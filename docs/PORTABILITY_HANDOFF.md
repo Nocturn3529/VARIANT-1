@@ -168,16 +168,24 @@ Host: Linux x86_64, CPython 3.13.5, Node 20. Cloned `port/linux-macos-bootstrap`
 
 **Not run here:** full Electron Deck UI, `prepare:native`, `electron-builder --linux`, Deck chat round-trip.
 
+
+### Linux prepare:native + soname fix — 2026-09-16
+
+- `npm run prepare:native` on Linux x64 pulled b10289 Ubuntu archive and staged 22 files.
+- Bugfix: restore archive soname symlinks (`libllama-common.so.0` etc.) and executable bits; without that `llama-server` was non-executable / missing `.so.0` deps.
+- After fix: `llama-server --version` → `version: 10289 (f9e832c10)` on Linux.
+- CI: added `backend-linux` job on `ubuntu-latest` (requirements.txt + PosixPty smoke); Windows jobs unchanged.
+
 ## Remaining gaps (post-bootstrap)
 
 Code seams for M0-M5 are on this branch tip `e13f2111a60541bef871c4625be1d979b63f1951`. Codex review deferred until Nocturn's usage limit resets - review the whole branch then.
 
 1. Live Linux smoke — follow **Linux smoke checklist** (setup + chat).
 2. Live Linux Files/Review path + PTY smoke — same checklist steps 4–5.
-3. Live `npm run prepare:native` on Linux/macOS (CPU recipes already pinned in-repo).
+3. Live `npm run prepare:native` on macOS (Linux x64 verified); optional GPU Unix recipes.
 4. `electron-builder --linux` (and later mac) on a real builder host.
 5. Optional: richer mac/linux desktop drivers beyond unsupported seam.
-6. CI ubuntu/macOS jobs.
+6. Expand CI beyond `backend-linux` (frontend-linux / macOS later).
 7. Push `port/linux-macos-bootstrap` to origin when Nocturn asks.
 
 ## Review protocol

@@ -53,3 +53,44 @@ jobs:
           .\backend\.venv\Scripts\python.exe -m pip check
       - name: Frontend build, typecheck, and regression suite
         run: npm run test:frontend
+
+  backend-linux:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies (requirements.txt)
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/python -m pip check
+      - name: Isolated backend regression suite
+        run: node ../scripts/test-python.js
+      - name: Posix PTY + unsupported desktop smoke
+        working-directory: .
+        run: |
+          backend/.venv/bin/python - <<'PY'
+          import os, sys, time
+          sys.path.insert(0, "backend")
+          from desktop_fabric.unsupported import UnsupportedDesktopAdapter
+          from process_tree import OwnedProcessTree
+          from execution_hosts.local import spawn_terminal
+          assert not OwnedProcessTree()._is_windows
+          chunks = []
+          proc = spawn_terminal(["/bin/echo", "ci-pty"], cwd="/tmp", env=dict(os.environ), cols=80, rows=24, on_output=lambda s,d: chunks.append(d))
+          assert type(proc).__name__ == "PosixPtyProcess"
+          time.sleep(0.3)
+          getattr(proc, "close", getattr(proc, "terminate", lambda: None))()
+          print("linux_smoke_ok", UnsupportedDesktopAdapter.__name__, len(chunks))
+          PY
