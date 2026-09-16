@@ -79,15 +79,4 @@ jobs:
         run: node ../scripts/test-python.js
       - name: Posix PTY + unsupported desktop smoke
         working-directory: .
-        run: >
-          backend/.venv/bin/python -c "import os,sys,time; sys.path.insert(0,'backend');
-          from desktop_fabric.unsupported import UnsupportedDesktopAdapter;
-          from process_tree import OwnedProcessTree;
-          from execution_hosts.local import spawn_terminal;
-          assert not OwnedProcessTree()._is_windows;
-          chunks=[];
-          proc=spawn_terminal(['/bin/echo','ci-pty'], cwd='/tmp', env=dict(os.environ), cols=80, rows=24, on_output=lambda s,d: chunks.append(d));
-          assert type(proc).__name__=='PosixPtyProcess';
-          time.sleep(0.3);
-          (getattr(proc,'close',None) or proc.terminate)();
-          print('linux_smoke_ok', UnsupportedDesktopAdapter.__name__, len(chunks))"
+        run: backend/.venv/bin/python scripts/ci-linux-smoke.py
