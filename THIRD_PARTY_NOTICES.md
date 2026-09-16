@@ -4,6 +4,41 @@ Original VARIANT-1 code is licensed under the root MIT license. Third-party
 components retain their own licenses. The Live2D cat and its floating overlay
 have been removed, including vendor libraries and model assets.
 
+## Prime Agent — persistent Python execution inspiration
+
+VARIANT-1's persistent Python execution approach was inspired by
+[Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent) from Prime Intellect.
+We thank the Prime Agent contributors for sharing their work.
+
+This acknowledgement credits the design inspiration and does not imply
+endorsement by Prime Intellect.
+
+Prime Agent's upstream MIT license notice is reproduced below for reference,
+from [LICENSE at commit `66abc2a`](https://github.com/PrimeIntellect-ai/prime-agent/blob/66abc2a604fc42a220292a1ca4cf33ee60cb5733/LICENSE).
+
+MIT License
+
+Copyright (c) 2025 Mario Zechner
+Copyright (c) 2026 Prime Intellect
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
 ## Geist fonts
 
 The bundled Geist and Geist Mono font files are distributed under the SIL Open
