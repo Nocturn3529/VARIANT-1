@@ -160,3 +160,105 @@ def test_collect_notices_includes_indirect_and_cpython(tmp_path):
     assert "MIT" in text
     assert "indirect" in text.lower()
     assert "PYTHON LICENSE" in text
+
+
+def test_root_extra_includes_extra_dependencies(tmp_path):
+    inv = tmp_path / "requirements.txt"
+    inv.write_text("parent[fast]>=1\n", encoding="utf-8")
+    specs = mod._requirement_specs(inv)
+    assert specs == [("parent", frozenset({"fast"}))]
+    dists = {
+        "parent": FakeDist(
+            "parent",
+            requires=["child>=1; extra == 'fast'", "unused>=1; extra == 'slow'"],
+            license_files={"LICENSE": "PARENT"},
+        ),
+        "child": FakeDist("child", license_files={"LICENSE": "CHILD"}),
+        "unused": FakeDist("unused", license_files={"LICENSE": "UNUSED"}),
+    }
+    loader = _loader_from(dists, tmp_path)
+    closed = mod.resolve_dependency_closure(specs, distribution_loader=loader)
+    names = [n.lower() for n in closed]
+    assert names == ["parent", "child"]
+    assert "unused" not in names
+
+
+def test_requires_dist_extras_include_base_and_extra_deps(tmp_path):
+    dists = {
+        "parent": FakeDist(
+            "parent",
+            requires=["child[fast]>=1"],
+            license_files={"LICENSE": "PARENT"},
+        ),
+        "child": FakeDist(
+            "child",
+            requires=["grandchild>=1; extra == 'fast'"],
+            license_files={"LICENSE": "CHILD"},
+        ),
+        "grandchild": FakeDist(
+            "grandchild",
+            license_files={"LICENSE": "GRANDCHILD"},
+        ),
+    }
+    loader = _loader_from(dists, tmp_path)
+    closed = mod.resolve_dependency_closure(["parent"], distribution_loader=loader)
+    assert [n.lower() for n in closed] == ["parent", "child", "grandchild"]
+
+
+def test_revisit_activates_new_extra_edges(tmp_path):
+    dists = {
+        "root": FakeDist(
+            "root",
+            requires=["child>=1", "other>=1"],
+            license_files={"LICENSE": "ROOT"},
+        ),
+        "other": FakeDist(
+            "other",
+            requires=["child[fast]>=1"],
+            license_files={"LICENSE": "OTHER"},
+        ),
+        "child": FakeDist(
+            "child",
+            requires=["grandchild>=1; extra == 'fast'"],
+            license_files={"LICENSE": "CHILD"},
+        ),
+        "grandchild": FakeDist(
+            "grandchild",
+            license_files={"LICENSE": "GRANDCHILD"},
+        ),
+    }
+    loader = _loader_from(dists, tmp_path)
+    closed = mod.resolve_dependency_closure(["root"], distribution_loader=loader)
+    names = [n.lower() for n in closed]
+    assert "root" in names
+    assert "child" in names
+    assert "other" in names
+    assert "grandchild" in names
+
+
+def test_missing_extra_dependency_is_hard_error(tmp_path):
+    dists = {
+        "parent": FakeDist(
+            "parent",
+            requires=["missing-extra-dep>=1; extra == 'fast'"],
+            license_files={"LICENSE": "PARENT"},
+        ),
+    }
+    loader = _loader_from(dists, tmp_path)
+    with pytest.raises(mod.NoticeCollectionError, match="not installed"):
+        mod.resolve_dependency_closure(
+            [("parent", frozenset({"fast"}))],
+            distribution_loader=loader,
+        )
+
+
+def test_homepage_alone_is_not_notice_material(tmp_path):
+    dist = FakeDist(
+        "homepageonly",
+        license_files={},
+        license_meta="",
+        project_urls=["Homepage, https://example.invalid/home"],
+    )
+    dist._root = tmp_path
+    with pytest.raises(mod.NoticeCollectionError, match="no license"):
+        mod._license_blobs(dist)
