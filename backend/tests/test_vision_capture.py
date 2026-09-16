@@ -1,3 +1,6 @@
+import pytest
+import os
+import sys
 """Unit tests for vision_capture helpers."""
 
 from __future__ import annotations
@@ -52,6 +55,10 @@ def test_capture_event_text_names_the_monitor():
     assert "no_lock" in text
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32" and not os.environ.get("DISPLAY"),
+    reason="mss active-monitor capture needs Win32 or a DISPLAY",
+)
 def test_grab_active_monitor_reports_scope():
     """Fallback capture targets the monitor with the foreground window (multi-
     display: the task window is often not on the primary monitor)."""

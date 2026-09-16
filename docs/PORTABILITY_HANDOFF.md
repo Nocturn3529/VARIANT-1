@@ -234,6 +234,23 @@ Docs notes: `bf4b573c` (R3/R4); this section supersedes tip SHA below.
 
 Counts: 15 FAILED + 1 isolation cleanup error. Smoke skipped because suite step failed — addressed by `always()` on the smoke step in `7bd01802`.
 
+## CI triage — backend-linux run 35117989259 (eb52e83)
+
+15 pytest failures + EACCES temp cleanup. Categories:
+
+| Category | Nodeids | Action |
+|----------|---------|--------|
+| Win32 physical desktop | 5× `test_desktop_fabric.py::test_physical_*` (`ctypes.windll`) | **skipif non-win32** (landed) |
+| Display capture | `test_vision_capture.py::test_grab_active_monitor_reports_scope` | **skipif** no DISPLAY and not win32 (landed) |
+| Windows %env% paths | `test_tools_safety.py::test_file_tools_expand_windows_percent_environment_vars` | **skipif non-win32** (landed) |
+| OS-aware llama binary | `test_llama_runtime_efficiency.py::test_relative_model_pins_*` expected `.exe` | **assert uses host binary name** (landed) |
+| Win venv layout in canary | `test_phase12_eval_plan.py::test_canary_seeds_*` looks for `Scripts/python.exe` | still open — BackendProcess path seam |
+| Fonts | `test_artifact_unicode_images_hunt.py::test_pdf_preserves_cjk_*` | open — Linux font coverage |
+| Shared/flaky | child_sessions cancel; extensions digest; inference bundled-llamacpp; model_options count; file_review GitUnavailable | keep asserts; investigate separately |
+| Isolation | EACCES unlink `conversations.sqlite3` under pytest tmp | open — SQLite handle leak on Linux |
+
+R6: Linux smoke step now uses `if: always() && !cancelled()` so it runs after pytest failure.
+
 ## Remaining gaps (post re-review round 2)
 
 Branch tip at handoff update: `feaed7932e976ba688a2e48f745c345bac0eccbc`.
