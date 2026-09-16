@@ -348,8 +348,14 @@ function createBackendManager(deps) {
         }
       });
     }
+    // POSIX: backend is spawned detached so pid is the session/process-group
+    // leader. Negative-pid kill reaps children the way taskkill /T does on Windows.
     try {
+      try {
+        process.kill(-pid, 'SIGTERM');
+      } catch (_) {
         process.kill(pid, 'SIGTERM');
+      }
       return Promise.resolve(true);
     } catch (_) {
       return Promise.resolve(false); // already gone
@@ -361,7 +367,7 @@ function createBackendManager(deps) {
       try { deps.killVariant1EngineProcesses(); } catch (_) {}
       return;
     }
-    if (process.platform !== 'win32') return;
+    if (process.platform === 'win32') {
     const roots = [appRoot];
     if (app.isPackaged && resourcesPath) {
       roots.push(resourcesPath);
@@ -404,8 +410,10 @@ function createBackendManager(deps) {
         timeout: timings.forceKillTimeoutMs,
       });
     } catch (_) {}
+    }
     // Managed SearXNG is a Docker container (not a project .exe). Backend stops
-    // it on graceful shutdown; this is a crash / hard-quit safety net.
+    // it on graceful shutdown; this is a crash / hard-quit safety net. Runs on every
+    // platform (previously skipped by a win32-only early return).
     try {
       runFileSync('docker', ['stop', 'variant1-searxng'], { windowsHide: true, stdio: 'ignore', timeout: 15000 });
     } catch (_) {}
@@ -604,6 +612,9 @@ function createBackendManager(deps) {
       child = spawnProcess(command, args, {
         cwd: spawnCwd,
         windowsHide: true,
+        // New session/process group on POSIX so terminateProcessTree can reap
+        // the tree with kill(-pid). Windows still uses taskkill /T.
+        detached: process.platform !== 'win32',
         env: backendSpawnEnv(
           process.env,
           getDataDir(),
