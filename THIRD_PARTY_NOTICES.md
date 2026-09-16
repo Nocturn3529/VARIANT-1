@@ -1,8 +1,8 @@
 # Third-party notices
 
 Original VARIANT-1 code is licensed under the root MIT license. Third-party
-components retain their own licenses. Optional Live2D vendor bundles and sample
-avatar material from development are not included in this public source export.
+components retain their own licenses. The Live2D cat and its floating overlay
+have been removed, including vendor libraries and model assets.
 
 ## Geist fonts
 
@@ -73,3 +73,25 @@ SOFTWARE.
 ## p5.js
 
 p5.js 2.3.2 is used for the code-generated kernel symbol and is bundled without modification. Licensed under LGPL-2.1. The complete license is in assets/licenses/p5-LGPL-2.1.txt. Source: https://github.com/processing/p5.js/tree/v2.3.2
+
+
+## Native and generated runtime notices
+
+The installer retains per-component licenses; the application MIT declaration
+is not a license grant for NVIDIA SDK libraries or other third-party software.
+The build manifest pins llama.cpp b10289 (f9e832c10e9444cb168ddcb579cc62c154f3068b)
+and its CPU/CUDA DLLs. NVIDIA CUDA 13.3 redistribution terms and the llama.cpp,
+cpp-httplib and json.hpp MIT notices are in assets/licenses/native.
+
+The loader filename libomp140.x86_64.dll contains the official LLVM20.1.8
+libomp.dll bytes (SHA256 a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c),
+under Apache-2.0 WITH LLVM-exception. It is not the Microsoft debug_nonredist
+binary from the original upstream Windows package. Its imported/exported ABI
+and CPU graph execution are tested before release. Source and archive provenance
+are recorded in config/native-runtime.json and the included LLVM notice.
+
+The renderer bundle carries THIRD_PARTY_LICENSES.txt for its compiled modules.
+The frozen backend's _internal/THIRD_PARTY_LICENSES.txt records locked Python and
+CPython notices. Electron includes LICENSE and LICENSES.chromium.html. The
+baseline excludes offline speech engines and weights; independently installed
+speech services remain subject to their own licenses.

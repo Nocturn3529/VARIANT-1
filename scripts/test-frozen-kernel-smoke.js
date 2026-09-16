@@ -40,7 +40,7 @@ if (!fs.existsSync(executable)) {
 }
 
 const forbiddenRuntimeNames = new Set([
-  'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime',
+  'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime', 'neutts', 'kittentts', 'piper', 'soundfile',
   'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core', 'zmq',
   'debugpy', '_pydevd_bundle', 'traitlets', 'prompt_toolkit', 'jedi', 'parso',
 ]);

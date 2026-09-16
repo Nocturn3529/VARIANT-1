@@ -52,7 +52,7 @@ def load_llm_config(path: str) -> dict:
         if isinstance(voice, dict):
             voice.setdefault("stt_provider", "xai" if voice.get("stt_route") == "cloud" else "local")
             voice.setdefault("tts_provider", "xai" if voice.get("tts_route") == "cloud" else "kokoro")
-            voice.setdefault("auto_tts", bool(voice.get("tts_enabled", True)))
+            voice.setdefault("auto_tts", bool(voice.get("tts_enabled", False)))
             voice.setdefault("stt", {})
             voice.setdefault("tts", {})
             for key in ("stt_route", "tts_route", "tts_enabled", "muted",

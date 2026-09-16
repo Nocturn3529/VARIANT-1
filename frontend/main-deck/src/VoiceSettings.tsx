@@ -12,6 +12,7 @@ import {createSwitchRow} from "./ui/Switch";
 const SwitchRow = createSwitchRow("gen-row deck-data-row");
 
 function status(provider: SpeechProviderInfo): string {
+  if (provider.id === "kokoro") return provider.available ? "Server configured" : "Server setup needed";
   if (provider.available) return "Ready";
   if (provider.kind === "local") return "Runtime needed";
   return "Credential needed";
@@ -248,7 +249,7 @@ export function VoiceSettings() {
       </div>
       <div className={`gen-info deck-data-row${anyCloud ? " gen-info--cloud" : ""}`}>
         <span className="gen-info__icon" aria-hidden="true">{anyCloud ? "C" : "L"}</span>
-        <div><strong>{anyCloud ? "Cloud speech provider selected" : "Speech stays on this machine"}</strong>
+        <div><strong>{anyCloud ? "Cloud speech provider selected" : "Configured speech services"}</strong>
           <p>Only the selected provider receives audio or reply text.</p></div>
       </div>
     </section>

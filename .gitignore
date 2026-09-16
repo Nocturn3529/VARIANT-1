@@ -37,7 +37,7 @@ frontend/main-deck/dist/
 
 # Only reviewed default config belongs in source control
 /config/*
-!/config/animations.json
+!/config/native-runtime.json
 !/config/llm_config.default.json
 !/config/messaging.default.json
 !/config/tools.default.json

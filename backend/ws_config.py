@@ -19,8 +19,10 @@ def _sessions(srv):
 
 
 async def _send_tts_voices(srv, websocket=None, *, broadcast: bool = False) -> None:
+    from host_voice import tts_config_key
     voice = srv.require_runtime().voice
     provider = voice.provider()
+    config_key = tts_config_key(voice.config())
     try:
         payload = {
             "type": "tts:voices",
@@ -37,6 +39,9 @@ async def _send_tts_voices(srv, websocket=None, *, broadcast: bool = False) -> N
             "route": voice.route(),
             "provider": provider,
         }
+    if tts_config_key(voice.config()) != config_key:
+        return
+    payload["config_key"] = config_key
     if broadcast:
         await srv.hub.broadcast(payload)
     elif websocket is not None:
@@ -530,7 +535,7 @@ def register(on):
                 "request_id": request_id,
             })
         await srv.hub.broadcast(srv.engine_status_message())
-        if key in {"tts_provider", "voice"}:
+        if key in {"tts_provider", "voice", "tts_options"}:
             background_tasks.spawn(
                 _send_tts_voices(srv, broadcast=True),
                 name="tts-voices-provider-refresh",
@@ -539,16 +544,12 @@ def register(on):
     @on("speech:credential:set")
     async def _speech_credential_set(srv, websocket, session, msg):
         from service_credentials import replace
-        from speech.providers import STT_PROVIDERS, TTS_PROVIDERS
+        from speech.providers import accepts_credential
         capability = str(msg.get("capability") or "").strip().lower()
         provider = str(msg.get("provider") or "").strip().lower()
-        known = {
-            "tts": {row["id"] for row in TTS_PROVIDERS},
-            "stt": {row["id"] for row in STT_PROVIDERS},
-        }
         try:
-            if capability not in known or provider not in known[capability]:
-                raise ValueError("unknown speech provider")
+            if not accepts_credential(capability, provider):
+                raise ValueError("This speech provider does not accept stored credentials.")
             replace(srv.router, capability, provider, str(msg.get("key") or ""))
         except Exception as exc:
             await websocket.send_json({"type": "speech:rejected",
@@ -560,12 +561,13 @@ def register(on):
 
     @on("speech:credential:clear")
     async def _speech_credential_clear(srv, websocket, session, msg):
+        from speech.providers import accepts_credential
         from service_credentials import clear
         capability = str(msg.get("capability") or "").strip().lower()
         provider = str(msg.get("provider") or "").strip().lower()
         try:
-            if capability not in {"tts", "stt"}:
-                raise ValueError("unknown speech capability")
+            if not accepts_credential(capability, provider):
+                raise ValueError("This speech provider does not accept stored credentials.")
             clear(srv.router, capability, provider)
         except Exception as exc:
             await websocket.send_json({"type": "speech:rejected",

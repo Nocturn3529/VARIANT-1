@@ -70,13 +70,12 @@ No model weights, CUDA redistributables, or native executables are committed her
 The current installer recipe expects its reviewed `bin/` manifest. A generic
 upstream runtime is not automatically the exact installer payload: the release
 builder must record its version, checksums, license, DLL list, and hardware tests.
-A fully automated pinned native-runtime acquisition step is still release work.
+Release builders use `npm run prepare:native` for the hash-verified native
+payload and notices. This is separate from users choosing a runtime in Settings.
 
 ## Optional components
 
-The legacy Live2D runtime/sample avatar were deliberately omitted pending their
-separate redistribution review. No avatar download or license acceptance is
-automated. The overlay's existing placeholder fallback remains available.
+The Live2D cat, vendor libraries and floating overlay have been removed.
 
 Speech engines and model weights are user-supplied; see
 [the model-drop instructions](../models/speech/README.txt). External MCP servers,

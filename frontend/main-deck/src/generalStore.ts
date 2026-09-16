@@ -37,6 +37,7 @@ const store = createModuleStore<GeneralState>({
     voices: [],
     currentVoice: "",
     voicesLoaded: false,
+    ttsConfigKey: "",
     voicesError: "",
     speechReceipt: null,
   },
@@ -99,6 +100,8 @@ function applyConfig(
       } satisfies SpeechProviderInfo];
     }) : []
   );
+  const nextConfigKey = hasVoice && typeof tts.config_key === "string" ? tts.config_key : state.ttsConfigKey || "";
+  const voicesChanged = hasVoice && ((previousTts && previousTts !== nextTts) || nextConfigKey !== (state.ttsConfigKey || ""));
   store.setState({
     connected: true,
     mode: String(message.mode || state.mode || "local"),
@@ -121,7 +124,10 @@ function applyConfig(
     voiceAvailable: hasVoice ? tts.available !== false : state.voiceAvailable,
     voiceSpeed: hasVoice && tts.speed != null ? Number(tts.speed) : state.voiceSpeed,
     currentVoice: hasVoice && tts.voice != null ? String(tts.voice) : state.currentVoice,
-    voicesLoaded: hasVoice && previousTts && previousTts !== nextTts ? false : state.voicesLoaded,
+    ttsConfigKey: nextConfigKey,
+    voices: voicesChanged ? [] : state.voices,
+    voicesError: voicesChanged ? "" : state.voicesError,
+    voicesLoaded: voicesChanged ? false : state.voicesLoaded,
   });
 }
 
@@ -177,6 +183,7 @@ export function ingestGeneral(message: Record<string, unknown>) {
     const state = store.getState();
     const provider = String(message.provider || "");
     if (provider && provider !== state.ttsProvider) return;
+    if (message.config_key && message.config_key !== state.ttsConfigKey) return;
     const items = Array.isArray(message.items) ? message.items : [];
     const voices: VoiceOption[] = items.map(item => {
       if (typeof item === "string") return {id: item, name: item, language: ""};

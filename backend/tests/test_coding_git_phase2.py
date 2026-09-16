@@ -31,6 +31,24 @@ from work_fabric.scope import WorkScope
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="Git is unavailable")
 
 
+def test_unique_commit_count_disambiguates_revisions_in_long_worktree_root(tmp_path):
+    root = tmp_path
+    while len(str(root)) < 195:
+        root = root / 'deep-worktree-segment'
+    root.mkdir(parents=True)
+    _run(root, 'init', '--quiet')
+    _run(root, 'config', 'user.name', 'Fixture')
+    _run(root, 'config', 'user.email', 'fixture@example.test')
+    _run(root, 'commit', '--allow-empty', '-m', 'base')
+    base = _run(root, 'rev-parse', 'HEAD')
+    git = GitProcess()
+    assert len(str(root)) + len(base + '..' + base) + 1 > 260
+    assert git.unique_commit_count(str(root), base, base) == 0
+    _run(root, 'commit', '--allow-empty', '-m', 'unique')
+    head = _run(root, 'rev-parse', 'HEAD')
+    assert git.unique_commit_count(str(root), base, head) == 1
+
+
 def _run(root: Path, *arguments: str) -> str:
     completed = subprocess.run(
         ["git", "-C", str(root), *arguments],

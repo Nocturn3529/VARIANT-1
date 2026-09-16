@@ -87,6 +87,7 @@ const tests = [
   "test-capability-surface-stores.js",
   "test-local-models-ui.js",
   "test-provider-auth-ui.js",
+  "test-speech-config.js",
   "test-service-settings-ui.js",
   // Typed turn + session-gate behavior is exercised by test-deck-runtime.js.
   "test-main-deck-controls.js",

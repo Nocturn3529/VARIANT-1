@@ -73,6 +73,7 @@ def voice_state(h) -> dict:
         },
         "tts": {
             "route": host_voice.tts_route(router), "provider": tts_provider,
+            "config_key": host_voice.tts_config_key(host_voice.voice_cfg(router)),
             "available": bool(tts_selected.get("available")),
             "local_available": bool(tts_assets["available"]),
             "drop_path": tts_assets["drop_path"],

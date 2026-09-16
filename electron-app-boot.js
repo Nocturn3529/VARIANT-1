@@ -188,7 +188,7 @@ function createWindowSecurity(deps) {
   }
 
   function isTrustedMediaRequest(webContents, origin, details) {
-    if (!webContents || ![getMainWindow(), getDeckWindow(), ...(deps.getChatWindows?.() || [])].includes(
+    if (!webContents || ![getDeckWindow(), ...(deps.getChatWindows?.() || [])].includes(
       BrowserWindow.fromWebContents(webContents))) return false;
     const requestUrl = (details && (
       details.requestingUrl || details.securityOrigin || details.requestingOrigin

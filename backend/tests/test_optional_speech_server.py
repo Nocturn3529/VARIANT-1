@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -61,3 +62,43 @@ async def test_server_errors_do_not_fall_back_to_in_process_engine(monkeypatch, 
     monkeypatch.setattr(local_tts, 'synthesize', forbidden)
     with pytest.raises(providers.SpeechProviderError):
         await providers.synthesize('kokoro', None, configured(), 'Hello')
+
+
+@pytest.mark.asyncio
+async def test_old_voice_lookup_cannot_publish_after_same_provider_endpoint_change():
+    import ws_config
+    import host_voice
+    entered, release = asyncio.Event(), asyncio.Event()
+    config = {'tts_provider': 'kokoro', **configured('http://server-a/v1')}
+    async def voices():
+        entered.set()
+        await release.wait()
+        return [{'id': 'old-server-voice'}]
+    voice = SimpleNamespace(config=lambda: config, provider=lambda: 'kokoro',
+        list_voices=voices, voice=lambda: 'af_nova', route=lambda: 'local')
+    sent = []
+    async def send(payload):
+        sent.append(payload)
+    server = SimpleNamespace(require_runtime=lambda: SimpleNamespace(voice=voice),
+        hub=SimpleNamespace(broadcast=send))
+    pending = asyncio.create_task(ws_config._send_tts_voices(server, broadcast=True))
+    await entered.wait()
+    old_key = host_voice.tts_config_key(config)
+    config['tts']['kokoro']['base_url'] = 'http://server-b/v1'
+    release.set()
+    await pending
+    assert sent == [] and host_voice.tts_config_key(config) != old_key
+    await ws_config._send_tts_voices(server, broadcast=True)
+    assert sent[0]['config_key'] == host_voice.tts_config_key(config)
+
+
+def test_frozen_catalog_has_only_configurable_speech_routes(tmp_path, monkeypatch):
+    from tests.test_provider_parity_hunt import _router
+    router = _router(tmp_path)
+    monkeypatch.setattr(providers, 'sys', SimpleNamespace(frozen=True))
+    monkeypatch.setattr(local_tts, 'sys', SimpleNamespace(frozen=True))
+    rows = providers.catalog(router, configured('  '), local_stt_available=False)
+    tts = {row['id']: row for row in rows['tts_providers']}
+    assert not {'piper', 'neutts', 'kittentts'} & tts.keys()
+    assert not tts['kokoro']['available']
+    assert {'openai', 'edge', 'kokoro'} <= tts.keys()

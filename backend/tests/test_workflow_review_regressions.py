@@ -511,7 +511,8 @@ async def test_outbox_retries_transient_send_without_replaying_inbound(tmp_path)
     try:
         envelope = MessageEnvelope("fake", "first", "c", "u", "hello")
         assert await gateway.receive(envelope)
-        await _until(lambda: bool(adapter.sent))
+        # The transport can finish before its durable delivery acknowledgement.
+        await _until(lambda: bool(adapter.sent) and gateway.ingress.outbound_pending(envelope) == "")
         assert attempts[1] - attempts[0] >= 0.45
         assert gateway.router.await_count == 1
         assert gateway.ingress.outbound_pending(envelope) == ""

@@ -77,6 +77,7 @@ try {
   if (!fs.existsSync(kernelExe)) {
     throw new Error('expected kernel output missing: ' + kernelExe);
   }
+  run(py, [path.join(root, 'scripts', 'collect-python-notices.py')]);
   console.log('\nBackend frozen: ' + exe);
   console.log('Kernel frozen: ' + kernelExe);
   console.log('Now run `npm run dist` to build the installer (it bundles this exe).');

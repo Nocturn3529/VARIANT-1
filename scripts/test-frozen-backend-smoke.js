@@ -66,7 +66,7 @@ for (const required of [
   assert.ok(hasModule(required), `frozen backend is missing runtime module ${required}`);
 }
 for (const forbidden of [
-  'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime',
+  'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime', 'neutts', 'kittentts', 'piper', 'soundfile',
   'tokenizers', 'fastapi.testclient', 'anyio.pytest_plugin',
   'mss.__main__', 'openpyxl.utils.dataframe', 'reportlab.graphics.samples',
   'reportlab.graphics.barcode.test', 'reportlab.lib.testutils',
@@ -282,6 +282,10 @@ async function waitForHealth(record) {
         const chunks = [];
         request.on('data', chunk => chunks.push(chunk));
         request.on('end', () => {
+          if (request.method === 'GET' && request.url === '/v1/audio/voices') {
+            response.writeHead(200, {'Content-Type': 'application/json'});
+            response.end(JSON.stringify({voices: ['af_nova']})); return;
+          }
           if (request.url !== '/v1/audio/speech') {response.writeHead(404); response.end(); return;}
           const payload = JSON.parse(Buffer.concat(chunks).toString());
           assert.strictEqual(payload.model, 'kokoro'); assert.strictEqual(payload.response_format, 'wav');

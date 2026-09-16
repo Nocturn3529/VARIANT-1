@@ -21,10 +21,11 @@
     "test:frozen": "npm run test:backend:frozen && npm run test:kernel:frozen",
     "test:frontend": "node scripts/test-frontend.js",
     "build:backend": "node scripts/build-backend.js",
-    "dist": "npm run build:deck && npm run build:backend && electron-builder",
-    "dist:electron-only": "electron-builder",
+    "dist": "npm run build:deck && npm run build:backend && npm run dist:electron-only",
+    "dist:electron-only": "node scripts/check-native-runtime.js && electron-builder",
     "test": "node scripts/test.js",
-    "clean:artifacts": "node scripts/clean-artifacts.js"
+    "clean:artifacts": "node scripts/clean-artifacts.js",
+    "prepare:native": "node scripts/prepare-native-runtime.js"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
@@ -69,7 +70,8 @@
       "!frontend/main-deck/dist/**/*.map",
       "!frontend/main-deck/dist/fixture.js",
       "!frontend/main-deck/dist/fixture.js.map",
-      "assets/**/*"
+      "assets/**/*",
+      "LICENSE"
     ],
     "extraResources": [
       {
@@ -127,7 +129,8 @@
         "provider": "generic",
         "url": ""
       }
-    ]
+    ],
+    "artifactName": "VARIANT-1-${version}-${arch}-Setup.${ext}"
   },
   "repository": {
     "type": "git",

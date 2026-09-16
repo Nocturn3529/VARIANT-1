@@ -590,7 +590,9 @@ async def test_recovery_drains_multiple_pages_once_without_adapter_restart(tmp_p
     gateway.set_router(route)
     await gateway.start()
     try:
-        await asyncio.wait_for(finished.wait(), 15)
+        # This checks durable multi-page recovery, not disk throughput. Hosted
+        # Windows runners can spend >15s committing the 211 real SQLite rows.
+        await asyncio.wait_for(finished.wait(), 60)
         await gateway.drain()
         assert len(calls) == len(set(calls)) == 211
         assert peak <= gateway._recovery_concurrency

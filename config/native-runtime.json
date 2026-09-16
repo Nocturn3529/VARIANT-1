@@ -1,0 +1,235 @@
+{
+  "upstream_tag": "b10289",
+  "upstream_commit": "f9e832c10e9444cb168ddcb579cc62c154f3068b",
+  "files": [
+    {
+      "file": "ggml-cuda.dll",
+      "bytes": 141574656,
+      "sha256": "fe4f145e5258ae20cc1fb731ffc4ba73e264a30f5572036a23a833a8a7e37f60",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cuda.dll"
+    },
+    {
+      "file": "llama.dll",
+      "bytes": 2840064,
+      "sha256": "49c73285d49fdb23dc6620292fd3aee1ef14137096e3a363b89e27129254a5ec",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "llama.dll"
+    },
+    {
+      "file": "ggml-cpu-ivybridge.dll",
+      "bytes": 1073664,
+      "sha256": "77a2d42109e71afcc31953d06b2a39d226fa5a3ecdde3f248870798b0192561e",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-ivybridge.dll"
+    },
+    {
+      "file": "ggml-cpu-sapphirerapids.dll",
+      "bytes": 1659904,
+      "sha256": "c3afd224abd7b4131ce52ce258c0fcb92f09852c6e91e585c61245963ae91abe",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-sapphirerapids.dll"
+    },
+    {
+      "file": "ggml-cpu-cannonlake.dll",
+      "bytes": 1395200,
+      "sha256": "2542967b1777f80d4b88eb279506449cd3400b23318214ce1cc04bd65666da00",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-cannonlake.dll"
+    },
+    {
+      "file": "libomp140.x86_64.dll",
+      "bytes": 768000,
+      "sha256": "a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c",
+      "source_archive": "clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz",
+      "member": "clang+llvm-20.1.8-x86_64-pc-windows-msvc/bin/libomp.dll"
+    },
+    {
+      "file": "ggml-cpu-x64.dll",
+      "bytes": 869376,
+      "sha256": "d953cc44567b5d47dafc8b254d8adbfc7a6204e62b02367ed2367d613fbd79cc",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-x64.dll"
+    },
+    {
+      "file": "ggml-rpc.dll",
+      "bytes": 137728,
+      "sha256": "79589e5ce7d9142f4fb6697f0f73f038790404d0293d522ba04b2a8634d81f9e",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-rpc.dll"
+    },
+    {
+      "file": "ggml-cpu-skylakex.dll",
+      "bytes": 1389056,
+      "sha256": "dbfe1fa17549f1de3fb53b49f6ce25be78b974e08daad4dc1478e7810af08313",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-skylakex.dll"
+    },
+    {
+      "file": "ggml-cpu-sse42.dll",
+      "bytes": 876544,
+      "sha256": "3e2dd5bf5c402874caeb9fc85c00f199ff837d41272c028bb3f554bc97a43926",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-sse42.dll"
+    },
+    {
+      "file": "mtmd.dll",
+      "bytes": 1470976,
+      "sha256": "23bdbee532b000e91ebfa658ea03c0b05c3435ea0ae929f27f307421ec67ee7d",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "mtmd.dll"
+    },
+    {
+      "file": "ggml-cpu-zen4.dll",
+      "bytes": 1389056,
+      "sha256": "6d2bda9161c0db93d83065b7e400e7866381015ea19a1de705758bd878cb045e",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-zen4.dll"
+    },
+    {
+      "file": "llama-common.dll",
+      "bytes": 7986176,
+      "sha256": "4e3dda25700a1de27250bad030ef90b85ac5bc904aefa43cfed42e3095fe087a",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "llama-common.dll"
+    },
+    {
+      "file": "ggml-cpu-alderlake.dll",
+      "bytes": 1180672,
+      "sha256": "756cedce40bbcf986b3f4fad9aff8f14e4d1d16e5a54245e285d7f5a9a739901",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-alderlake.dll"
+    },
+    {
+      "file": "ggml-cpu-cascadelake.dll",
+      "bytes": 1381376,
+      "sha256": "6b4d0baebc7ee20af519ea4d59d2499ac21f1f0f6e38056c761c4fafe68c9127",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-cascadelake.dll"
+    },
+    {
+      "file": "ggml-cpu-icelake.dll",
+      "bytes": 1388032,
+      "sha256": "29377bd5058150861804c28e4e1fea110c8d403a92537bde8cdfe3132943aa2b",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-icelake.dll"
+    },
+    {
+      "file": "ggml.dll",
+      "bytes": 86016,
+      "sha256": "5a92bb850b0a9a4cd878cc2f2a9faa9dbfe48e5b0ccfcf1f0d6153738821350c",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml.dll"
+    },
+    {
+      "file": "ggml-cpu-piledriver.dll",
+      "bytes": 1077248,
+      "sha256": "172cc49f13b01b1515c9b9eb9e3814900a29759455eafd6c9a9d19250254204e",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-piledriver.dll"
+    },
+    {
+      "file": "ggml-cpu-sandybridge.dll",
+      "bytes": 1053696,
+      "sha256": "141d5d1b037ae958142cf4145e086868b38bc1620b5b9c5d4bfe94645820f162",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-sandybridge.dll"
+    },
+    {
+      "file": "ggml-cpu-haswell.dll",
+      "bytes": 1184768,
+      "sha256": "9ff26fc3bc1b2dc7c804354f0c34ffca8aa47144cd9953d8f1739afd5bec0822",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-haswell.dll"
+    },
+    {
+      "file": "llama-server-impl.dll",
+      "bytes": 9966080,
+      "sha256": "d9e1e7e93570d01c69220ed1278569c82888304acd04eac6b2dd1c4ddd92af57",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "llama-server-impl.dll"
+    },
+    {
+      "file": "llama-server.exe",
+      "bytes": 9216,
+      "sha256": "9eb103cd99d00ae4424910601971fa605b08fc5a20f5105b6558770691ea41c2",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "llama-server.exe"
+    },
+    {
+      "file": "ggml-cpu-cooperlake.dll",
+      "bytes": 1382400,
+      "sha256": "752ebf66bc0d8046c50f2c57a13d3460bfc207dbf3e6b2643c2155288585df72",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-cpu-cooperlake.dll"
+    },
+    {
+      "file": "ggml-base.dll",
+      "bytes": 773120,
+      "sha256": "e3cf1a6c6f2f16814c0412aeb8e5b56155eefc941a27890a04e48c3f978257a2",
+      "source_archive": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "member": "ggml-base.dll"
+    },
+    {
+      "file": "cublas64_13.dll",
+      "bytes": 51870320,
+      "sha256": "f1d500d0cd892f5b8c6b6cdbffd82d0c55d5f5427215668e7ceb55aeeccc1b63",
+      "source_archive": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "member": "cublas64_13.dll"
+    },
+    {
+      "file": "cublasLt64_13.dll",
+      "bytes": 460301424,
+      "sha256": "b592cd016d7673e9cb97716a22b27c4010ee635377a3ba28f37070a9bdb76a68",
+      "source_archive": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "member": "cublasLt64_13.dll"
+    },
+    {
+      "file": "cudart64_13.dll",
+      "bytes": 551024,
+      "sha256": "b00ca6f53699120da815bf3e06e2e4285fae2f201235b883dcbb50eec51e2a2a",
+      "source_archive": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "member": "cudart64_13.dll"
+    }
+  ],
+  "archives": [
+    {
+      "file": "llama-b10289-bin-win-cuda-13.3-x64.zip",
+      "sha256": "150d53b3f30384f7ed823a53d59f685ab19ee953022c344158ec3ac864db166d",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/llama-b10289-bin-win-cuda-13.3-x64.zip"
+    },
+    {
+      "file": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+      "sha256": "1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/cudart-llama-bin-win-cuda-13.3-x64.zip"
+    },
+    {
+      "file": "clang+llvm-20.1.8-x86_64-pc-windows-msvc.tar.xz",
+      "sha256": "f229769f11d6a6edc8ada599c0cda964b7dee6ab1a08c6cf9dd7f513e85b107f",
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/clang%2Bllvm-20.1.8-x86_64-pc-windows-msvc.tar.xz"
+    }
+  ],
+  "license_sources": [
+    {
+      "file": "llama-MIT.txt",
+      "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/f9e832c10e9444cb168ddcb579cc62c154f3068b/LICENSE"
+    },
+    {
+      "file": "cpp-httplib-MIT.txt",
+      "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/f9e832c10e9444cb168ddcb579cc62c154f3068b/vendor/cpp-httplib/LICENSE"
+    },
+    {
+      "file": "jsonhpp-MIT.txt",
+      "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/f9e832c10e9444cb168ddcb579cc62c154f3068b/licenses/LICENSE-jsonhpp"
+    },
+    {
+      "file": "llvm-openmp-20.1.8.txt",
+      "url": "https://raw.githubusercontent.com/llvm/llvm-project/llvmorg-20.1.8/openmp/LICENSE.TXT"
+    },
+    {
+      "file": "nvidia-cuda-13.3-EULA.html",
+      "url": "https://docs.nvidia.com/cuda/archive/13.3.0/eula/index.html"
+    }
+  ],
+  "note": "OpenMP is official LLVM20.1.8 libomp.dll under the import-library filename required by ggml. Microsoft debug_nonredist bytes are not included. Export coverage and CPU graph execution are tested."
+}

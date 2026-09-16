@@ -1,0 +1,2 @@
+# This byte-golden regression fixture must not change under Windows checkout.
+backend/tests/fixtures/r3-phase2-client-reconstructed.txt text eol=lf

@@ -18,6 +18,7 @@ const sharedOptions = {
   loader: {".woff2": "file"},
   sourcemap: true,
   minify: true,
+  metafile: true,
   logLevel: "info",
 };
 const platformOptions = {
@@ -55,7 +56,27 @@ async function main() {
     console.log("[deck] watching React/TypeScript sources");
     return;
   }
-  await esbuild.build(platformOptions);
+  const result = await esbuild.build(platformOptions);
+  const packages = new Set();
+  for (const input of Object.keys(result.metafile.inputs)) {
+    if (!input.replaceAll('\\', '/').includes('node_modules/')) continue;
+    let folder = path.dirname(path.resolve(root, input));
+    while (folder !== root && path.dirname(folder) !== folder) {
+      if (fs.existsSync(path.join(folder, 'package.json'))) {packages.add(folder); break;}
+      folder = path.dirname(folder);
+    }
+  }
+  const notices = ['Bundled renderer dependency notices. Each component retains its own license.'];
+  for (const folder of [...packages].sort()) {
+    const metadata = JSON.parse(fs.readFileSync(path.join(folder, 'package.json'), 'utf8'));
+    const licenses = fs.readdirSync(folder).filter(name => /^(license|copying|notice)([.-]|$)/i.test(name));
+    const supplied = path.join(root, 'assets/licenses', `${metadata.name.replace(/^@/, '').replaceAll('/', '-')}-${metadata.version}.txt`);
+    if (!licenses.length && !fs.existsSync(supplied)) throw new Error(`Missing renderer dependency license: ${metadata.name}`);
+    notices.push(`\n${metadata.name} ${metadata.version}\n${'-'.repeat(60)}`);
+    for (const name of licenses) notices.push(fs.readFileSync(path.join(folder, name), 'utf8'));
+    if (!licenses.length) notices.push(fs.readFileSync(supplied, 'utf8'));
+  }
+  fs.writeFileSync(path.join(outdir, 'THIRD_PARTY_LICENSES.txt'), notices.join('\n'), 'utf8');
   await esbuild.build(fixtureOptions);
 }
 

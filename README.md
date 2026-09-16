@@ -43,8 +43,7 @@ npm start
 
 Choose and configure a supported provider or local runtime in the app. Model
 weights and native inference binaries are not stored in this repository.
-The optional Live2D vendor runtime and sample avatar are also omitted; the
-existing overlay uses its placeholder fallback when unavailable.
+The Live2D cat and its floating overlay have been removed.
 Google subscription OAuth additionally requires an authorized client configuration;
 this source preview does not bundle one. See [setup limitations](docs/SETUP.md).
 

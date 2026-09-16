@@ -39,6 +39,24 @@ function load(name, electron) {
   assert.ok(menu.some(row => row.label === 'Quit VARIANT-1'));
   assert.ok(menu.some(row => row.label === 'Open Main Deck'));
   assert.ok(!menu.some(row => /overlay|avatar|cat/i.test(row.label || '')));
+  const handlers = {}, preview = {setPermissionRequestHandler() {}, setPermissionCheckHandler() {}};
+  const deck = {}, chat = {}, foreign = {};
+  const security = load('electron-app-boot.js', {BrowserWindow: {fromWebContents: contents => contents.owner},
+    session: {defaultSession: {setPermissionRequestHandler: fn => {handlers.request = fn;},
+      setPermissionCheckHandler: fn => {handlers.check = fn;}}, fromPartition: () => preview},
+  }).createWindowSecurity({getDeckWindow: () => deck, getMonitorWindow: () => null,
+    getChatWindows: () => [chat], log() {}});
+  security.configurePermissionHandlers();
+  const url = 'variant1://app/frontend/main-deck/index.html';
+  for (const owner of [deck, chat, foreign]) {
+    const contents = {owner, getURL: () => url};
+    const details = {requestingUrl: url, mediaTypes: ['audio']};
+    let accepted;
+    handlers.request(contents, 'media', value => {accepted = value;}, details);
+    assert.equal(accepted, owner !== foreign, 'microphone request must work without a retired avatar getter');
+    assert.equal(handlers.check(contents, 'media', url, details), owner !== foreign);
+    assert.equal(handlers.check(contents, 'media', url, {...details, mediaTypes: ['video']}), false);
+  }
   const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
   for (const name of ['react', 'react-dom', 'p5', '@xterm/xterm']) {
     assert.ok(pkg.devDependencies[name], `${name} must remain available to esbuild`);

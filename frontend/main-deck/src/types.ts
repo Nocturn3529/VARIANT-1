@@ -418,6 +418,7 @@ export type GeneralState = {
   voices: VoiceOption[];
   currentVoice: string;
   voicesLoaded: boolean;
+  ttsConfigKey?: string;
   voicesError: string;
   speechReceipt: {requestId: string; accepted: boolean; error: string} | null;
 };

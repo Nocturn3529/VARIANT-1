@@ -128,7 +128,7 @@ class GitProcess:
         argv = tuple(str(item) for item in arguments)
         if any("\x00" in item for item in argv):
             raise ValueError("Git arguments cannot contain NUL characters")
-        command = [self.executable, "-c", "core.quotepath=false",
+        command = [self.executable, "-c", "core.quotepath=false", "-c", "core.longpaths=true",
                    "-c", "core.hooksPath=" + os.devnull, "-C", base, *argv]
         try:
             completed = run_bounded_child(
@@ -764,7 +764,7 @@ class GitProcess:
         return result.returncode == 0
 
     def unique_commit_count(self, root: str, base_oid: str, head: str = "HEAD") -> int:
-        return int(self.run(root, ["rev-list", "--count", f"{base_oid}..{head}"]).text or 0)
+        return int(self.run(root, ["rev-list", "--count", str(head), "--not", str(base_oid), "--"]).text or 0)
 
 
 __all__ = [

@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 from typing import Callable, Optional
+from copy import deepcopy
+import hashlib
+import json
 
 
 def voice_cfg(router) -> dict:
@@ -12,7 +15,7 @@ def voice_cfg(router) -> dict:
         router.cfg["voice"] = value
     value.setdefault("stt_provider", "local")
     value.setdefault("tts_provider", "kokoro")
-    value.setdefault("auto_tts", True)
+    value.setdefault("auto_tts", False)
     value.setdefault("speed", 1.0)
     value.setdefault("stt", {})
     value.setdefault("tts", {})
@@ -67,7 +70,8 @@ def tts_voice(router, *, default_cloud: str = "eve", default_local: str = "af_no
 
 
 def set_tts(router, key, value, *, save: Optional[Callable[[], None]] = None) -> None:
-    config = voice_cfg(router)
+    previous = voice_cfg(router)
+    config = deepcopy(previous)
     name = str(key or "")
     if name in {"tts_enabled", "auto_tts"}:
         config["auto_tts"] = bool(value)
@@ -105,9 +109,24 @@ def set_tts(router, key, value, *, save: Optional[Callable[[], None]] = None) ->
         for field, field_value in fields.items():
             if str(field) not in {"api_key", "token", "secret"}:
                 target[str(field)] = field_value
+        if capability == "tts" and provider == "kokoro" and "base_url" in fields:
+            from speech.providers import _kokoro_base
+            target["base_url"] = str(target.get("base_url") or "").strip()
+            if target["base_url"]:
+                target["base_url"] = _kokoro_base(target)
     else:
         return
-    if save:
-        save()
-    elif hasattr(router, "save_config"):
-        router.save_config()
+    router.cfg["voice"] = config
+    try:
+        persist = save or getattr(router, "save_config", None)
+        if persist is not None and persist() is False:
+            raise OSError("Speech settings could not be saved.")
+    except BaseException:
+        router.cfg["voice"] = previous
+        raise
+
+
+def tts_config_key(config: dict) -> str:
+    provider = str(config.get("tts_provider") or "kokoro")
+    value = {"provider": provider, "options": (config.get("tts") or {}).get(provider) or {}}
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

@@ -161,7 +161,7 @@
     "autostart": true,
     "stt_provider": "local",
     "tts_provider": "kokoro",
-    "auto_tts": true,
+    "auto_tts": false,
     "speed": 1.0,
     "stt": {},
     "tts": {}

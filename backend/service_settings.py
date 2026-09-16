@@ -10,14 +10,14 @@ import service_credentials
 
 def definitions():
     from web_search.providers import provider_definitions
-    from speech.providers import STT_PROVIDERS, TTS_PROVIDERS
+    from speech.providers import STT_PROVIDERS, tts_definitions
     from browser_fabric.settings import settings_catalog
 
     rows = []
     for service, group, category, registry in (
         ('web', 'Web search', 'search', provider_definitions()),
         ('stt', 'Speech input', 'voice', STT_PROVIDERS),
-        ('tts', 'Speech output', 'voice', TTS_PROVIDERS),
+        ('tts', 'Speech output', 'voice', tts_definitions()),
     ):
         for provider in registry:
             rows.append({**provider, 'service': service, 'provider': provider['id'],

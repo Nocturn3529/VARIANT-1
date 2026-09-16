@@ -14,6 +14,7 @@ import importlib.util
 import io
 import json
 import os
+import sys
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,17 @@ STT_PROVIDERS: tuple[dict[str, Any], ...] = (
 _TTS = {item["id"]: item for item in TTS_PROVIDERS}
 _STT = {item["id"]: item for item in STT_PROVIDERS}
 
+
+def tts_definitions() -> tuple[dict[str, Any], ...]:
+    if not getattr(sys, "frozen", False):
+        return TTS_PROVIDERS
+    return tuple(row for row in TTS_PROVIDERS if row['id'] not in {'neutts', 'kittentts', 'piper'})
+
+
+def accepts_credential(capability: str, provider: str) -> bool:
+    rows = tts_definitions() if capability == 'tts' else STT_PROVIDERS if capability == 'stt' else ()
+    return any(row['id'] == provider and row.get('auth') in {'api_key', 'optional', 'shared'} for row in rows)
+
 VOICE_SUGGESTIONS: dict[str, tuple[str, ...]] = {
     "edge": ("en-US-AriaNeural", "en-US-JennyNeural", "en-US-AndrewNeural",
              "en-US-BrianNeural", "en-US-GuyNeural", "en-GB-SoniaNeural"),
@@ -179,11 +191,19 @@ def _module(name: str) -> bool:
 
 def catalog(router, config: dict, *, local_stt_available: bool) -> dict:
     tts_rows = []
-    for definition in TTS_PROVIDERS:
+    for definition in tts_definitions():
         provider = str(definition["id"])
         available = _configured(router, "tts", definition)
         if provider == "kokoro":
-            available = bool(_provider_config(config, "tts", provider).get("base_url")) or local_tts.available()
+            options = _provider_config(config, "tts", provider)
+            if str(options.get("base_url") or "").strip():
+                try:
+                    _kokoro_base(options)
+                    available = True
+                except (ValueError, SpeechProviderError):
+                    available = False
+            else:
+                available = local_tts.available()
         elif provider == "edge":
             available = _module("edge_tts")
         elif provider == "neutts":

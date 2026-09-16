@@ -4,7 +4,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const {spawnSync} = require('child_process');
+const {spawnSync, execFileSync} = require('child_process');
 
 const root = path.join(__dirname, '..');
 const runtime = path.join(root, 'dist', 'win-unpacked', 'resources', 'bin');
@@ -48,6 +48,9 @@ const version = runServer(['--version']);
 assert.match(version, /version:/i, 'packaged llama-server did not load its DLL closure');
 const devices = runServer(['--list-devices']);
 assert.match(devices, /CUDA0:/, 'packaged llama-server did not load the CUDA backend');
+execFileSync(path.join(root, 'backend/.venv/Scripts/python.exe'),
+  [path.join(root, 'scripts/test-native-matrix.py'), '--runtime', runtime],
+  {cwd: root, stdio: 'inherit', windowsHide: true});
 
 const bytes = fs.readdirSync(runtime).reduce(
   (total, name) => total + fs.statSync(path.join(runtime, name)).size,
