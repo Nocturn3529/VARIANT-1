@@ -70,6 +70,10 @@ a = Analysis(
     noarchive=False,
 )
 
+# The upstream Arrow hook copies regression datasets despite excluding Python
+# test modules. They are not runtime codecs or headers.
+a.datas = [row for row in a.datas if not row[0].replace("\\", "/").startswith("pyarrow/tests/")]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

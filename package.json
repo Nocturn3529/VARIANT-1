@@ -25,7 +25,8 @@
     "dist:electron-only": "node scripts/check-native-runtime.js && electron-builder",
     "test": "node scripts/test.js",
     "clean:artifacts": "node scripts/clean-artifacts.js",
-    "prepare:native": "node scripts/prepare-native-runtime.js"
+    "prepare:native": "node scripts/prepare-native-runtime.js",
+    "audit:package": "node scripts/audit-package.js"
   },
   "dependencies": {
     "electron-updater": "^6.3.9",
@@ -71,7 +72,9 @@
       "!frontend/main-deck/dist/fixture.js",
       "!frontend/main-deck/dist/fixture.js.map",
       "assets/**/*",
-      "LICENSE"
+      "LICENSE",
+      "!node_modules/**/*.map",
+      "!node_modules/**/*.d.ts"
     ],
     "extraResources": [
       {

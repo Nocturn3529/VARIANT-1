@@ -45,6 +45,9 @@ const forbiddenRuntimeNames = new Set([
   'debugpy', '_pydevd_bundle', 'traitlets', 'prompt_toolkit', 'jedi', 'parso',
 ]);
 const pendingRuntimePaths = [path.dirname(executable)];
+if (fs.existsSync(path.join(path.dirname(executable), '_internal/pyarrow/tests'))) {
+  throw new Error('Arrow regression datasets must not ship inside the kernel');
+}
 while (pendingRuntimePaths.length) {
   const current = pendingRuntimePaths.pop();
   for (const entry of fs.readdirSync(current, {withFileTypes: true})) {
