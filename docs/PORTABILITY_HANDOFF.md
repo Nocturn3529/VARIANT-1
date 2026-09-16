@@ -136,12 +136,25 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - Smoke: extracted linux-x64 recipe to a temp dir on Windows host (22 files including `llama-server`).
 - Remaining: live `npm run prepare:native` on Linux/macOS hosts; optional GPU Unix recipes later.
 
+## Linux smoke checklist (Runtime — M1/M2)
+
+Run on a real Linux host against this worktree on `port/linux-macos-bootstrap` (do not use the original VARIANT-1 checkout).
+
+1. `git checkout port/linux-macos-bootstrap && git status -sb` (clean tip).
+2. `npm run setup:backend` — log should say it uses `requirements.txt` (not win32 `requirements.lock`); interpreter at `backend/.venv/bin/python`.
+3. `npm start` — backend reaches ready via port-file + health; send one Deck chat turn.
+4. Open a Linux project root in **Files** and **Review** — paths must join with `/` (no `\\`-only absolute()).
+5. Open a terminal session — transport should be `posix_pty` unless PTY open fails (then labeled pipe fallback). Must not load ConPTY off Windows.
+6. Optional: if a bundled `llama-server` / `whisper-server` exists under app/resources roots, quit uncleanly once and confirm electron orphan sweep does not leave strays.
+
+Record date + tip SHA + pass/fail in **Platforms actually tested** when done.
+
 ## Remaining gaps (post-bootstrap)
 
 Code seams for M0-M5 are on this branch tip `e13f2111a60541bef871c4625be1d979b63f1951`. Codex review deferred until Nocturn's usage limit resets - review the whole branch then.
 
-1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat.
-2. Live Linux Files/Review path + PTY smoke.
+1. Live Linux smoke — follow **Linux smoke checklist** (setup + chat).
+2. Live Linux Files/Review path + PTY smoke — same checklist steps 4–5.
 3. Live `npm run prepare:native` on Linux/macOS (CPU recipes already pinned in-repo).
 4. `electron-builder --linux` (and later mac) on a real builder host.
 5. Optional: richer mac/linux desktop drivers beyond unsupported seam.
