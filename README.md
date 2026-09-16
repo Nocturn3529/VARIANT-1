@@ -1,63 +1,85 @@
 # VARIANT-1
 
-**A persistent AI workspace for coding, research, and desktop work.**
+**Work with local files, Python, and AI in one Windows workspace.**
 
-VARIANT-1 is a Windows desktop application for AI power users. It combines a
-persistent CPython environment, composable tools, and supported local or cloud
-models in an Electron/React workspace.
+VARIANT-1 brings a live Python environment, connected tools, and supported local
+or cloud models into a desktop workspace for coding, research, and desktop work.
+Keep variables, imports, and helper functions available across calls within a
+live session, combine tools through Python, and inspect intermediate results.
+
+The current preview is for technically comfortable Windows users who want to
+inspect and adapt multi-step workflows. It uses an Electron/React interface and
+a CPython backend; see [Architecture](docs/ARCHITECTURE.md) for the technical design.
 
 [Website](https://variant-1-silk.vercel.app/) · [Setup](docs/SETUP.md) ·
 [Architecture](docs/ARCHITECTURE.md) · [Issues](https://github.com/Nocturn3529/VARIANT-1/issues)
 
 ## Status
 
-This is the first public **source preview**, under active development. A new
-public Windows installer is still being prepared. Downloadable installers will
-appear in [GitHub Releases](https://github.com/Nocturn3529/VARIANT-1/releases)
-after their build and installation checks are complete. This source publication
-does not certify every provider, model, or desktop workflow.
+VARIANT-1 is an early public **source preview**, under active development. A
+public Windows installer is still being prepared. Installers will be published
+in [GitHub Releases](https://github.com/Nocturn3529/VARIANT-1/releases) after build
+and installation checks are complete. Publishing the source does not certify
+every provider, model, or desktop workflow.
 
 ## What it provides
 
-- Persistent Python variables, imports, and helpers across calls in a live kernel.
-- ASTB: discoverable tools composed through Python and canonical host services.
-- Optional chat-local tool mutation, with authoring off by default.
-- Files, processes, browser/desktop operations, connectors, and inspectable results.
-- Supported local models, your own API keys/custom endpoints, and provider-account connections.
-- User steering and cancellation, with explicit state and resource lifetimes.
+- **Continue work within a live session.** Reuse Python variables, imports, and
+  helper functions across calls instead of recreating that working state for
+  each step. Live state is not a guarantee of recovery after a restart.
+- **Combine code and tools.** Work with files, processes, browser/desktop
+  operations, and connectors through Python, with inspectable results. The ASTB
+  tool-discovery layer exposes capabilities as needed through shared backend services.
+- **Choose supported local or cloud inference.** Use local models, your own API
+  keys or custom endpoints, or supported provider-account connections. Available
+  features depend on the model, provider, and configuration.
+- **Stay involved as work runs.** Steer or cancel execution, with explicit state
+  and resource lifetimes. Stopping work does not undo actions already completed.
+- **Adapt tools when needed.** Optional chat-local tool authoring can change
+  executable tool methods. Authoring is off by default and does not train model weights.
 
-The app requires no VARIANT subscription. Users supply inference: local models
-use their hardware; cloud providers set their own costs, quotas, and account
-requirements. OAuth is an authorization method, not a promise of free inference.
+## Costs and model access
+
+The app requires no VARIANT subscription. You supply the inference: local models
+use your hardware, while cloud providers set their own costs, quotas, and account
+requirements. OAuth authorizes access; it does not promise free inference.
+
+Model weights and native inference binaries are not stored in this repository.
+Google subscription OAuth also requires an authorized client configuration that
+this source preview does not bundle. See [Setup](docs/SETUP.md) for requirements
+and limitations before choosing a connection.
 
 ## Run from source
 
-Use Windows x64, Python **3.13**, Node.js, and Git. Read [the setup guide](docs/SETUP.md)
-for model/runtime prerequisites and optional components.
+Use Windows x64, Python **3.13**, Node.js, and Git. Read
+[the setup guide](docs/SETUP.md) for runtime prerequisites and optional components.
 
 ```powershell
+git clone https://github.com/Nocturn3529/VARIANT-1.git
+cd VARIANT-1
 npm ci
 npm run setup:backend
 npm start
 ```
 
-Choose and configure a supported provider or local runtime in the app. Model
-weights and native inference binaries are not stored in this repository.
+After launch, configure a supported provider or local runtime in the app.
+Start with sample files or recoverable copies while learning how a workflow behaves.
 The Live2D cat and its floating overlay have been removed.
-Google subscription OAuth additionally requires an authorized client configuration;
-this source preview does not bundle one. See [setup limitations](docs/SETUP.md).
 
 ## Execution and data
 
-Python and desktop tools run with your operating-system permissions; this is
-not a sandbox. They can change files and operate applications. Inspect important
-results and use recoverable copies for unfamiliar workflows. Stopping execution
-does not reverse completed effects.
+**This is not a sandbox.** Python and desktop tools run with your operating-system
+permissions. They can change files and operate applications; choosing a project
+folder does not restrict them to that folder. Inspect important results and keep
+recoverable copies. Cancellation cannot reverse completed effects.
 
 Cloud model requests send selected messages and tool results to the chosen
-provider. Live Python state can be lost on restart, reset, eviction, or failure.
-Optional portable checkpoints, durable chat records, and approved memory are
-different mechanisms; not every live object is restorable.
+provider. Using a desktop app does not make cloud inference local.
+
+Live Python state can be lost on restart, reset, eviction, or failure. Optional
+portable checkpoints, durable chat records, and approved memory are separate
+mechanisms, and not every live object is restorable. Portable checkpointing and
+restoration are disabled by default. See [state lifetimes](docs/ARCHITECTURE.md#state-lifetimes).
 
 ## Development
 
