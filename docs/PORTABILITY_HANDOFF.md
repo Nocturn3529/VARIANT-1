@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `e56275358ec791a9e53b2551c3bd5e72c0fe811a` |
+| Branch tip (this doc) | `67aee736` (code; handoff pin follows) |
 
 ## Goals
 
@@ -268,11 +268,11 @@ Paused for ChatGPT re-review. **Do not merge.** PR #3 remains draft. `main` and 
 
 Linux tests were run on GitHub `ubuntu-latest`, not a local Linux VM. This desktop only ran Windows pytest.
 
-### Review SHA
+### Review SHAs
 
-`e56275358ec791a9e53b2551c3bd5e72c0fe811a` on `port/linux-macos-bootstrap`.
-
-Handoff commit (this file) is the next SHA after this section lands.
+- **Tested SHA** (Linux 2820 passed / 29 skipped / 0 failed): `e56275358ec791a9e53b2551c3bd5e72c0fe811a`
+- **Code SHA after interim decisions:** `67aee736`
+- **Handoff SHA:** this commit (recorded in the branch-tip row after push)
 
 ### Review findings addressed
 
@@ -285,7 +285,7 @@ Handoff commit (this file) is the next SHA after this section lands.
 
 ### Linux follow-ups from actual CI tracebacks (after N1 collection)
 
-Cleared on Linux pytest (see run `35132963407` below): Git missing-cwd mislabeled as `GitUnavailable`; WindowsPath from patching `os.name`; canary `Scripts/python.exe`; packaged `llama-server.exe`; local-model path grouping; extension restage digest vs copy order; child cancel-in-spawn-tick; CJK glyph coverage via CID fallback; architecture unowned `create_task`.
+Cleared on Linux pytest at `e5627535` (run `35132963407`): Git missing-cwd mislabeled as `GitUnavailable`; WindowsPath from patching `os.name`; canary `Scripts/python.exe`; packaged `llama-server.exe`; local-model path grouping; extension restage digest vs copy order; child cancel-in-spawn-tick (later given full pump lifecycle); architecture unowned `create_task`. The STSong CID CJK fallback that helped that run is **not** the portable default; it was removed after the interim review.
 
 ### Exact results
 
@@ -301,19 +301,30 @@ Cleared on Linux pytest (see run `35132963407` below): Git missing-cwd mislabele
 | backend-linux pytest | **2820 passed, 29 skipped, 0 failed** in 353.04s |
 | backend-linux smoke | `linux_smoke_ok UnsupportedDesktopAdapter 1` |
 | backend-linux job | **failure** — isolation cleanup only |
-| backend (Windows) | in progress at handoff write; see follow-up line if the job finished before this commit |
+| backend (Windows) | Isolated suite still **in_progress** at 18:14:01Z on job 104918214770 when this section was written. Prior Windows backend **success** at `d38dda9d` (run 35128949311). |
 
-Linux isolation: `TEST ISOLATION FAILURE: EACCES: permission denied, unlink '.../conversation-sessions2828/conversations.sqlite3'`. Pytest had already exited, so this is **not** an in-process pytest sqlite handle. Cause still unverified (permissions / leftover process / Node unlink). Not treated as a product-assert failure.
+Linux isolation: `TEST ISOLATION FAILURE: EACCES: permission denied, unlink '.../conversation-sessions2828/conversations.sqlite3'`. On normal Linux, an open file can still be unlinked (EACCES is permissions/ownership/sticky-bit, not “file is open”). Open-handle remains a **hypothesis**. Cleanup now logs euid/egid, lstat mode/owner for the file and parents, symlink targets, chmod errors, mount type, and lsof when present. The failure stays failing.
+
+### Interim reviewer decisions implemented (comment 5702435497)
+
+Code SHA after those decisions: `67aee736`.
+
+1. Review may start with cleanup still red. Failure kept visible. Diagnostics added; cause not established.
+2. Removed `UnicodeCIDFont('STSong-Light')` and the synthetic `range(0x4E00, 0xA000)` map. Outline registration now logs path, TTC subfont index, cmap size, and `U+4E2D` membership. Extraction whitespace normalization kept. **Embeddable TrueType-outline CJK qualification is unfinished** (no vendored/subset face this round; Noto TTC still not proven to expose the glyph to ReportLab).
+3. Spawn pumps use generation tokens, done-callbacks for exception retrieval/reference cleanup, and `drain_spawn_pumps()` on test teardown. Tests: gated queued cancel, running cancel, already-completed cancel (must not rewrite), pump failure, started scheduler.
+
+Local Windows after those three commits: child/architecture/CJK tests **22 passed**.
 
 ### Remaining gaps
 
-1. Linux job red solely on EACCES temp cleanup after a green pytest. Diagnose permissions/ownership/leftover process; do not weaken suite asserts.
-2. Opinionated forks already sent to ChatGPT: review-now vs wait-for-EACCES; CID CJK fallback vs skip-with-reason vs another TTF; owned spawn-pump vs await `run_once` inside `spawn()`. Grok defaults until ruled: pause here; keep CID fallback; keep owned spawn-pump.
-3. Local Windows ConPTY SIGINT observation (`[False-terminal]`) — not reproduced as a GitHub Windows job failure at `d38dda9d`.
-4. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
-5. macOS `prepare:native` + builder evidence.
-6. `electron-builder --linux` (and later mac) on a real builder.
-7. **Merging remains Nocturn's decision after ChatGPT re-review.**
+1. Linux job red on EACCES temp cleanup after green pytest at `e5627535`. Next Linux run at `67aee73` should print the new diagnostic block; do not chmod-777 or skip it.
+2. Portable embedded CJK outline font (source/version/license, actual cmap, PDF font resource, render samples). Not CID.
+3. Windows backend job of run 35132963407 may still be running; record its conclusion when available without blocking re-review.
+4. Local Windows ConPTY SIGINT observation (`[False-terminal]`).
+5. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
+6. macOS `prepare:native` + builder evidence.
+7. `electron-builder --linux` (and later mac) on a real builder.
+8. **Merging remains Nocturn's decision after ChatGPT full re-review.** PR #3 stays draft.
 
 
 ## Review protocol
