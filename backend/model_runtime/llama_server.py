@@ -21,6 +21,11 @@ from process_tree import (
 
 _NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 
+def _default_llama_relpath() -> str:
+    """Packaged/default llama-server path for the current OS."""
+    name = "llama-server.exe" if sys.platform.startswith("win") else "llama-server"
+    return "bin/" + name
+
 # LLMScheduler currently admits one local generation at a time. Keep the
 # server's KV allocation aligned instead of accepting its auto slot count.
 _LOCAL_PARALLEL_SLOTS = 1
@@ -82,7 +87,7 @@ class LlamaServer:
         self.data_dir = data_dir or app_root
         self.host = cfg.get("host", "127.0.0.1")
         self.autostart = cfg.get("autostart", True)
-        self.binary = _abs(app_root, cfg.get("binary", "bin/llama-server.exe"))
+        self.binary = _abs(app_root, cfg.get("binary") or _default_llama_relpath())
         _m = cfg.get("model", "")
         self.model = resolve_user_model_path(self.data_dir, _m) if _m else ""
         _mp = cfg.get("mmproj", "")

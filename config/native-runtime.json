@@ -231,5 +231,5 @@
       "url": "https://docs.nvidia.com/cuda/archive/13.3.0/eula/index.html"
     }
   ],
-  "note": "OpenMP is official LLVM20.1.8 libomp.dll under the import-library filename required by ggml. Microsoft debug_nonredist bytes are not included. Export coverage and CPU graph execution are tested."
+  "note": "OpenMP is official LLVM20.1.8 libomp.dll under the import-library filename required by ggml. Microsoft debug_nonredist bytes are not included. Export coverage and CPU graph execution are tested. Platform scope: hash-verified prepare/check currently cover Windows x64 only. Linux/macOS should place `llama-server` (and deps) under bin/ until a per-OS manifest lands."
 }
