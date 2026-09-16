@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `93d6c40a87259dd78b93ebaa45520c15b55d7777` |
+| Branch tip (this doc) | `88b9ae98971dba32ec77d39abcba1ced372d7004` |
 
 ## Goals
 
@@ -28,15 +28,15 @@ Living document for the cross-platform port. **All port work happens in this wor
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
 | M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** - `2c75217514cd8a9474b002d01fd054ad331b4288` |
-| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
+| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — `88ad2a5b7a3c280d4afcb7208dca035a306bc4dc` (live prepare:native on Linux/mac still pending) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
-| M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
+| M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **unsupported seam done** — richer drivers optional |
 
 ## Known remaining Windows locks
 
 - **Desktop fabric:** `backend/desktop/*` Win32/UIA (`uiautomation` win32-gated) — M5.
 - **Terminal:** ConPTY Windows-only (lazy import); Unix `PosixPtyProcess` path in `execution_hosts/local.py` — live Linux smoke still open.
-- **Native recipes:** `config/native-runtime.json` still win32/x64 hash recipe; Linux/mac prepare exits 2 until recipes exist.
+- **Native recipes:** Windows `native-runtime.json` unchanged; Unix CPU recipes pinned (`native-runtime.*.json`). GPU Unix recipes optional later.
 - **Paths:** Review/Files hostSep landed in M2; watch for other UI `\` joins.
 - **CI:** `.github/workflows/ci.yml` still `windows-latest` only.
 
@@ -136,20 +136,23 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - Smoke: extracted linux-x64 recipe to a temp dir on Windows host (22 files including `llama-server`).
 - Remaining: live `npm run prepare:native` on Linux/macOS hosts; optional GPU Unix recipes later.
 
-## Remaining gaps
+## Remaining gaps (post-bootstrap)
 
-1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
-2. M2 live Linux smoke for Files/Review paths + PTY (code landed).
-3. M3: Unix CPU recipes pinned (`88ad2a5`); optional GPU Unix recipes later; live prepare on Linux/macOS.
-4. M4: `electron-builder --linux` (and later mac) on a real builder.
-5. M5: richer mac/linux desktop drivers beyond unsupported seam (optional).
+Code seams for M0–M5 are on this branch tip `88b9ae98971dba32ec77d39abcba1ced372d7004`. Codex review deferred until Nocturn's usage limit resets — review the whole branch then.
+
+1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat.
+2. Live Linux Files/Review path + PTY smoke.
+3. Live `npm run prepare:native` on Linux/macOS (CPU recipes already pinned in-repo).
+4. `electron-builder --linux` (and later mac) on a real builder host.
+5. Optional: richer mac/linux desktop drivers beyond unsupported seam.
 6. CI ubuntu/macOS jobs.
+7. Push `port/linux-macos-bootstrap` to origin when Nocturn asks.
 
 ## Review protocol
 
 1. Focused commits on `port/linux-macos-bootstrap` only.
 2. Record SHA + exact tests in this file.
-3. Codex review → Nocturn approval → merge to `main`.
+3. When ready: Codex reviews the whole branch → Nocturn approval → merge to `main` (no per-milestone Codex while usage-capped).
 
 ## Coordinators
 
