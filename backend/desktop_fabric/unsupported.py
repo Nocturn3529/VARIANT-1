@@ -23,19 +23,18 @@ from .models import (
 )
 
 
-def _reason() -> str:
-    return (
-        "Desktop automation is not supported on "
-        f"{sys.platform}: Win32/UIA driver only. "
-        "Use Windows, or pass a custom DesktopLiveAdapter."
-    )
-
-
 class UnsupportedDesktopAdapter:
     """Clear no-op seam: every live call raises DesktopUnavailable."""
 
     def __init__(self, *, platform: str | None = None) -> None:
         self.platform = platform or sys.platform
+
+    def _reason(self) -> str:
+        return (
+            "Desktop automation is not supported on "
+            f"{self.platform}: Win32/UIA driver only. "
+            "Use Windows, or pass a custom DesktopLiveAdapter."
+        )
 
     def catalog(self, *, backend_instance_id: str) -> tuple[list[AppRecord], list[WindowRecord]]:
         raise DesktopUnavailable(self._reason())
