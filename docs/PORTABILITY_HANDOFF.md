@@ -12,6 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
+| Branch tip (this doc) | `93d6c40a87259dd78b93ebaa45520c15b55d7777` |
 
 ## Goals
 
@@ -24,78 +25,83 @@ Living document for the cross-platform port. **All port work happens in this wor
 
 | ID | Scope | Status |
 |----|-------|--------|
-| M0 | Bootstrap this handoff doc; lock baseline | **done** — 3bd72c7e352d5f0549f084656421bc9f252a5110 |
-| M1 | Backend/kernel startup + basic Deck↔backend chat | **in progress** (Runtime) |
-| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | pending |
-| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **in progress** — path seams; win x64 recipe unchanged |
-| M4 | Packaging (`electron-builder` linux + mac targets) | **in progress** — linux/mac targets added; win/NSIS preserved |
+| M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
+| M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
+| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **next** (Runtime) |
+| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **path seams done** — `93d6c40a87259dd78b93ebaa45520c15b55d7777`; Unix hash recipes still open |
+| M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | pending |
 
-## Known Windows locks (pre-port scan)
+## Known remaining Windows locks
 
-- **Packaging:** `package.json` build only defines `win` / NSIS; artifact name assumes Setup.
-- **Bundled natives:** `extraResources` references Windows `llama-server.exe` + DLLs; SETUP documents Windows llama builds only.
-- **Desktop fabric:** `backend/desktop/*` uses `ctypes.windll`, UIA (`uiautomation` win32-gated), elevation, SendInput.
-- **Terminal:** `backend/execution_hosts/windows_conpty.py` + ConPTY path; Unix `pty`/`termios` path already present in `local.py`.
-- **Kernel leases:** Windows Job Objects for child cleanup (see ARCHITECTURE).
-- **Electron backend spawn:** `electron-backend.js` already branches exe name / python vs python3; orphan cleanup still PowerShell/CIM on Windows only.
-- **Paths:** some UI/helpers hardcode `\` joins (e.g. Review `absolute()`); git porcelain uses `/`.
+- **Desktop fabric:** `backend/desktop/*` Win32/UIA (`uiautomation` win32-gated) — M5.
+- **Terminal:** ConPTY Windows-only; Unix `pty`/`termios` path exists in `execution_hosts/local.py` — verify/finish in M2.
+- **Native recipes:** `config/native-runtime.json` still win32/x64 hash recipe; Linux/mac prepare exits 2 until recipes exist.
+- **Paths:** some UI helpers hardcode `\` (e.g. Review `absolute()`) — M2.
+- **CI:** `.github/workflows/ci.yml` still `windows-latest` only.
+
+Already softened: electron-builder linux/mac targets; win llama `bin/` under `build.win.extraResources`; setup-backend uses `requirements.txt` off Windows; `process_tree.OwnedProcessTree` has POSIX process-group path; electron POSIX spawn/kill.
 
 ## Platforms actually tested
 
 | Platform | What was tested | Result | Date | Commit |
 |----------|-----------------|--------|------|--------|
-| Windows (host) | Worktree create from baseline; clean tree on branch | OK | 2026-09-16 | `ed36f87…` |
-| Linux | — | not yet | — | — |
+| Windows (host) | Worktree create; `node --check` on touched JS; static packaging/JSON parse | OK | 2026-09-16 | through `93d6c40…` |
+| Linux | live `setup:backend` / `npm start` / chat | **not yet** | — | — |
 | macOS | — | not yet | — | — |
 
 ## Change log
 
-### M0 — Bootstrap
+### M0 — Bootstrap — `3bd72c7e352d5f0549f084656421bc9f252a5110`
 
-- **SHA:** `3bd72c7e352d5f0549f084656421bc9f252a5110`
 - Added `docs/PORTABILITY_HANDOFF.md`.
 - No runtime behavior changes.
-- Platforms tested: Windows host (worktree create + commit only). Linux/macOS: not yet.
 
-### M4 — electron-builder linux/mac targets
+### M1 — Backend boot seams — `d331e2a4393f17283e38583a2b99930ee2c71813`
 
-- Added `build.linux` (AppImage, deb) and `build.mac` (dmg, zip) with non-Setup `artifactName`.
-- Moved Windows `bin/` llama DLL/`llama-server.exe` filters under `build.win.extraResources` so Unix packaging is not tied to Windows natives.
-- Kept `win`/`nsis` and Windows Setup `artifactName` unchanged in behavior.
-- Platforms tested: config validated on Windows host (no full `electron-builder --linux` run here).
+- `scripts/setup-backend.js`: non-Windows installs from `requirements.txt` (not win32 `requirements.lock`).
+- `electron-backend.js`: POSIX `detached` spawn; `terminateProcessTree` via `kill(-pid)`; SearXNG docker stop on Linux/macOS too.
+- Windows `taskkill` / PowerShell orphan sweep unchanged.
+- Tests (Windows host): `node --check electron-backend.js`, `node --check scripts/setup-backend.js`.
+- **Gap:** no live Linux/macOS boot or Deck↔backend chat yet.
 
-### M3 — native binary path seams
+### M4 — electron-builder linux/mac — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`
 
-- Added `scripts/native-runtime-paths.js` (`llama-server` vs `llama-server.exe`).
-- `prepare-native-runtime.js` / `check-native-runtime.js`: clear exit(2) on non-win32/x64 instead of hard throw; Windows x64 recipe unchanged (`config/native-runtime.json`).
-- `model_runtime.llama_server` + `runtime_installer` default bundled binary is OS-aware (no shared `.exe`-only default).
-- Remaining: per-OS hash manifests / download recipes for Linux and macOS llama builds.
+- `build.linux` (AppImage, deb) and `build.mac` (dmg, zip); non-Setup `artifactName`.
+- Windows llama filters moved under `build.win.extraResources`; win/NSIS Setup naming preserved.
+- Tests: `JSON.parse(package.json)` on Windows host; no `electron-builder --linux` run.
 
-### M1 — Backend boot seams (Runtime)
+### M3 — native path seams — `93d6c40a87259dd78b93ebaa45520c15b55d7777`
 
-- **SHA:** d331e2a4393f17283e38583a2b99930ee2c71813
-- `scripts/setup-backend.js`: on non-Windows, install from `requirements.txt` (platform markers) instead of the win32-targeted `requirements.lock` (`pywin32` / `uiautomation`).
-- `electron-backend.js`: POSIX spawn uses `detached: true`; `terminateProcessTree` uses process-group `kill(-pid)`; SearXNG `docker stop` safety net no longer skipped on Linux/macOS.
-- Windows spawn/kill paths unchanged (`taskkill /T`, PowerShell orphan sweep).
+- `scripts/native-runtime-paths.js`; prepare/check soft-fail off win32/x64.
+- `llama_server` / `runtime_installer` OS-aware default binary name.
+- **Gap:** Linux/macOS hash manifests / download recipes.
 
-**Tests run (Windows host):**
-- `node --check electron-backend.js`
-- `node --check scripts/setup-backend.js`
-- Static review of `requirements.lock` header (`Target environment: ... win32`) and `requirements.txt` `uiautomation ; sys_platform == "win32"`
+## Codex review handoff (batch 1)
 
-**Not yet verified:** live `npm run setup:backend` / `npm start` on Linux or macOS; Deck↔backend chat round-trip on Unix.
+Review these commits on `port/linux-macos-bootstrap` (do not merge without Nocturn + Codex):
+
+1. `3bd72c7e352d5f0549f084656421bc9f252a5110` — M0 docs
+2. `d331e2a4393f17283e38583a2b99930ee2c71813` — M1 boot
+3. `c8cb94c7885c8df3521a75cd9876ff547f8b2e95` — M4 packaging targets
+4. `93d6c40a87259dd78b93ebaa45520c15b55d7777` — M3 native paths (+ handoff updates)
+
+**Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; no Unix llama recipes yet.
 
 ## Remaining gaps
 
-See milestone table. Runtime: **M1** process/path/python startup. Packaging: finish Unix llama hash manifests (M3) and smoke `electron-builder --linux` on a Linux host (M4); M5 desktop stub still pending.
+1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
+2. M2: FS/git path normalization + Unix PTY verification.
+3. M3: per-OS llama hash/download recipes.
+4. M4: `electron-builder --linux` (and later mac) on a real builder.
+5. M5: desktop driver stub.
+6. CI ubuntu/macOS jobs.
 
 ## Review protocol
 
-1. Finish milestone with focused commit(s) on `port/linux-macos-bootstrap`.
-2. Record final SHA + exact test commands/results in this file.
-3. Hand off to Codex for review.
-4. Merge to `main` only after Codex review **and** Nocturn approval.
+1. Focused commits on `port/linux-macos-bootstrap` only.
+2. Record SHA + exact tests in this file.
+3. Codex review → Nocturn approval → merge to `main`.
 
 ## Coordinators
 
