@@ -1,4 +1,4 @@
-﻿# Portability handoff — Linux / macOS
+# Portability handoff — Linux / macOS
 
 Living document for the cross-platform port. **All port work happens in this worktree only.** Integration into `main` waits on Codex review and Nocturn approval.
 
@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `feaed7932e976ba688a2e48f745c345bac0eccbc` |
+| Branch tip (this doc) | `78f642053a3fd20890290c457a1b4a796cbf6492` |
 
 ## Goals
 
@@ -217,7 +217,7 @@ CI at review: [run 35117989259](https://github.com/Nocturn3529/VARIANT-1/actions
 | **R2.a–c** | `d4c7449e6946809513b7512d593ae1ea58819b47` | Existing key: regular file, owner, mode 0600 (no symlink); decrypt never creates replacement key; `VARIANT1_SECRETSTORE_KEY` forced under test runtime in `conftest.py` + `test-python.js` | `pytest tests/test_secretstore.py` — **17 passed, 2 skipped** (Unix mode/symlink on Windows host) |
 | **R3** | `d606824e85f0a83f75a76666cec24c0848a501ee` | Rewrite only `bin/llama-server[.exe]` (and whisper equivalents); preserve `runtimes/.../llama-server` customs | `test_llama_default_binary_resolve` + `test_speech_assets` in combined **32 passed** |
 | **R4** | `74548984a71927efd566d28c619a8233efd4e232` | Requires-Dist closure; marker/comment parse; missing package/license = hard error | `test_collect_python_notices.py` included in **32 passed** |
-| **R5** | `7bd01802…` (with R6 CI) | `/proc/<pid>/exe` (Linux) or injected Darwin resolver only; **no** argv/command-text fallback | `node scripts/test-electron-backend.js` — **passed** (incl. spaced path + unrelated argv negatives) |
+| **R5** | `7bd018027d0a0834fa4b5b0ff87c1f13efe02d01` | `/proc/<pid>/exe` only; no argv fallback | `node scripts/test-electron-backend.js` passed |
 | **R6** | same commit | Smoke step `if: always() && !cancelled()` so it runs after a failed suite; sentinel byte accumulation | Needs live Linux CI result on this tip |
 
 Docs notes: `bf4b573c` (R3/R4); this section supersedes tip SHA below.
@@ -253,7 +253,7 @@ R6: Linux smoke step now uses `if: always() && !cancelled()` so it runs after py
 
 ## Remaining gaps (post re-review round 2)
 
-Branch tip at handoff update: `feaed7932e976ba688a2e48f745c345bac0eccbc`.
+Branch tip at handoff update: `78f642053a3fd20890290c457a1b4a796cbf6492`.
 
 1. Re-run CI on this tip; confirm R6 smoke runs (even if pytest red) and record pass/fail; re-check which category-A items clear.
 2. Fixture/marker fixes for remaining category A; diagnose D items without weakening asserts.
