@@ -93,7 +93,7 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 3. `c8cb94c7885c8df3521a75cd9876ff547f8b2e95` — M4 packaging targets
 4. `93d6c40a87259dd78b93ebaa45520c15b55d7777` — M3 native paths (+ handoff updates)
 
-**Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; Unix llama recipes are stubs until archive hashes are filled.
+**Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; Unix CPU llama recipes are pinned (b10289); electron-builder --linux still unsmoked on a Linux host.
 
 
 ### M3 — Unix llama recipe stubs
