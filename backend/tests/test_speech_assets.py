@@ -88,7 +88,10 @@ def test_whisper_binary_only_adapts_bundled_defaults(tmp_path, monkeypatch):
     custom = custom_dir / "whisper-server"
     custom.write_bytes(b"custom")
 
-    monkeypatch.setattr("speech.assets.os.name", "nt")
+    monkeypatch.setattr(
+        "speech.assets.whisper_server_basename",
+        lambda: "whisper-server.exe",
+    )
     # Bundled default pin gets .exe adaptation on Windows.
     resolved_default = resolve_whisper_binary(
         "bin/whisper/whisper-server",
@@ -163,7 +166,10 @@ def test_whisper_binary_dot_slash_still_adapts_bundled_default(tmp_path, monkeyp
     bundled = app / "bin" / "whisper" / "whisper-server.exe"
     bundled.parent.mkdir(parents=True)
     bundled.write_bytes(b"runtime")
-    monkeypatch.setattr("speech.assets.os.name", "nt")
+    monkeypatch.setattr(
+        "speech.assets.whisper_server_basename",
+        lambda: "whisper-server.exe",
+    )
     resolved = resolve_whisper_binary(
         "./bin/whisper/whisper-server",
         app_root=str(app),

@@ -43,6 +43,12 @@ from eval_plan import (
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
 SOURCE_CONFIG = ROOT / "config" / "llm_config.json"
+
+
+def backend_venv_python() -> Path:
+    if os.name == "nt":
+        return BACKEND / ".venv" / "Scripts" / "python.exe"
+    return BACKEND / ".venv" / "bin" / "python"
 RUNS = Path(__file__).resolve().parent / "runs"
 SCHEMA = "variant1.astb.canary.v2"
 MCP_SERVER_ID = "astb_fixture"
@@ -1238,7 +1244,7 @@ class BackendProcess:
         authority = ROOT / "docs" / "ASTB_CAPABILITY_AUTHORITY_MANIFEST.json"
         return {
             "target": "source",
-            "python": str(BACKEND / ".venv" / "Scripts" / "python.exe"),
+            "python": str(backend_venv_python()),
             "server_sha256": sha256_file(BACKEND / "server.py"),
             "kernel_contract_sha256": sha256_file(
                 BACKEND / "kernel_runtime" / "integration.py"
@@ -1297,7 +1303,7 @@ class BackendProcess:
 
         if not self.enable_mcp:
             return
-        python = BACKEND / ".venv" / "Scripts" / "python.exe"
+        python = backend_venv_python()
         server = Path(__file__).resolve().parent / "fixture_mcp_server.py"
         if not python.is_file():
             raise FileNotFoundError(f"backend interpreter is missing: {python}")
@@ -1357,7 +1363,7 @@ class BackendProcess:
         self._prepare_config()
         self._prepare_tools_config()
         self._prepare_mcp_runtime()
-        python = BACKEND / ".venv" / "Scripts" / "python.exe"
+        python = backend_venv_python()
         if self.target == "source":
             if not python.is_file():
                 raise FileNotFoundError(f"backend interpreter is missing: {python}")
