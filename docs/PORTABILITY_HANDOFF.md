@@ -205,6 +205,13 @@ From the 24 failures at 42b87b5 (not re-run yet on this tip):
 
 A clean Windows suite does **not** settle Linux failures. Re-categorize with exact nodeids after the next `backend-linux` run on this tip.
 
+
+### Review follow-up — R3/R4 (ChatGPT re-review on eb52e83)
+
+- **R3:** d606824e85f0a83f75a76666cec24c0848a501ee — bundled-default-only llama/whisper path rewrite + tests.
+- **R4:** 74548984a71927efd566d28c619a8233efd4e232 — collect-python-notices closure/markers/hard errors + fixtures.
+- Tests: pytest test_llama_default_binary_resolve / test_speech_assets / test_collect_python_notices.
+
 ## Remaining gaps (post R1-R6)
 
 Branch tip at handoff update: `033277741c2293fa006bfdd5330e0ba333c6b4e7`.
