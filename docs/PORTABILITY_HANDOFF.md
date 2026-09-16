@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `88b9ae98971dba32ec77d39abcba1ced372d7004` |
+| Branch tip (this doc) | 895f8621cb9c75d1611d0d76c6d92cbd3322a5b6 |
 
 ## Goals
 
@@ -28,7 +28,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
 | M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** - `2c75217514cd8a9474b002d01fd054ad331b4288` |
-| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — `88ad2a5b7a3c280d4afcb7208dca035a306bc4dc` (live prepare:native on Linux/mac still pending) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
+| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — 88ad2a5b7a3c280d4afcb7208dca035a306bc4dc (live prepare:native on Linux/mac still pending) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **unsupported seam done** — richer drivers optional |
 
