@@ -27,7 +27,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 |----|-------|--------|
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
-| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** (SHA pending) |
+| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** - `2c75217514cd8a9474b002d01fd054ad331b4288` |
 | M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
@@ -35,9 +35,9 @@ Living document for the cross-platform port. **All port work happens in this wor
 ## Known remaining Windows locks
 
 - **Desktop fabric:** `backend/desktop/*` Win32/UIA (`uiautomation` win32-gated) — M5.
-- **Terminal:** ConPTY Windows-only; Unix `pty`/`termios` path exists in `execution_hosts/local.py` — verify/finish in M2.
+- **Terminal:** ConPTY Windows-only (lazy import); Unix `PosixPtyProcess` path in `execution_hosts/local.py` — live Linux smoke still open.
 - **Native recipes:** `config/native-runtime.json` still win32/x64 hash recipe; Linux/mac prepare exits 2 until recipes exist.
-- **Paths:** some UI helpers hardcode `\` (e.g. Review `absolute()`) — M2.
+- **Paths:** Review/Files hostSep landed in M2; watch for other UI `\` joins.
 - **CI:** `.github/workflows/ci.yml` still `windows-latest` only.
 
 Already softened: electron-builder linux/mac targets; win llama `bin/` under `build.win.extraResources`; setup-backend uses `requirements.txt` off Windows; `process_tree.OwnedProcessTree` has POSIX process-group path; electron POSIX spawn/kill.
@@ -120,22 +120,13 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 
 
 
-### M2 — Host path joins + ConPTY lazy import
+### M2 - Host path joins + ConPTY lazy import - `2c75217514cd8a9474b002d01fd054ad331b4288`
 
-- ReviewPanel / FilesPanel: hostSep + trailing-sep aware joins (no hardcoded \\\).
-- FilesPanel.relativePath: normalize host \\\ to POSIX relative with \/\\\\/g\.
-- \execution_hosts/local.py\: lazy-import ConPTY only on \os.name == "nt"\; POSIX \PosixPtyProcess\ path unchanged.
-- Tests (Windows host): static review of path helpers; ode\ syntax not run on TSX here.
-- **Gap:** live Linux PTY + Files/Review open on a Unix project root.
-
-### M2 - Workbench path joins + ConPTY lazy import - _(SHA after commit)_
-
-- `ReviewPanel.tsx` / `FilesPanel.tsx`: host-aware path sep (`hostSep` / `withTrailingSep`); no hardcoded `\` joins.
+- `ReviewPanel.tsx` / `FilesPanel.tsx`: `hostSep` / `withTrailingSep` — no hardcoded `\` joins.
 - `scripts/workbench-fixture-entry.ts`: parent-dir cut accepts `\` or `/`.
-- `execution_hosts/local.py`: ConPTY import is Windows-only inside `spawn_terminal`; POSIX still uses `PosixPtyProcess` (`pty`/`termios`). ConPTY remains Windows-only.
-- Tests (Windows host): byte-check of TS regexes; `ast.parse` on `local.py`.
-- **Gap:** live Linux PTY smoke; Deck UI path join on a Unix root.
-
+- `execution_hosts/local.py`: lazy-import ConPTY only when `os.name == "nt"`; POSIX uses `PosixPtyProcess` (`pty`/`termios`). ConPTY stays Windows-only.
+- Tests (Windows host): static review of path helpers; `ast.parse` on `local.py`.
+- **Gap:** live Linux PTY smoke; Files/Review open on a Unix project root.
 
 ### M3 — Unix llama recipes pinned (b10289)
 
