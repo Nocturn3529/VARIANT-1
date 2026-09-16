@@ -129,7 +129,10 @@ async function testAppRootComposition() {
       ['-B', path.join(__dirname, 'test-browser-downloads-composition.py'), dataDir, row.path],
       {cwd: root, encoding: 'utf8', timeout: 30000});
     const expected = JSON.parse(result);
-    assert.equal(path.dirname(row.path), expected.staging_root, mode);
+    // Windows temp paths can use either an 8.3 alias or the long directory name.
+    // Compare the actual directories, preserving the cross-runtime boundary check.
+    assert.equal(fs.realpathSync.native(path.dirname(row.path)),
+      fs.realpathSync.native(expected.staging_root), mode);
     assert.equal(row.operation_id, `op-${mode}`);
     await host.command({action: 'ack_downloads', tab_id: 'composition', download_ids: [row.download_id]});
     assert.equal(fs.existsSync(row.path), false);
