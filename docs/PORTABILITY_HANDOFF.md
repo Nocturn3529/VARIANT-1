@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `78f642053a3fd20890290c457a1b4a796cbf6492` |
+| Branch tip (this doc) | `e56275358ec791a9e53b2551c3bd5e72c0fe811a` |
 
 ## Goals
 
@@ -261,6 +261,59 @@ Branch tip at handoff update: `78f642053a3fd20890290c457a1b4a796cbf6492`.
 4. macOS prepare:native + builder evidence.
 5. `electron-builder --linux` (and later mac) on a real builder.
 6. **Do not merge** until ChatGPT re-review + Nocturn approval.
+
+## Grok takeover — N1 / R2.a / R3 / R4 (2026-09-16)
+
+Paused for ChatGPT re-review. **Do not merge.** PR #3 remains draft. `main` and `C:\Users\noctu\Desktop\VARIANT-1` were not modified.
+
+Linux tests were run on GitHub `ubuntu-latest`, not a local Linux VM. This desktop only ran Windows pytest.
+
+### Review SHA
+
+`e56275358ec791a9e53b2551c3bd5e72c0fe811a` on `port/linux-macos-bootstrap`.
+
+Handoff commit (this file) is the next SHA after this section lands.
+
+### Review findings addressed
+
+| ID | Change |
+|----|--------|
+| **N1** | Restored docstring + `from __future__` before ordinary imports in `backend/tests/test_vision_capture.py`. Collection SyntaxError gone. Kept DISPLAY skipif. |
+| **R2.a** | `fstat` the opened key fd; validate the real parent-directory chain (reject world-writable / symlink-into-0777). Exclusive create recovers by reading the winner's key. Tests for TOCTOU, parents, corrupt key, concurrent init. Missing-key decrypt and R2.c isolation kept. |
+| **R3** | Whisper resolver no longer `lstrip("./")`. Parent-relative `../models/...` and `../../...` preserved; `./` bundled defaults still adapt. Llama resolver unchanged. |
+| **R4** | Notice collector retains extras, includes `pkg[extra]` as the package plus extra deps, revisits when a new extra activates edges. Homepage-only metadata is not notice material. Missing extra deps still hard-fail. |
+
+### Linux follow-ups from actual CI tracebacks (after N1 collection)
+
+Cleared on Linux pytest (see run `35132963407` below): Git missing-cwd mislabeled as `GitUnavailable`; WindowsPath from patching `os.name`; canary `Scripts/python.exe`; packaged `llama-server.exe`; local-model path grouping; extension restage digest vs copy order; child cancel-in-spawn-tick; CJK glyph coverage via CID fallback; architecture unowned `create_task`.
+
+### Exact results
+
+**Local Windows** (`node scripts/test-python.js` on this desktop, after N1/R2.a/R3/R4, before Linux follow-ups): **2837 passed, 1 failed, 9 skipped**. Failure: `test_execution_hosts.py::test_signal_acceptance_is_separate_from_observed_effect[False-terminal]` — ConPTY Ctrl+C did not write the SIGINT marker within 5s. Pre-existing host/runtime, not N1/R2/R3/R4. Re-run on the same nodeid failed the same way.
+
+**GitHub Windows backend** run [35128949311](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35128949311) at `d38dda9d` (N1+R2.a+R3+R4 only): **backend job success**. Frontend-scripts success. Linux pytest 9 failed / 2809 passed / 29 skipped (pre-follow-up).
+
+**GitHub tip** run [35132963407](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35132963407) at `e5627535`:
+
+| Job | Result |
+|-----|--------|
+| frontend-scripts | **success** |
+| backend-linux pytest | **2820 passed, 29 skipped, 0 failed** in 353.04s |
+| backend-linux smoke | `linux_smoke_ok UnsupportedDesktopAdapter 1` |
+| backend-linux job | **failure** — isolation cleanup only |
+| backend (Windows) | in progress at handoff write; see follow-up line if the job finished before this commit |
+
+Linux isolation: `TEST ISOLATION FAILURE: EACCES: permission denied, unlink '.../conversation-sessions2828/conversations.sqlite3'`. Pytest had already exited, so this is **not** an in-process pytest sqlite handle. Cause still unverified (permissions / leftover process / Node unlink). Not treated as a product-assert failure.
+
+### Remaining gaps
+
+1. Linux job red solely on EACCES temp cleanup after a green pytest. Diagnose permissions/ownership/leftover process; do not weaken suite asserts.
+2. Opinionated forks already sent to ChatGPT: review-now vs wait-for-EACCES; CID CJK fallback vs skip-with-reason vs another TTF; owned spawn-pump vs await `run_once` inside `spawn()`. Grok defaults until ruled: pause here; keep CID fallback; keep owned spawn-pump.
+3. Local Windows ConPTY SIGINT observation (`[False-terminal]`) — not reproduced as a GitHub Windows job failure at `d38dda9d`.
+4. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
+5. macOS `prepare:native` + builder evidence.
+6. `electron-builder --linux` (and later mac) on a real builder.
+7. **Merging remains Nocturn's decision after ChatGPT re-review.**
 
 
 ## Review protocol
