@@ -38,41 +38,41 @@ class UnsupportedDesktopAdapter:
         self.platform = platform or sys.platform
 
     def catalog(self, *, backend_instance_id: str) -> tuple[list[AppRecord], list[WindowRecord]]:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     def validate_window(self, window: WindowRecord) -> Mapping[str, Any]:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def observe(self, window: WindowRecord, *, mode: str) -> AdapterObservation:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def capture(self, window: WindowRecord) -> AdapterCapture:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def preflight(
         self, window: WindowRecord, *, action: str, delivery: str,
         arguments: Mapping[str, Any],
     ) -> None:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def dispatch(
         self, window: WindowRecord, *, action: str, delivery: str,
         element: DesktopElement | None, arguments: Mapping[str, Any],
     ) -> AdapterDispatch:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def focus(self, window: WindowRecord) -> AdapterFocus:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     async def focus_session(self, arguments: Mapping[str, Any]) -> AdapterFocus:
-        raise DesktopUnavailable(_reason())
+        raise DesktopUnavailable(self._reason())
 
     def capability_report(self) -> Mapping[str, Any]:
         return {
             "adapter": "unsupported",
             "platform": self.platform,
             "supported": False,
-            "reason": _reason(),
+            "reason": self._reason(),
             "windows_available": False,
             "driver_state": {
                 "explicitly_bound_per_window": False,
