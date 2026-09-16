@@ -26,7 +26,6 @@ function createSettingsStore({ configPath, log }) {
       return settings;
     } catch (err) {
       return {
-        avatar: { size: 160, position: null },
         voice: { muted: false },
         general: { autoStart: false },
       };

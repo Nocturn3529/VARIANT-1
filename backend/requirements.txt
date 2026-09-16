@@ -23,9 +23,8 @@ lxml>=6.0,<7.0         # DOCX/PPTX dependency and HTML structural validation
 pathspec>=1.1.1,<2.0   # gitignore grammar shared with the desktop file tree
 XlsxWriter>=3.2,<4.0   # packaged workbook-engine compatibility for extensions
 uiautomation>=2.0,<3.0 ; sys_platform == "win32"  # Windows computer-use UI Automation driver
-kokoro-onnx>=0.4,<1.0  # local TTS runtime on ONNX Runtime (no torch); compatible
-                       # model/voice weights are user-supplied under
-                       # models/speech/kokoro in VARIANT-1's writable data folder.
+# Offline speech engines/weights are user-provided. Kokoro uses a separately
+# installed OpenAI-compatible speech server; no phonemizer/eSpeak runtime ships.
 edge-tts>=7.2,<8.0     # lightweight Microsoft neural-voice client
 pytest>=8.0,<9.0       # Tier-1 backend tests (npm test)
 pytest-asyncio>=0.24,<1.0

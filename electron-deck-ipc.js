@@ -2,7 +2,7 @@
 
 /**
  * Main Deck + Settings + Monitor IPC handlers for the Electron main process.
- * Overlay-only IPC lives in electron-overlay.js; backend:getInfo stays in main.
+ * Backend discovery remains in the main-process composition root.
  */
 
 const path = require('path');

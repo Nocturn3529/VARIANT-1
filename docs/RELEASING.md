@@ -23,6 +23,6 @@ The website links to GitHub Releases; it does not need to host the large install
 Manual updates are acceptable initially. An automatic update feed requires its
 own tested channel, metadata, signature and migration behavior.
 
-The optional Live2D runtime/model files excluded from source must not be silently
-added to an installer without their redistribution requirements being established.
+The Live2D cat and its overlay have been removed, including its model, vendor
+libraries, configuration and tray controls. Do not reintroduce those payloads.
 Do not ship a developer's model weights, accounts, profiles, test data or logs.

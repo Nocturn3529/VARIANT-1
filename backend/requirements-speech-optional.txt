@@ -1,0 +1,5 @@
+# Optional SOURCE-DEVELOPMENT in-process Kokoro support only.
+# Not a baseline installer dependency. Packaged apps connect to a user-owned
+# speech server instead; installing this file into system Python does not alter
+# a frozen application. Components have their own licenses, including GPL.
+kokoro-onnx==0.5.0

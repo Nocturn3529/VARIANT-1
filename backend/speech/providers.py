@@ -47,8 +47,8 @@ def audio_result(value, *, fallback_mime: str = "audio/wav") -> AudioResult:
 
 TTS_PROVIDERS: tuple[dict[str, Any], ...] = (
     {"id": "kokoro", "name": "Kokoro", "kind": "local", "auth": "none",
-     "description": "User-supplied Kokoro ONNX model.", "default_voice": "af_nova",
-     "default_model": "kokoro-v1.0.onnx", "mime_type": "audio/wav"},
+     "description": "Separately installed Kokoro speech server. Configure its API base URL; no engine or weights are bundled.", "default_voice": "af_nova",
+     "default_model": "kokoro", "mime_type": "audio/wav"},
     {"id": "edge", "name": "Microsoft Edge", "kind": "cloud", "auth": "none",
      "description": "Microsoft neural voices through Edge TTS.",
      "default_voice": "en-US-AriaNeural", "default_model": "edge-tts",
@@ -183,7 +183,7 @@ def catalog(router, config: dict, *, local_stt_available: bool) -> dict:
         provider = str(definition["id"])
         available = _configured(router, "tts", definition)
         if provider == "kokoro":
-            available = local_tts.available()
+            available = bool(_provider_config(config, "tts", provider).get("base_url")) or local_tts.available()
         elif provider == "edge":
             available = _module("edge_tts")
         elif provider == "neutts":
@@ -244,6 +244,18 @@ def _wav_from_pcm(pcm: bytes, rate: int = 24000, channels: int = 1,
 async def list_voices(provider: str, router, config: dict) -> list[dict]:
     provider = str(provider or "kokoro").lower()
     if provider == "kokoro":
+        options = _provider_config(config, "tts", provider)
+        if options.get("base_url"):
+            base = _kokoro_base(options)
+            try:
+                async with httpx.AsyncClient(trust_env=False, timeout=30) as client:
+                    response = await client.get(f"{base}/audio/voices")
+                    response.raise_for_status()
+                    values = response.json().get("voices", [])
+                return [{"id": str(value), "name": str(value), "language": ""}
+                        for value in values if isinstance(value, str)]
+            except (httpx.HTTPError, OSError, ValueError, AttributeError) as exc:
+                raise SpeechProviderError("Could not load voices from the configured Kokoro server. Check that it is running and its API base URL is correct.") from exc
         values = await asyncio.to_thread(local_tts.list_voices)
         return [{"id": value, "name": value, "language": ""} for value in values]
     if provider == "xai":
@@ -271,6 +283,15 @@ async def list_voices(provider: str, router, config: dict) -> list[dict]:
     return [{"id": value, "name": value, "language": ""} for value in values]
 
 
+def _kokoro_base(options: dict) -> str:
+    from urllib.parse import urlsplit
+    base = str(options.get("base_url") or "").strip().rstrip("/")
+    parsed = urlsplit(base)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise SpeechProviderError("Kokoro needs an HTTP(S) API base URL, for example http://127.0.0.1:8880/v1.")
+    return base
+
+
 async def synthesize(provider: str, router, config: dict, text: str, *,
                      voice: str = "", speed: float = 1.0) -> AudioResult:
     provider = str(provider or "kokoro").lower()
@@ -283,6 +304,14 @@ async def synthesize(provider: str, router, config: dict, text: str, *,
     model = str(options.get("model") or definition.get("default_model") or "")
     speed = max(0.25, min(4.0, float(speed or 1.0)))
     if provider == "kokoro":
+        if options.get("base_url"):
+            base = _kokoro_base(options)
+            data = await _post_audio(f"{base}/audio/speech",
+                {"model": model, "voice": voice, "input": text, "response_format": "wav", "speed": speed},
+                {"Content-Type": "application/json"}, "Kokoro speech server")
+            if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+                raise SpeechProviderError("Kokoro server returned non-WAV audio; configure an OpenAI-compatible speech endpoint with WAV support.")
+            return AudioResult(data, "audio/wav")
         data = await local_tts.synthesize(text, max(0.7, min(1.4, speed)), voice=voice)
         return AudioResult(data, "audio/wav")
     if provider == "xai":

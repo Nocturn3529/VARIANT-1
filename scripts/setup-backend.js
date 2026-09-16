@@ -84,6 +84,6 @@ try {
   console.log('Run `npm start`.');
 } catch (err) {
   console.error('\nBackend setup failed:', err.message);
-  console.error('Make sure Python 3.9+ is installed and on your PATH.');
+  console.error('Make sure CPython 3.13 x64 is installed and on your PATH.');
   process.exit(1);
 }

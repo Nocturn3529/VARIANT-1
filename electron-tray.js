@@ -10,7 +10,6 @@ const { Tray, Menu, nativeImage } = require('electron');
 /**
  * @param {object} deps
  * @param {string} deps.appRoot
- * @param {() => import('electron').BrowserWindow|null} deps.getMainWindow
  * @param {() => void} deps.openDeckWindow
  * @param {() => void} deps.openMonitor
  * @param {() => void} deps.quitApp
@@ -18,7 +17,6 @@ const { Tray, Menu, nativeImage } = require('electron');
 function createTray(deps) {
   const {
     appRoot,
-    getMainWindow,
     openDeckWindow,
     openMonitor,
     quitApp,
@@ -48,20 +46,6 @@ function createTray(deps) {
       click: () => openDeckWindow('settings'),
     },
     { type: 'separator' },
-    {
-      label: 'Show overlay',
-      click: () => {
-        const mainWindow = getMainWindow();
-        if (mainWindow) mainWindow.show();
-      },
-    },
-    {
-      label: 'Hide overlay',
-      click: () => {
-        const mainWindow = getMainWindow();
-        if (mainWindow) mainWindow.hide();
-      },
-    },
     {
       label: 'Live Logs…',
       click: () => openMonitor(),

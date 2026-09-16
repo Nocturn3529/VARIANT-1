@@ -35,7 +35,6 @@ const portFile = path.join(scratch, 'backend.json');
 const smokeData = path.join(scratch, 'data');
 const mcpAudit = path.join(scratch, 'mcp-audit.jsonl');
 const mcpFixture = path.join(root, 'experiments', 'live-canary', 'fixture_mcp_server.py');
-const sourceKokoroModels = path.join(root, 'models', 'base', 'kokoro');
 const backendPython = path.join(
   root, 'backend', '.venv', 'Scripts',
   process.platform === 'win32' ? 'python.exe' : 'python',
@@ -46,17 +45,6 @@ let output = '';
 fs.mkdirSync(scratch, {recursive: false});
 assert.ok(fs.existsSync(executable), `missing frozen backend: ${executable}`);
 assert.ok(fs.existsSync(archiveViewer), `missing PyInstaller archive viewer: ${archiveViewer}`);
-
-// Model weights are not installer resources. Hard-link the developer fixtures
-// into the same user-data drop directory a packaged user controls, avoiding a
-// second 337 MiB copy while exercising the real discovery contract.
-const stagedKokoroModels = path.join(smokeData, 'models', 'speech', 'kokoro');
-fs.mkdirSync(stagedKokoroModels, {recursive: true});
-for (const name of ['kokoro-v1.0.onnx', 'voices-v1.0.bin']) {
-  const source = path.join(sourceKokoroModels, name);
-  assert.ok(fs.existsSync(source), `missing Kokoro smoke asset: ${source}`);
-  fs.linkSync(source, path.join(stagedKokoroModels, name));
-}
 
 const archive = execFileSync(
   archiveViewer,
@@ -71,16 +59,14 @@ for (const required of [
   'fastapi', 'uvicorn', 'httpx', 'websockets', 'anyio._backends._asyncio',
   'docx', 'pptx', 'openpyxl', 'reportlab.pdfgen.canvas', 'pypdf',
   'lxml.html', 'xlsxwriter', 'mcp.client.session', 'mcp.client.stdio',
-  'mcp.client.streamable_http', 'mcp.client.sse', 'kokoro_onnx',
-  'kokoro_onnx.config', 'kokoro_onnx.tokenizer', 'kokoro_onnx.trim',
-  'espeakng_loader', 'phonemizer.backend.espeak.espeak',
-  'phonemizer.backend.espeak.wrapper', 'language_tags.data',
+  'mcp.client.streamable_http', 'mcp.client.sse',
   'browser_fabric.provisioning', 'speech.assets',
   process.platform === 'win32' ? 'mss.windows' : 'mss.linux',
 ]) {
   assert.ok(hasModule(required), `frozen backend is missing runtime module ${required}`);
 }
 for (const forbidden of [
+  'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime',
   'tokenizers', 'fastapi.testclient', 'anyio.pytest_plugin',
   'mss.__main__', 'openpyxl.utils.dataframe', 'reportlab.graphics.samples',
   'reportlab.graphics.barcode.test', 'reportlab.lib.testutils',
@@ -97,28 +83,10 @@ for (const forbidden of [
 fs.mkdirSync(path.join(smokeData, 'config'), {recursive: true});
 
 const frozenInternal = path.join(path.dirname(executable), '_internal');
-for (const voiceAsset of [
-  path.join('kokoro_onnx', 'config.json'),
-  path.join('language_tags', 'data', 'json', 'index.json'),
-  path.join('espeakng_loader', 'espeak-ng.dll'),
-  path.join('espeakng_loader', 'espeak-ng-data', 'phondata'),
-  path.join('espeakng_loader', 'espeak-ng-data', 'phonindex'),
-  path.join('espeakng_loader', 'espeak-ng-data', 'phontab'),
-  path.join('espeakng_loader', 'espeak-ng-data', 'en_dict'),
-  path.join('espeakng_loader', 'espeak-ng-data', 'lang', 'gmw', 'en-US'),
-]) {
-  assert.ok(fs.existsSync(path.join(frozenInternal, voiceAsset)),
-    `frozen local TTS is missing runtime asset ${voiceAsset}`);
+for (const optional of ['kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime']) {
+  assert.ok(!fs.existsSync(path.join(frozenInternal, optional)), `speech runtime leaked into baseline: ${optional}`);
 }
-for (const staleVoiceData of [
-  path.join('kokoro_onnx', '__init__.py'),
-  path.join('kokoro_onnx', 'tokenizer.py'),
-  path.join('kokoro_onnx', 'trim.py'),
-  path.join('kokoro_onnx', 'py.typed'),
-]) {
-  assert.ok(!fs.existsSync(path.join(frozenInternal, staleVoiceData)),
-    `frozen local TTS retained package-wide data ${staleVoiceData}`);
-}
+let speechServer = null;
 
 const child = spawn(executable, ['--port-file', portFile, '--port', '0'], {
   cwd: path.join(root, 'backend'),
@@ -300,6 +268,31 @@ async function waitForHealth(record) {
       });
       assert.strictEqual(removed.type, 'extension-v2:accepted', JSON.stringify(removed));
 
+      const missing = await websocketRequest(socket, {
+        type: 'tts:preview', request_id: `missing-${randomUUID()}`, text: 'Optional speech check.'});
+      assert.ok(missing.error && !missing.audio, 'baseline must report unconfigured speech, not fake audio');
+      const fixtureWav = Buffer.alloc(46);
+      fixtureWav.write('RIFF'); fixtureWav.writeUInt32LE(38, 4); fixtureWav.write('WAVEfmt ', 8);
+      fixtureWav.writeUInt32LE(16, 16); fixtureWav.writeUInt16LE(1, 20); fixtureWav.writeUInt16LE(1, 22);
+      fixtureWav.writeUInt32LE(24000, 24); fixtureWav.writeUInt32LE(48000, 28);
+      fixtureWav.writeUInt16LE(2, 32); fixtureWav.writeUInt16LE(16, 34); fixtureWav.write('data', 36);
+      fixtureWav.writeUInt32LE(2, 40);
+      let externalCalls = 0;
+      speechServer = http.createServer((request, response) => {
+        const chunks = [];
+        request.on('data', chunk => chunks.push(chunk));
+        request.on('end', () => {
+          if (request.url !== '/v1/audio/speech') {response.writeHead(404); response.end(); return;}
+          const payload = JSON.parse(Buffer.concat(chunks).toString());
+          assert.strictEqual(payload.model, 'kokoro'); assert.strictEqual(payload.response_format, 'wav');
+          externalCalls++; response.writeHead(200, {'Content-Type': 'audio/wav'}); response.end(fixtureWav);
+        });
+      });
+      await new Promise(resolve => speechServer.listen(0, '127.0.0.1', resolve));
+      const configured = await websocketRequest(socket, {type: 'tts:set', request_id: `speech-config-${randomUUID()}`,
+        key: 'tts_options', value: {provider: 'kokoro', fields: {model: 'kokoro',
+          base_url: `http://127.0.0.1:${speechServer.address().port}/v1`}}});
+      assert.strictEqual(configured.type, 'speech:accepted', JSON.stringify(configured));
       const voiceRequestId = `voice-${randomUUID()}`;
       const preview = await websocketRequest(socket, {
         type: 'tts:preview',
@@ -314,15 +307,17 @@ async function waitForHealth(record) {
       assert.ok(wav.length > 44, 'frozen local TTS returned an empty WAV');
       assert.strictEqual(wav.subarray(0, 4).toString('ascii'), 'RIFF');
       assert.strictEqual(wav.subarray(8, 12).toString('ascii'), 'WAVE');
-      assert.strictEqual(wav.readUInt32LE(24), 24000, 'unexpected Kokoro sample rate');
+      assert.strictEqual(wav.readUInt32LE(24), 24000, 'unexpected speech fixture sample rate');
+      assert.strictEqual(externalCalls, 1, 'configured speech must use the external server exactly once');
     } finally {
       socket.close();
     }
     console.log(
       `frozen backend smoke: status=${health.status}, ready=${health.ready}, ` +
-      `version=${health.version}, identity=matched, mcp=stdio-ok, voice=wav-ok`,
+      `version=${health.version}, identity=matched, mcp=stdio-ok, optional-speech=missing-ok/external-http-fixture-ok`,
     );
   } finally {
+    if (speechServer) {speechServer.closeAllConnections(); await new Promise(resolve => speechServer.close(resolve));}
     if (child.exitCode == null) child.kill();
     await Promise.race([
       new Promise(resolve => child.once('exit', resolve)),

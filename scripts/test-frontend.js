@@ -21,8 +21,8 @@ function section(label, action) {
 section("Electron and renderer syntax", () => {
   const files = [
     ...fs.readdirSync(root).filter(name => /^electron-[\w-]+\.js$/.test(name)),
-    "main.js", "preload.js", "deck-preload.js", "monitor-preload.js", "popout-preload.js",
-    "frontend/renderer.js", "frontend/monitor.js", "frontend/main-deck/public/mic-capture-processor.js",
+    "main.js", "deck-preload.js", "monitor-preload.js", "popout-preload.js",
+    "frontend/monitor.js", "frontend/main-deck/public/mic-capture-processor.js",
     "frontend/main-deck/dev/fixture-loader.js",
   ];
   for (const file of files) execFileSync(process.execPath, ["--check", path.join(root, file)], {cwd: root, stdio: "inherit"});
@@ -92,7 +92,7 @@ const tests = [
   "test-main-deck-controls.js",
   "test-overview-receipts.js",
   "test-deck-fixture-hygiene.js",
-  "test-overlay-avatar-only.js",
+  "test-overlay-removal.js",
   "test-deck-mic.js",
   "test-stream-isolation.js",
   "test-chat-attachments.js",

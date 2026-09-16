@@ -1,27 +1,15 @@
-"""
-Local text-to-speech runtime for VARIANT-1.
+"""Optional in-process Kokoro support for source development only.
 
-Text-to-speech, fully local — no cloud, no API key, no torch. The voice is a
-stable Kokoro voice id (default `af_nova`), selectable per call: the persisted
-choice lives in the server's voice config (``voice.voice``), ``list_voices()``
-enumerates what the loaded voice pack offers, and the ``tts:preview`` WS
-command lets the Main Deck audition a voice before saving it.
-
-Engine: kokoro-onnx (Kokoro on ONNX Runtime). Needs the `kokoro-onnx` pip
-package (in requirements.txt) plus two user-supplied model files in
-models/speech/kokoro/ under VARIANT-1's user-data directory:
-    kokoro-v1.0.onnx  ·  voices-v1.0.bin
-The installer does not ship model weights. Development checkouts may retain the
-old models/base/kokoro pair as a compatibility fallback.
-
-Returns 24 kHz mono 16-bit WAV bytes that the renderer plays while the avatar's
-mouth moves. Degrades gracefully: if the package or voice files are missing,
-TTS is simply off and VARIANT-1 stays text-only.
+Packaged VARIANT-1 does not include this engine or its dependencies. Its canonical
+speech provider connects to a separately installed Kokoro HTTP service instead.
+Source users can install requirements-speech-optional.txt and supply the matching
+ONNX/voices pair. Speech work never changes the model-facing Python tool loop.
 """
 
 import asyncio
 import struct
 import threading
+import sys
 
 from speech.assets import kokoro_drop_dir, resolve_kokoro_assets
 
@@ -48,7 +36,7 @@ def _onnx_files_present() -> bool:
 def asset_status() -> dict:
     model, voices = resolve_kokoro_assets()
     return {
-        "available": model.is_file() and voices.is_file(),
+        "available": available(),
         "drop_path": str(kokoro_drop_dir()),
         "model_path": str(model),
         "voices_path": str(voices),
@@ -62,6 +50,9 @@ def _load_engine():
     so no restart is needed."""
     global _engine, _engine_err, _loaded, _engine_voices
     with _engine_lock:
+        if getattr(sys, "frozen", False):
+            _engine_err = "Kokoro is separately installed. Start a compatible speech server and set its API base URL in Settings > Voice > Kokoro. Model files alone do not install the engine."
+            return
         if _loaded:
             if _engine is not None or not _onnx_files_present():
                 return
@@ -90,6 +81,8 @@ def available() -> bool:
     that happens lazily on the first synth.)"""
     # The engine reference is published only after construction. Reading this
     # metadata must never wait for the lock held across synthesis.
+    if getattr(sys, "frozen", False):
+        return False
     if _engine is not None:
         return True
     try:

@@ -1,5 +1,25 @@
 # Windows source setup
 
+## Optional speech
+
+The baseline installer does not include offline speech engines or model weights.
+For Kokoro, install/start a user-owned
+[OpenAI-compatible speech server](https://github.com/remsky/Kokoro-FastAPI)
+following that project's setup instructions. In Voice settings choose Kokoro,
+set Speech server URL to its API base URL including `/v1` (for example
+`http://127.0.0.1:8880/v1`), then choose a server-supported model/voice and Preview.
+VARIANT-1 neither installs nor starts that service. Docker/Python requirements
+belong to the chosen server, not the baseline app.
+
+Local Whisper needs a complete whisper.cpp Windows distribution with
+`whisper-server.exe`, its adjacent DLLs and a compatible ggml `.bin` model in
+`%APPDATA%/VARIANT-1/models/speech/whisper`. The app starts that user-provided
+sidecar when transcription is requested. Cloud speech retains provider settings.
+
+Source developers may install `backend/requirements-speech-optional.txt` and
+supply the Kokoro ONNX/voices pair for the optional in-process development path.
+Installing it into system Python does not add it to a frozen application.
+
 ## Google subscription OAuth limitation
 
 This public source build does not bundle a third-party Google OAuth client
@@ -14,7 +34,7 @@ commit client credentials or copy another application's credentials into source.
 
 - Windows x64. Other operating systems are not qualified for this desktop release.
 - CPython **3.13 x64** on PATH. The kernel runtime enforces the 3.13 family;
-  `setup-backend.js` has an older error message mentioning 3.9+, which is not the requirement.
+  Other Python minor versions are not a compatible kernel runtime.
 - Node.js with npm. Existing CI uses Node 20; the initial public-export validation
   also records its exact local Node version in the release notes when available.
 - Git for source checkout and the Git workbench features.

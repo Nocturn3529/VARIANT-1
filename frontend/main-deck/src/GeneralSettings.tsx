@@ -37,7 +37,7 @@ export function GeneralSettings({page = "general"}: {page?: GeneralSettingsPage}
         />
         <SettingToggleRow
           title="Start hidden in the tray"
-          description="Launch without showing the avatar on the desktop."
+          description="Launch without opening the main window."
           checked={s.startHidden}
           onChange={value => { void setStartHidden(value); }}
         />

@@ -12,18 +12,15 @@ packaging step (package.json) copies that folder to <resources>/backend/, where
 main.js launches Variant1Backend.exe.
 
 Notes:
-- Kokoro's Python modules are statically reachable. Its vocabulary, dependency
-  metadata, language-tag registry, and bundled eSpeak-NG runtime are the only
-  explicit voice assets. MCP and web/document/capture libraries use exact
-  first-party imports plus maintained PyInstaller hooks.
+- Offline speech engines/weights are not bundled. Cloud speech uses HTTP clients;
+  local Kokoro connects to a user-owned server. MCP and web/document/capture
+  libraries use exact first-party imports plus maintained PyInstaller hooks.
 - console=True keeps ``sys.stdout``/``sys.stderr`` usable for Uvicorn and lets
   Electron capture backend diagnostics into ``logs/main.log``. Electron starts
   the process with ``windowsHide: true``, so this does not open a terminal.
 """
 
 from PyInstaller.utils.hooks import (
-    collect_data_files,
-    collect_dynamic_libs,
     collect_submodules,
     copy_metadata,
 )
@@ -32,28 +29,7 @@ datas = []
 binaries = []
 hiddenimports = []
 
-# Local TTS imports every Python module it uses through kokoro_onnx's ordinary
-# import graph. These are file-based runtime assets that Python imports cannot
-# discover: Kokoro's vocabulary, versions read through importlib.metadata,
-# language-tags' registry, and espeakng-loader's DLL/data files. VARIANT-1's local
-# route is explicitly en-US, so retain the eSpeak core indexes, English
-# dictionary, and en/en-US language definitions. A future multilingual local
-# route must expand this manifest and the frozen synthesis board together.
-ESPEAK_EN_US_ASSETS = [
-    "espeak-ng-data/intonations",
-    "espeak-ng-data/phondata",
-    "espeak-ng-data/phonindex",
-    "espeak-ng-data/phontab",
-    "espeak-ng-data/en_dict",
-    "espeak-ng-data/lang/gmw/en",
-    "espeak-ng-data/lang/gmw/en-US",
-]
-datas += collect_data_files("kokoro_onnx", includes=["config.json"])
-datas += copy_metadata("kokoro-onnx")
-datas += copy_metadata("phonemizer-fork")
-datas += collect_data_files("language_tags", includes=["data/json/*.json"])
-datas += collect_data_files("espeakng_loader", includes=ESPEAK_EN_US_ASSETS)
-binaries += collect_dynamic_libs("espeakng_loader")
+# Offline speech engines are user-provided services, not frozen payloads.
 
 # Domain packages register implementations dynamically.
 hiddenimports += collect_submodules("work_fabric")
@@ -110,7 +86,9 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        "tkinter", "torch", "kokoro",  # legacy GUI/training/TTS package
+        "tkinter", "torch", "kokoro",
+        "kokoro_onnx", "phonemizer", "espeakng_loader", "onnxruntime",
+        "neutts", "kittentts", "piper", "soundfile",  # optional user-owned speech engines
         # Model-authored Python and portable codecs live only in Variant1Kernel.
         "IPython", "ipykernel", "jupyter_client", "jupyter_core", "zmq",
         "traitlets", "tornado", "comm", "debugpy", "jedi", "parso",

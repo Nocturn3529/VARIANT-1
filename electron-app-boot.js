@@ -3,7 +3,7 @@
 /**
  * App boot helpers for VARIANT-1's Electron main process:
  * GPU flags, variant1:// protocol, data-dir seed, window hardening / permissions,
- * and the whenReady lifecycle (Deck, overlay, tray, backend, updater, hotkey).
+ * and the whenReady lifecycle (Deck, tray, backend, updater, hotkey).
  */
 
 const path = require('path');
@@ -103,22 +103,20 @@ function isAudioOnlyMediaDetails(details) {
 
 /**
  * @param {object} deps
- * @param {() => import('electron').BrowserWindow|null} deps.getMainWindow
  * @param {() => import('electron').BrowserWindow|null} deps.getDeckWindow
  * @param {() => import('electron').BrowserWindow|null} deps.getMonitorWindow
  * @param {(msg: string) => void} deps.log
  */
 function createWindowSecurity(deps) {
-  const { getMainWindow, getDeckWindow, getMonitorWindow, log } = deps;
+  const { getDeckWindow, getMonitorWindow, log } = deps;
 
   function isTrustedIpcSender(event, expectedWindow = null) {
     if (!event || !event.sender || !event.senderFrame) return false;
     const win = BrowserWindow.fromWebContents(event.sender);
     if (!win || win.isDestroyed()) return false;
-    const mainWindow = getMainWindow();
     const deckWindow = getDeckWindow();
     const monitorWindow = getMonitorWindow();
-    if (![mainWindow, deckWindow, monitorWindow].includes(win)) return false;
+    if (![deckWindow, monitorWindow].includes(win)) return false;
     if (expectedWindow && win !== expectedWindow) return false;
     return isTrustedAppUrl(event.senderFrame.url);
   }
@@ -282,9 +280,10 @@ function createInitDataDir(deps) {
           'It must include whisper-server.exe, its adjacent DLLs, and a compatible ggml *.bin model.',
           'VARIANT-1 uses the configured model filename when present, otherwise the first *.bin.',
           '',
-          'TTS: drop a compatible Kokoro pair into kokoro/ using these exact names:',
-          '  kokoro-v1.0.onnx',
-          '  voices-v1.0.bin',
+          'TTS: install/start your own Kokoro-compatible speech server separately.',
+          'In Settings > Voice > Kokoro set its API base URL (including /v1), model and voice.',
+          'For example: http://127.0.0.1:8880/v1. Use Preview to verify the connection.',
+          'Model files alone do not install a speech engine. No offline speech runtime is bundled.',
           '',
           'Use Settings > General > Voice to refresh availability.',
           '',
@@ -315,7 +314,6 @@ function createInitDataDir(deps) {
         ['llm_config.json', 'llm_config.default.json'],
         ['tools.json', 'tools.default.json'],
         ['messaging.json', 'messaging.default.json'],
-        ['animations.json', 'animations.json'],
       ];
       for (const [dstName, srcName] of seeds) {
         try {
@@ -379,13 +377,11 @@ function createBeforeQuitHandler({
  * @param {() => void} deps.configurePermissionHandlers
  * @param {() => object} deps.readSettings
  * @param {(view?: string) => import('electron').BrowserWindow|null} deps.openDeckWindow
- * @param {() => void} deps.createOverlayWindow
  * @param {() => void} deps.installTray
   * @param {() => void} deps.startBackend
   * @param {() => void|Promise<void>} deps.stopBackend
  * @param {() => any} deps.getAutoUpdater
  * @param {() => import('electron').BrowserWindow|null} deps.getDeckWindow
- * @param {() => import('electron').BrowserWindow|null} deps.getMainWindow
  * @param {(v: boolean) => void} deps.setQuitting
  * @param {(msg: string) => void} deps.log
  * @param {() => string} deps.getUserDataBackendJsonPath
@@ -401,13 +397,11 @@ function registerAppLifecycle(deps) {
     registerGuestWebviewPolicy,
     readSettings,
     openDeckWindow,
-    createOverlayWindow,
     installTray,
     startBackend,
     stopBackend,
     getAutoUpdater,
     getDeckWindow,
-    getMainWindow,
     setQuitting,
     log,
     getUserDataBackendJsonPath,
@@ -449,7 +443,6 @@ function registerAppLifecycle(deps) {
       || !!(readSettings().general && readSettings().general.startHidden);
 
     if (!startHidden) openDeckWindow('chat');
-    createOverlayWindow();
     installTray();
     startBackend();
     log('VARIANT-1 started.');
@@ -471,9 +464,7 @@ function registerAppLifecycle(deps) {
 
     app.on('activate', () => {
       const deckWindow = getDeckWindow();
-      const mainWindow = getMainWindow();
-      if (!deckWindow || deckWindow.isDestroyed()) openDeckWindow('chat');
-      if (!mainWindow || mainWindow.isDestroyed()) createOverlayWindow();
+        if (!deckWindow || deckWindow.isDestroyed()) openDeckWindow('chat');
     });
   });
 

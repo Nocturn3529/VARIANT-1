@@ -29,6 +29,8 @@ assert.ok(Array.isArray(files), 'package.json build.files must be an array');
 assert.strictEqual(packageJson.name, 'variant1');
 assert.strictEqual(packageJson.build.productName, 'VARIANT-1');
 assert.strictEqual(packageJson.build.appId, 'app.variant1.desktop');
+assert.strictEqual(read('backend/server.py').match(/^VERSION = "([^"]+)"/m)?.[1], packageJson.version,
+  'the backend handshake version must match the Electron release version');
 assert.strictEqual(Object.hasOwn(packageJson, 'author'), false,
   'a company/author identity must not be invented for VARIANT-1');
 assert.match(mainJs, /app\.setName\(['"]VARIANT-1['"]\)/,
@@ -57,7 +59,7 @@ for (const file of requiredModules) {
 
 // Also require that preloads + main entry are allowlisted.
 for (const entry of [
-  'main.js', 'preload.js', 'deck-preload.js', 'monitor-preload.js',
+  'main.js', 'deck-preload.js', 'monitor-preload.js',
   'deck-routes.json', 'THIRD_PARTY_NOTICES.md',
 ]) {
   assert.ok(
@@ -217,26 +219,11 @@ assert.doesNotMatch(backendSpec, /["']kernel_runtime\.capsule_worker["']/,
   'the backend bundle must not hidden-import worker-only capsule codecs');
 assert.doesNotMatch(backendSpec, /\bcollect_all\b/,
   'the frozen backend must not use package-wide collect_all()');
-for (const voiceAsset of [
-  'collect_data_files("kokoro_onnx", includes=["config.json"])',
-  'copy_metadata("kokoro-onnx")',
-  'copy_metadata("phonemizer-fork")',
-  'collect_data_files("language_tags", includes=["data/json/*.json"])',
-  'collect_data_files("espeakng_loader", includes=ESPEAK_EN_US_ASSETS)',
-  'collect_dynamic_libs("espeakng_loader")',
-]) {
-  assert.ok(backendSpec.includes(voiceAsset),
-    `frozen local TTS is missing exact asset rule: ${voiceAsset}`);
+for (const optional of ['kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime']) {
+  assert.ok(backendSpec.includes('"' + optional + '"'), 'speech exclusion missing: ' + optional);
+  assert.ok(!backendSpec.includes('copy_metadata("' + optional), 'speech metadata must not ship');
 }
-for (const espeakAsset of [
-  'espeak-ng-data/intonations', 'espeak-ng-data/phondata',
-  'espeak-ng-data/phonindex', 'espeak-ng-data/phontab',
-  'espeak-ng-data/en_dict', 'espeak-ng-data/lang/gmw/en',
-  'espeak-ng-data/lang/gmw/en-US',
-]) {
-  assert.ok(backendSpec.includes(`"${espeakAsset}"`),
-    `frozen local TTS is missing en-US eSpeak asset: ${espeakAsset}`);
-}
+assert.doesNotMatch(backendSpec, /ESPEAK_EN_US_ASSETS|collect_data_files\("kokoro/, 'offline speech payload must not be frozen');
 for (const workerOnly of [
   'IPython', 'ipykernel', 'jupyter_client', 'jupyter_core', 'zmq', 'debugpy',
   'traitlets', 'tornado', 'comm', 'prompt_toolkit', 'jedi', 'parso',

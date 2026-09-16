@@ -35,5 +35,5 @@ for(const file of ['goalsStore.ts','ui/fabricPresentation.ts','workbench/Browser
 const electron=['deck-preload.js','electron-deck-ipc.js','electron-app-boot.js'].map(file=>fs.readFileSync(path.join(root,file),'utf8')).join('\n');
 assert.doesNotMatch(electron,/workbench:browser:(?:popout|location|closed)|__variant1BrowserPopout/,'Native panels are the sole browser detachment path');
 // These remain live entry points, not legacy workspace copies.
-for(const file of ['frontend/index.html','frontend/renderer.js','frontend/monitor.html','frontend/monitor.js','frontend/main-deck/popout.html'])assert.ok(fs.existsSync(path.join(root,file)));
+for(const file of ['frontend/monitor.html','frontend/monitor.js','frontend/main-deck/popout.html'])assert.ok(fs.existsSync(path.join(root,file)));
 console.log(`frontend reachability: ${reached.size} current source modules, no orphan implementations, no retired browser/startup path`);

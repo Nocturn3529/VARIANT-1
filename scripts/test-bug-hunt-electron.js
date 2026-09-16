@@ -32,13 +32,6 @@ function load(name,overrides){const file=path.join(root,name),local=createRequir
   assert.equal(trashed.length,1,'junction parents cannot redirect repository trash outside the root');
   assert.equal((await handlers.get('workbench:fs:unwatch')({sender:avatar},'missing')).ok,false);
 
-  const overlay=load('electron-overlay.js',{'electron':electron}).createOverlayController({appRoot:root,
-    readSettings:()=>({avatar:{size:240},secret:'must-not-leak'}),isTrustedIpcSender:(event,expected)=>event.sender===expected});
-  overlay.setMainWindow(avatar);overlay.registerIpc();
-  const settings=handlers.get('avatar:settings:get')({sender:avatar});
-  assert.equal(settings.avatar.size,240);assert.deepEqual(Object.keys(settings),['avatar']);assert.deepEqual(Object.keys(settings.avatar),['size']);
-  assert.equal(handlers.get('avatar:settings:get')({sender:deck}),null);
-  assert.equal(handlers.get('settings:get')({sender:avatar}),null,'narrow size API does not restore full settings access');
 
   class Window extends EventEmitter {
     constructor(){super();this.dead=false;this.sent=[];this.loading=true;this.webContents=new EventEmitter();this.webContents.isLoading=()=>this.loading;this.webContents.send=(...args)=>this.sent.push(args);}
@@ -62,5 +55,5 @@ function load(name,overrides){const file=path.join(root,name),local=createRequir
   assert.ok(made.some(target=>target.endsWith(path.join('runtimes','playwright'))),'one mkdir failure does not skip remaining independent folders');
   assert.ok(logs.some(line=>line.includes('could not create data directory')&&line.includes('permission denied')));
   assert.ok(logs.some(line=>line.includes('could not seed speech instructions')));
-  console.log('Bug hunt Electron: concrete Git paths, junction trash fence, narrow avatar settings, unwatch trust, latest navigation and boot diagnostics passed');
+  console.log('Bug hunt Electron: concrete Git paths, junction trash fence, unwatch trust, latest navigation and boot diagnostics passed');
 })().catch(error=>{console.error(error);process.exitCode=1;});

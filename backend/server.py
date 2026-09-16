@@ -39,7 +39,7 @@ from observability.activity import (
 
 from paths import APP_ROOT  # frozen-aware app root (PyInstaller-safe)
 
-VERSION = "0.1.0"
+VERSION = "0.1.1-preview.1"
 START_TIME = time.time()
 
 # Writable base for user data (config, memory, downloaded models). Defaults to

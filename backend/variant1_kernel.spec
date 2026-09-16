@@ -59,6 +59,7 @@ a = Analysis(
     runtime_hooks=[],
     excludes=[
         "server", "fastapi", "uvicorn", "playwright", "mcp", "kokoro_onnx",
+        "phonemizer", "espeakng_loader", "onnxruntime", "neutts", "kittentts", "piper", "soundfile",
         "IPython", "ipykernel", "jupyter_client", "jupyter_core", "zmq",
         "traitlets", "tornado", "comm", "debugpy", "jedi", "parso",
         "prompt_toolkit", "matplotlib_inline", "nest_asyncio", "tkinter",

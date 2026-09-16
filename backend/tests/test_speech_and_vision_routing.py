@@ -102,6 +102,7 @@ async def test_tts_route_is_an_exclusive_data_boundary():
 
 
 def test_local_kokoro_phonemizer_runtime_assets_are_usable():
+    pytest.importorskip("kokoro_onnx", reason="optional source-only speech engine")
     from kokoro_onnx.tokenizer import Tokenizer
 
     tokenizer = Tokenizer()

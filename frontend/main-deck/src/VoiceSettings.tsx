@@ -114,8 +114,8 @@ function ProviderOptions({
   return <form className="voice-provider-options" onSubmit={save}>
     <label><span>Model</span><input value={model} onChange={event => setModel(event.target.value)}
       placeholder={provider.default_model || "Provider default"}/></label>
-    {provider.kind === "cloud" ? <label><span>Base URL override</span><input value={baseUrl}
-      onChange={event => setBaseUrl(event.target.value)} placeholder="Use provider default"/></label> : null}
+    {provider.kind === "cloud" || provider.id === "kokoro" ? <label><span>{provider.id === "kokoro" ? "Speech server URL" : "Base URL override"}</span><input value={baseUrl}
+      onChange={event => setBaseUrl(event.target.value)} placeholder={provider.id === "kokoro" ? "http://127.0.0.1:8880/v1" : "Use provider default"}/></label> : null}
     {capability === "stt" || provider.id === "xai" ? <label><span>Language</span><input
       value={language} onChange={event => setLanguage(event.target.value)} placeholder="auto"/></label> : null}
     {provider.id === "piper" ? <label><span>Voice model path</span><input value={modelPath}
@@ -197,9 +197,10 @@ export function VoiceSettings() {
       Drop whisper-server.exe, its adjacent DLLs, and a compatible ggml .bin model here.
     </LocalAssetNotice> : null}
     <ProviderPanel capability="tts" providers={state.ttsProviders} selectedId={state.ttsProvider}/>
-    {state.ttsProvider === "kokoro" && !state.ttsLocalAvailable ? <LocalAssetNotice path={state.ttsDropPath}>
-      Drop kokoro-v1.0.onnx and voices-v1.0.bin here.
-    </LocalAssetNotice> : null}
+    {state.ttsProvider === "kokoro" ? <p className="gen-notice">
+      Install and start your own Kokoro-compatible speech server, then enter its API base URL above.
+      Use a model and voice supported by that server and test with Preview. The app does not install the engine or model.
+    </p> : null}
 
     <section className="gen-card gen-card--speaker deck-instrument">
       <header className="deck-instrument__header"><div><h3 className="deck-instrument__title">Playback</h3></div>

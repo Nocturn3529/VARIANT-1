@@ -57,3 +57,22 @@ Keep persistent service ownership in the backend and render its state through th
 frontend protocol. Treat resource/chat identity and stale asynchronous results
 explicitly. Test changes in isolation from personal models, accounts, browser
 profiles, and runtime data.
+
+
+### Installer composition — 2026-09-16
+
+The Live2D cat overlay is retired: no avatar window, preload, renderer, animation
+configuration, libraries or model payload. Start hidden starts the tray/backend;
+normal startup opens Main Deck. React, p5 and xterm are build dependencies,
+compiled into the renderer, and no longer ship twice as production node_modules.
+Personal config/plugins are excluded from installer defaults. Both frozen Python
+runtimes, native CPU/CUDA fallback, and browser provisioning remain intact.
+Release freezing requires matching Electron and backend handshake versions.
+
+The baseline lock and both frozen runtimes exclude offline speech engines.
+Kokoro voice enumeration and WAV synthesis use the configured user-owned HTTP
+service through the existing speech provider. No model-facing tool or second
+agent loop is added. Whisper retains its user-provided executable/model sidecar;
+cloud speech retains its HTTP adapters. Optional source-only Kokoro dependencies
+are separate from the baseline lock. Frozen checks verify absent speech payloads,
+clear unconfigured behavior, and configured external WAV transport.

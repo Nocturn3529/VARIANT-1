@@ -13,7 +13,6 @@ const { createLogger } = require('./electron-logging');
 const { createSettingsStore } = require('./electron-settings-store');
 const { createTray } = require('./electron-tray');
 const { createAppWindows } = require('./electron-app-windows');
-const { createOverlayController } = require('./electron-overlay');
 const { registerDeckIpc } = require('./electron-deck-ipc');
 const { registerBrowserCapture } = require('./electron-browser-capture');
 const { registerBrowserDownloads } = require('./electron-browser-downloads');
@@ -117,19 +116,14 @@ function getAutoUpdater() {
 }
 
 // --- Window refs -----------------------------------------------------------
-let mainWindow = null;
 let deckWindow = null;
 let monitorWindow = null;
 let tray = null;
 let isQuitting = false;
-let overlay = null;
 let appWindows = null;
 
 function webContentsSource(webContents) {
   if (!webContents) return 'renderer';
-  if (mainWindow && !mainWindow.isDestroyed() && mainWindow.webContents === webContents) {
-    return 'renderer.overlay';
-  }
   if (deckWindow && !deckWindow.isDestroyed() && deckWindow.webContents === webContents) {
     return 'renderer.deck';
   }
@@ -144,11 +138,7 @@ function recoverRenderer(webContents, reason) {
   let label = '';
   let getWindow = null;
   let recreate = null;
-  if (mainWindow && mainWindow.webContents === webContents) {
-    label = 'overlay';
-    getWindow = () => mainWindow;
-    recreate = () => createOverlayWindow();
-  } else if (deckWindow && deckWindow.webContents === webContents) {
+  if (deckWindow && deckWindow.webContents === webContents) {
     label = 'deck';
     getWindow = () => deckWindow;
     recreate = () => openDeckWindow('chat');
@@ -223,7 +213,6 @@ app.on('child-process-gone', (_event, details) => {
 let chatWindows = null;
 const security = createWindowSecurity({
   getChatWindows: () => chatWindows?.list() || [],
-  getMainWindow: () => mainWindow,
   getDeckWindow: () => deckWindow,
   getMonitorWindow: () => monitorWindow,
   log: logToFile,
@@ -259,7 +248,6 @@ const backend = createBackendManager({
   logStream: logBackendStream,
   flushLogStreams,
   getStatusWindows: () => [deckWindow, ...(chatWindows?.list() || [])],
-  getActivityWindows: () => [mainWindow],
 });
 
 registerBackendIpc({
@@ -271,30 +259,6 @@ registerBackendIpc({
 chatWindows = require('./electron-chat-windows').createChatWindows({appRoot:APP_ROOT,getDeckWindow:()=>deckWindow,
   getBackendInfo:()=>backend.getInfo(),isTrustedIpcSender,hardenAppWindow});
 app.on('before-quit',()=>chatWindows.closeAll());
-
-// --- Overlay (window + IPC) ------------------------------------------------
-function ensureOverlay() {
-  if (overlay) return overlay;
-  overlay = createOverlayController({
-    appRoot: APP_ROOT,
-    readSettings,
-    writeSettings,
-    log: logToFile,
-    hardenAppWindow,
-    isTrustedIpcSender,
-    isQuitting: () => isQuitting,
-    getBackendInfo: () => backend.getInfo(),
-  });
-  // Overlay IPC is limited to drag and click-through behavior.
-  overlay.registerIpc();
-  return overlay;
-}
-
-function createOverlayWindow() {
-  ensureOverlay().createWindow();
-  mainWindow = ensureOverlay().getMainWindow();
-  return mainWindow;
-}
 
 // --- Deck / Monitor windows ------------------------------------------------
 function ensureAppWindows() {
@@ -333,7 +297,6 @@ function openMonitorWindow() {
 function installTray() {
   tray = createTray({
     appRoot: APP_ROOT,
-    getMainWindow: () => mainWindow,
     openDeckWindow: (view) => openDeckWindow(view || 'chat'),
     openMonitor: () => openMonitorWindow(),
     quitApp: () => {
@@ -378,13 +341,11 @@ registerAppLifecycle({
   registerGuestWebviewPolicy,
   readSettings: () => readSettings(),
   openDeckWindow: (view) => openDeckWindow(view || 'chat'),
-  createOverlayWindow,
   installTray,
   startBackend: () => backend.startBackend(),
   stopBackend: () => backend.stopBackend(),
   getAutoUpdater,
   getDeckWindow: () => deckWindow,
-  getMainWindow: () => mainWindow,
   setQuitting: (v) => { isQuitting = !!v; },
   log: logToFile,
   getUserDataBackendJsonPath: () => path.join(app.getPath('userData'), 'backend.json'),

@@ -35,6 +35,12 @@ function run(file, args, cwd) {
 }
 
 try {
+  const packageVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const backendVersion = fs.readFileSync(path.join(backendDir, 'server.py'), 'utf8')
+    .match(/^VERSION = "([^"]+)"/m)?.[1];
+  if (!packageVersion || backendVersion !== packageVersion) {
+    throw new Error('package.json and backend/server.py versions must match before freezing');
+  }
   if (!fs.existsSync(venvPy)) {
     throw new Error('backend/.venv is required; run `npm run setup:backend` first');
   }
