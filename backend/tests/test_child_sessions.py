@@ -23,11 +23,18 @@ from work_fabric.capabilities import register_work_fabric_tools
 from tests.support.model_routes import RouteAwareRouter
 
 _TEST_WORK_SERVICES = []
+_TEST_CHILD_MANAGERS = []
 
 
 @pytest.fixture(autouse=True)
 async def close_owned_test_work_services():
     yield
+    managers = list(_TEST_CHILD_MANAGERS)
+    _TEST_CHILD_MANAGERS.clear()
+    await asyncio.gather(
+        *(manager.drain_spawn_pumps() for manager in managers),
+        return_exceptions=True,
+    )
     services = list(_TEST_WORK_SERVICES)
     _TEST_WORK_SERVICES.clear()
     await asyncio.gather(*(service.shutdown() for service in services))
@@ -87,10 +94,12 @@ class _Host:
 
 
 def _manager(database_path, host, artifact_store):
-    return ChildSessionManager(
+    manager = ChildSessionManager(
         str(database_path), host, artifact_store,
         work=host.require_runtime().work,
     )
+    _TEST_CHILD_MANAGERS.append(manager)
+    return manager
 
 
 def _runtimes(host):
@@ -355,6 +364,130 @@ async def test_child_cancelled_in_spawn_tick_is_durably_terminal(tmp_path, monke
     }
     assert called is False
     assert manager.list("parent-immediate")[0]["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_queued_cancel_wins_before_gated_pump(tmp_path, monkeypatch):
+    host = _Host(tmp_path / "queued-cancel.sqlite3")
+    manager = _manager(
+        str(tmp_path / "queued-cancel.sqlite3"), host,
+        ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+    )
+    work = host.require_runtime().work
+    gate = asyncio.Event()
+    original = work.scheduler.run_once
+    called = False
+
+    async def gated_run_once():
+        await gate.wait()
+        return await original()
+
+    async def fake_run(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return "should not run"
+
+    monkeypatch.setattr(work.scheduler, "run_once", gated_run_once)
+    monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
+    admitted = await manager.spawn("parent-queued", task="hold queue")
+    cancelled = await manager.cancel("parent-queued", admitted["child_id"])
+    assert cancelled["status"] == "cancelled"
+    assert called is False
+    gate.set()
+    await manager.drain_spawn_pumps()
+    assert manager.inspect("parent-queued", admitted["child_id"])["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_running_cancel_does_not_wait_on_sleep(tmp_path, monkeypatch):
+    host = _Host(tmp_path / "running-cancel.sqlite3")
+    manager = _manager(
+        str(tmp_path / "running-cancel.sqlite3"), host,
+        ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+    )
+    running = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_run(*_args, **_kwargs):
+        running.set()
+        await release.wait()
+        return "still running"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
+    admitted = await manager.spawn("parent-running", task="hold running")
+    await running.wait()
+    assert manager.inspect("parent-running", admitted["child_id"])["status"] == "running"
+    cancelled = await manager.cancel("parent-running", admitted["child_id"])
+    release.set()
+    assert cancelled["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_completed_cancel_does_not_rewrite_status(tmp_path, monkeypatch):
+    host = _Host(tmp_path / "completed-cancel.sqlite3")
+    manager = _manager(
+        str(tmp_path / "completed-cancel.sqlite3"), host,
+        ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+    )
+
+    async def fake_run(*_args, **_kwargs):
+        return "DONE: already finished"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
+    admitted = await manager.spawn("parent-done", task="finish first")
+    terminal = await _terminal(manager, "parent-done", admitted["child_id"])
+    assert terminal["status"] == "completed"
+    cancelled = await manager.cancel("parent-done", admitted["child_id"])
+    assert cancelled["status"] == "completed"
+    assert cancelled.get("error") != "cancelled by parent"
+
+
+@pytest.mark.asyncio
+async def test_spawn_pump_failure_is_recorded_and_cleared(tmp_path, monkeypatch):
+    host = _Host(tmp_path / "pump-fail.sqlite3")
+    manager = _manager(
+        str(tmp_path / "pump-fail.sqlite3"), host,
+        ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+    )
+    work = host.require_runtime().work
+
+    async def boom():
+        raise RuntimeError("injected pump failure")
+
+    monkeypatch.setattr(work.scheduler, "run_once", boom)
+    admitted = await manager.spawn("parent-pump", task="pump fails")
+    pumps = list(manager._spawn_pumps.values())
+    if pumps:
+        await asyncio.wait(pumps)
+    await manager.drain_spawn_pumps()
+    assert any(
+        isinstance(exc, RuntimeError) and "injected pump failure" in str(exc)
+        for exc in manager._spawn_pump_errors
+    )
+    assert admitted["status"] in {"queued", "interrupted", "failed", "cancelled"}
+
+
+@pytest.mark.asyncio
+async def test_started_scheduler_does_not_create_unstarted_pump(tmp_path, monkeypatch):
+    host = _Host(tmp_path / "started-sched.sqlite3")
+    manager = _manager(
+        str(tmp_path / "started-sched.sqlite3"), host,
+        ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+    )
+    work = host.require_runtime().work
+    manager._require_work()
+    await work.start()
+    assert work.started is True
+
+    async def fake_run(*_args, **_kwargs):
+        return "DONE: started scheduler"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
+    admitted = await manager.spawn("parent-started", task="live scheduler")
+    assert manager._spawn_pumps == {}
+    terminal = await _terminal(manager, "parent-started", admitted["child_id"])
+    assert terminal["status"] == "completed"
+    await work.shutdown()
 
 
 @pytest.mark.asyncio

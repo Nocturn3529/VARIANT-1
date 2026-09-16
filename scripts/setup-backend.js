@@ -54,10 +54,27 @@ try {
     console.warn('pip self-upgrade skipped (continuing): ' + e.message);
   }
 
-  // Prefer the pinned lock for reproducible installs; fall back to loose ranges.
+  // Prefer the pinned lock on Windows for reproducible installs. The checked-in
+  // requirements.lock is win32-targeted (pywin32/uiautomation); on Linux/macOS
+  // use the platform-marked requirements.txt until a Unix lock exists.
   const lockFile = path.join('backend', 'requirements.lock');
   const reqFile = path.join('backend', 'requirements.txt');
-  const depsFile = fs.existsSync(path.join(root, lockFile)) ? lockFile : reqFile;
+  const lockPath = path.join(root, lockFile);
+  const reqPath = path.join(root, reqFile);
+  let depsFile;
+  if (isWin && fs.existsSync(lockPath)) {
+    depsFile = lockFile;
+  } else if (fs.existsSync(reqPath)) {
+    if (!isWin && fs.existsSync(lockPath)) {
+      console.log('Using requirements.txt on ' + process.platform +
+        ' (requirements.lock is win32-targeted).');
+    }
+    depsFile = reqFile;
+  } else if (fs.existsSync(lockPath)) {
+    depsFile = lockFile;
+  } else {
+    throw new Error('missing backend/requirements.txt and backend/requirements.lock');
+  }
   console.log('installing from ' + depsFile);
   run(venvPy, ['-m', 'pip', 'install', '-r', depsFile]);
 

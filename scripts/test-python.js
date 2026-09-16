@@ -8,10 +8,11 @@
  *   npm run test:python:desktop   // also runs real Windows app scenarios
  */
 
-const {execFileSync} = require('child_process');
+const {execFileSync, spawnSync} = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {makeTreeWritable, removeTreeWithRetry} = require('./test-isolation-cleanup');
 
 const root = path.join(__dirname, '..');
 const backend = path.join(root, 'backend');
@@ -23,6 +24,15 @@ const python = isWin
 if (!fs.existsSync(python)) {
   console.error('Backend venv not found. Run: npm run setup:backend');
   process.exit(1);
+}
+
+const cleanupTests = spawnSync(
+  process.execPath,
+  ['--test', path.join(__dirname, 'test-isolation-cleanup.test.js')],
+  {cwd: root, stdio: 'inherit'},
+);
+if ((cleanupTests.status || 0) !== 0) {
+  process.exit(cleanupTests.status || 1);
 }
 
 const userArgs = process.argv.slice(2);
@@ -110,41 +120,71 @@ function inventoryChanges(before, after) {
   return changed;
 }
 
-function makeTreeWritable(base) {
-  if (!fs.existsSync(base)) return;
-  for (const entry of fs.readdirSync(base, {withFileTypes: true})) {
-    const full = path.join(base, entry.name);
-    if (entry.isDirectory() && !entry.isSymbolicLink()) makeTreeWritable(full);
+
+
+function describePathChain(target, isolatedRoot) {
+  const lines = [];
+  let current = target;
+  const seen = new Set();
+  while (current && !seen.has(current)) {
+    seen.add(current);
     try {
-      fs.chmodSync(full, entry.isDirectory() ? 0o777 : 0o666);
-    } catch (_) {
-      // rmSync below remains the authority and reports a real cleanup failure.
+      const st = fs.lstatSync(current);
+      const mode = (st.mode & 0o7777).toString(8).padStart(4, '0');
+      let extra = '';
+      if (st.isSymbolicLink()) {
+        const dest = fs.readlinkSync(current);
+        extra = ` -> ${dest}`;
+      }
+      lines.push(
+        `  ${st.isDirectory() ? 'd' : st.isSymbolicLink() ? 'l' : 'f'} ${mode} uid=${st.uid} gid=${st.gid} nlink=${st.nlink} ${current}${extra}`
+      );
+    } catch (error) {
+      lines.push(`  missing ${current}: ${error.code || ''} ${error.message}`);
     }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+    if (isolatedRoot && current.length < isolatedRoot.length) break;
   }
-  try { fs.chmodSync(base, 0o777); } catch (_) {}
+  return lines;
 }
 
-function removeTreeWithRetry(base, timeoutMs = 20000) {
-  const sleeper = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (fs.existsSync(base)) {
-    try {
-      fs.rmSync(base, {
-        recursive: true,
-        force: true,
-        maxRetries: 2,
-        retryDelay: 100,
-      });
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(error.code)) throw error;
-      if (Date.now() >= deadline) break;
-      Atomics.wait(sleeper, 0, 0, 250);
-    }
+function describeIsolationFailure(error, tempRoot, chmodErrors) {
+  const lines = [
+    `TEST ISOLATION FAILURE: could not remove pytest temp directory: ${error.message}`,
+  ];
+  if (typeof process.getuid === 'function') {
+    lines.push(`euid=${process.getuid()} egid=${process.getgid()} cwd=${process.cwd()}`);
   }
-  if (fs.existsSync(base)) throw lastError || new Error(`Could not remove ${base}`);
+  lines.push(`platform=${process.platform} fs=${os.type()} tmp=${tempRoot}`);
+  const failedPath = error.path || '';
+  if (failedPath) {
+    lines.push('path chain (lstat, isolated root only):');
+    lines.push(...describePathChain(failedPath, tempRoot));
+  }
+  if (chmodErrors.length) {
+    lines.push('chmod errors during makeTreeWritable:');
+    for (const item of chmodErrors.slice(0, 40)) lines.push(`  ${item}`);
+  }
+  try {
+    const mnt = spawnSync('findmnt', ['-T', failedPath || tempRoot, '-o', 'TARGET,FSTYPE,OPTIONS', '-n'], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (mnt.status === 0 && mnt.stdout.trim()) lines.push(`mount: ${mnt.stdout.trim()}`);
+  } catch (_) {}
+  try {
+    const lsof = spawnSync('lsof', ['-n', failedPath || tempRoot], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (lsof.stdout && lsof.stdout.trim()) {
+      lines.push('lsof:');
+      lines.push(...lsof.stdout.trim().split(/\r?\n/).slice(0, 20).map((row) => `  ${row}`));
+    }
+  } catch (_) {}
+  return lines.join('\n');
 }
 
 const pytestArgs = userArgs.length ? userArgs : ['tests', '-q'];
@@ -156,6 +196,7 @@ if (!hasOption('--basetemp')) pytestArgs.push('--basetemp', baseTemp);
 
 const env = Object.assign({}, process.env);
 for (const name of pathOverrideVars) delete env[name];
+const testSecretstoreKey = path.join(tempRoot, 'secretstore.key');
 Object.assign(env, {
   TMP: tempDir,
   TEMP: tempDir,
@@ -163,6 +204,8 @@ Object.assign(env, {
   VARIANT1_DATA_DIR: testDataDir,
   VARIANT1_CONFIG: testConfigDir,
   VARIANT1_LLM_CONFIG: path.join(root, 'config', 'llm_config.default.json'),
+  // R2.c: isolate Fernet key material inside the runner temp tree.
+  VARIANT1_SECRETSTORE_KEY: testSecretstoreKey,
 });
 if (runDesktop) env.VARIANT1_DESKTOP_INTEGRATION = '1';
 
@@ -193,11 +236,16 @@ try {
         });
       } catch (_) {}
     }
-    makeTreeWritable(tempRoot);
-    removeTreeWithRetry(tempRoot);
-    removeTreeWithRetry(tempBase);
+    const chmodErrors = makeTreeWritable(tempRoot);
+    try {
+      removeTreeWithRetry(tempRoot);
+      removeTreeWithRetry(tempBase);
+    } catch (cleanupError) {
+      console.error(describeIsolationFailure(cleanupError, tempRoot, chmodErrors));
+      process.exitCode = 1;
+    }
   } catch (error) {
-    console.error(`TEST ISOLATION FAILURE: could not remove pytest temp directory: ${error.message}`);
+    console.error(describeIsolationFailure(error, tempRoot, []));
     process.exitCode = 1;
   }
 }

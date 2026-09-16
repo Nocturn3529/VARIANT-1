@@ -1,6 +1,7 @@
 """Durable Windows Desktop Fabric orchestration and stable factory surface."""
 
 from __future__ import annotations
+import sys
 
 import asyncio
 from dataclasses import dataclass
@@ -831,7 +832,13 @@ def create_desktop_fabric(
         unknown_effect=int(raw_recovery["unknown_effect"]),
         windows_need_rebind=int(raw_recovery["windows_need_rebind"]),
     )
-    live_adapter = adapter or WindowsDesktopAdapter(desktop_control=desktop_control)
+    if adapter is not None:
+        live_adapter = adapter
+    elif sys.platform.startswith("win"):
+        live_adapter = WindowsDesktopAdapter(desktop_control=desktop_control)
+    else:
+        from .unsupported import UnsupportedDesktopAdapter
+        live_adapter = UnsupportedDesktopAdapter()
     return DesktopFabric(
         repository=repository, artifact_store=artifact_store,
         adapter=live_adapter, backend_instance_id=instance_id,

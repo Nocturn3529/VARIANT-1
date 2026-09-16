@@ -38,6 +38,10 @@ frontend/main-deck/dist/
 # Only reviewed default config belongs in source control
 /config/*
 !/config/native-runtime.json
+!/config/native-runtime.linux-x64.json
+!/config/native-runtime.linux-arm64.json
+!/config/native-runtime.darwin-arm64.json
+!/config/native-runtime.darwin-x64.json
 !/config/llm_config.default.json
 !/config/messaging.default.json
 !/config/tools.default.json

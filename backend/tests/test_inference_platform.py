@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -205,7 +206,8 @@ def test_llamacpp_runtime_download_is_a_work_job(tmp_path, monkeypatch):
 
 
 def test_packaged_llamacpp_does_not_impersonate_managed_install(tmp_path):
-    binary = tmp_path / "packaged" / "bin" / "llama-server.exe"
+    name = "llama-server.exe" if sys.platform.startswith("win") else "llama-server"
+    binary = tmp_path / "packaged" / "bin" / name
     binary.parent.mkdir(parents=True)
     binary.write_bytes(b"packaged runtime")
     router = SimpleNamespace(

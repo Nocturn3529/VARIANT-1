@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 
+import sys
+
 import pytest
 
 from artifacts import ContentAddressedArtifactStore
@@ -657,6 +659,7 @@ def _physical_value_harness(
     return adapter, window, element, calls
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="WindowsDesktopAdapter physical delivery requires Win32")
 @pytest.mark.asyncio
 @pytest.mark.parametrize("value", ["literal {value}", ""])
 async def test_physical_value_replacement_requires_editable_focus_and_avoids_delete(
@@ -695,6 +698,7 @@ async def test_physical_value_replacement_requires_editable_focus_and_avoids_del
     assert calls == expected
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="WindowsDesktopAdapter physical delivery requires Win32")
 @pytest.mark.asyncio
 async def test_physical_set_value_accepts_actual_focus_when_focusable_flag_is_false(
     monkeypatch,
@@ -732,6 +736,7 @@ async def test_physical_set_value_accepts_actual_focus_when_focusable_flag_is_fa
     ]
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="WindowsDesktopAdapter physical delivery requires Win32")
 @pytest.mark.asyncio
 async def test_physical_set_value_refuses_file_list_item_before_keyboard_input(
     monkeypatch,
@@ -765,6 +770,7 @@ async def test_physical_set_value_refuses_file_list_item_before_keyboard_input(
     assert calls == []
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="WindowsDesktopAdapter physical delivery requires Win32")
 @pytest.mark.asyncio
 async def test_physical_set_value_stops_after_click_when_editable_focus_is_unproven(
     monkeypatch,

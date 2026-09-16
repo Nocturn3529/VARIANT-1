@@ -102,6 +102,7 @@ const tests = [
   "test-grok-review-ipc.js",
   "test-electron-logging.js",
   "test-electron-backend.js",
+  "test-isolation-cleanup.test.js",
 ];
 
 for (const test of tests) {

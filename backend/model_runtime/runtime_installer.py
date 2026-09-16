@@ -424,7 +424,7 @@ class RuntimeInstaller:
         return llama_status(
             self.data_dir,
             configured_binary=configured_binary,
-            bundled_binary=os.path.join(app_root, "bin", "llama-server.exe") if app_root else "",
+            bundled_binary=(os.path.join(app_root, "bin", "llama-server.exe" if sys.platform.startswith("win") else "llama-server") if app_root else ""),
             running_binary=str(getattr(engine, "running_binary", "") or ""),
         )
 

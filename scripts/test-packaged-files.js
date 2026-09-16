@@ -158,22 +158,41 @@ assert.match(appBoot, /VARIANT-1 user-supplied speech models/,
   'fresh user data must explain the speech drop contract');
 assert.strictEqual(
   defaultLlmConfig.voice.binary,
-  'models/speech/whisper/whisper-server.exe',
-  'fresh installs must resolve Whisper from the user drop folder',
+  'models/speech/whisper/whisper-server',
+  'fresh installs must resolve Whisper from the user drop folder (platform-neutral basename)',
+);
+assert.strictEqual(
+  defaultLlmConfig.local.binary,
+  'bin/llama-server',
+  'fresh installs must pin llama-server without a Windows-only .exe suffix',
 );
 
-const nativeRuntime = (packageJson.build.extraResources || []).find(
-  entry => entry && entry.from === 'bin' && entry.to === 'bin',
-);
-const kernelRuntime = (packageJson.build.extraResources || []).find(
+function effectiveExtraResources(platform) {
+  const build = packageJson.build || {};
+  const shared = Array.isArray(build.extraResources) ? build.extraResources : [];
+  const plat = build[platform] && Array.isArray(build[platform].extraResources)
+    ? build[platform].extraResources
+    : [];
+  return shared.concat(plat);
+}
+
+function binResource(platform) {
+  return effectiveExtraResources(platform).find(
+    entry => entry && entry.from === 'bin' && entry.to === 'bin',
+  );
+}
+
+const kernelRuntime = effectiveExtraResources('win').find(
+  entry => entry && entry.from === 'backend/dist/Variant1Kernel'
+    && entry.to === 'backend/kernel',
+) || (packageJson.build.extraResources || []).find(
   entry => entry && entry.from === 'backend/dist/Variant1Kernel'
     && entry.to === 'backend/kernel',
 );
 assert.ok(kernelRuntime,
   'the one-directory kernel runtime must remain isolated under backend/kernel');
-assert.ok(nativeRuntime && Array.isArray(nativeRuntime.filter),
-  'native runtime packaging must use an explicit filter');
-assert.deepStrictEqual(nativeRuntime.filter, [
+
+const WINDOWS_NATIVE_FILTER = [
   'llama-server.exe',
   'llama-server-impl.dll',
   'llama-common.dll',
@@ -188,15 +207,44 @@ assert.deepStrictEqual(nativeRuntime.filter, [
   'cublas64_13.dll',
   'cublasLt64_13.dll',
   'cudart64_13.dll',
-], 'installer native-runtime manifest changed without updating its contract');
-assert.ok(!nativeRuntime.filter.some(item => item.includes('**') || item.includes('whisper')),
-  'native runtime manifest must not broaden or rebundle user-supplied Whisper');
+];
+
+const winNative = binResource('win');
+assert.ok(winNative && Array.isArray(winNative.filter),
+  'Windows native runtime packaging must use an explicit filter');
+assert.deepStrictEqual(winNative.filter, WINDOWS_NATIVE_FILTER,
+  'installer Windows native-runtime manifest changed without updating its contract');
+assert.ok(!winNative.filter.some(item => item.includes('**') || item.includes('whisper')),
+  'Windows native runtime manifest must not broaden or rebundle user-supplied Whisper');
 for (const excludedTool of [
   'llama-cli.exe', 'llama-bench.exe', 'llama-quantize.exe',
   'llama-perplexity.exe', 'ggml-rpc-server.exe', 'whisper/whisper-server.exe',
 ]) {
-  assert.ok(!nativeRuntime.filter.includes(excludedTool),
+  assert.ok(!winNative.filter.includes(excludedTool),
     `installer must not retain non-runtime tool ${excludedTool}`);
+}
+
+for (const platform of ['linux', 'mac']) {
+  const unixNative = binResource(platform);
+  assert.ok(unixNative && Array.isArray(unixNative.filter),
+    `${platform} native runtime packaging must use an explicit filter`);
+  assert.ok(unixNative.filter.includes('llama-server'),
+    `${platform} native filter must include llama-server`);
+  assert.ok(!unixNative.filter.includes('llama-server.exe'),
+    `${platform} native filter must not require Windows llama-server.exe`);
+  assert.ok(!unixNative.filter.some(item => String(item).endsWith('.dll')),
+    `${platform} native filter must not ship Windows DLLs`);
+  assert.ok(!unixNative.filter.some(item => item.includes('**') || item.includes('whisper')),
+    `${platform} native runtime must not broaden or rebundle Whisper`);
+}
+
+// Shared config/backend resources remain available on every platform.
+for (const platform of ['win', 'linux', 'mac']) {
+  const extras = effectiveExtraResources(platform);
+  assert.ok(extras.some(e => e && e.from === 'config' && e.to === 'config'),
+    `${platform} must still bundle the allowlisted config resource`);
+  assert.ok(extras.some(e => e && e.from === 'backend/dist/Variant1Backend' && e.to === 'backend'),
+    `${platform} must still bundle the frozen backend`);
 }
 
 // A PyInstaller windowed process sets stdout/stderr to None on Windows. Uvicorn

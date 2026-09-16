@@ -39,3 +39,5 @@ duckdb==1.5.5
 matplotlib==3.11.1
 plotly==6.9.0
 safetensors==0.8.0
+
+cryptography>=42,<49  # Unix Fernet secret store (Windows keeps DPAPI)

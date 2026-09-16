@@ -39,6 +39,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Noto Sans SC subset (PDF CJK)
+
+The packaged `backend/artifacts/fonts/Variant1CJK-Regular.ttf` face is a
+TrueType-outline subset of Noto Sans SC VF 2.004, instantiated at Regular.
+It is distributed under the SIL Open Font License 1.1. The full upstream
+notice/license is included in `assets/licenses/NotoSansSC-OFL-1.1.txt` and
+`backend/artifacts/fonts/OFL.txt`. Project: https://github.com/notofonts/noto-cjk
+
 ## Geist fonts
 
 The bundled Geist and Geist Mono font files are distributed under the SIL Open

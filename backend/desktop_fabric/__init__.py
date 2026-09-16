@@ -14,6 +14,7 @@ from .adapter import (
     DesktopLiveAdapter,
     WindowsDesktopAdapter,
 )
+from .unsupported import UnsupportedDesktopAdapter
 from .access import (
     bind_desktop_fabric,
     current_desktop_fabric,
@@ -67,7 +68,7 @@ __all__ = [
     "DesktopObservation", "DesktopOperation", "DesktopRecoveryReport",
     "DesktopScopeMismatch",
     "DesktopStaleReference", "DesktopUnavailable", "DesktopValidationError",
-    "WindowsDesktopAdapter", "ProcessIdentity", "WindowRecord",
+    "WindowsDesktopAdapter", "UnsupportedDesktopAdapter", "ProcessIdentity", "WindowRecord",
     "create_desktop_fabric",
     "create_child_desktop_binding_snapshot", "desktop_binding_snapshot",
     "ensure_desktop_binding",

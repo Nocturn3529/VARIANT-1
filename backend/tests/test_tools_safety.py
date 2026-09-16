@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 import builtin_tools
@@ -99,6 +101,7 @@ def test_builtin_registry_has_no_launch_tools():
     }
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="percent-env path expansion is a Windows path contract")
 @pytest.mark.asyncio
 async def test_file_tools_expand_windows_percent_environment_vars(tmp_path, monkeypatch):
     monkeypatch.setenv("VARIANT1_TEST_TMP", str(tmp_path))

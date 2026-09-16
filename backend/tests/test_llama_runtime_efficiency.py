@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from model_runtime.llama_server import LlamaServer, resolve_user_model_path
@@ -13,7 +15,8 @@ def test_relative_model_pins_use_writable_user_model_root(tmp_path):
         "mmproj": "models/user/qwen-mmproj.gguf",
     }, str(app_root), str(data_dir))
 
-    assert engine.binary == str(app_root / "bin" / "llama-server.exe")
+    expected = "llama-server.exe" if sys.platform.startswith("win") else "llama-server"
+    assert engine.binary == str(app_root / "bin" / expected)
     assert engine.model == str(data_dir / "models" / "user" / "qwen.gguf")
     assert engine.mmproj == str(
         data_dir / "models" / "user" / "qwen-mmproj.gguf"

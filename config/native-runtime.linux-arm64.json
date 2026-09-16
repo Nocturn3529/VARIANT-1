@@ -1,0 +1,130 @@
+{
+  "platform": "linux",
+  "arch": "arm64",
+  "status": "ready",
+  "upstream_tag": "b10289",
+  "upstream_commit": "f9e832c10e9444cb168ddcb579cc62c154f3068b",
+  "files": [
+    {
+      "file": "llama-server",
+      "bytes": 72480,
+      "sha256": "3afad4a2aaa932ac27d76aaadef107e1f1a7011c389bdca71b8b30441b8ed969",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/llama-server"
+    },
+    {
+      "file": "libggml-base.so.0.18.1",
+      "bytes": 865600,
+      "sha256": "18dc2483491a563224dbaa41d6f7696f1298d9333a491546401166ac80dbc3f8",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-base.so.0.18.1"
+    },
+    {
+      "file": "libggml-cpu-armv8.0_1.so",
+      "bytes": 929088,
+      "sha256": "79f9a0f1fceba9be453ec0917af98d6f2f7e528ee507c91a349c19f5f80b6050",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.0_1.so"
+    },
+    {
+      "file": "libggml-cpu-armv8.2_1.so",
+      "bytes": 995992,
+      "sha256": "48771b29e90b64a8661b3ed13a32aa36d962f992e2a6770144fa9a1ae9f46767",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.2_1.so"
+    },
+    {
+      "file": "libggml-cpu-armv8.2_2.so",
+      "bytes": 995992,
+      "sha256": "497ca11805c139f616cd019b418ab699c9ac837034f04236497ce85056d48f38",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.2_2.so"
+    },
+    {
+      "file": "libggml-cpu-armv8.2_3.so",
+      "bytes": 930864,
+      "sha256": "5ec3d55ffdbbb8574c5fc26e587cb5b7f9b6013b9c51a87f6e9191bf0f266f89",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.2_3.so"
+    },
+    {
+      "file": "libggml-cpu-armv8.6_1.so",
+      "bytes": 996736,
+      "sha256": "e7507ffc78c458d28f589879f00825988ac95c0795aa60be9e4d2be2534795eb",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.6_1.so"
+    },
+    {
+      "file": "libggml-cpu-armv8.6_2.so",
+      "bytes": 996688,
+      "sha256": "24ea207edeabcfda9b7d8384b28018b64c12a17f54517845e3b331d49273990d",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv8.6_2.so"
+    },
+    {
+      "file": "libggml-cpu-armv9.2_1.so",
+      "bytes": 996728,
+      "sha256": "0e3eea2e3402feeb09802395df79f8cf18caaa8f9a16fbd70717a6f925b94884",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv9.2_1.so"
+    },
+    {
+      "file": "libggml-cpu-armv9.2_2.so",
+      "bytes": 996728,
+      "sha256": "41fa32fcc7a287d81a4bc37d3776ada551ea4eb041407d8c196891a9b490b0d2",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-armv9.2_2.so"
+    },
+    {
+      "file": "libggml-rpc.so",
+      "bytes": 162424,
+      "sha256": "2f821ff6c9def3eddbdb92721fc5fd81fdba0aef7af5339392aeb2831bec83bb",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml-rpc.so"
+    },
+    {
+      "file": "libggml.so.0.18.1",
+      "bytes": 77400,
+      "sha256": "ca4ba3566a9b858dbd6fa60f195a4e0d332d0703d47ebb6b6384ae8e315be45c",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libggml.so.0.18.1"
+    },
+    {
+      "file": "libllama-common.so.0.0.10289",
+      "bytes": 5462784,
+      "sha256": "f92c96e282de7faf2f30406850e70ea06c065f4ae65f6ce49be3580052fd03f1",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libllama-common.so.0.0.10289"
+    },
+    {
+      "file": "libllama-server-impl.so",
+      "bytes": 7155704,
+      "sha256": "35c438646ae69f2fdd5bdd0efaaf89e3f584f62a863e69853ad1f9e20c99d88e",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libllama-server-impl.so"
+    },
+    {
+      "file": "libllama.so.0.0.10289",
+      "bytes": 4052856,
+      "sha256": "f8036402522d280f26efe366100c96558e94ebdd0a24bbdf36dfc65cb5b91acd",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libllama.so.0.0.10289"
+    },
+    {
+      "file": "libmtmd.so.0.0.10289",
+      "bytes": 1602960,
+      "sha256": "a13f66d5d4f80afa7b26541409a1c6df79f8ef15f2f54cd3b352b6dc595e80be",
+      "source_archive": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "member": "llama-b10289/libmtmd.so.0.0.10289"
+    }
+  ],
+  "archives": [
+    {
+      "file": "llama-b10289-bin-ubuntu-arm64.tar.gz",
+      "sha256": "9645d8190f9904c26f6b21bea43daa234810773e15b864367279f10d20108ec1",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/llama-b10289-bin-ubuntu-arm64.tar.gz"
+    }
+  ],
+  "license_sources": [],
+  "note": "Hash-verified CPU build from llama.cpp b10289 (llama-b10289-bin-ubuntu-arm64.tar.gz). Ships llama-server + runtime shared libs only. Windows CUDA recipe remains config/native-runtime.json."
+}

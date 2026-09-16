@@ -140,8 +140,26 @@ class GitProcess:
                 max_stdout_bytes=self.max_output_bytes,
                 max_stderr_bytes=self.max_output_bytes,
             )
-        except FileNotFoundError as exc:
-            raise GitUnavailable(f"Git executable is unavailable: {self.executable}") from exc
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            missing = getattr(exc, "filename", None)
+            if not os.path.isdir(base):
+                raise GitCommandError(
+                    f"Git working directory is unavailable: {base}",
+                    arguments=argv,
+                    returncode=-1,
+                ) from exc
+            if isinstance(exc, FileNotFoundError):
+                exe = os.path.normcase(os.path.normpath(str(self.executable)))
+                if (
+                    not missing
+                    or os.path.normcase(os.path.normpath(str(missing))) == exe
+                ):
+                    raise GitUnavailable(
+                        f"Git executable is unavailable: {self.executable}"
+                    ) from exc
+            raise GitCommandError(
+                f"Git command could not start: {exc}", arguments=argv, returncode=-1
+            ) from exc
         except OSError as exc:
             raise GitCommandError(
                 f"Git command could not start: {exc}", arguments=argv, returncode=-1
