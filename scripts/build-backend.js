@@ -77,6 +77,8 @@ try {
   if (!fs.existsSync(kernelExe)) {
     throw new Error('expected kernel output missing: ' + kernelExe);
   }
+  // Notices use requirements.lock on Windows and requirements.txt elsewhere;
+  // collect-python-notices.py also validates a CPython LICENSE(.txt).
   run(py, [path.join(root, 'scripts', 'collect-python-notices.py')]);
   console.log('\nBackend frozen: ' + exe);
   console.log('Kernel frozen: ' + kernelExe);
