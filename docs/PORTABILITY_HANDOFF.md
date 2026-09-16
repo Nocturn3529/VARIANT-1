@@ -184,7 +184,7 @@ Host: Linux x86_64, CPython 3.13.5, Node 20. Cloned `port/linux-macos-bootstrap`
 - **R4 SHA:** `34caacc67de737025da1a0c12330e1296d7bf8e3` ? `collect-python-notices.py` uses lock on Windows / requirements.txt elsewhere; CPython `LICENSE(.txt)`.
 - Left for Runtime: electron-backend.js / ci-linux-smoke. R2 secretstore owned by coordinator.
 
-### R5/R6 - PR #3 ChatGPT review fixes (Runtime) - _(SHA after commit)_
+### R5/R6 - PR #3 ChatGPT review fixes (Runtime) - a1d3bf17b455feed29aaca219318efc8a11fd1bc
 
 - R5: `electron-backend-posix-engines.js` + `electron-backend.js` POSIX orphan sweep uses `/proc/<pid>/exe` (Linux) or absolute-path regex so directories with spaces work; regression in `scripts/test-electron-backend.js` (`testPosixEnginePathWithSpaces`).
 - R6: `scripts/ci-linux-smoke.py` asserts `ci-pty` sentinel, process exit 0, `UnsupportedDesktopAdapter` raises `DesktopUnavailable`, and always closes the PTY in `finally`.
