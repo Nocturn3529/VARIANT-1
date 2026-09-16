@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `dd38bf9ff8ff8819f6a64d4ca6c76048005f9334` |
+| Branch tip (this doc) | `033277741c2293fa006bfdd5330e0ba333c6b4e7` |
 
 ## Goals
 
@@ -207,7 +207,7 @@ A clean Windows suite does **not** settle Linux failures. Re-categorize with exa
 
 ## Remaining gaps (post R1-R6)
 
-Branch tip at handoff update: `dd38bf9ff8ff8819f6a64d4ca6c76048005f9334`.
+Branch tip at handoff update: `033277741c2293fa006bfdd5330e0ba333c6b4e7`.
 
 1. Re-run CI on pushed tip; confirm R1 clears `frontend-scripts` and R2 shrinks Linux failures; document remaining nodeids by category.
 2. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
