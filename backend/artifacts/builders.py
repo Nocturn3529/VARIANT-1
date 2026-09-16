@@ -11,6 +11,7 @@ from io import BytesIO, StringIO
 import hashlib
 import html
 import json
+import logging
 import math
 import os
 import re
@@ -20,6 +21,7 @@ from typing import Any, Mapping, Sequence
 from core_invariants import canonical_json_bytes, strict_json_value
 
 BUILDER_VERSION = "variant1-artifact-builders.2"
+_LOG = logging.getLogger(__name__)
 _MAX_BLOCKS = 2_000
 _MAX_ROWS = 50_000
 _MAX_CELLS = 500_000
@@ -462,28 +464,39 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
         index = len(loaded)
         regular_name = f"Variant1Unicode{index}"
         bold_name = f"Variant1UnicodeBold{index}"
-        try:
-            regular = TTFont(regular_name, regular_path)
-            bold = TTFont(bold_name, bold_path if os.path.isfile(bold_path) else regular_path)
-            pdfmetrics.registerFont(regular)
-            pdfmetrics.registerFont(bold)
-            loaded.append((
-                regular_name, bold_name,
-                dict(regular.face.charToGlyph), dict(bold.face.charToGlyph),
-            ))
-        except Exception:
+        collection = regular_path.lower().endswith((".ttc", ".otc"))
+        last_error: BaseException | None = None
+        registered = False
+        for subfont in (range(8) if collection else (0,)):
+            try:
+                regular = TTFont(regular_name, regular_path, subfontIndex=subfont)
+                bold_source = bold_path if os.path.isfile(bold_path) else regular_path
+                bold = TTFont(bold_name, bold_source, subfontIndex=subfont)
+                pdfmetrics.registerFont(regular)
+                pdfmetrics.registerFont(bold)
+                regular_map = dict(regular.face.charToGlyph)
+                bold_map = dict(bold.face.charToGlyph)
+                _LOG.info(
+                    "PDF outline font registered path=%s subfont=%s cmap=%s has_U+4E2D=%s",
+                    regular_path,
+                    subfont,
+                    len(regular_map),
+                    0x4E2D in regular_map,
+                )
+                loaded.append((regular_name, bold_name, regular_map, bold_map))
+                registered = True
+                break
+            except Exception as exc:
+                last_error = exc
+                _LOG.info(
+                    "PDF outline font skipped path=%s subfont=%s: %s: %s",
+                    regular_path,
+                    subfont,
+                    type(exc).__name__,
+                    exc,
+                )
+        if not registered and last_error is not None:
             continue
-    try:
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-
-        cid_name = "STSong-Light"
-        pdfmetrics.registerFont(UnicodeCIDFont(cid_name))
-        # Reportlab's TrueType cmap often omits CJK ideographs from Noto TTC
-        # collections. CID fonts keep those codepoints drawable/extractable.
-        cjk = {codepoint: 1 for codepoint in range(0x4E00, 0xA000)}
-        loaded.append((cid_name, cid_name, cjk, cjk))
-    except Exception:
-        pass
     if not loaded:
         raise ValueError("PDF needs an installed Unicode outline font")
     return tuple(loaded)
