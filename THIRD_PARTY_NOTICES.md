@@ -4,6 +4,14 @@ Original VARIANT-1 code is licensed under the root MIT license. Third-party
 components retain their own licenses. The Live2D cat and its floating overlay
 have been removed, including vendor libraries and model assets.
 
+## Noto Sans SC subset (PDF CJK)
+
+The packaged `backend/artifacts/fonts/Variant1CJK-Regular.ttf` face is a
+TrueType-outline subset of Noto Sans SC VF 2.004, instantiated at Regular.
+It is distributed under the SIL Open Font License 1.1. The full upstream
+notice/license is included in `assets/licenses/NotoSansSC-OFL-1.1.txt` and
+`backend/artifacts/fonts/OFL.txt`. Project: https://github.com/notofonts/noto-cjk
+
 ## Geist fonts
 
 The bundled Geist and Geist Mono font files are distributed under the SIL Open

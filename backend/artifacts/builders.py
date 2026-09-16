@@ -437,6 +437,14 @@ def _delimited(spec: Mapping[str, Any], delimiter: str) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
+def bundled_pdf_cjk_font_path() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "fonts",
+        "Variant1CJK-Regular.ttf",
+    )
+
+
 @lru_cache(maxsize=1)
 def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], ...]:
     """Register available outline fonts and retain their actual glyph maps."""
@@ -445,7 +453,9 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
     from reportlab.pdfbase.ttfonts import TTFont
 
     package_fonts = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+    bundled = bundled_pdf_cjk_font_path()
     candidates = (
+        (bundled, bundled),
         (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"),
         (r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
         (r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\meiryob.ttc"),
