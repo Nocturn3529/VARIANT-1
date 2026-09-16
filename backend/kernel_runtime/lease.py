@@ -877,12 +877,20 @@ class KernelLease:
             })
             command = self.manager.worker_command("")
             if self.manager.worker_executable or getattr(sys, "frozen", False):
-                windows_root = str(env.get("SystemRoot") or r"C:\Windows")
-                env["PATH"] = os.pathsep.join((
-                    os.path.dirname(os.path.abspath(command[0])),
-                    os.path.join(windows_root, "System32"),
-                    windows_root,
-                ))
+                # Windows frozen/packaged PATH rewrite only. On POSIX keep the
+                # inherited PATH and only prepend the worker directory.
+                worker_dir = os.path.dirname(os.path.abspath(command[0]))
+                if sys.platform.startswith("win"):
+                    windows_root = str(env.get("SystemRoot") or r"C:\Windows")
+                    env["PATH"] = os.pathsep.join((
+                        worker_dir,
+                        os.path.join(windows_root, "System32"),
+                        windows_root,
+                    ))
+                else:
+                    env["PATH"] = os.pathsep.join(
+                        (worker_dir, str(env.get("PATH") or ""))
+                    )
                 for inherited in (
                     "PYTHONHOME",
                     "PYTHONPATH",
@@ -891,6 +899,8 @@ class KernelLease:
                     "CONDA_DEFAULT_ENV",
                 ):
                     env.pop(inherited, None)
+            # KernelJobObject is OwnedProcessTree: Win32 Job Object on Windows,
+            # POSIX process-group ownership on Linux/macOS (no Job Object abort).
             self.job = KernelJobObject(
                 max_processes=self.manager.limits.max_processes,
                 process_memory_bytes=self.manager.limits.process_memory_bytes,
@@ -900,18 +910,24 @@ class KernelLease:
             log_path = os.path.join(self.root, "worker.log")
             log_handle = open(log_path, "ab", buffering=0)
             try:
-                self.process = subprocess.Popen(
-                    command,
-                    cwd=self.workspace_root,
-                    env=env,
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=log_handle,
-                    bufsize=0,
-                    close_fds=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                    start_new_session=os.name != "nt",
-                )
+                popen_kwargs: dict[str, Any] = {
+                    "cwd": self.workspace_root,
+                    "env": env,
+                    "stdin": subprocess.PIPE,
+                    "stdout": subprocess.PIPE,
+                    "stderr": log_handle,
+                    "bufsize": 0,
+                    "close_fds": True,
+                }
+                if os.name == "nt":
+                    # Hide the console window; Job Object ownership follows assign_pid.
+                    popen_kwargs["creationflags"] = getattr(
+                        subprocess, "CREATE_NO_WINDOW", 0
+                    )
+                else:
+                    # POSIX process-group seam (OwnedProcessTree / KernelJobObject).
+                    popen_kwargs["start_new_session"] = True
+                self.process = subprocess.Popen(command, **popen_kwargs)
             finally:
                 log_handle.close()
             try:

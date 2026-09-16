@@ -367,7 +367,6 @@ function createBackendManager(deps) {
       try { deps.killVariant1EngineProcesses(); } catch (_) {}
       return;
     }
-    if (process.platform === 'win32') {
     const roots = [appRoot];
     if (app.isPackaged && resourcesPath) {
       roots.push(resourcesPath);
@@ -381,35 +380,68 @@ function createBackendManager(deps) {
     const uniqueRoots = [...new Set(
       roots.filter(Boolean).map((value) => path.resolve(String(value)))
     )];
-    const psRoots = uniqueRoots
-      .map((value) => `'${value.replace(/'/g, "''")}'`)
-      .join(',');
-    const ps = [
-      `$roots = @(${psRoots});`,
-      "$names = 'llama-server.exe','whisper-server.exe';",
-      'foreach ($name in $names) {',
-      '  Get-CimInstance Win32_Process -Filter "Name=$name" | ForEach-Object {',
-      '    $candidate = $_.ExecutablePath;',
-      '    $owned = $false;',
-      '    if ($candidate) {',
-      '      foreach ($root in $roots) {',
-      "        $prefix = $root.TrimEnd('\\') + '\\';",
-      '        if ($candidate.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { $owned = $true; break }',
-      '      }',
-      '    }',
-      '    if ($owned) {',
-      '      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue',
-      '    }',
-      '  }',
-      '}',
-    ].join(' ');
-    try {
-      runFileSync('powershell.exe', ['-NoProfile', '-Command', ps], {
-        windowsHide: true,
-        stdio: 'ignore',
-        timeout: timings.forceKillTimeoutMs,
-      });
-    } catch (_) {}
+
+    if (process.platform === 'win32') {
+      const psRoots = uniqueRoots
+        .map((value) => `'${value.replace(/'/g, "''")}'`)
+        .join(',');
+      const ps = [
+        `$roots = @(${psRoots});`,
+        "$names = 'llama-server.exe','whisper-server.exe';",
+        'foreach ($name in $names) {',
+        '  Get-CimInstance Win32_Process -Filter "Name=$name" | ForEach-Object {',
+        '    $candidate = $_.ExecutablePath;',
+        '    $owned = $false;',
+        '    if ($candidate) {',
+        '      foreach ($root in $roots) {',
+        "        $prefix = $root.TrimEnd('\\') + '\\';",
+        '        if ($candidate.Equals($root, [System.StringComparison]::OrdinalIgnoreCase) -or $candidate.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { $owned = $true; break }',
+        '      }',
+        '    }',
+        '    if ($owned) {',
+        '      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue',
+        '    }',
+        '  }',
+        '}',
+      ].join(' ');
+      try {
+        runFileSync('powershell.exe', ['-NoProfile', '-Command', ps], {
+          windowsHide: true,
+          stdio: 'ignore',
+          timeout: timings.forceKillTimeoutMs,
+        });
+      } catch (_) {}
+    } else {
+      // POSIX orphan sweep for bundled inference engines (PowerShell path is Windows-only).
+      const names = new Set(['llama-server', 'whisper-server']);
+      let listing = '';
+      try {
+        listing = String(execFileSync('ps', ['-ax', '-o', 'pid=', '-o', 'command='], {
+          encoding: 'utf8',
+          timeout: timings.forceKillTimeoutMs,
+          env: process.env,
+        }));
+      } catch (_) {
+        listing = '';
+      }
+      for (const line of listing.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const sp = trimmed.search(/\s/);
+        if (sp <= 0) continue;
+        const pid = Number(trimmed.slice(0, sp));
+        const command = trimmed.slice(sp + 1).trim();
+        if (!Number.isFinite(pid) || pid <= 1) continue;
+        const exe = command.split(/\s+/)[0] || '';
+        const base = path.basename(exe);
+        if (!names.has(base)) continue;
+        const owned = uniqueRoots.some((root) => {
+          const prefix = root.endsWith(path.sep) ? root : root + path.sep;
+          return exe === root || exe.startsWith(prefix);
+        });
+        if (!owned) continue;
+        try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+      }
     }
     // Managed SearXNG is a Docker container (not a project .exe). Backend stops
     // it on graceful shutdown; this is a crash / hard-quit safety net. Runs on every

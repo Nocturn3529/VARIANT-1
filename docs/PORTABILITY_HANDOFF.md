@@ -77,6 +77,13 @@ Already softened: electron-builder linux/mac targets; win llama `bin/` under `bu
 - `llama_server` / `runtime_installer` OS-aware default binary name.
 - **Gap:** Linux/macOS hash manifests / download recipes.
 
+### M1b - Kernel lease soft-gate + Unix engine orphan sweep - _(SHA after commit)_
+
+- `backend/kernel_runtime/lease.py`: CREATE_NO_WINDOW only on Windows; POSIX uses `start_new_session` for process-group ownership via `KernelJobObject`/`OwnedProcessTree` (no Win32 Job Object abort). Frozen/packaged PATH rewrite no longer injects `C:\Windows` on Linux/macOS.
+- `electron-backend.js`: POSIX orphan cleanup for owned `llama-server` / `whisper-server` under app/resources roots (Windows PowerShell CIM path unchanged).
+- Tests (Windows host): `node --check electron-backend.js`; `lease.py` compile/ast imports OK.
+- **Gap:** live Linux kernel boot + engine orphan sweep still unverified.
+
 ## Codex review handoff (batch 1)
 
 Review these commits on `port/linux-macos-bootstrap` (do not merge without Nocturn + Codex):
