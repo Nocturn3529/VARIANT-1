@@ -47,7 +47,7 @@ Already softened: electron-builder linux/mac targets; win llama `bin/` under `bu
 | Platform | What was tested | Result | Date | Commit |
 |----------|-----------------|--------|------|--------|
 | Windows (host) | Worktree create; `node --check` on touched JS; static packaging/JSON parse | OK | 2026-09-16 | through `93d6c40…` |
-| Linux | live `setup:backend` / `npm start` / chat | **not yet** | — | — |
+| Linux | setup:backend + imports + PosixPty + server listen (no full Deck UI) | **partial OK** | 2026-09-16 | `38481a1…` | **not yet** | — | — |
 | macOS | — | not yet | — | — |
 
 ## Change log
@@ -148,6 +148,25 @@ Run on a real Linux host against this worktree on `port/linux-macos-bootstrap` (
 6. Optional: if a bundled `llama-server` / `whisper-server` exists under app/resources roots, quit uncleanly once and confirm electron orphan sweep does not leave strays.
 
 Record date + tip SHA + pass/fail in **Platforms actually tested** when done.
+
+
+### Linux smoke (coordinator box) — 2026-09-16
+
+Host: Linux x86_64, CPython 3.13.5, Node 20. Cloned `port/linux-macos-bootstrap` @ `38481a1`.
+
+| Check | Result |
+|-------|--------|
+| `npm run setup:backend` | **OK** — used `requirements.txt` (skipped win32 `uiautomation`); venv at `backend/.venv/bin/python`; Playwright Chromium installed |
+| `node --check` electron-backend / setup-backend / native-runtime-paths | **OK** |
+| `package.json` build.linux / build.mac | **present** |
+| `UnsupportedDesktopAdapter` import | **OK** |
+| `OwnedProcessTree` POSIX | **OK** (`_is_windows=False`) |
+| `spawn_terminal(["/bin/echo", ...])` | **OK** — `PosixPtyProcess` / `transport=posix_pty` |
+| `import server` | **OK** |
+| hostSep absolute joins (Unix + Windows roots) | **OK** |
+| Backend listen | **OK** — logged `listening on 127.0.0.1:37931` (llama-server missing expected without prepare:native; port-file race not asserted) |
+
+**Not run here:** full Electron Deck UI, `prepare:native`, `electron-builder --linux`, Deck chat round-trip.
 
 ## Remaining gaps (post-bootstrap)
 
