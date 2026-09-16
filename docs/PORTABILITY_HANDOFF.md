@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `TIP_PLACEHOLDER` |
+| Branch tip (this doc) | `feaed7932e976ba688a2e48f745c345bac0eccbc` |
 
 ## Goals
 
@@ -236,7 +236,7 @@ Counts: 15 FAILED + 1 isolation cleanup error. Smoke skipped because suite step 
 
 ## Remaining gaps (post re-review round 2)
 
-Branch tip at handoff update: `TIP_PLACEHOLDER`.
+Branch tip at handoff update: `feaed7932e976ba688a2e48f745c345bac0eccbc`.
 
 1. Re-run CI on this tip; confirm R6 smoke runs (even if pytest red) and record pass/fail; re-check which category-A items clear.
 2. Fixture/marker fixes for remaining category A; diagnose D items without weakening asserts.
