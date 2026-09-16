@@ -1,29 +1,46 @@
 'use strict';
+const fs = require('node:fs');
 const path = require('node:path');
 const {execFileSync} = require('node:child_process');
 const {
-  isWindowsX64NativeRecipe,
   hostVenvPython,
+  nativeRuntimeManifestRelPath,
 } = require('./native-runtime-paths');
 
 const root = path.resolve(__dirname, '..');
-
-if (!isWindowsX64NativeRecipe()) {
+const rel = nativeRuntimeManifestRelPath();
+if (!rel) {
   console.error(
-    'prepare:native: hash-verified recipe is Windows x64 only (this host is ' +
-      process.platform + '/' + process.arch + ').'
+    'prepare:native: no recipe mapping for ' + process.platform + '/' + process.arch + '.'
+  );
+  process.exit(2);
+}
+const manifestPath = path.join(root, rel);
+if (!fs.existsSync(manifestPath)) {
+  console.error('prepare:native: missing manifest ' + rel);
+  process.exit(2);
+}
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const files = Array.isArray(manifest.files) ? manifest.files : [];
+if (manifest.status === 'stub' || files.length === 0) {
+  console.error(
+    'prepare:native: ' + rel + ' is a stub (no hash-verified archives yet).'
   );
   console.error(
-    'Ship or download a per-OS llama-server into bin/ (see docs/PORTABILITY_HANDOFF.md M3).'
-  );
-  console.error(
-    'Windows release inputs remain in config/native-runtime.json — run prepare:native on win32/x64.'
+    'Fill files/archives in that manifest, or place ' +
+      require('./native-runtime-paths').llamaServerBasename() +
+      ' under bin/ manually. See docs/PORTABILITY_HANDOFF.md M3.'
   );
   process.exit(2);
 }
 
 execFileSync(
   hostVenvPython(root),
-  [path.join(__dirname, 'prepare-native-runtime.py'), ...process.argv.slice(2)],
+  [
+    path.join(__dirname, 'prepare-native-runtime.py'),
+    '--manifest',
+    manifestPath,
+    ...process.argv.slice(2),
+  ],
   {cwd: root, stdio: 'inherit', windowsHide: true}
 );

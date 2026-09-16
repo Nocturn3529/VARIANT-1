@@ -41,11 +41,15 @@ def fetch(url, target, digest=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--manifest', type=Path, default=ROOT / 'config' / 'native-runtime.json', help='Hash manifest JSON')
     parser.add_argument('--cache', type=Path, default=Path(os.environ.get('LOCALAPPDATA', str(ROOT))) / 'VARIANT-1-build-cache')
     parser.add_argument('--output', type=Path, default=ROOT / 'bin')
     parser.add_argument('--replace', action='store_true', help='Replace only manifest-listed files with verified release bytes')
     args = parser.parse_args()
-    manifest = json.loads((ROOT / 'config/native-runtime.json').read_text(encoding='utf-8'))
+    manifest_path = args.manifest.resolve()
+    manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+    if not manifest.get('files'):
+        raise SystemExit('Native manifest has no files (stub?): ' + str(manifest_path))
     cache, output = args.cache.resolve(), args.output.resolve()
     cache.mkdir(parents=True, exist_ok=True)
     output.mkdir(parents=True, exist_ok=True)
