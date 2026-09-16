@@ -34,8 +34,11 @@ def test_pdf_preserves_cjk_text_in_extractable_unicode_mapping():
     }
     output = build_artifact(spec, "pdf")
     extracted = PdfReader(BytesIO(output.payload)).pages[0].extract_text()
-    assert "Hello 中文" in extracted
-    assert "再次检查 中文" in extracted
+    # Mixed outline/CID faces can insert breaks in pypdf extraction; the
+    # unicode mapping still has to preserve the CJK codepoints in order.
+    normalized = " ".join(extracted.split())
+    assert "Hello 中文" in normalized
+    assert "再次检查 中文" in normalized
     status, findings, metrics = validate_payload(
         "pdf", output.payload, specification=spec,
     )

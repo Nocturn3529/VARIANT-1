@@ -364,8 +364,9 @@ def test_bounded_child_caps_output_while_draining_both_pipes(tmp_path):
             sys.executable,
             "-u",
             "-c",
-            "import sys; sys.stdout.buffer.write(b'o'*1048576); "
-            "sys.stderr.buffer.write(b'e'*1048576)",
+            "import sys,threading;"
+            "t=threading.Thread(target=lambda: sys.stderr.buffer.write(b'e'*1048576));"
+            "t.start(); sys.stdout.buffer.write(b'o'*1048576); t.join()",
         ],
         cwd=str(tmp_path),
         env=inherited_environment(),

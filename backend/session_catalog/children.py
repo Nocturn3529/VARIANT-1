@@ -182,6 +182,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         self._change_publisher = None
         self._change_loop: asyncio.AbstractEventLoop | None = None
         self._pending_change_events: dict[tuple[str, str], dict[str, Any]] = {}
+        self._spawn_pumps: dict[str, asyncio.Task] = {}
         self.work = work
         self._work_registered = False
         with self._connect() as conn:
@@ -789,7 +790,9 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         # here: spawn() must return while the handle is still queued so a
         # same-tick cancel can win the queued CAS before the worker runs.
         if not work.started:
-            asyncio.create_task(work.scheduler.run_once())
+            self._spawn_pumps[child_id] = asyncio.create_task(
+                work.scheduler.run_once()
+            )
         return job_id
 
     async def _work_handler(self, execution: JobExecutionContext) -> JobResult:
