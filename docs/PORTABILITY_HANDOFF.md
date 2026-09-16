@@ -176,6 +176,14 @@ Host: Linux x86_64, CPython 3.13.5, Node 20. Cloned `port/linux-macos-bootstrap`
 - After fix: `llama-server --version` → `version: 10289 (f9e832c10)` on Linux.
 - CI: added `backend-linux` job on `ubuntu-latest` (requirements.txt + PosixPty smoke); Windows jobs unchanged.
 
+
+### ChatGPT review R1/R3/R4 (Packaging)
+
+- **R1 SHA:** `edb32babd2a5e425f60ad7f10b33a28ac90286ff` ? `test-packaged-files.js` checks win/linux/mac effective `extraResources`; Windows native allowlist unchanged.
+- **R3 SHA:** `d2d349fa1288fd5719ac6718982fc64df499eb7e` ? `llm_config.default.json` extensionless llama/whisper pins; `resolve_llama_binary_relpath` + whisper basename resolve; tests with real default config path.
+- **R4 SHA:** `34caacc67de737025da1a0c12330e1296d7bf8e3` ? `collect-python-notices.py` uses lock on Windows / requirements.txt elsewhere; CPython `LICENSE(.txt)`.
+- Left for Runtime: electron-backend.js / ci-linux-smoke. R2 secretstore owned by coordinator.
+
 ## Remaining gaps (post-bootstrap)
 
 Code seams for M0-M5 are on this branch tip `e13f2111a60541bef871c4625be1d979b63f1951`. Codex review deferred until Nocturn's usage limit resets - review the whole branch then.
