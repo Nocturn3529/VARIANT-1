@@ -112,6 +112,12 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - `create_desktop_fabric` uses Win32/UIA adapter on Windows only; non-Windows gets explicit unsupported driver (no windll/UIA calls).
 - Win32/UIA code paths untouched.
 
+
+### M5 follow-up
+
+- **SHA:** a3f12e263a536574b488eb295cbe1d1c89019457
+- UnsupportedDesktopAdapter._reason is an instance method so platform= overrides show in errors/capability_report.
+
 ## Remaining gaps
 
 1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
