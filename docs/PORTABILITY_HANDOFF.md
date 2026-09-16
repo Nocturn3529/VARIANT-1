@@ -210,7 +210,7 @@ A clean Windows suite does **not** settle Linux failures. Re-categorize with exa
 
 ## Remaining gaps (post R1–R6)
 
-Branch tip at handoff update: c779bed3df87e6af702514c3cbb4641efbf2231d.
+Branch tip at handoff update: 3100adb69e8bd5cbcdaaa3aabcce59ed090fa6fe.
 
 1. Re-run CI on pushed tip; confirm R1 clears rontend-scripts and R2 shrinks Linux failures; document remaining nodeids by category.
 2. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
