@@ -785,9 +785,11 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         work = self._require_work()
         job_id = self._admit_job(child_id)
         # Narrow embedded/test compositions can drive one scheduler turn
-        # without installing a second scheduler loop.
+        # without installing a second scheduler loop. Do not await that turn
+        # here: spawn() must return while the handle is still queued so a
+        # same-tick cancel can win the queued CAS before the worker runs.
         if not work.started:
-            await work.scheduler.run_once()
+            asyncio.create_task(work.scheduler.run_once())
         return job_id
 
     async def _work_handler(self, execution: JobExecutionContext) -> JobResult:

@@ -473,6 +473,17 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
             ))
         except Exception:
             continue
+    try:
+        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+
+        cid_name = "STSong-Light"
+        pdfmetrics.registerFont(UnicodeCIDFont(cid_name))
+        # Reportlab's TrueType cmap often omits CJK ideographs from Noto TTC
+        # collections. CID fonts keep those codepoints drawable/extractable.
+        cjk = {codepoint: 1 for codepoint in range(0x4E00, 0xA000)}
+        loaded.append((cid_name, cid_name, cjk, cjk))
+    except Exception:
+        pass
     if not loaded:
         raise ValueError("PDF needs an installed Unicode outline font")
     return tuple(loaded)
