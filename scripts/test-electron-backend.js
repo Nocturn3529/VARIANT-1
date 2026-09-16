@@ -12,6 +12,8 @@ const {
   backendSpawnEnv,
   createBackendManager,
   requestBackendShutdown,
+  resolvePosixEngineExecutable,
+  isOwnedPosixEnginePath,
 } = require('../electron-backend');
 const {createBeforeQuitHandler} = require('../electron-app-boot');
 
@@ -327,6 +329,29 @@ async function testProbeFailureFallsBackToOs(tempDir) {
     clock+=21;assert.equal(await result.manager.getInfo(),null);
     assert.deepEqual(result.killed,[process.pid],'failed custom probe cannot block bounded unhealthy recovery');
   } finally {await result.manager.stopBackend();await closeServer(server);}
+}
+
+
+function testPosixEnginePathWithSpaces() {
+  const spaced = '/opt/VARIANT-1 App/bin/llama-server --host 127.0.0.1 --port 8080';
+  const exe = resolvePosixEngineExecutable(4242, spaced);
+  assert.strictEqual(exe, '/opt/VARIANT-1 App/bin/llama-server',
+    'POSIX engine path must keep directories that contain spaces');
+  assert.strictEqual(
+    isOwnedPosixEnginePath(exe, ['/opt/VARIANT-1 App']),
+    true,
+  );
+  assert.strictEqual(
+    isOwnedPosixEnginePath(exe, ['/opt/other-root']),
+    false,
+  );
+  const whisper = resolvePosixEngineExecutable(
+    7,
+    '/data/speech models/whisper-server -m tiny',
+  );
+  assert.strictEqual(whisper, '/data/speech models/whisper-server');
+  // Whitespace split would wrongly yield '/opt/VARIANT-1' — ensure we never do that.
+  assert.notStrictEqual(spaced.split(/\s+/)[0], exe);
 }
 
 function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
@@ -828,6 +853,7 @@ async function main() {
     await testLiveBackendGetsHealthMissGraceBeforeTermination(tempDir);
     await testAliveStartingBackendRecoversDuringStartupGrace(tempDir);
     await testProbeFailureFallsBackToOs(tempDir);
+    testPosixEnginePathWithSpaces();
     testPackagedEngineCleanupUsesOwnedRoots(tempDir);
     await testOverlayReceivesOnlyScopedActivityStatus(tempDir);
     await testReadinessFailureSchedulesOnlyOneRestart(tempDir);

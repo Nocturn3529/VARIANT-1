@@ -10,6 +10,11 @@ const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
 const { spawn, execFile, execFileSync } = require('child_process');
+const {
+  POSIX_ENGINE_NAMES,
+  resolvePosixEngineExecutable,
+  isOwnedPosixEnginePath,
+} = require('./electron-backend-posix-engines');
 
 const MAX_BACKEND_RESTARTS = 5;
 const DEFAULT_BACKEND_TIMINGS = Object.freeze({
@@ -413,7 +418,6 @@ function createBackendManager(deps) {
       } catch (_) {}
     } else {
       // POSIX orphan sweep for bundled inference engines (PowerShell path is Windows-only).
-      const names = new Set(['llama-server', 'whisper-server']);
       let listing = '';
       try {
         listing = String(execFileSync('ps', ['-ax', '-o', 'pid=', '-o', 'command='], {
@@ -432,14 +436,9 @@ function createBackendManager(deps) {
         const pid = Number(trimmed.slice(0, sp));
         const command = trimmed.slice(sp + 1).trim();
         if (!Number.isFinite(pid) || pid <= 1) continue;
-        const exe = command.split(/\s+/)[0] || '';
-        const base = path.basename(exe);
-        if (!names.has(base)) continue;
-        const owned = uniqueRoots.some((root) => {
-          const prefix = root.endsWith(path.sep) ? root : root + path.sep;
-          return exe === root || exe.startsWith(prefix);
-        });
-        if (!owned) continue;
+        const exe = resolvePosixEngineExecutable(pid, command);
+        if (!exe || !POSIX_ENGINE_NAMES.includes(path.basename(exe))) continue;
+        if (!isOwnedPosixEnginePath(exe, uniqueRoots)) continue;
         try { process.kill(pid, 'SIGTERM'); } catch (_) {}
       }
     }
@@ -904,4 +903,7 @@ module.exports = {
   backendIdentityMatches,
   backendSpawnEnv,
   requestBackendShutdown,
+  resolvePosixEngineExecutable,
+  isOwnedPosixEnginePath,
+  POSIX_ENGINE_NAMES,
 };

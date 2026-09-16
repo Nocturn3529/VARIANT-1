@@ -1,4 +1,4 @@
-﻿"""Minimal Linux CI smoke: unsupported desktop + Posix PTY spawn."""
+"""Minimal Linux CI smoke: unsupported desktop + Posix PTY spawn."""
 from __future__ import annotations
 
 import os
@@ -7,6 +7,7 @@ import time
 
 sys.path.insert(0, "backend")
 
+from desktop_fabric.models import DesktopUnavailable  # noqa: E402
 from desktop_fabric.unsupported import UnsupportedDesktopAdapter  # noqa: E402
 from execution_hosts.local import spawn_terminal  # noqa: E402
 from process_tree import OwnedProcessTree  # noqa: E402
@@ -14,19 +15,45 @@ from process_tree import OwnedProcessTree  # noqa: E402
 
 def main() -> None:
     assert not OwnedProcessTree()._is_windows
+
+    adapter = UnsupportedDesktopAdapter(platform="linux")
+    report = adapter.capability_report()
+    assert report.get("supported") is False
+    assert report.get("adapter") == "unsupported"
+    raised = False
+    try:
+        adapter.catalog(backend_instance_id="ci-smoke")
+    except DesktopUnavailable as exc:
+        raised = True
+        assert "not supported" in str(exc).lower() or "Win32/UIA" in str(exc)
+    assert raised, "UnsupportedDesktopAdapter must raise DesktopUnavailable"
+
     chunks: list[bytes] = []
-    proc = spawn_terminal(
-        ["/bin/echo", "ci-pty"],
-        cwd="/tmp",
-        env=dict(os.environ),
-        cols=80,
-        rows=24,
-        on_output=lambda _stream, data: chunks.append(data),
-    )
-    assert type(proc).__name__ == "PosixPtyProcess"
-    time.sleep(0.3)
-    closer = getattr(proc, "close", None) or proc.terminate
-    closer()
+    proc = None
+    try:
+        proc = spawn_terminal(
+            ["/bin/echo", "ci-pty"],
+            cwd="/tmp",
+            env=dict(os.environ),
+            cols=80,
+            rows=24,
+            on_output=lambda _stream, data: chunks.append(data),
+        )
+        assert type(proc).__name__ == "PosixPtyProcess"
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not any(b"ci-pty" in c for c in chunks):
+            time.sleep(0.05)
+        assert any(b"ci-pty" in c for c in chunks), f"missing sentinel in {chunks!r}"
+        code = proc.wait(timeout=2.0)
+        assert code == 0, f"echo exit code {code}"
+    finally:
+        if proc is not None:
+            closer = getattr(proc, "close", None)
+            if callable(closer):
+                closer()
+            else:
+                proc.terminate(force=True)
+
     print("linux_smoke_ok", UnsupportedDesktopAdapter.__name__, len(chunks))
 
 
