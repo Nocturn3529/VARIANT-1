@@ -28,7 +28,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
 | M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** (SHA pending) |
-| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **path seams done** — `93d6c40a87259dd78b93ebaa45520c15b55d7777`; Unix hash recipes still open |
+| M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **CPU recipes pinned** — `88ad2a5` (+ path seams `93d6c40`) |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
 
@@ -137,8 +137,9 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - **Gap:** live Linux PTY smoke; Deck UI path join on a Unix root.
 
 
-### M3 ? Unix llama recipes pinned (b10289)
+### M3 — Unix llama recipes pinned (b10289)
 
+- **SHA:** `88ad2a5b7a3c280d4afcb7208dca035a306bc4dc` (ReviewPanel accidental staging undone in `295cb9042e58e522313be7161f9d31588103e605`)
 - Hash-verified CPU archives for linux-x64/arm64 and darwin-x64/arm64 (same upstream_tag as Windows).
 - `prepare-native-runtime.py` unpacks `.tar.gz` / `.tar.xz` / zip; Unix manifests `status: ready` with llama-server + runtime libs.
 - Smoke: extracted linux-x64 recipe to a temp dir on Windows host (22 files including `llama-server`).
@@ -148,7 +149,7 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 
 1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
 2. M2 live Linux smoke for Files/Review paths + PTY (code landed).
-3. M3: fill Unix stub manifests with real llama.cpp archive hashes (stubs tracked).
+3. M3: Unix CPU recipes pinned (`88ad2a5`); optional GPU Unix recipes later; live prepare on Linux/macOS.
 4. M4: `electron-builder --linux` (and later mac) on a real builder.
 5. M5: richer mac/linux desktop drivers beyond unsupported seam (optional).
 6. CI ubuntu/macOS jobs.
