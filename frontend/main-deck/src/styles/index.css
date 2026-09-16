@@ -1,0 +1,25 @@
+/* VARIANT-1 Main Deck — one design system, then shell and route components. */
+@import url("./design-system.css");
+@import url("./shell.css");
+@import url("./chat.css");
+@import url("./memory.css");
+@import url("./automations.css");
+@import url("./overview.css");
+@import url("./settings.css");
+@import url("./local-models.css");
+@import url("./workbench.css");
+@import url("./workspace-overlays.css");
+@import url("./refinement.css");
+@import url("./composer.css");
+@import url("./composer-motion.css");
+/* Restore a visible keyboard focus indicator after compact destination
+   controls remove their native outlines. */
+
+.app-shell :is(button, input, select, textarea, summary, [role="button"], [role="option"], [role="separator"], [tabindex]):focus-visible {
+  outline: 2px solid var(--deck-text-primary);
+  outline-offset: 2px;
+}
+.app-shell :is(.history-search, .composer, .core-fact-add, .archive-search):focus-within {
+  border-color: var(--deck-line-strong);
+  box-shadow: 0 0 0 1px var(--deck-focus);
+}

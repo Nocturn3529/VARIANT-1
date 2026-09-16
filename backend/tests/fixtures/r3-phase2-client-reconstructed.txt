@@ -1,0 +1,292 @@
+"""Synchronous adapter for the public changed-items API.
+
+The API publishes its wire contract from ``GET /schema``.  ``fetch_items``
+rediscovers that contract at the start of every call, walks the cursor-based
+``GET /items`` pages, handles the one documented second-page rate-limit retry,
+and returns the result contract's normalized list.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass
+from typing import Any, Mapping
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.request import Request, urlopen
+
+
+_SCHEMA_PATH = "/schema"
+_DEFAULT_TIMEOUT_SECONDS = 10
+_EXPECTED_PAGINATION_STOP = "only when next_cursor is null"
+_EXPECTED_LOOP_GUARD = "treat a repeated non-null cursor as an error"
+
+
+class FetchItemsError(RuntimeError):
+    """Base class for errors raised while fetching or validating the API."""
+
+
+class TransportError(FetchItemsError):
+    """The service could not be reached or returned an unsuccessful response."""
+
+
+class SchemaContractError(FetchItemsError, ValueError):
+    """The discovery document is not the advertised public contract."""
+
+
+class ResponseContractError(FetchItemsError, ValueError):
+    """An items page does not satisfy the advertised public contract."""
+
+
+@dataclass(frozen=True)
+class _HTTPResult:
+    status: int
+    payload: Any | None
+    headers: Mapping[str, str]
+
+
+def _base_url_parts(base_url: str) -> tuple[str, str, str]:
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("base_url must be a non-empty URL string")
+
+    parts = urlsplit(base_url)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError("base_url must be an absolute HTTP(S) URL")
+    if parts.query or parts.fragment:
+        raise ValueError("base_url must not contain a query or fragment")
+    return parts.scheme, parts.netloc, parts.path.rstrip("/")
+
+
+def _endpoint(base_url: str, path: str, query: Mapping[str, Any] | None = None) -> str:
+    """Append a schema-advertised absolute path to ``base_url``.
+
+    A deployment prefix in ``base_url`` is retained.  Query values are encoded
+    by ``urlencode`` only for the documented cursor query.
+    """
+
+    scheme, netloc, prefix = _base_url_parts(base_url)
+    if not isinstance(path, str):
+        raise SchemaContractError("schema endpoint path must be a string")
+    path_parts = urlsplit(path)
+    if (
+        not path.startswith("/")
+        or path_parts.scheme
+        or path_parts.netloc
+        or path_parts.query
+        or path_parts.fragment
+    ):
+        raise SchemaContractError("schema endpoint path must be absolute and have no query")
+
+    full_path = f"{prefix}{path}"
+    encoded_query = urlencode(list(query.items()), doseq=True) if query else ""
+    return urlunsplit((scheme, netloc, full_path, encoded_query, ""))
+
+
+def _header_map(headers: Any) -> dict[str, str]:
+    if headers is None:
+        return {}
+    try:
+        return {str(key).lower(): str(value) for key, value in headers.items()}
+    except AttributeError:
+        return {}
+
+
+def _json_from_body(url: str, body: bytes) -> Any:
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FetchItemsError(f"GET {url} was not valid UTF-8 JSON") from exc
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise FetchItemsError(f"GET {url} did not return JSON") from exc
+
+
+def _get_json(url: str) -> _HTTPResult:
+    request = Request(url, method="GET", headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=_DEFAULT_TIMEOUT_SECONDS) as response:
+            status = response.getcode()
+            headers = _header_map(getattr(response, "headers", None))
+            body = response.read()
+    except HTTPError as exc:
+        # urllib raises HTTPError for 429 before entering the response context.
+        # Keep its status and Retry-After header so the page walker can apply
+        # the one retry that the public schema documents.
+        if exc.code == 429:
+            return _HTTPResult(429, None, _header_map(exc.headers))
+        raise TransportError(f"GET {url} returned HTTP {exc.code}") from exc
+    except (URLError, OSError) as exc:
+        raise TransportError(f"GET {url} failed: {exc}") from exc
+
+    if status == 429:
+        return _HTTPResult(429, None, headers)
+    if status != 200:
+        raise TransportError(f"GET {url} returned HTTP {status}")
+    return _HTTPResult(status, _json_from_body(url, body), headers)
+
+
+def _discover(base_url: str) -> tuple[str, str, str]:
+    result = _get_json(_endpoint(base_url, _SCHEMA_PATH))
+    if result.status != 200:
+        raise TransportError("GET /schema returned HTTP 429; retry is only defined for page two")
+    document = result.payload
+    if not isinstance(document, dict):
+        raise SchemaContractError("/schema must return a JSON object")
+
+    discovery = document.get("discovery")
+    if not isinstance(discovery, dict) or discovery.get("method") != "GET" or discovery.get("path") != "/schema":
+        raise SchemaContractError("/schema.discovery must describe GET /schema")
+
+    items = document.get("items")
+    if not isinstance(items, dict):
+        raise SchemaContractError("/schema.items must be an object")
+    if items.get("method") != "GET":
+        raise SchemaContractError("/schema.items must use GET")
+
+    pagination = items.get("pagination")
+    if not isinstance(pagination, dict):
+        raise SchemaContractError("/schema.items.pagination must be an object")
+    if pagination.get("loop_guard") != _EXPECTED_LOOP_GUARD:
+        raise SchemaContractError("/schema does not advertise the cursor loop guard")
+    if pagination.get("stop") != _EXPECTED_PAGINATION_STOP:
+        raise SchemaContractError("/schema does not advertise null-cursor termination")
+
+    path = items.get("path")
+    if not isinstance(path, str) or not path.startswith("/"):
+        raise SchemaContractError("/schema.items.path must be an absolute path")
+
+    query = items.get("query")
+    if not isinstance(query, dict) or "cursor" not in query:
+        raise SchemaContractError("/schema.items.query must document cursor")
+
+    mapping = items.get("field_mapping")
+    if not isinstance(mapping, dict):
+        raise SchemaContractError("/schema.items.field_mapping must be an object")
+    id_field = next((name for name, public_name in mapping.items() if public_name == "id"), None)
+    quantity_field = next((name for name, public_name in mapping.items() if public_name == "quantity"), None)
+    if type(id_field) is not str or type(quantity_field) is not str:
+        raise SchemaContractError("/schema is missing mapped id or quantity fields")
+
+    response_shape = items.get("response")
+    if not isinstance(response_shape, dict) or not isinstance(response_shape.get("items"), list):
+        raise SchemaContractError("/schema.items.response.items must be a list shape")
+    if "next_cursor" not in response_shape:
+        raise SchemaContractError("/schema.items.response must document next_cursor")
+
+    retry = items.get("retry")
+    if not isinstance(retry, dict) or retry.get("status") != 429 or retry.get("header") != "Retry-After":
+        raise SchemaContractError("/schema.items.retry must describe HTTP 429 and Retry-After")
+
+    result_contract = document.get("result_contract")
+    if not isinstance(result_contract, dict) or result_contract.get("synchronous") is not True:
+        raise SchemaContractError("/schema.result_contract must advertise a synchronous client")
+    if result_contract.get("python_entrypoint") != "client.fetch_items(base_url)":
+        raise SchemaContractError("/schema.result_contract has an unexpected entrypoint")
+
+    transport = document.get("transport")
+    if not isinstance(transport, dict) or transport.get("allowed_method") != "GET":
+        raise SchemaContractError("/schema.transport must allow GET")
+
+    return _endpoint(base_url, path), id_field, quantity_field
+
+
+def _retry_delay(headers: Mapping[str, str]) -> int:
+    raw = headers.get("retry-after")
+    if raw is None or re.fullmatch(r"[0-9]+", raw.strip()) is None:
+        raise TransportError("HTTP 429 did not provide a whole-number Retry-After header")
+    return int(raw.strip())
+
+
+def _page_payload(url: str, *, allow_rate_limit_retry: bool) -> Any:
+    result = _get_json(url)
+    if result.status != 429:
+        return result.payload
+    if not allow_rate_limit_retry:
+        raise TransportError(f"GET {url} returned HTTP 429 outside the documented second-page retry")
+
+    delay = _retry_delay(result.headers)
+    time.sleep(delay)
+    retried = _get_json(url)
+    if retried.status == 429:
+        raise TransportError(f"GET {url} returned HTTP 429 after its one allowed retry")
+    return retried.payload
+
+
+def _normalise_page(payload: Any, fields: Mapping[str, str]) -> tuple[list[dict[str, Any]], str | None]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        raise ResponseContractError("GET /items must return an object with an items list")
+    if "next_cursor" not in payload:
+        raise ResponseContractError("GET /items must return next_cursor")
+
+    next_cursor = payload["next_cursor"]
+    if next_cursor is not None and type(next_cursor) is not str:
+        raise ResponseContractError("next_cursor must be an opaque string or null")
+
+    id_field = fields["id_field"]
+    quantity_field = fields["quantity_field"]
+    page_records: list[dict[str, Any]] = []
+    for index, record in enumerate(payload["items"]):
+        if not isinstance(record, dict):
+            raise ResponseContractError(f"item {index} must be an object")
+        if id_field not in record or quantity_field not in record:
+            raise ResponseContractError(f"item {index} is missing id or quantity")
+        item_id = record[id_field]
+        quantity = record[quantity_field]
+        if type(item_id) is not str or not item_id:
+            raise ResponseContractError(f"item {index} id must be a nonempty Unicode string")
+        if type(quantity) is not int:
+            raise ResponseContractError(f"item {index} quantity must be an exact Python int")
+        page_records.append({"id": item_id, "quantity": quantity})
+    return page_records, next_cursor
+
+
+def _normalise_all(pages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    by_id: dict[str, int] = {}
+    for record in pages:
+        item_id = record["id"]
+        quantity = record["quantity"]
+        if item_id in by_id and by_id[item_id] != quantity:
+            raise ResponseContractError(f"conflicting quantities for id {item_id!r}")
+        by_id[item_id] = quantity
+    return [{"id": item_id, "quantity": by_id[item_id]} for item_id in sorted(by_id)]
+
+
+def fetch_items(base_url: str) -> list[dict[str, Any]]:
+    """Synchronously fetch, paginate, retry, and normalize all public items.
+
+    The schema is fetched on every invocation.  The first items request omits
+    ``cursor``; each later request sends the preceding non-null cursor exactly
+    once.  A 429 is retried once, with the stated whole-second
+    ``Retry-After`` delay, only on the first request for the second page.
+    """
+
+    items_endpoint, id_field, quantity_field = _discover(base_url)
+    fields = {"id_field": id_field, "quantity_field": quantity_field}
+    records: list[dict[str, Any]] = []
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+    page_index = 0
+
+    while True:
+        if cursor is not None:
+            if cursor in seen_cursors:
+                raise ResponseContractError(f"repeated non-null cursor {cursor!r}")
+            seen_cursors.add(cursor)
+        # _discover returns a fully resolved URL; append the cursor to it while
+        # preserving any base URL prefix and the schema-advertised path.
+        if cursor is None:
+            request_url = items_endpoint
+        else:
+            request_url = items_endpoint + "?" + urlencode({"cursor": cursor})
+        page_payload = _page_payload(request_url, allow_rate_limit_retry=(page_index == 1))
+        page_records, next_cursor = _normalise_page(page_payload, fields)
+        records.extend(page_records)
+        page_index += 1
+        if next_cursor is None:
+            break
+        cursor = next_cursor
+
+    return _normalise_all(records)

@@ -1,0 +1,22 @@
+{
+  "_comment": "Messaging is disabled by default. Telegram and Discord are built in; other catalog platforms activate through installed messaging plugins. New senders enter pairing until approved.",
+  "enabled": false,
+  "adapters": {
+    "telegram": {
+      "enabled": false,
+      "allowed_users": [],
+      "allowed_conversations": [],
+      "prefix": "",
+      "poll_timeout": 25
+    },
+    "discord": {
+      "enabled": false,
+      "allowed_users": [],
+      "allowed_conversations": [],
+      "prefix": "",
+      "mention_only": true
+    }
+  },
+  "sessions": {},
+  "pairing": {"pending": [], "approved": []}
+}

@@ -1,0 +1,14 @@
+# Bundled default for VARIANT-1-managed SearXNG (Docker volume → /etc/searxng).
+# On first managed start, a copy under the user data dir gets a random secret_key
+# if missing. JSON format is required for web_search.
+use_default_settings: true
+
+server:
+  secret_key: "variant1-dev-replace-on-first-run"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json

@@ -1,0 +1,18 @@
+[
+  {"patterns":["a/*.tmp"],"path":"a/direct.tmp","ignored":true},
+  {"patterns":["a/*.tmp"],"path":"a/deep/indirect.tmp","ignored":false},
+  {"patterns":["a/**/b.txt"],"path":"a/b.txt","ignored":true},
+  {"patterns":["a/**/b.txt"],"path":"a/deep/b.txt","ignored":true},
+  {"patterns":["/only.txt"],"path":"nested/only.txt","ignored":false},
+  {"patterns":["/only.txt"],"path":"only.txt","ignored":true},
+  {"patterns":["*.tmp","!keep.tmp"],"path":"nested/keep.tmp","ignored":false},
+  {"patterns":["cache/","!cache/keep.txt"],"path":"cache/keep.txt","ignored":true},
+  {"patterns":["cache/*","!cache/keep.txt"],"path":"cache/keep.txt","ignored":false},
+  {"patterns":["\\#literal"],"path":"#literal","ignored":true},
+  {"patterns":["\\!literal"],"path":"!literal","ignored":true},
+  {"patterns":["with\\ space.txt"],"path":"with space.txt","ignored":true},
+  {"patterns":["[ab]?.txt"],"path":"ab.txt","ignored":true},
+  {"patterns":["UPPER.txt"],"path":"upper.txt","ignored":true},
+  {"patterns":["folder/"],"path":"folder","directory":true,"ignored":true},
+  {"patterns":["folder/"],"path":"folder","directory":false,"ignored":false}
+]

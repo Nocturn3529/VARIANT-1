@@ -1,0 +1,1 @@
+{"text":"Opening Notepad now.","actions":[{"tool":"open_app","args":{"target":"notepad"}}]}

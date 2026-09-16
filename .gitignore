@@ -1,0 +1,66 @@
+# Dependencies and generated outputs
+node_modules/
+.venv/
+backend/.venv/
+backend/.playwright-browsers/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/build/
+backend/dist/
+/dist/
+/out/
+frontend/main-deck/dist/
+
+# Private local state and development evidence
+/.claude/
+/.codex/
+/artifacts/
+/attachments/
+/data/
+/backend/data/
+/logs/
+/tmp/
+/.tmp*/
+/tmp-*/
+/backend/tmp*/
+/terminals/
+/runtimes/
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.jsonl
+
+# Only reviewed default config belongs in source control
+/config/*
+!/config/animations.json
+!/config/llm_config.default.json
+!/config/messaging.default.json
+!/config/tools.default.json
+!/config/TOOLS.md
+!/config/prompts/
+!/config/searxng/
+!/config/plugins/
+/config/plugins/*
+!/config/plugins/.gitkeep
+
+# Native binaries, model weights, and optional licensed avatar components
+/bin/
+/models/*
+!/models/speech/
+/models/speech/*
+!/models/speech/README.txt
+/assets/avatar/*
+!/assets/avatar/README.md
+/frontend/vendor/*
+!/frontend/vendor/README.md
+/experiments/live-canary/runs/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+*.spec.bak

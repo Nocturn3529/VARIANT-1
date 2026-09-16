@@ -1,0 +1,4 @@
+<think>
+Let me consider the user's question carefully...
+</think>
+{"text":"Here is a short answer."}

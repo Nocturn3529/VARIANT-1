@@ -1,0 +1,140 @@
+{
+  "title": "Discord",
+  "controls": [
+    {
+      "id": 1,
+      "key": "aid:ch1#1",
+      "role": "ListItem",
+      "name": "Channel 1",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 2,
+      "key": "aid:ch2#1",
+      "role": "ListItem",
+      "name": "Channel 2",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 3,
+      "key": "aid:ch3#1",
+      "role": "ListItem",
+      "name": "Channel 3",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 4,
+      "key": "aid:ch4#1",
+      "role": "ListItem",
+      "name": "Channel 4",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 5,
+      "key": "aid:ch5#1",
+      "role": "ListItem",
+      "name": "Channel 5",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 6,
+      "key": "aid:ch6#1",
+      "role": "ListItem",
+      "name": "Channel 6",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 7,
+      "key": "aid:ch7#1",
+      "role": "ListItem",
+      "name": "Channel 7",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 8,
+      "key": "rn:Button|Send#1",
+      "role": "Button",
+      "name": "Send",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 9,
+      "key": "rn:Edit|Message#1",
+      "role": "Edit",
+      "name": "Message",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    }
+  ]
+}

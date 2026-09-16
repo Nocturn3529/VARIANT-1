@@ -1,0 +1,169 @@
+{
+  "_comment": "Clean default config seeded into a fresh install's userData on first run. No model path, no API keys, no machine-specific data \u2014 the real config/llm_config.json (with the developer's model + keys) is intentionally NOT shipped.",
+  "mode": "local",
+  "subagents": {
+    "max_depth": 4,
+    "max_active_cloud": 8,
+    "max_active_local": 1,
+    "max_admitted": 16
+  },
+  "local": {
+    "binary": "bin/llama-server.exe",
+    "model": "",
+    "host": "127.0.0.1",
+    "port": 8080,
+    "autostart": true,
+    "prewarm": false,
+    "ctx_size": "auto",
+    "parallel": 1,
+    "backend": "auto",
+    "n_gpu_layers": "auto",
+    "threads": 0,
+    "flash_attn": "auto",
+    "cache_type_k": "q8_0",
+    "cache_type_v": "q8_0",
+    "cache_prompt": true,
+    "cache_reuse": 256,
+    "cache_ram_mb": 512,
+    "ctx_checkpoints": 8,
+    "sleep_idle_seconds": 1800,
+    "fit_target_mb": 1024,
+    "fit_min_ctx": 4096,
+    "metrics": true,
+    "extra_args": [],
+    "mmproj": "",
+    "reasoning_budget": 1024
+  },
+  "inference": {
+    "runtime": "llamacpp",
+    "runtimes": {
+      "vllm": {
+        "endpoint": "http://127.0.0.1:8000",
+        "model": "",
+        "context_size": 32768,
+        "api_key_env": ""
+      },
+      "sglang": {
+        "endpoint": "http://127.0.0.1:30000",
+        "model": "",
+        "context_size": 32768,
+        "api_key_env": ""
+      },
+      "mlx": {
+        "endpoint": "http://127.0.0.1:8080",
+        "model": "",
+        "context_size": 32768,
+        "api_key_env": ""
+      },
+      "openai_compatible": {
+        "endpoint": "",
+        "model": "",
+        "context_size": 8192,
+        "api_key_env": ""
+      }
+    }
+  },
+  "cloud": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-6",
+    "anthropic_model": "claude-sonnet-4-6",
+    "openai_model": "gpt-4o",
+    "openai-codex_model": "gpt-5.3-codex-spark",
+    "xai_model": "grok-4.3",
+    "ollama_model": "gemma4:31b-cloud",
+    "opencode-zen_model": "x-preview-f-free",
+    "hermes_model": "upstage/solar-pro4:free",
+    "nvidia_model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "gemini_model": "gemini-1.5-pro",
+    "keys": {},
+    "credential_pools": {},
+    "pool_strategies": {},
+    "provider_options": {},
+    "context_windows": {
+      "openai-codex/gpt-5.3-codex-spark": 128000,
+      "openai-codex/gpt-5.6-luna": 272000,
+      "opencode-zen/x-preview-f-free": 1048576,
+      "hermes/upstage/solar-pro4:free": 524288
+    },
+    "fallback_chain": []
+  },
+  "sampling": {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "max_tokens": 512,
+    "reasoning_max_tokens": 1024
+  },
+  "action_surface": {
+    "stop_new_kernels": false,
+    "freeze_mutation": false,
+    "kernel": {
+      "checkpoint": {
+        "enabled": false,
+        "restore_on_boot": false
+      }
+    },
+    "support_matrix": [
+      {
+        "profile": "trusted-local.v1",
+        "provider": "local",
+        "model": "*qwen3.5-4b*",
+        "adapter": "llama_cpp.*",
+        "status": "qualified",
+        "evidence": "Phase 12 source sequence passed 13/13 required provider/static stages on 2026-08-23; mutation was deliberately not evaluated for Qwen"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "xai",
+        "model": "grok-4.6",
+        "adapter": "xai.responses",
+        "status": "qualified",
+        "evidence": "Phase 12 source sequence passed 19/19 required stages on 2026-08-23, including static controls and held-out occupied-seed/vacancy mutation"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "openai-codex",
+        "model": "gpt-*",
+        "adapter": "openai_codex.responses",
+        "status": "developer",
+        "evidence": "Direct OAuth Responses transport and usage accounting smoke-validated on 2026-08-26; full action-surface qualification remains a benchmark task"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "ollama",
+        "model": "gemma4:31b-cloud",
+        "adapter": "openai.*",
+        "status": "qualified",
+        "evidence": "Phase 12 static/control qualification passed on 2026-08-23; repaired persistent-CPython live probe passed 3/3 Mutation-Off cases and 2/2 held-out mutation shapes on 2026-09-02"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "opencode-zen",
+        "model": "x-preview-f-free",
+        "adapter": "openai.*",
+        "status": "qualified",
+        "evidence": "Phase 12 source sequence passed 19/19 required stages on 2026-08-23, including static controls and held-out occupied-seed/vacancy mutation"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "hermes",
+        "model": "upstage/solar-pro4:free",
+        "adapter": "openai.*",
+        "status": "qualified",
+        "evidence": "Phase 12 source sequence passed 17/17 required provider/static/control stages on 2026-08-23"
+      }
+    ]
+  },
+  "voice": {
+    "binary": "models/speech/whisper/whisper-server.exe",
+    "model": "models/speech/whisper/whisper.bin",
+    "host": "127.0.0.1",
+    "port": 8081,
+    "autostart": true,
+    "stt_provider": "local",
+    "tts_provider": "kokoro",
+    "auto_tts": true,
+    "speed": 1.0,
+    "stt": {},
+    "tts": {}
+  }
+}

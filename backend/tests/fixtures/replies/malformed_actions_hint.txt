@@ -1,0 +1,1 @@
+{"text":"I'll click the button.","actions":[{"tool":"computer","args":{"action":"click","id":3

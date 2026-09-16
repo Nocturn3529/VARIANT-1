@@ -1,0 +1,23 @@
+'use strict';
+const path = require('node:path');
+const Module = require('node:module');
+const {JSDOM} = require('jsdom');
+const {buildSync} = require('esbuild');
+const dom = new JSDOM('<!doctype html><html><body></body></html>', {url: 'https://variant1.test/', pretendToBeVisual: true});
+for (const key of ['window', 'document', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement', 'Event', 'MouseEvent', 'KeyboardEvent', 'CustomEvent', 'Node', 'MutationObserver', 'DOMException']) global[key] = key === 'window' ? dom.window : dom.window[key];
+Object.defineProperty(global, 'navigator', {value: dom.window.navigator, configurable: true});
+global.getComputedStyle = dom.window.getComputedStyle;
+global.requestAnimationFrame = callback => setTimeout(callback, 0);
+global.cancelAnimationFrame = clearTimeout;
+global.ResizeObserver = class {observe() {} disconnect() {}};
+global.IS_REACT_ACT_ENVIRONMENT = true;
+dom.window.focus = () => {};
+dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
+dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
+const filename = path.join(__dirname, '.generated-frontend-maintainability.cjs');
+const compiled = new Module(filename, module);
+compiled.filename = filename; compiled.paths = Module._nodeModulePaths(__dirname);
+const entry = process.argv[2] === '--mic-reconnect' ? 'test-mic-reconnect-entry.ts' : process.argv[2] === '--terminal-stream' ? 'test-terminal-stream-entry.ts' : process.argv[2] === '--peers' ? 'test-peer-ui-entry.tsx' : process.argv[2] === '--chat-reliability' ? 'test-chat-reliability-entry.tsx' : process.argv[2] === '--goal-guidance' ? 'test-goal-guidance-entry.tsx' : process.argv[2] === '--agent-team' ? 'test-agent-team-entry.tsx' : process.argv[2] === '--chat-notices' ? 'test-chat-notices-entry.tsx' : process.argv[2] === '--goal-composer' ? 'test-goal-composer-entry.tsx' : process.argv[2] === '--input-queue' ? 'test-input-queue-entry.tsx' : process.argv[2] === '--composer' ? 'test-composer-entry.tsx' : process.argv[2] === '--chat-ownership' ? 'test-chat-ownership-entry.tsx' : process.argv[2] === '--pane' ? 'test-pane-ui-entry.tsx' : process.argv[2] === '--browser' ? 'test-browser-host-entry.ts' : process.argv[2] === '--browser-settings' ? 'test-browser-settings-entry.tsx' : process.argv[2] === '--design' ? 'test-frontend-design-entry.tsx' : 'test-frontend-maintainability-entry.tsx';
+compiled._compile(buildSync({entryPoints: [path.join(__dirname, entry)],
+  bundle: true, platform: 'node', format: 'cjs', packages: 'external', jsx: 'automatic', write: false, logLevel: 'silent'}).outputFiles[0].text, filename);
+Promise.resolve(compiled.exports.run()).catch(error => { console.error(error); process.exitCode = 1; }).finally(() => dom.window.close());

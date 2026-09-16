@@ -1,0 +1,756 @@
+/*
+ * VARIANT-1 Main Deck design system.
+ *
+ * This file is the sole authority for application-wide color, typography,
+ * spacing, radii, focus, and shell-chrome tokens. Destination styles may
+ * compose these tokens, but must not replace them per route.
+ */
+
+@font-face {
+  font-family: "Geist";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-latin.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Geist Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("../assets/fonts/geist-mono-latin.woff2") format("woff2");
+}
+
+:root {
+  color-scheme: dark;
+
+  --deck-canvas: #0e0e0e;
+  --deck-surface-subtle: #181818;
+  --deck-surface-raised: #222222;
+  --deck-surface-strong: #262626;
+  --deck-surface-panel: #141414;
+  --deck-line: #2a2a2a;
+  --deck-line-soft: #202020;
+  --deck-line-strong: #363636;
+  --deck-text-primary: #eaeaea;
+  --deck-text-secondary: #c8c8c8;
+  --deck-text-muted: #919191;
+  --deck-text-faint: #808080;
+  --deck-text-disabled: #666666;
+  --deck-accent: #eaeaea;
+  --deck-accent-soft: #222222;
+  --deck-accent-line: #363636;
+  /* Reserved for enabled mutation authority; ordinary controls stay neutral. */
+  --deck-mutation: #39ff14;
+  --deck-positive: #c8c8c8;
+  --deck-positive-soft: #222222;
+  --deck-warning: #d8d8d8;
+  --deck-danger: #eaeaea;
+  --deck-focus: rgba(255, 255, 255, .42);
+
+  /* Mono telemetry. Labels distinguish resources and series. */
+  --deck-signal-cyan: #eaeaea;
+  --deck-signal-indigo: #a8a8a8;
+  --deck-signal-lime: #c8c8c8;
+  --deck-signal-amber: #919191;
+  --deck-signal-orange: #b8b8b8;
+  --deck-signal-magenta: #d8d8d8;
+  --deck-signal-red: #eaeaea;
+  --deck-signal-warm: #c8c8c8;
+  --deck-signal-neutral: #e3e3e3;
+  --deck-signal-idle: #454545;
+
+  --font-ui: "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-sans: var(--font-ui);
+  --font-mono: "Cascadia Code", "Cascadia Mono", "Geist Mono", monospace;
+  --font-chat-code: "Geist Mono", monospace;
+
+  /* Shared readable scale, with a deliberate compact workbench chrome size. */
+  --deck-text-xs: 11px;
+  --deck-text-compact: 11px;
+  --deck-text-sm: 12px;
+  --deck-text-md: 13px;
+  --deck-text-lg: 15px;
+  --deck-text-xl: 16px;
+
+  --deck-radius-sm: 3px;
+  --deck-radius-md: 4px;
+  --deck-radius-lg: 6px;
+  --deck-control-height: 32px;
+  --deck-chat-text: 14px;
+  --deck-code-text: 13px;
+  --deck-label-text: 12px;
+  --deck-motion-fast: 110ms;
+  --deck-motion-panel: 180ms;
+  --deck-page-gutter: clamp(14px, 1.4vw, 28px);
+  --history-width: 237px;
+  --context-width: 360px;
+  --titlebar-height: 32px;
+  --footer-height: 28px;
+  --deck-shadow: 0 16px 60px rgba(0, 0, 0, .35);
+
+  /*
+   * Product breakpoints (max-width). CSS variables cannot drive media queries,
+   * so destination styles must use these exact pixel values:
+   *   830  narrow  — history drawer; compact destination chrome
+   *   980  medium  — destination / Overview grids
+   *   1180 wide    — context inspector overlay
+   * React reads the same numbers from layout.ts.
+   */
+}
+
+:root[data-density="compact"] {
+  --deck-control-height: 28px;
+  --deck-chat-text: 13px;
+  --deck-code-text: 12px;
+  --deck-label-text: 11px;
+}
+
+:root[data-motion="reduced"] {
+  --deck-motion-fast: 0ms;
+  --deck-motion-panel: 0ms;
+}
+
+.deck-input-dialog {
+  width: min(420px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 20px;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius-lg);
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-panel);
+  box-shadow: var(--deck-shadow);
+  font: var(--deck-text-md)/1.5 var(--font-ui);
+}
+.deck-input-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.deck-input-dialog header, .deck-input-dialog footer { display: flex; align-items: center; gap: 8px; }
+.deck-input-dialog header { justify-content: space-between; margin-bottom: 18px; }
+.deck-input-dialog h2 { margin: 0; font-size: var(--deck-text-lg); }
+.deck-input-dialog label { display: grid; gap: 6px; }
+.deck-input-dialog input { width: 100%; height: var(--deck-control-height); padding: 0 9px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); color: inherit; background: var(--deck-canvas); font: inherit; }
+.deck-input-dialog footer { justify-content: flex-end; margin-top: 20px; }
+.deck-input-dialog p[role="alert"] { color: var(--deck-danger); font-size: var(--deck-text-sm); }
+.deck-input-dialog :is(button, input):focus-visible { outline: 2px solid var(--deck-text-primary); outline-offset: 2px; }
+
+body,
+.app-shell {
+  color: var(--deck-text-primary);
+  background: var(--deck-canvas);
+  font-family: var(--font-ui);
+  font-size: var(--deck-text-md);
+}
+
+.app-shell button,
+.app-shell input,
+.app-shell select,
+.app-shell textarea {
+  font-family: inherit;
+}
+
+.app-shell input[type="checkbox"],
+.app-shell input[type="radio"],
+.app-shell input[type="range"] {
+  accent-color: var(--deck-text-primary);
+}
+
+.app-shell ::selection {
+  color: var(--deck-canvas);
+  background: var(--deck-text-primary);
+}
+
+.app-shell .titlebar,
+.app-shell .section-footer,
+.app-shell .workspace {
+  background: var(--deck-canvas);
+  border-color: var(--deck-line);
+}
+
+.app-shell .titlebar__mark {
+  color: var(--deck-text-primary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .titlebar__name {
+  color: var(--deck-text-primary);
+  font-family: var(--font-sans);
+}
+
+.app-shell .window-actions button {
+  color: var(--deck-text-muted);
+  background: transparent;
+}
+
+.app-shell .window-actions button:hover,
+.app-shell .window-actions .window-actions__close:hover {
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-subtle);
+}
+
+.app-shell .section-footer__button {
+  color: var(--deck-text-muted);
+}
+
+.app-shell .section-footer__button:hover {
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-subtle);
+}
+
+.app-shell .section-footer__button.active {
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-raised);
+}
+
+.app-shell .section-footer__button.active::before {
+  background: var(--deck-text-primary);
+}
+
+/* Shared destination primitives. Route styles add layout, never a new theme. */
+
+
+.deck-destination-scroll {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .18) transparent;
+}
+
+.deck-destination-page {
+  width: calc(100% - (2 * var(--deck-page-gutter)));
+  margin: 0 auto;
+  padding: 20px 0 32px;
+}
+
+.deck-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 7px;
+  gap: 5px;
+  border-radius: 999px;
+  color: var(--deck-text-secondary);
+  background: var(--deck-surface-raised);
+  font: var(--deck-text-xs) var(--font-mono);
+  white-space: nowrap;
+}
+
+.deck-status::before,
+.deck-status > i {
+  width: 5px;
+  height: 5px;
+  display: block;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.deck-button {
+  height: var(--deck-control-height);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  gap: 6px;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: 6px;
+  color: var(--deck-text-secondary);
+  background: var(--deck-surface-raised);
+  font-size: var(--deck-text-sm);
+  font-weight: 550;
+  cursor: pointer;
+}
+
+.deck-button svg {
+  width: 13px;
+  height: 13px;
+  flex: none;
+}
+
+.deck-button:hover:not(:disabled) {
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-strong);
+}
+
+.deck-button:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.deck-button:focus-visible {
+  outline: 1px solid var(--deck-focus);
+  outline-offset: 2px;
+}
+
+.deck-button--primary {
+  color: var(--deck-canvas);
+  background: var(--deck-text-primary);
+  border-color: var(--deck-text-primary);
+}
+
+.deck-button--primary:hover:not(:disabled) {
+  color: var(--deck-canvas);
+  background: #ffffff;
+}
+
+.deck-button--icon {
+  width: var(--deck-control-height);
+  padding: 0;
+  border-color: transparent;
+  color: var(--deck-text-muted);
+  background: transparent;
+}
+
+.deck-button--icon svg {
+  width: 17px;
+  height: 17px;
+}
+
+.deck-button--icon:hover:not(:disabled) {
+  color: var(--deck-text-primary);
+  background: var(--deck-surface-subtle);
+}
+
+.deck-button--quiet {
+  height: 28px;
+  padding: 0 8px;
+  border-color: var(--deck-line);
+  color: var(--deck-text-muted);
+  background: var(--deck-surface-raised);
+  font-size: var(--deck-text-xs);
+}
+
+.deck-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  gap: 6px;
+  border: 0;
+  color: var(--deck-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.deck-switch__track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  flex: none;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: 999px;
+  background: var(--deck-surface-raised);
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.deck-switch__track > b {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--deck-text-faint);
+  transition: transform .15s ease, background .15s ease;
+}
+
+.deck-switch.is-on .deck-switch__track {
+  background: var(--deck-surface-strong);
+  border-color: var(--deck-line-strong);
+}
+
+.deck-switch.is-on .deck-switch__track > b {
+  background: var(--deck-text-primary);
+  transform: translateX(12px);
+}
+
+.deck-switch:disabled {
+  opacity: .45;
+  cursor: default;
+}
+
+.deck-switch:focus-visible {
+  outline: 1px solid var(--deck-focus);
+  outline-offset: 2px;
+}
+
+.deck-switch__label,
+.deck-switch__caption {
+  font-size: var(--deck-text-xs);
+  font-weight: 560;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.deck-switch__caption {
+  color: var(--deck-text-faint);
+}
+
+.deck-switch--framed {
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--deck-line);
+  border-radius: 7px;
+  background: #141617;
+}
+
+.deck-switch--framed.is-on {
+  color: var(--deck-text-primary);
+  border-color: var(--deck-focus);
+}
+
+/*
+ * Instrument composition.
+ *
+ * Overview established this language for dense live telemetry. These hooks
+ * are intentionally content-agnostic so every Main Deck destination can use
+ * the same quiet chrome without copying an Overview-specific selector tree.
+ */
+.deck-instrument {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-md);
+  color: var(--deck-text-primary);
+  background: var(--deck-canvas);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+  font-family: var(--font-ui);
+}
+
+.deck-instrument__header {
+  min-width: 0;
+  min-height: 84px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  gap: 24px;
+  border-bottom: 1px solid var(--deck-line);
+  background: var(--deck-canvas);
+}
+
+.deck-instrument__heading { min-width: 0; }
+
+.deck-instrument__eyebrow,
+.deck-section-band__eyebrow,
+.deck-section__header .deck-section-band__eyebrow {
+  display: block;
+  color: var(--deck-text-faint);
+  font: 600 var(--deck-text-xs) var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.deck-instrument__title-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  margin-top: 5px;
+  gap: 10px;
+}
+
+.deck-instrument__title {
+  margin: 0;
+  color: var(--deck-text-primary);
+  font: 620 var(--deck-text-lg)/1.15 var(--font-ui);
+  letter-spacing: -.01em;
+}
+
+.deck-instrument__description {
+  margin: 5px 0 0;
+  color: var(--deck-text-faint);
+  font: var(--deck-text-xs)/1.45 var(--font-ui);
+}
+
+.deck-instrument__status {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  padding: 7px 9px;
+  gap: 7px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  color: var(--deck-text-faint);
+  background: var(--deck-surface-raised);
+  font: 600 var(--deck-text-xs) var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.deck-instrument__status > i {
+  width: 6px;
+  height: 6px;
+  display: block;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.deck-instrument__status[data-state="live"],
+.deck-instrument__status.is-live {
+  color: var(--deck-signal-lime);
+}
+
+.deck-instrument__status[data-state="live"] > i,
+.deck-instrument__status.is-live > i {
+  box-shadow: 0 0 9px currentColor;
+}
+
+.deck-instrument__status[data-state="warning"] { color: var(--deck-signal-amber); }
+.deck-instrument__status[data-state="danger"] { color: var(--deck-signal-red); }
+
+.deck-instrument__controls {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.deck-instrument__utility {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  color: var(--deck-text-faint);
+  font: var(--deck-text-xs) var(--font-mono);
+}
+
+.deck-instrument__utility strong {
+  color: var(--deck-text-primary);
+  font: 560 var(--deck-text-xl) var(--font-ui);
+}
+
+.deck-metric-rail {
+  --deck-metric-columns: 4;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--deck-metric-columns), minmax(0, 1fr));
+  border-bottom: 1px solid var(--deck-line);
+  background: var(--deck-canvas);
+}
+
+.deck-metric {
+  min-width: 0;
+  min-height: 92px;
+  display: grid;
+  align-content: center;
+  padding: 15px 22px;
+  gap: 6px;
+  border-right: 1px solid var(--deck-line-soft);
+  background: var(--deck-canvas);
+}
+
+.deck-metric:last-child { border-right: 0; }
+
+.deck-metric__label {
+  color: var(--deck-text-faint);
+  font: 600 var(--deck-text-xs) var(--font-mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.deck-metric__value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--deck-text-primary);
+  font: 450 19px/1.2 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deck-metric__detail {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--deck-text-muted);
+  font: var(--deck-text-xs)/1.4 var(--font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deck-section {
+  min-width: 0;
+  color: var(--deck-text-secondary);
+  background: var(--deck-canvas);
+}
+
+.deck-section-band,
+.deck-section__header {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 12px 18px;
+  gap: 20px;
+  border-bottom: 1px solid var(--deck-line-soft);
+  background: var(--deck-surface-raised);
+}
+
+.deck-section-band__heading { min-width: 0; display: grid; gap: 5px; }
+
+.deck-section-band__title {
+  margin: 0;
+  color: var(--deck-text-primary);
+  font: 600 var(--deck-text-md)/1.2 var(--font-ui);
+  letter-spacing: 0;
+}
+
+.deck-segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-raised);
+}
+
+.deck-segmented > button,
+.deck-segmented__button {
+  min-width: 0;
+  height: var(--deck-control-height);
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--deck-line);
+  border-radius: 0;
+  color: var(--deck-text-faint);
+  background: transparent;
+  font: 550 var(--deck-text-xs) var(--font-ui);
+  cursor: pointer;
+}
+
+.deck-segmented > button:last-child,
+.deck-segmented__button:last-child { border-right: 0; }
+
+.deck-segmented > button:hover,
+.deck-segmented > button:focus-visible,
+.deck-segmented__button:hover,
+.deck-segmented__button:focus-visible { color: var(--deck-text-primary); }
+
+.deck-segmented > button.is-active,
+.deck-segmented > button[aria-pressed="true"],
+.deck-segmented__button.is-active,
+.deck-segmented__button[aria-pressed="true"] {
+  color: var(--deck-canvas);
+  background: var(--deck-text-primary);
+}
+
+.deck-data-list {
+  min-width: 0;
+  display: grid;
+  background: var(--deck-canvas);
+}
+
+.deck-data-list > * + * { border-top: 1px solid var(--deck-line); }
+
+.deck-data-row {
+  --deck-data-columns: 3;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(var(--deck-data-columns), minmax(0, 1fr));
+  background: var(--deck-canvas);
+}
+
+.deck-data-cell {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  padding: 11px 12px;
+  gap: 4px;
+  border-right: 1px solid var(--deck-line-soft);
+}
+
+.deck-data-cell:last-child { border-right: 0; }
+
+.deck-data-cell__label {
+  color: var(--deck-text-faint);
+  font: 600 var(--deck-text-xs) var(--font-mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.deck-data-cell__value {
+  min-width: 0;
+  color: var(--deck-text-secondary);
+  font: 550 var(--deck-text-sm)/1.4 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+
+.deck-data-cell__detail {
+  min-width: 0;
+  color: var(--deck-text-faint);
+  font: var(--deck-text-xs)/1.45 var(--font-ui);
+  overflow-wrap: anywhere;
+}
+
+.platform-note {
+  margin: 8px 0 0;
+  color: var(--deck-text-faint);
+  font-size: var(--deck-text-xs);
+  line-height: 1.45;
+}
+
+.runtime-error {
+  margin: 8px 0 0;
+  padding: 8px 9px;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius-sm);
+  color: var(--deck-danger);
+  background: var(--deck-surface-subtle);
+  font-size: var(--deck-text-xs);
+  line-height: 1.4;
+}
+
+.deck-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 20px 16px;
+  gap: 6px;
+  color: var(--deck-text-faint);
+  text-align: center;
+  grid-column: 1 / -1;
+}
+
+.deck-empty[hidden] {
+  display: none;
+}
+
+.deck-empty__title {
+  margin: 0;
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-sm);
+  font-weight: 550;
+  line-height: 1.3;
+}
+
+.deck-empty__description {
+  margin: 0;
+  max-width: 28em;
+  color: var(--deck-text-faint);
+  font-size: var(--deck-text-xs);
+  line-height: 1.45;
+}
+
+.deck-empty__action {
+  display: flex;
+  margin-top: 4px;
+}
+
+.deck-empty--panel {
+  flex: 1;
+  align-self: stretch;
+  min-height: 140px;
+  height: 100%;
+}
+
+.deck-empty--inline {
+  min-height: 0;
+  padding: 16px 12px;
+}
+
+@media (max-width: 830px) {
+  :root { --deck-page-gutter: 12px; }
+  .deck-destination-page { padding-top: 14px; padding-bottom: 28px; }
+}

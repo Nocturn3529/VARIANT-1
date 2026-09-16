@@ -1,0 +1,51 @@
+/* Small SVG/CSS surfaces: no canvas, render loop, or permanent idle animation. */
+.composer-mic-glyph { display: grid; place-items: center; width: 24px; height: 24px; pointer-events: none; }
+.composer-mic-glyph svg { width: 24px; height: 24px; overflow: visible; }
+.mic-glyph__symbol, .mic-glyph__wave { transform-origin: 14px 14px; transition: opacity 150ms ease, transform 220ms ease; }
+.mic-glyph__wave, .mic-glyph__echo, .mic-glyph__orbit { opacity: 0; }
+.mic-glyph__echo { stroke-width: 1; }
+.mic-glyph__orbit { transform-origin: 14px 14px; stroke-width: 1; }
+.voice-button:is(:hover,:focus-visible):not(:disabled) .composer-mic-glyph:is([data-phase="idle"],[data-phase="error"]) .mic-glyph__symbol { animation: mic-lift 500ms cubic-bezier(.2,.8,.2,1); }
+.voice-button:is(:hover,:focus-visible):not(:disabled) .composer-mic-glyph:is([data-phase="idle"],[data-phase="error"]) .mic-glyph__echo { animation: mic-echo 650ms ease-out; }
+.composer-mic-glyph[data-phase="recording"] .mic-glyph__symbol { opacity: 0; transform: translateY(2px) scale(.7); }
+.composer-mic-glyph[data-phase="recording"] .mic-glyph__wave { opacity: 1; }
+.composer-mic-glyph[data-phase="recording"] .mic-glyph__wave path { transform-box: fill-box; transform-origin: center; animation: mic-wave 780ms ease-in-out var(--wave-delay) infinite alternate; }
+.composer-mic-glyph:is([data-phase="requesting"],[data-phase="encoding"],[data-phase="transcribing"]) .mic-glyph__symbol { opacity: .7; transform: scale(.72); }
+.composer-mic-glyph:is([data-phase="requesting"],[data-phase="encoding"],[data-phase="transcribing"]) .mic-glyph__orbit { opacity: .8; animation: mic-orbit 1200ms linear infinite; }
+@keyframes mic-lift { 0%,100% { transform: none; } 35% { transform: translateY(-1px) rotate(-8deg) scale(1.08); } 65% { transform: rotate(3deg); } }
+@keyframes mic-echo { 0% { opacity: 0; transform: scale(.88); transform-origin: center; } 35% { opacity: .7; } 100% { opacity: 0; transform: scale(1.12); transform-origin: center; } }
+@keyframes mic-wave { 0% { transform: scaleY(.28); } 55% { transform: scaleY(.82); } 100% { transform: scaleY(1); } }
+@keyframes mic-orbit { to { transform: rotate(360deg); } }
+
+.composer .composer-mutation-control { position: relative; isolation: isolate; overflow: visible; transition: background-color 240ms ease, border-color 240ms ease, box-shadow 350ms ease; }
+.composer .composer-mutation-control > :is(.deck-switch__label,.deck-switch__caption,.deck-switch__track) { position: relative; z-index: 1; }
+.composer .composer-mutation-control[aria-checked="true"] {
+  color: var(--deck-mutation);
+  border-color: color-mix(in srgb,var(--deck-mutation) 48%,transparent);
+  background: color-mix(in srgb,var(--deck-mutation) 6%,var(--deck-surface-panel));
+  box-shadow: inset 0 0 12px color-mix(in srgb,var(--deck-mutation) 5%,transparent),0 0 14px color-mix(in srgb,var(--deck-mutation) 10%,transparent);
+}
+.composer .composer-mutation-control[aria-checked="true"]:hover:not(:disabled) { background: color-mix(in srgb,var(--deck-mutation) 11%,var(--deck-surface-panel)); box-shadow: 0 0 18px color-mix(in srgb,var(--deck-mutation) 16%,transparent); }
+.composer .composer-mutation-control .deck-switch__track { transition: border-color 200ms ease, background 200ms ease; }
+.composer .composer-mutation-control .deck-switch__track b { transition: transform 360ms cubic-bezier(.25,1.6,.45,1),background-color 180ms ease,box-shadow 240ms ease; }
+.composer .composer-mutation-control[aria-checked="true"] .deck-switch__track b { box-shadow: 0 0 7px color-mix(in srgb,var(--deck-mutation) 55%,transparent); }
+.mutation-decoration { position: absolute; z-index: 0; inset: 0; border-radius: inherit; pointer-events: none; color: var(--deck-mutation); }
+.mutation-lattice { position: absolute; inset: 0; width: 100%; height: 100%; stroke-width: .6; opacity: 0; }
+.composer-mutation-control[aria-checked="true"] .mutation-lattice { opacity: .10; }
+.mutation-lattice__rung { stroke-width: .45; }
+.mutation-sweep { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; }
+.mutation-sweep > i { display: block; position: absolute; inset: -1px; opacity: 0; background: linear-gradient(105deg,transparent 15%,color-mix(in srgb,var(--deck-mutation) 24%,transparent) 43%,color-mix(in srgb,var(--deck-mutation) 65%,transparent) 49%,transparent 60%); transform: translateX(-120%); }
+.mutation-sparks { position: absolute; inset: 0; }
+.mutation-sparks > i { position: absolute; width: 2px; height: 2px; border-radius: .5px; opacity: 0; background: var(--deck-mutation); box-shadow: 0 0 5px var(--deck-mutation); }
+.composer .composer-mutation-control.is-energizing { animation: mutation-ignite 950ms ease-out; }
+.composer-mutation-control.is-energizing .mutation-sweep > i { animation: mutation-sweep 850ms cubic-bezier(.15,.6,.2,1) both; }
+.composer-mutation-control.is-energizing .mutation-lattice { stroke-dasharray: 24 8; animation: mutation-lattice 1000ms ease-out both; }
+.composer-mutation-control.is-energizing .mutation-sparks > i { animation: mutation-spark 620ms ease-out var(--spark-delay) both; }
+@keyframes mutation-ignite { 0% { box-shadow: inset 0 0 0 1px var(--deck-mutation),0 0 0 transparent; } 38% { box-shadow: inset 0 0 18px color-mix(in srgb,var(--deck-mutation) 15%,transparent),0 0 22px color-mix(in srgb,var(--deck-mutation) 32%,transparent); } 100% { box-shadow: inset 0 0 12px color-mix(in srgb,var(--deck-mutation) 5%,transparent),0 0 14px color-mix(in srgb,var(--deck-mutation) 10%,transparent); } }
+@keyframes mutation-sweep { 0% { opacity: 0; transform: translateX(-120%); } 18% { opacity: 1; } 80% { opacity: .65; } 100% { opacity: 0; transform: translateX(120%); } }
+@keyframes mutation-lattice { 0% { opacity: .1; stroke-dashoffset: 48; } 35% { opacity: .4; } 100% { opacity: .1; stroke-dashoffset: 0; } }
+@keyframes mutation-spark { 0%,12% { opacity: 0; transform: scale(.3); } 30% { opacity: .85; } 100% { opacity: 0; transform: translate(var(--spark-x),var(--spark-y)) scale(.15); } }
+
+.composer-mic-glyph[data-motion="off"] *, .composer .composer-mutation-control.control-motion-off, .composer-mutation-control.control-motion-off * { animation: none !important; transition: none !important; }
+:root[data-motion="reduced"] :is(.composer-mic-glyph,.composer-mutation-control), :root[data-motion="reduced"] :is(.composer-mic-glyph,.composer-mutation-control) * { animation: none !important; transition: none !important; }
+@media (prefers-reduced-motion: reduce) { .composer-mic-glyph *, .composer .composer-mutation-control, .composer-mutation-control * { animation: none !important; transition: none !important; } }

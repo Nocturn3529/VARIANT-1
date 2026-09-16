@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' variant1:; connect-src ws://127.0.0.1:*; script-src 'self' variant1:; style-src 'self' variant1: 'unsafe-inline'; img-src 'self' variant1: data: blob:; media-src 'self' variant1: data: blob:; font-src 'self' variant1:; frame-src 'self' variant1://app https: about: blob:; object-src 'none'; base-uri 'none'; form-action 'none';" />
+  <title>VARIANT-1</title>
+  <link rel="stylesheet" href="./dist/platform.css" />
+</head>
+<body>
+  <div id="variant1-boot" style="position:fixed;inset:0;background:#0e0e0e;color:#d4d4d4;display:grid;place-content:center;text-align:center;font:11px monospace;letter-spacing:3px;z-index:9999">VARIANT-1<br><br>LOADING ▒</div>
+  <div id="variant1-react-root"></div>
+  <script type="module" src="./dist/platform.js"></script>
+</body>
+</html>

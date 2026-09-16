@@ -1,0 +1,230 @@
+/* Main Deck shell. */
+
+/* Keep conditionally mounted panels absent from layout and interaction. */
+[hidden] { display: none !important; }
+
+* { box-sizing: border-box; }
+
+html, body { width: 100%; height: 100%; min-height: 100%; overflow: hidden; }
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--deck-canvas);
+  color: var(--deck-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--deck-text-md);
+  -webkit-font-smoothing: antialiased;
+}
+
+button, input, select, textarea { font: inherit; }
+button { color: inherit; }
+button, [role="button"] { -webkit-tap-highlight-color: transparent; }
+svg {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.app-shell {
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  min-width: 320px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  grid-template-rows: var(--titlebar-height) minmax(0, 1fr) var(--footer-height);
+  background: var(--deck-canvas);
+}
+
+.titlebar {
+  height: var(--titlebar-height);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border-bottom: 0;
+  background: var(--deck-canvas);
+  user-select: none;
+}
+
+.titlebar__drag {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding-left: 12px;
+  gap: 8px;
+  -webkit-app-region: drag;
+}
+
+.titlebar__mark {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border-radius: 0;
+  color: var(--deck-text-primary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.titlebar__name { color: var(--deck-text-secondary); font-size: var(--deck-text-sm); font-weight: 600; }
+
+.window-actions {
+  justify-self: end;
+  height: 100%;
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+
+.window-actions button {
+  width: 46px;
+  height: 100%;
+  border: 0;
+  color: var(--deck-text-muted);
+  background: transparent;
+  cursor: default;
+}
+.window-actions button:hover { color: var(--deck-text-primary); background: var(--deck-surface-subtle); }
+.window-actions .window-actions__close:hover { background: #c42b1c; }
+.window-actions span { position: relative; top: -1px; font-size: 14px; }
+
+.workspace {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+}
+
+/* A zero-width panel can have a very tall min-content size when its text
+   wraps. Keep that intrinsic height from growing the workspace row and
+   pushing the composer below the viewport. */
+.workspace > * { min-height: 0; }
+
+.app-shell.chat-shell.history-collapsed .history-reveal { display: grid; }
+
+.section-footer {
+  position: relative;
+  z-index: 30;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  padding: 0 5px;
+  gap: 10px;
+  border-top: 0;
+  background: var(--deck-canvas);
+  -webkit-app-region: no-drag;
+}
+
+.section-footer__nav,
+.section-footer__tools {
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.section-footer__button {
+  position: relative;
+  height: 100%;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  padding: 0 8px;
+  gap: 5px;
+  border: 0;
+  border-radius: 0;
+  color: var(--deck-text-muted);
+  background: transparent;
+  font-size: var(--deck-text-xs);
+  font-weight: 520;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.section-footer__button svg { width: 14px; height: 14px; flex: none; }
+.section-footer__button:hover { color: var(--deck-text-primary); background: var(--deck-surface-subtle); }
+.section-footer__button.active,
+.section-footer__button[aria-pressed="true"] { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.section-footer__button.active::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 7px;
+  left: 7px;
+  height: 1px;
+  background: var(--deck-accent);
+}
+
+.eyebrow {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--deck-text-faint);
+  font-family: var(--font-mono);
+  font-size: var(--deck-text-xs);
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+kbd {
+  padding: 2px 5px;
+  border: 1px solid #3b3e42;
+  border-bottom-color: #494c50;
+  border-radius: 4px;
+  color: var(--deck-text-faint);
+  background: #141617;
+  font-family: var(--font-ui);
+  font-size: var(--deck-text-xs);
+}
+
+@keyframes blink { 50% { opacity: .15; } }
+
+.toast { position: fixed; z-index: 30; left: 50%; bottom: 22px; padding: 8px 12px; border: 1px solid var(--deck-line-strong); border-radius: 7px; color: var(--deck-text-secondary); background: #222427; box-shadow: var(--deck-shadow); font-size: var(--deck-text-xs); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity .18s ease, transform .18s ease; }
+.toast.visible { opacity: 1; transform: translate(-50%, 0); }
+@media (max-width: 1180px) {
+  .section-footer__nav, .section-footer__tools { gap: 0; }
+  .section-footer__button { width: 32px; justify-content: center; padding: 0; }
+  .section-footer__button span { display: none; }
+}
+
+@media (max-width: 830px) {
+  .app-shell { min-width: 360px; }
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .app-shell .history-reveal { display: grid; }
+  .section-footer__nav, .section-footer__tools { gap: 0; }
+  .section-footer__button { width: 32px; justify-content: center; padding: 0; }
+  .section-footer__button span { display: none; }
+  .window-actions button { width: 38px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}
+.deck-lazy-surface {
+  min-height: 12rem;
+  flex: 1 1 auto;
+  display: grid;
+  place-content: center;
+  gap: 0.25rem;
+  color: var(--deck-text-secondary);
+  text-align: center;
+}
+
+.deck-lazy-surface span {
+  color: var(--deck-text-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.deck-lazy-surface strong {
+  color: var(--deck-text-primary);
+  font-size: 0.85rem;
+  font-weight: 550;
+}

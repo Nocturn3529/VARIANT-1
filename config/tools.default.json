@@ -1,0 +1,25 @@
+{
+  "_comment": "Clean default tools config seeded on first run. The developer's real config/tools.json is intentionally NOT shipped.",
+  "web_search": {
+    "_comment": "Single provider for web_search. Default free path is in-process VARIANT-1 Search (no Docker). Optional: searxng | brave | tavily | ddg.",
+    "provider": "variant1",
+    "variant1": {
+      "engines": ["ddg", "bing"]
+    },
+    "searxng": {
+      "base_url": "http://127.0.0.1:8888",
+      "autostart": false,
+      "managed": true,
+      "host": "127.0.0.1",
+      "port": 8888,
+      "container_name": "variant1-searxng",
+      "docker_image": "docker.io/searxng/searxng:latest"
+    },
+    "brave": {
+      "api_key": ""
+    },
+    "tavily": {
+      "api_key": ""
+    }
+  }
+}

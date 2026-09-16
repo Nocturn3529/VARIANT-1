@@ -1,0 +1,11 @@
+.local-model-library {display:grid;gap:24px;min-width:0;}
+.local-model-library .setting-row__copy {min-width:0;overflow-wrap:anywhere;}
+.local-model-library .setting-row__control,.local-model-library .settings-section__action {display:flex;gap:8px;flex-wrap:wrap;}
+.local-model-search {display:flex;gap:8px;}
+.local-model-search input {flex:1;min-width:0;padding:8px 10px;border:1px solid var(--deck-line);border-radius:6px;background:var(--deck-surface-subtle);color:var(--deck-text-primary);font:inherit;}
+.local-model-variants {min-width:0;display:grid;gap:12px;border:0;margin:16px 0 0;padding:0;}
+.local-model-variants legend {margin-bottom:12px;overflow-wrap:anywhere;}
+.local-model-variants label {display:flex;align-items:flex-start;gap:10px;overflow-wrap:anywhere;}
+.local-model-variants small {display:block;color:var(--deck-text-secondary);margin-top:4px;}
+.local-model-library input:is([type=checkbox],[type=radio]),.local-model-library progress {accent-color:var(--deck-text-primary);}
+.local-model-library progress {display:block;width:100%;height:4px;margin-top:10px;}

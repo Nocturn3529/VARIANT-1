@@ -1,0 +1,1 @@
+{"extends":"../frontend/main-deck/tsconfig.json","include":["chat-command-contracts.ts"],"exclude":[]}

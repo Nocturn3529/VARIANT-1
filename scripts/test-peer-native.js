@@ -1,0 +1,81 @@
+"use strict";
+// Real renderer with a local peer protocol fixture; no external harness or model is launched.
+const fs=require("node:fs"),path=require("node:path"),os=require("node:os"),{spawn}=require("node:child_process");
+const root=path.resolve(__dirname,".."),temp=fs.mkdtempSync(path.join(os.tmpdir(),"variant1-peer-ui-"));
+const out=process.env.VARIANT1_PEER_TEST_ARTIFACTS || path.join(root,"artifacts/frontend-terminal-peer-2026-09-14");fs.mkdirSync(out,{recursive:true});
+fs.writeFileSync(path.join(temp,"preload.cjs"),`const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('variant1Deck',{getBackendInfo:()=>ipcRenderer.invoke('fixture:backend')});`);
+fs.writeFileSync(path.join(temp,"main.cjs"),`
+const {app,BrowserWindow,ipcMain,protocol}=require('electron');
+const {WebSocketServer}=require(${JSON.stringify(require.resolve("ws"))});
+const fs=require('node:fs'),assert=require('node:assert/strict');
+const boot=require(${JSON.stringify(path.join(root,"electron-app-boot.js"))});
+boot.applyGpuFlags(app);boot.registerVariant1Scheme(protocol);app.setPath('userData',${JSON.stringify(path.join(temp,"profile"))});
+const pause=ms=>new Promise(r=>setTimeout(r,ms));let win,server;const sockets=[],frames=[];
+async function wait(expression){for(let i=0;i<240;i++){if(await win.webContents.executeJavaScript(expression))return;await pause(50);}throw new Error('Timed out: '+expression);}
+const run=async code=>{try{return await win.webContents.executeJavaScript(code);}catch(error){console.error('RENDERER_COMMAND',code);throw error;}};
+const click=text=>run('[...document.querySelectorAll("button")].find(b=>b.textContent==='+JSON.stringify(text)+').click()');
+async function capture(name){await pause(250);fs.writeFileSync(${JSON.stringify(out)}+'/'+name,(await win.webContents.capturePage()).toPNG());}
+app.whenReady().then(async()=>{
+ boot.registerVariant1Protocol(protocol,${JSON.stringify(root)});
+ server=new WebSocketServer({port:0,host:'127.0.0.1'});await new Promise(r=>server.once('listening',r));
+ const info={port:server.address().port,token:'fixture'};
+ const peers=[{peer_id:'peer-research',kind:'variant_chat',chat_id:'research',display_name:'Research measurements',status:'idle',project:{name:'Field study',root:'C:/Example/Field study'}},{peer_id:'peer-review',kind:'variant_chat',chat_id:'review',display_name:'Review the analysis',status:'busy'},{peer_id:'peer-grok',kind:'external_harness',display_name:'Grok Build',status:'connected',adapter:'grok-peer-bridge',external_session_id:'grok-fixture-session',terminal_id:'fixture-terminal'}];
+ const messages=[{message_id:'peer-message-fixture-1',exchange_id:'exchange-fixture-1',sender_peer_id:'peer-review',target_peer_id:'peer-research',content:'I checked the boundary conditions. Keep zero-valued measurements in the sample; only exclude missing values.',state:'observed',sequence:1,revision:3,created_at:Date.now()/1000}];
+ server.on('connection',socket=>{sockets.push(socket);const send=value=>socket.send(JSON.stringify(value));
+  socket.on('message',raw=>{const m=JSON.parse(String(raw));frames.push(m);
+   if(m.type==='chat:sessions')send({type:'chat:sessions',active_id:'research',items:[{id:'research',title:'Research measurements'},{id:'review',title:'Review the analysis'}]});
+   if(m.type==='chat:session:get')send({type:'chat:session',session:{id:'research',title:'Research measurements',messages:[{role:'user',text:'Review these measurements and keep the results in the Python workspace.'},{role:'assistant',text:'The measurements are loaded. I will ask the review chat to check the boundary conditions.'},{role:'user',text:'[Peer message] Internal envelope',peer_display:{display_name:'Review the analysis',content:messages[0].content},origin:{kind:'peer',peer_id:'peer-review',message_id:messages[0].message_id}},{role:'assistant',text:'I have sent the follow-up to Grok Build.',run_id:'fixture-run',peer_sent:[{message_id:'outgoing-fixture',sender_peer_id:'peer-research',target_peer_id:'peer-grok',target_display_name:'Grok Build',content:'Keep zero values in the sample and check the missing-value cases.',state:'queued',sender_invocation:{run_id:'fixture-run',chat_id:'research'}}]}],runtime:{busy:false,kernel:{state:'idle',generation:1}}}});
+   if(m.type==='execution:get')send({type:'execution:snapshot',chat_id:'research',terminals:[],processes:[]});
+   if(m.type==='browser:host:register')send({type:'browser:host:registered'});
+   if(m.type.startsWith('peers:')){
+    const operation=m.type.slice(6);let result={};
+    if(operation==='list')result={items:peers};
+    if(operation==='get')result=peers.find(p=>p.peer_id===m.peer_id);
+    if(operation==='inbox')result={peer_id:'peer-research',direction:m.direction,messages,cursor:1,revision:3};
+    if(operation==='inspect')result=messages.find(row=>row.message_id===m.message_id);
+    if(['send','reply','grok:launch','grok:connect','grok:setup','grok:permission','grok:delivery'].includes(operation))throw new Error('Visual fixture must not submit mutations');
+    if(operation==='grok:sessions')result={viewer_chat_id:m.chat_id,items:[{session_id:'saved-field-study',title:'Field study analysis',cwd:'C:/Example/Field study',updated_at:Date.now()/1000}],cursor:null};
+    if(operation==='grok:status')result={available:true,installed:true,adapter:'grok-peer-bridge',items:[{binding_id:'fixture-binding',viewer_chat_id:'research',owner_chat_id:'research',delivery_mode:'inbox',preferred_delivery_mode:'inbox',automatic_wake_available:true,native_agent_origin:false,capabilities:{live_ingress:false},session_id:'grok-fixture-session',terminal_id:'fixture-terminal',peer_id:'peer-grok',status:'connected',pending_permissions:[]}]};
+    send({type:'peers:result',chat_id:m.chat_id,request_id:m.request_id,operation,ok:true,result});
+   }
+  });
+ });
+ ipcMain.handle('fixture:backend',()=>info);
+ win=new BrowserWindow({show:false,width:1180,height:820,webPreferences:{preload:${JSON.stringify(path.join(temp,"preload.cjs"))},contextIsolation:true,sandbox:true,nodeIntegration:false}});
+ win.webContents.on('console-message',event=>console.log('RENDERER',event.message));
+ await win.loadURL('variant1://app/frontend/main-deck/index.html');
+ await wait('!!document.querySelector("#composer-input") && !document.querySelector(".startup-cover")');
+ assert.ok(await run(${JSON.stringify('!!document.querySelector(\'[aria-label="Message from Review the analysis"]\')')}),'canonical origin renders separately from human messages');
+ await run(${JSON.stringify('document.querySelector(\'[aria-label="Peers"]\').click()')});
+ await wait('document.querySelectorAll(".peer-directory button").length===2');
+ win.showInactive();await capture('discover.png');
+ await click('Inbox');await wait('!!document.querySelector(".peer-dialog .peer-message")');await capture('inbox.png');
+ await click('Reply');await run('(()=>{const node=document.querySelector(".peer-compose textarea");Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,"value").set.call(node,"Thanks. I will preserve zero values and add a check for missing samples.");node.dispatchEvent(new Event("input",{bubbles:true}));})()');
+ win.setSize(600,660);await capture('compact-reply.png');
+ const fits=await run('(()=>{const dialog=document.querySelector(".peer-dialog").getBoundingClientRect(),send=document.querySelector(".peer-compose button[type=submit]").getBoundingClientRect();return dialog.width<=innerWidth && dialog.height<=innerHeight && send.bottom<=dialog.bottom;})()');
+ assert.equal(fits,true,'compact peer dialog keeps the send action visible');
+ await run(${JSON.stringify('document.querySelector(\'[aria-label="Close peers"]\').click()')});
+ await capture('transcript.png');
+ const count=frames.length;await pause(400);assert.equal(frames.slice(count).filter(row=>row.type.startsWith('peers:')).length,0,'closed peer overlay emits no refresh traffic');
+ win.setSize(1180,820);
+ await run('document.querySelector(".execution-trace__summary").click()');await run('document.querySelector(".peer-send-trace summary").click()');await capture('peer-chat-and-outgoing-trace.png');
+ await run(${JSON.stringify('document.querySelector(\'[aria-label="Peers"]\').click()')});await click('Grok');
+ await wait('document.querySelectorAll(".grok-launch-form select option").length===2 && !!document.querySelector(".grok-delivery-mode")');
+ await run(${JSON.stringify('(()=>{const select=document.querySelector(\'[aria-label="Grok session"]\');select.value="saved-field-study";select.dispatchEvent(new Event("change",{bubbles:true}));})()')});
+ assert.equal(await run(${JSON.stringify('document.querySelector(\'[aria-label="Grok directory"]\').value')}),'C:/Example/Field study');
+ assert.match(await run('document.querySelector(".grok-delivery-mode").textContent'),/Inbox only/);
+ await capture('grok-saved-session.png');
+ assert.equal(await run("document.querySelector('input[value=agent_context_prompt]').disabled"),false);
+ assert.equal(await run("document.querySelector('input[value=inbox]').checked"),true);
+ await run('document.querySelector(".grok-peer-dialog__body").scrollTop=10000');await capture('grok-stock-delivery.png');
+ win.setSize(600,660);await capture('grok-compact.png');
+ assert.equal(await run('document.querySelector(".grok-peer-dialog").scrollWidth<=document.querySelector(".grok-peer-dialog").clientWidth'),true,'portable Grok controls fit a compact window');
+ await run(${JSON.stringify('document.querySelector(\'[aria-label="Close grok build"]\').click()')});
+ await run(${JSON.stringify('document.querySelector(\'[aria-label="Close peers"]\').click()')});
+ fs.writeFileSync(${JSON.stringify(path.join(out,"frames.json"))},JSON.stringify(frames,null,2));
+ console.log('Native peer UI: discovery, attributed inbox/transcript, compact reply controls and closed-view silence passed');
+}).catch(error=>{console.error(error);process.exitCode=1;}).finally(()=>{for(const socket of sockets)socket.terminate();if(server)server.close();app.exit(process.exitCode||0);});
+`);
+const child=spawn(require("electron"),[path.join(temp,"main.cjs")],{windowsHide:true,stdio:"inherit",cwd:root});
+const timer=setTimeout(()=>child.kill(),45000);
+child.once("exit",code=>{clearTimeout(timer);process.exitCode=code===0?0:1;const target=path.resolve(temp);if(path.dirname(target)===path.resolve(os.tmpdir())&&path.basename(target).startsWith("variant1-peer-ui-"))fs.rmSync(target,{recursive:true,force:true,maxRetries:4,retryDelay:150});});

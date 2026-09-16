@@ -1,0 +1,50 @@
+{
+  "title": "Notepad",
+  "controls": [
+    {
+      "id": -1513238330,
+      "key": "rn:Text|Status#1",
+      "role": "Text",
+      "name": "Status",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 1,
+      "key": "aid:saveBtn#1",
+      "role": "Button",
+      "name": "Save",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 2,
+      "key": "rn:Edit|#1",
+      "role": "Edit",
+      "name": "",
+      "value": "hello world",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    }
+  ]
+}

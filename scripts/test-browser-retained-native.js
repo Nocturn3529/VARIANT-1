@@ -1,0 +1,81 @@
+'use strict';
+const fs=require('node:fs'), os=require('node:os'), path=require('node:path'), assert=require('node:assert/strict');
+const {spawnSync}=require('node:child_process');
+const root=path.resolve(__dirname,'..');
+const temp=fs.mkdtempSync(path.join(os.tmpdir(),'variant-retained-browser-'));
+const output=path.join(root,'artifacts','retained-browser-20260914');
+fs.mkdirSync(output,{recursive:true});
+const code=`
+const {app,BrowserWindow}=require('electron');
+const fs=require('node:fs'),http=require('node:http'),assert=require('node:assert/strict');
+const {createBrowserViewManager}=require(${JSON.stringify(path.join(root,'electron-browser-views.js'))});
+app.setPath('userData',${JSON.stringify(path.join(temp,'profile'))});
+app.disableHardwareAcceleration();
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+async function until(check){for(let i=0;i<150;i++){if(await check())return;await pause(20);}throw Error('fixture observation timeout');}
+let manager,deck,detached,server; const result={checks:{}};
+app.whenReady().then(async()=>{
+ try {
+  let loads=0;
+  server=http.createServer((req,res)=>{if(req.url.startsWith('/page'))loads++;res.setHeader('Content-Type','text/html');res.end('<!doctype html><title>Retained fixture</title><body style="margin:0;background:#334455"><input id="kept"><script>window.loadIdentity=performance.timeOrigin;window.timerTicks=0;setInterval(()=>timerTicks++,20)</script></body>');});
+  await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const url='http://127.0.0.1:'+server.address().port+'/page';
+  const options={show:false,width:1100,height:800,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}};
+  deck=new BrowserWindow(options);detached=new BrowserWindow(options);
+  await deck.loadURL('about:blank');await detached.loadURL('about:blank');
+  manager=createBrowserViewManager({getDeckWindow:()=>deck,getNativeWindow:(id,owner)=>id==='pane:fixture'&&owner===deck.webContents?detached:null,
+    isTrustedIpcSender:event=>event.sender===deck.webContents,hardenGuestContents:()=>{}});
+  const event={sender:deck.webContents};
+  const command=async input=>{const value=await manager.command(event,{tabId:'retained',...input});assert.equal(value.ok,true,JSON.stringify(value));return value;};
+  const layout={bounds:{x:40,y:80,width:400,height:300},viewport:{width:800,height:480},scroll:{x:0,y:0},visible:true};
+  let answer=await command({action:'attach',attachmentId:'dock-1',windowId:'',url,...layout});
+  const guestId=answer.state.guestId,generation=answer.state.generation;
+  const guest=manager.getGuest(guestId).contents;
+  await until(()=>guest.getURL()===url&&!guest.isLoading());
+  await guest.loadURL(url+'?second');
+  const identity=await guest.executeJavaScript('document.querySelector("#kept").value="preserved";window.retainedObject={value:42};window.loadIdentity');
+  assert.ok(guest.navigationHistory.canGoBack());
+  const prior=await guest.executeJavaScript('timerTicks');
+  const beforeCalls=loads;
+  answer=await command({action:'attach',attachmentId:'detached-1',windowId:'pane:fixture',url,...layout});
+  assert.equal(answer.state.guestId,guestId);assert.equal(answer.state.generation,generation);assert.equal(loads,beforeCalls);
+  assert.equal(await guest.executeJavaScript('loadIdentity'),identity);
+  assert.equal(await guest.executeJavaScript('document.querySelector("#kept").value'),'preserved');
+  assert.equal(await guest.executeJavaScript('retainedObject.value'),42);
+  assert.ok(answer.state.canGoBack);assert.ok(answer.state.url.endsWith('?second'));
+  await until(async()=>await guest.executeJavaScript('timerTicks')>prior);
+  result.checks.same_guest_form_script_timer_history_after_detach=true;
+  const clip=detached.contentView.children.find(view=>view.children?.some(child=>child.webContents?.id===guestId));
+  assert.deepEqual(clip.getBounds(),{x:40,y:80,width:400,height:300});
+  assert.deepEqual(clip.children[0].getBounds(),{x:0,y:0,width:800,height:480});
+  await until(async()=>JSON.stringify(await guest.executeJavaScript('({width:innerWidth,height:innerHeight})'))===JSON.stringify({width:800,height:480}));
+  result.checks.full_viewport_inside_narrow_native_container=true;
+  const stale=await manager.command(event,{tabId:'retained',action:'detach',attachmentId:'dock-1'});
+  assert.equal(stale.ok,false);assert.equal(manager.getGuest(guestId).host,detached);
+  result.checks.stale_detach_cannot_park_new_attachment=true;
+  await command({action:'layout',attachmentId:'detached-1',...layout,scroll:{x:200,y:50},visible:false});
+  assert.equal(clip.getVisible(),false);assert.equal(clip.children[0].getBounds().x,-200);
+  await command({action:'layout',attachmentId:'detached-1',...layout});
+  assert.equal(clip.getVisible(),true);
+  result.checks.hide_overlay_and_scroll_offset_preserve_document=true;
+  detached.close();await until(()=>detached.isDestroyed());
+  assert.equal(guest.isDestroyed(),false);assert.equal(manager.getGuest(guestId).host,null);
+  answer=await command({action:'attach',attachmentId:'dock-2',windowId:'',url,...layout});
+  assert.equal(answer.state.guestId,guestId);assert.equal(await guest.executeJavaScript('loadIdentity'),identity);assert.equal(loads,beforeCalls);
+  result.checks.popout_close_and_redock_preserve_guest=true;
+  const value=await command({action:'call',method:'executeJavaScript',args:['({value:retainedObject.value,input:document.querySelector("#kept").value})']});
+  assert.deepEqual(value.value,{value:42,input:'preserved'});
+  await command({action:'call',method:'sendInputEvent',args:[{type:'keyDown',keyCode:'A'}]});
+  result.checks.async_command_parity=true;
+  await command({action:'destroy'});await until(()=>guest.isDestroyed());assert.equal(manager.getGuest(guestId),null);
+  result.checks.explicit_tab_close_destroys_guest=true;
+  result.passed=true;
+ }catch(error){result.passed=false;result.error=error.stack;process.exitCode=1;}
+ finally {fs.writeFileSync(${JSON.stringify(path.join(output,'RESULT.json'))},JSON.stringify(result,null,2));console.log(JSON.stringify(result));manager?.dispose();for(const win of [deck,detached])if(win&&!win.isDestroyed())win.destroy();server?.close();app.exit(result.passed?0:1);}
+});
+`;
+fs.writeFileSync(path.join(temp,'main.cjs'),code);
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const run=spawnSync(require('electron'),[path.join(temp,'main.cjs')],{encoding:'utf8',timeout:45000,windowsHide:true,env});
+process.stdout.write(run.stdout||'');process.stderr.write(run.stderr||'');
+assert.equal(run.status,0,'retained browser native fixture failed');

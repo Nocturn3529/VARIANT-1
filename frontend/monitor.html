@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' variant1:; connect-src 'none'; style-src 'self' 'unsafe-inline' variant1: https://fonts.googleapis.com; font-src 'self' variant1: https://fonts.gstatic.com; script-src 'self' variant1:; img-src 'self' variant1: data:;" />
+  <title>VARIANT-1 — Logs</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="variant1://app/frontend/monitor.css" />
+</head>
+<body>
+  <div class="mon-panel" id="mon-panel">
+    <div class="corner corner-tl" aria-hidden="true"></div>
+    <div class="corner corner-tr" aria-hidden="true"></div>
+    <div class="corner corner-bl" aria-hidden="true"></div>
+    <div class="corner corner-br" aria-hidden="true"></div>
+
+    <div class="hud-scanlines" aria-hidden="true"></div>
+    <div class="hud-sweep" aria-hidden="true"></div>
+
+    <header class="mon-header" id="bar">
+      <span class="mon-header__diamond" aria-hidden="true">◆</span>
+      <span class="mon-header__brand">VARIANT1</span>
+      <span class="mon-header__sub">// LIVE LOGS</span>
+      <span class="mon-header__spacer"></span>
+      <span id="live-dot" class="live-dot working" title="Streaming session log"></span>
+      <span class="live-label">LIVE</span>
+      <button type="button" id="mon-pin" class="mon-close mon-window-button" title="Keep window on top" aria-label="Keep Log monitor on top" aria-pressed="true">Pin</button>
+      <button type="button" id="mon-minimize" class="mon-close mon-window-button" title="Minimize" aria-label="Minimize Log monitor">−</button>
+      <button type="button" id="mon-maximize" class="mon-close mon-window-button" title="Maximize or restore" aria-label="Maximize or restore Log monitor">❐</button>
+      <button type="button" id="mon-close" class="mon-close" title="Close">✕</button>
+    </header>
+
+    <div class="mon-toolbar">
+      <span class="mon-toolbar__meta">SOURCE:<span class="mon-toolbar__hi">main0</span></span>
+      <span class="mon-toolbar__sep">|</span>
+      <span class="mon-toolbar__meta">LINES:<span id="line-count" class="mon-toolbar__val">0</span></span>
+      <span class="mon-toolbar__sep">|</span>
+      <span class="mon-toolbar__meta">AUTO-SCROLL:<span id="scroll-state" class="mon-toolbar__hi">ON</span></span>
+      <span class="mon-toolbar__spacer"></span>
+      <button type="button" id="btn-copy" class="mon-tool-btn" title="Copy all lines">Copy</button>
+      <button type="button" id="btn-clear" class="mon-tool-btn" title="Clear session log view">Clear</button>
+      <button type="button" id="btn-folder" class="mon-tool-btn" title="Open logs folder">Folder</button>
+      <span id="clock" class="mon-clock">00:00:00</span>
+    </div>
+
+    <main id="feed" class="mon-feed" aria-live="polite" aria-label="Session log">
+      <div id="empty" class="empty">
+        <div class="empty__prompt">&gt; AWAITING LOG LINES<span class="caret">_</span></div>
+        <p class="empty__hint">Same stream as <code>logs/main0.log</code> — backend, renderer, activity mirrors, and main process.</p>
+      </div>
+    </main>
+
+    <button type="button" id="resume-btn" class="resume-btn" hidden>
+      ▼ <span id="new-count">0</span> NEW · JUMP TO END
+    </button>
+
+    <footer class="mon-footer">
+      <span>SESSION ONLY · main1 history kept on disk</span>
+      <span class="mon-footer__rule" aria-hidden="true"></span>
+      <span id="copy-status" class="mon-footer__status" hidden></span>
+      <span class="mon-footer__rule" aria-hidden="true"></span>
+      <span>READ-ONLY</span>
+    </footer>
+  </div>
+
+  <script src="variant1://app/frontend/monitor.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+{
+  "title": "Chat App",
+  "controls": [
+    {
+      "id": -1789083623,
+      "key": "rn:Text|Alice#1",
+      "role": "Text",
+      "name": "Alice",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": -71477052,
+      "key": "rn:Text|Bob#1",
+      "role": "Text",
+      "name": "Bob",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 1,
+      "key": "rn:ListItem|Alice#1",
+      "role": "ListItem",
+      "name": "Alice",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 2,
+      "key": "rn:ListItem|Bob#1",
+      "role": "ListItem",
+      "name": "Bob",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 3,
+      "key": "rn:Button|Reply#1",
+      "role": "Button",
+      "name": "Reply",
+      "value": "",
+      "state": "",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    }
+  ]
+}

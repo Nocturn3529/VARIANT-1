@@ -1,0 +1,65 @@
+{
+  "title": "Settings",
+  "controls": [
+    {
+      "id": 1,
+      "key": "rn:TabItem|General#1",
+      "role": "TabItem",
+      "name": "General",
+      "value": "",
+      "state": "selected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 2,
+      "key": "rn:TabItem|Privacy#1",
+      "role": "TabItem",
+      "name": "Privacy",
+      "value": "",
+      "state": "unselected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 3,
+      "key": "rn:CheckBox|Enable notifications#1",
+      "role": "CheckBox",
+      "name": "Enable notifications",
+      "value": "",
+      "state": "on",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    },
+    {
+      "id": 4,
+      "key": "rn:RadioButton|Dark mode#1",
+      "role": "RadioButton",
+      "name": "Dark mode",
+      "value": "",
+      "state": "selected",
+      "offscreen": false,
+      "bounds": [
+        0,
+        0,
+        100,
+        100
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "primary": [
+    "chat",
+    "memory",
+    "automations",
+    "overview",
+    "runtime",
+    "settings"
+  ],
+  "settings": [
+    "general",
+    "providers",
+    "provider-keys",
+    "custom-endpoints",
+    "local-models",
+    "tools-keys",
+    "search",
+    "browser",
+    "voice",
+    "messaging",
+    "plugins",
+    "memory",
+    "about"
+  ]
+}
