@@ -110,9 +110,63 @@ def test_whisper_binary_preserves_absolute_custom(tmp_path):
     abs_bin = tmp_path / "opt" / "whisper-server"
     abs_bin.parent.mkdir(parents=True)
     abs_bin.write_bytes(b"abs")
+    bundled = tmp_path / "data" / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
     resolved = resolve_whisper_binary(
         str(abs_bin),
         app_root=str(tmp_path / "app"),
         data_dir=str(tmp_path / "data"),
     )
     assert resolved == abs_bin.resolve()
+
+
+def test_whisper_binary_preserves_parent_relative_when_bundled_exists(tmp_path):
+    app = tmp_path / "workspace" / "app"
+    data = tmp_path / "workspace" / "data"
+    bundled = data / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
+    sibling = tmp_path / "workspace" / "models" / "speech" / "whisper" / "whisper-server"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_bytes(b"sibling")
+
+    resolved = resolve_whisper_binary(
+        "../models/speech/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == sibling.resolve()
+
+
+def test_whisper_binary_preserves_repeated_parent_segments(tmp_path):
+    app = tmp_path / "outer" / "workspace" / "app"
+    data = tmp_path / "outer" / "workspace" / "data"
+    bundled = data / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
+    uncle = tmp_path / "outer" / "models" / "speech" / "whisper" / "whisper-server"
+    uncle.parent.mkdir(parents=True)
+    uncle.write_bytes(b"uncle")
+
+    resolved = resolve_whisper_binary(
+        "../../models/speech/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == uncle.resolve()
+
+
+def test_whisper_binary_dot_slash_still_adapts_bundled_default(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    data = tmp_path / "data"
+    bundled = app / "bin" / "whisper" / "whisper-server.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"runtime")
+    monkeypatch.setattr("speech.assets.os.name", "nt")
+    resolved = resolve_whisper_binary(
+        "./bin/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == bundled.resolve()

@@ -74,7 +74,10 @@ def resolve_whisper_binary(
         if path.is_absolute():
             candidates.append(path)
         else:
-            norm = raw.replace("\\", "/").lstrip("./")
+            # Strip only literal "./" prefixes. lstrip("./") would also eat "../".
+            norm = raw.replace("\\", "/")
+            while norm.startswith("./"):
+                norm = norm[2:]
             if norm.lower() in {item.lower() for item in _BUNDLED_WHISPER_RELPATHS}:
                 adapted = Path(norm).with_name(basename)
                 candidates.extend((root / adapted, Path(app_root).resolve() / adapted))
