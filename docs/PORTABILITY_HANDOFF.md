@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `67aee736` (code; handoff pin follows) |
+| Branch tip (this doc) | `386f4456` (code + main merge; handoff pin follows) |
 
 ## Goals
 
@@ -325,6 +325,50 @@ Local Windows after those three commits: child/architecture/CJK tests **22 passe
 6. macOS `prepare:native` + builder evidence.
 7. `electron-builder --linux` (and later mac) on a real builder.
 8. **Merging remains Nocturn's decision after ChatGPT full re-review.** PR #3 stays draft.
+
+
+## ChatGPT re-review of 65e36f4 (comment 5703076728) — R7 / R8 / CJK
+
+Paused for the next ChatGPT re-review. **Do not merge.** PR #3 remains draft. `main` and `C:\Users\noctu\Desktop\VARIANT-1` were not modified.
+
+Review comment: https://github.com/Nocturn3529/VARIANT-1/pull/3#issuecomment-5703076728
+
+### Commits since 65e36f4
+
+| SHA | Change |
+| --- | --- |
+| `2ddb9590` | **R7.** Isolation cleanup skips symbolic links before chmod/recursion, stays inside the isolated root, and adds only owner write/search bits (`0700`/`0600`). Node tests cover internal/external links, broken links, Windows junctions, and read-only directories. Maintained `test-python.js` run requires those tests and still fails on unexpected cleanup errors. |
+| `1c31c64b` | **R8.** `WorkScheduler.run_once()` holds one admission lock across capacity checks and leases. Unstarted compositions get an owned follow-up pump when a slot frees. Non-blocking spawn, queued/running/completed cancel, and per-kind limits kept. |
+| `42b0f323` | **CJK.** Vendored TrueType `glyf` subset of Noto Sans SC VF 2.004 (Regular), OFL 1.1, packaged as `Variant1CJK-Regular.ttf`. ReportLab embeds `/FontFile2`. Tests check cmap membership, rendered ink, extractable text, and registration logs. CID stays removed. |
+| `9d941c92` | Empty retrigger while the PR was unmergeable with `main` (GitHub skipped `pull_request` CI). |
+| `386f4456` | Merge `origin/main` (`d58837b3`) so the draft PR is mergeable again. Keep the Prime Agent notice and the CJK font notice. |
+
+Retained from earlier reviews: N1, R2.a–c, R3, R4, R1, R5 (macOS orphan still deferred), R6, spawn-pump lifecycle, CID removal.
+
+### Exact CI — run 35142327887 at `386f4456`
+
+[GitHub Actions run 35142327887](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35142327887) tests `386f4456c16f77ea8a40ddea2f9dcbffbea23a02`. Overall **success**.
+
+| Check | Observed result |
+| --- | --- |
+| frontend-scripts | **success** |
+| backend-linux cleanup unit tests | 8 passed, 1 skipped (Windows junction) |
+| backend-linux pytest | **2836 passed, 29 skipped, 0 failed** in 324.31s |
+| backend-linux isolation cleanup | **success** (no EACCES / no `TEST ISOLATION FAILURE`) |
+| backend-linux smoke | `linux_smoke_ok UnsupportedDesktopAdapter 1` |
+| backend-linux job | **success** |
+| backend (Windows) | **2855 passed, 10 skipped** in 2231.10s; job **success** |
+
+Local Windows before push: isolation-cleanup node tests 8 passed / 1 skipped; focused pytest 20 passed (scheduler admission, child simultaneous/restart, CJK qualification, retained cancel/architecture/per-kind tests).
+
+### Remaining gaps
+
+1. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
+2. macOS `prepare:native` + builder evidence.
+3. `electron-builder --linux` (and later mac) on a real builder.
+4. Local Windows ConPTY SIGINT observation (`test_execution_hosts.py::test_signal_acceptance_is_separate_from_observed_effect[False-terminal]`), author-reported on this desktop, not reproduced in CI.
+5. Broader Japanese/Korean PDF claims need their own evidence; the bundled face qualifies the existing mixed Chinese/Latin export test.
+6. **Merging remains Nocturn's decision after ChatGPT re-review.** PR #3 stays draft.
 
 
 ## Review protocol
