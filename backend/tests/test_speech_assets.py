@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from speech.assets import (
+    resolve_whisper_binary,
     KOKORO_MODEL_NAME,
     KOKORO_VOICES_NAME,
     kokoro_drop_dir,
@@ -74,3 +75,44 @@ def test_kokoro_requires_the_compatible_user_pair(tmp_path):
     )
     assert selected_model == model.resolve()
     assert selected_voices == voices.resolve()
+
+
+def test_whisper_binary_only_adapts_bundled_defaults(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    data = tmp_path / "data"
+    bundled = app / "bin" / "whisper" / "whisper-server.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"runtime")
+    custom_dir = app / "runtimes" / "cpu"
+    custom_dir.mkdir(parents=True)
+    custom = custom_dir / "whisper-server"
+    custom.write_bytes(b"custom")
+
+    monkeypatch.setattr("speech.assets.os.name", "nt")
+    # Bundled default pin gets .exe adaptation on Windows.
+    resolved_default = resolve_whisper_binary(
+        "bin/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved_default == bundled.resolve()
+
+    # Custom same-basename relative must keep parent and configured name.
+    resolved_custom = resolve_whisper_binary(
+        "runtimes/cpu/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved_custom == custom.resolve()
+
+
+def test_whisper_binary_preserves_absolute_custom(tmp_path):
+    abs_bin = tmp_path / "opt" / "whisper-server"
+    abs_bin.parent.mkdir(parents=True)
+    abs_bin.write_bytes(b"abs")
+    resolved = resolve_whisper_binary(
+        str(abs_bin),
+        app_root=str(tmp_path / "app"),
+        data_dir=str(tmp_path / "data"),
+    )
+    assert resolved == abs_bin.resolve()

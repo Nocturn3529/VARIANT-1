@@ -16,7 +16,7 @@ def test_default_config_local_binary_is_platform_neutral():
     assert cfg["local"]["binary"] == "bin/llama-server"
 
 
-def test_resolve_maps_exe_and_bare_pins(monkeypatch):
+def test_resolve_maps_bundled_exe_and_bare_pins(monkeypatch):
     monkeypatch.setattr("model_runtime.llama_server.sys.platform", "linux")
     assert resolve_llama_binary_relpath("bin/llama-server.exe") == "bin/llama-server"
     assert resolve_llama_binary_relpath("bin/llama-server") == "bin/llama-server"
@@ -28,11 +28,25 @@ def test_resolve_maps_exe_and_bare_pins(monkeypatch):
     assert resolve_llama_binary_relpath("bin/llama-server.exe") == "bin/llama-server.exe"
 
 
-def test_resolve_preserves_custom_relative_and_absolute(monkeypatch, tmp_path):
+def test_resolve_preserves_custom_same_basename_and_absolute(monkeypatch, tmp_path):
     monkeypatch.setattr("model_runtime.llama_server.sys.platform", "linux")
     assert resolve_llama_binary_relpath("bin/custom-llama") == "bin/custom-llama"
+    assert resolve_llama_binary_relpath("runtimes/cpu/llama-server") == "runtimes/cpu/llama-server"
+    assert (
+        resolve_llama_binary_relpath("runtimes/cuda/llama-server.exe")
+        == "runtimes/cuda/llama-server.exe"
+    )
+    assert resolve_llama_binary_relpath("../other/llama-server") == "../other/llama-server"
     abs_path = str(tmp_path / "llama-server.exe")
     assert resolve_llama_binary_relpath(abs_path) == abs_path
+
+    monkeypatch.setattr("model_runtime.llama_server.sys.platform", "win32")
+    # Custom same-basename paths must not be collapsed to bin/llama-server.exe
+    assert resolve_llama_binary_relpath("runtimes/cpu/llama-server") == "runtimes/cpu/llama-server"
+    assert (
+        resolve_llama_binary_relpath("runtimes/cuda/llama-server.exe")
+        == "runtimes/cuda/llama-server.exe"
+    )
 
 
 def test_llama_server_uses_default_config_pin(monkeypatch):

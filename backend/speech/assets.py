@@ -43,33 +43,42 @@ def kokoro_drop_dir(value: str | None = None) -> Path:
     return data_root(value) / "models" / "speech" / "kokoro"
 
 
+# Bundled/default pins whose basename may be OS-adapted (.exe on Windows).
+_BUNDLED_WHISPER_RELPATHS = frozenset({
+    "bin/whisper/whisper-server",
+    "bin/whisper/whisper-server.exe",
+    "models/speech/whisper/whisper-server",
+    "models/speech/whisper/whisper-server.exe",
+})
+
+
 def resolve_whisper_binary(
     configured: object,
     *,
     app_root: str = APP_ROOT,
     data_dir: str | None = None,
 ) -> Path:
-    """Resolve a user-supplied whisper-server, then the legacy dev runtime."""
+    """Resolve a user-supplied whisper-server, then the legacy dev runtime.
+
+    Basename OS adaptation (whisper-server <-> whisper-server.exe) applies only
+    to recognized bundled defaults. Custom same-basename relatives such as
+    ``runtimes/cpu/whisper-server`` are preserved as configured.
+    """
 
     raw = str(configured or "").strip()
     root = data_root(data_dir)
     candidates: list[Path] = []
+    basename = whisper_server_basename()
     if raw:
         path = Path(raw).expanduser()
         if path.is_absolute():
             candidates.append(path)
         else:
+            norm = raw.replace("\\", "/").lstrip("./")
+            if norm.lower() in {item.lower() for item in _BUNDLED_WHISPER_RELPATHS}:
+                adapted = Path(norm).with_name(basename)
+                candidates.extend((root / adapted, Path(app_root).resolve() / adapted))
             candidates.extend((root / path, Path(app_root).resolve() / path))
-    basename = whisper_server_basename()
-    # Honor a platform-neutral configured path (.../whisper-server) on Windows.
-    if raw:
-        raw_path = Path(raw)
-        if raw_path.name.lower() in {"whisper-server", "whisper-server.exe"}:
-            candidates = [
-                root / raw_path.with_name(basename),
-                Path(app_root).resolve() / raw_path.with_name(basename),
-                *candidates,
-            ]
     candidates.extend((
         whisper_drop_dir(str(root)) / basename,
         Path(app_root).resolve() / "bin" / "whisper" / basename,

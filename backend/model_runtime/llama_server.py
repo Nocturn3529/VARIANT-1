@@ -27,11 +27,19 @@ def _default_llama_relpath() -> str:
     return "bin/" + name
 
 
+# Only these packaged pins are rewritten to the host default under bin/.
+_BUNDLED_LLAMA_RELPATHS = frozenset({
+    "bin/llama-server",
+    "bin/llama-server.exe",
+})
+
+
 def resolve_llama_binary_relpath(configured: object | None = None) -> str:
     """Map a packaged/default binary pin to the host OS.
 
-    Accepts ``bin/llama-server``, ``bin/llama-server.exe``, or empty.
-    Absolute paths and unrelated names are returned unchanged (normpath).
+    Rewrites only recognized bundled defaults (``bin/llama-server[.exe]``) or
+    empty. Absolute paths, parent-relative customs, and same-basename pins
+    under other directories (e.g. ``runtimes/cpu/llama-server``) are preserved.
     """
     raw = str(configured or "").strip()
     if not raw:
@@ -39,8 +47,9 @@ def resolve_llama_binary_relpath(configured: object | None = None) -> str:
     if os.path.isabs(raw):
         return os.path.normpath(raw)
     norm = raw.replace("\\", "/")
-    base = norm.split("/")[-1].lower()
-    if base in {"llama-server", "llama-server.exe"}:
+    if norm.startswith("./"):
+        norm = norm[2:]
+    if norm.lower() in {item.lower() for item in _BUNDLED_LLAMA_RELPATHS}:
         return _default_llama_relpath()
     return norm
 
