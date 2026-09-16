@@ -12,6 +12,7 @@ const {execFileSync, spawnSync} = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const {makeTreeWritable, removeTreeWithRetry} = require('./test-isolation-cleanup');
 
 const root = path.join(__dirname, '..');
 const backend = path.join(root, 'backend');
@@ -23,6 +24,15 @@ const python = isWin
 if (!fs.existsSync(python)) {
   console.error('Backend venv not found. Run: npm run setup:backend');
   process.exit(1);
+}
+
+const cleanupTests = spawnSync(
+  process.execPath,
+  ['--test', path.join(__dirname, 'test-isolation-cleanup.test.js')],
+  {cwd: root, stdio: 'inherit'},
+);
+if ((cleanupTests.status || 0) !== 0) {
+  process.exit(cleanupTests.status || 1);
 }
 
 const userArgs = process.argv.slice(2);
@@ -110,22 +120,7 @@ function inventoryChanges(before, after) {
   return changed;
 }
 
-function makeTreeWritable(base, chmodErrors = []) {
-  if (!fs.existsSync(base)) return chmodErrors;
-  for (const entry of fs.readdirSync(base, {withFileTypes: true})) {
-    const full = path.join(base, entry.name);
-    if (entry.isDirectory() && !entry.isSymbolicLink()) makeTreeWritable(full, chmodErrors);
-    try {
-      fs.chmodSync(full, entry.isDirectory() ? 0o777 : 0o666);
-    } catch (error) {
-      chmodErrors.push(`${full}: ${error.code || ''} ${error.message}`);
-    }
-  }
-  try { fs.chmodSync(base, 0o777); } catch (error) {
-    chmodErrors.push(`${base}: ${error.code || ''} ${error.message}`);
-  }
-  return chmodErrors;
-}
+
 
 function describePathChain(target, isolatedRoot) {
   const lines = [];
@@ -190,29 +185,6 @@ function describeIsolationFailure(error, tempRoot, chmodErrors) {
     }
   } catch (_) {}
   return lines.join('\n');
-}
-
-function removeTreeWithRetry(base, timeoutMs = 20000) {
-  const sleeper = new Int32Array(new SharedArrayBuffer(4));
-  const deadline = Date.now() + timeoutMs;
-  let lastError = null;
-  while (fs.existsSync(base)) {
-    try {
-      fs.rmSync(base, {
-        recursive: true,
-        force: true,
-        maxRetries: 2,
-        retryDelay: 100,
-      });
-      return;
-    } catch (error) {
-      lastError = error;
-      if (!['EPERM', 'EBUSY', 'ENOTEMPTY', 'EACCES'].includes(error.code)) throw error;
-      if (Date.now() >= deadline) break;
-      Atomics.wait(sleeper, 0, 0, 250);
-    }
-  }
-  if (fs.existsSync(base)) throw lastError || new Error(`Could not remove ${base}`);
 }
 
 const pytestArgs = userArgs.length ? userArgs : ['tests', '-q'];
