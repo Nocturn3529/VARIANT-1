@@ -79,7 +79,8 @@ window.variant1Deck = {
   renameWorkbenchPath: async (path, name) => {
     const file = files.get(path);
     if (!file) return {ok: false, error: "Sample file not found"};
-    const next = path.slice(0, path.lastIndexOf("\\") + 1) + name;
+    const cut = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
+    const next = (cut >= 0 ? path.slice(0, cut + 1) : "") + name;
     files.set(next, file); files.delete(path);
     return {ok: true, path: next};
   },

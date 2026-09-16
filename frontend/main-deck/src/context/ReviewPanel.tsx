@@ -25,8 +25,17 @@ function statusGlyph(value: string): string {
   return "M";
 }
 
+/** Join project-root + repo-relative file using the host path separator. */
+function hostSep(root: string): "\\" | "/" {
+  if (/^[A-Za-z]:/.test(root) || root.includes("\\")) return "\\";
+  return "/";
+}
+
 function absolute(root: string, file: string): string {
-  return `${root.replace(/[\\/]$/, "")}\\${file.replace(/\//g, "\\")}`;
+  const sep = hostSep(root);
+  const base = root.replace(/[\\\/]$/, "");
+  const rel = String(file || "").replace(/[\\\/]+/g, sep);
+  return `${base}${sep}${rel}`;
 }
 const unstaged = (file: WorkbenchGitFile) => file.status === "??" || !!file.status[1]?.trim();
 const missing = (file: WorkbenchGitFile) => file.status[1] === "D" || file.status.trim() === "D";

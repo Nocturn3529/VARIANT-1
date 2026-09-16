@@ -27,7 +27,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 |----|-------|--------|
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
-| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **next** (Runtime) |
+| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** (this commit; Linux PTY smoke still pending) |
 | M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **path seams done** — `93d6c40a87259dd78b93ebaa45520c15b55d7777`; Unix hash recipes still open |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
@@ -118,10 +118,20 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - **SHA:** a3f12e263a536574b488eb295cbe1d1c89019457
 - UnsupportedDesktopAdapter._reason is an instance method so platform= overrides show in errors/capability_report.
 
+
+
+### M2 — Host path joins + ConPTY lazy import
+
+- ReviewPanel / FilesPanel: hostSep + trailing-sep aware joins (no hardcoded \\\).
+- FilesPanel.relativePath: normalize host \\\ to POSIX relative with \/\\\\/g\.
+- \execution_hosts/local.py\: lazy-import ConPTY only on \os.name == "nt"\; POSIX \PosixPtyProcess\ path unchanged.
+- Tests (Windows host): static review of path helpers; ode\ syntax not run on TSX here.
+- **Gap:** live Linux PTY + Files/Review open on a Unix project root.
+
 ## Remaining gaps
 
 1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
-2. M2: FS/git path normalization + Unix PTY verification.
+2. M2 live Linux smoke for Files/Review paths + PTY (code landed).
 3. M3: fill Unix stub manifests with real llama.cpp archive hashes (stubs tracked).
 4. M4: `electron-builder --linux` (and later mac) on a real builder.
 5. M5: richer mac/linux desktop drivers beyond unsupported seam (optional).

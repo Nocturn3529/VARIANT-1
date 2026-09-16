@@ -21,8 +21,18 @@ type FileEntry = {
 
 type MenuState = {entry: FileEntry; x: number; y: number} | null;
 
+function hostSep(root: string): "\\" | "/" {
+  if (/^[A-Za-z]:/.test(root) || root.includes("\\")) return "\\";
+  return "/";
+}
+
+function withTrailingSep(root: string): string {
+  if (root.endsWith("\\") || root.endsWith("/")) return root;
+  return `${root}${hostSep(root)}`;
+}
+
 function relativePath(root: string, fullPath: string): string {
-  const prefix = root.endsWith("\\") || root.endsWith("/") ? root : `${root}\\`;
+  const prefix = withTrailingSep(root);
   return fullPath.toLowerCase().startsWith(prefix.toLowerCase())
     ? fullPath.slice(prefix.length).replace(/\\/g, "/")
     : fullPath.replace(/\\/g, "/");
@@ -138,7 +148,7 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
       while (cursor && cursor.toLowerCase().startsWith(root.toLowerCase())) {
         const matcher = ignoreRules.current.get(cursor);
         if (matcher) {
-          const prefix = cursor.endsWith("\\") || cursor.endsWith("/") ? cursor : `${cursor}\\`;
+          const prefix = withTrailingSep(cursor);
           const relative = entry.path.toLowerCase().startsWith(prefix.toLowerCase())
             ? entry.path.slice(prefix.length).replace(/\\/g, "/")
             : entry.name;
