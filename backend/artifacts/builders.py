@@ -450,6 +450,8 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
         (r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\segoeuib.ttf"),
         (r"C:\Windows\Fonts\seguisym.ttf", r"C:\Windows\Fonts\seguisym.ttf"),
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         (os.path.join(package_fonts, "Vera.ttf"), os.path.join(package_fonts, "VeraBd.ttf")),
     )

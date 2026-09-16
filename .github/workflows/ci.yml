@@ -75,6 +75,8 @@ jobs:
           .venv/bin/python -m pip install --upgrade pip
           .venv/bin/python -m pip install -r requirements.txt
           .venv/bin/python -m pip check
+      - name: Install CJK fonts for PDF artifact tests
+        run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
       - name: Isolated backend regression suite
         id: backend_linux_pytest
         run: node ../scripts/test-python.js
