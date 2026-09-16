@@ -98,6 +98,7 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 
 ### M3 — Unix llama recipe stubs
 
+- **SHA:** `c121afe99caee185967bb01cab655319ec6bd713`
 - Added stub manifests: `config/native-runtime.linux-x64.json`, `linux-arm64`, `darwin-arm64`, `darwin-x64` (`status: stub`, empty files/archives).
 - `native-runtime-paths.js` resolves per-OS manifest; `prepare-native-runtime` / `check-native-runtime` consume `--manifest` / stubs with clear exit(2) until hashes are filled.
 - Windows `config/native-runtime.json` recipe unchanged.
@@ -105,6 +106,7 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 
 ### M5 — desktop unsupported seam
 
+- **SHA:** `e7412d48a7b7c968dc7913de85337762b943e59d`
 - Added `UnsupportedDesktopAdapter` (`backend/desktop_fabric/unsupported.py`).
 - `create_desktop_fabric` uses Win32/UIA adapter on Windows only; non-Windows gets explicit unsupported driver (no windll/UIA calls).
 - Win32/UIA code paths untouched.
