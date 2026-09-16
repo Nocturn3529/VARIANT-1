@@ -93,12 +93,12 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 3. `c8cb94c7885c8df3521a75cd9876ff547f8b2e95` — M4 packaging targets
 4. `93d6c40a87259dd78b93ebaa45520c15b55d7777` — M3 native paths (+ handoff updates)
 
-**Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; no Unix llama recipes yet.
+**Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; Unix llama recipes are stubs until archive hashes are filled.
 
 
 ### M3 — Unix llama recipe stubs
 
-- **SHA:** `c121afe99caee185967bb01cab655319ec6bd713`
+- **SHA:** `c121afe99caee185967bb01cab655319ec6bd713` (scripts); `a5eb8308f46a50e9e1b8264768b3e84994c18205` (tracked stub JSON + gitignore allowlist)
 - Tracked stub manifests via `.gitignore` allowlist (config/* was ignoring them).
 - Added stub manifests: `config/native-runtime.linux-x64.json`, `linux-arm64`, `darwin-arm64`, `darwin-x64` (`status: stub`, empty files/archives).
 - `native-runtime-paths.js` resolves per-OS manifest; `prepare-native-runtime` / `check-native-runtime` consume `--manifest` / stubs with clear exit(2) until hashes are filled.
@@ -116,9 +116,9 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 
 1. Live Linux smoke: `npm run setup:backend` + backend up + basic chat (M1 closure).
 2. M2: FS/git path normalization + Unix PTY verification.
-3. M3: per-OS llama hash/download recipes.
+3. M3: fill Unix stub manifests with real llama.cpp archive hashes (stubs tracked).
 4. M4: `electron-builder --linux` (and later mac) on a real builder.
-5. M5: desktop driver stub.
+5. M5: richer mac/linux desktop drivers beyond unsupported seam (optional).
 6. CI ubuntu/macOS jobs.
 
 ## Review protocol
