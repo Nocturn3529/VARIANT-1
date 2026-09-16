@@ -177,30 +177,48 @@ Host: Linux x86_64, CPython 3.13.5, Node 20. Cloned `port/linux-macos-bootstrap`
 - CI: added `backend-linux` job on `ubuntu-latest` (requirements.txt + PosixPty smoke); Windows jobs unchanged.
 
 
-### ChatGPT review R1/R3/R4 (Packaging)
+### ChatGPT review R1–R6 (PR #3 follow-up) — 2026-09-16
 
-- **R1 SHA:** `edb32babd2a5e425f60ad7f10b33a28ac90286ff` ? `test-packaged-files.js` checks win/linux/mac effective `extraResources`; Windows native allowlist unchanged.
-- **R3 SHA:** `d2d349fa1288fd5719ac6718982fc64df499eb7e` ? `llm_config.default.json` extensionless llama/whisper pins; `resolve_llama_binary_relpath` + whisper basename resolve; tests with real default config path.
-- **R4 SHA:** `34caacc67de737025da1a0c12330e1296d7bf8e3` ? `collect-python-notices.py` uses lock on Windows / requirements.txt elsewhere; CPython `LICENSE(.txt)`.
-- Left for Runtime: electron-backend.js / ci-linux-smoke. R2 secretstore owned by coordinator.
+Review comment: https://github.com/Nocturn3529/VARIANT-1/pull/3#issuecomment-5699925524  
+Prior CI evidence (reviewed head 42b87b5): [run 35112895136](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35112895136) — Windows rontend-scripts fail (R1); Linux ackend-linux 24 failed / 2763 passed / 22 skipped (mix of R2 + fixtures/env); Linux PTY smoke skipped after suite failure.
 
-### R5/R6 - PR #3 ChatGPT review fixes (Runtime) - a1d3bf17b455feed29aaca219318efc8a11fd1bc
+| ID | SHA | Summary | Local verification |
+|----|-----|---------|-------------------|
+| **R1** | edb32babd2a5e425f60ad7f10b33a28ac90286ff | 	est-packaged-files.js checks win/linux/mac *effective* extraResources; Windows native allowlist kept | Needs 
+ode_modules (esbuild) for full script; contract logic reviewed |
+| **R2** | 8f8f9e1162414683e9469b21ce8bd5fcaaa138b3 | Unix/macOS Fernet secret store (ernet: + 0600 keyfile); Windows DPAPI unchanged; VARIANT1_SECRETSTORE_DISABLED / _KEY | pytest backend/tests/test_secretstore.py — **13 passed** |
+| **R3** | d2d349fa1288fd5719ac6718982fc64df499eb7e | Extensionless in/llama-server / whisper pins; 
+esolve_llama_binary_relpath | pytest …/test_llama_default_binary_resolve.py — included in **17 passed** with R2 |
+| **R4** | 34caacc67de737025da1a0c12330e1296d7bf8e3 | Notices inventory: lock on Windows, 
+equirements.txt elsewhere; CPython LICENSE(.txt) | Collector dry-run OK on Windows host |
+| **R5** | 1d3bf17b455feed29aaca219318efc8a11fd1bc | electron-backend-posix-engines.js — /proc/<pid>/exe or absolute-path match (spaces OK) | Focused Node assertions on spaced paths — **OK**; full electron test needs Electron module |
+| **R6** | same as R5 | ci-linux-smoke.py asserts ci-pty, exit 0, DesktopUnavailable, inally cleanup | Syntax OK on Windows; live assert on Linux CI after push |
 
-- R5: `electron-backend-posix-engines.js` + `electron-backend.js` POSIX orphan sweep uses `/proc/<pid>/exe` (Linux) or absolute-path regex so directories with spaces work; regression in `scripts/test-electron-backend.js` (`testPosixEnginePathWithSpaces`).
-- R6: `scripts/ci-linux-smoke.py` asserts `ci-pty` sentinel, process exit 0, `UnsupportedDesktopAdapter` raises `DesktopUnavailable`, and always closes the PTY in `finally`.
-- Tests (Windows host): focused Node assertions for spaced paths; `node --check` on touched JS. Full `test-electron-backend.js` needs Electron module (pre-existing).
+Docs SHA for R1/R3/R4 packaging notes: 8fb30109….
 
-## Remaining gaps (post-bootstrap)
+### Linux CI failure triage (categories — from review + R2 fix)
 
-Code seams for M0-M5 are on this branch tip `e13f2111a60541bef871c4625be1d979b63f1951`. Codex review deferred until Nocturn's usage limit resets - review the whole branch then.
+From the 24 failures at 42b87b5 (not re-run yet on this tip):
 
-1. Live Linux smoke — follow **Linux smoke checklist** (setup + chat).
-2. Live Linux Files/Review path + PTY smoke — same checklist steps 4–5.
-3. Live `npm run prepare:native` on macOS (Linux x64 verified); optional GPU Unix recipes.
-4. `electron-builder --linux` (and later mac) on a real builder host.
-5. Optional: richer mac/linux desktop drivers beyond unsupported seam.
-6. Expand CI beyond `backend-linux` (frontend-linux / macOS later).
-7. Push `port/linux-macos-bootstrap` to origin when Nocturn asks.
+1. **Unported product (addressed in R2):** credential/OAuth encrypt paths that raised "DPAPI is only available on Windows". Expect those to clear once ackend-linux re-runs on this tip.
+2. **Windows-assuming fixtures:** ctypes.windll monkeypatches, .exe runtime pins, Windows path/env syntax, live-canary .venv/Scripts/python.exe. Fix with platform markers/fixtures — **not** by weakening shared behavior asserts.
+3. **Headless / env prerequisites:** CJK font coverage; display-capture without a display. Need xvfb or skip-with-reason only where justified.
+4. **Integrity / semantics (separate diagnosis):** immediate child cancellation returning completed; extension staging digest-change detection; temp conversation DB cleanup EACCES.
+5. **Smoke was skipped:** R6 hardening only runs when the suite step is green or when smoke is made independent — prefer keeping smoke after a green (or allow-failure-scoped) pytest gate.
+
+A clean Windows suite does **not** settle Linux failures. Re-categorize with exact nodeids after the next ackend-linux run on this tip.
+
+## Remaining gaps (post R1–R6)
+
+Branch tip at handoff update: c779bed3df87e6af702514c3cbb4641efbf2231d.
+
+1. Re-run CI on pushed tip; confirm R1 clears rontend-scripts and R2 shrinks Linux failures; document remaining nodeids by category.
+2. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
+3. macOS prepare:native + builder evidence (no macOS CI job yet).
+4. electron-builder --linux (and later mac) on a real builder.
+5. Broader CI (frontend-linux / macOS).
+6. **Do not merge** until ChatGPT re-review + Nocturn approval.
+
 
 ## Review protocol
 
