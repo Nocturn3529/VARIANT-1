@@ -9,13 +9,25 @@ from paths import APP_ROOT
 
 KOKORO_MODEL_NAME = "kokoro-v1.0.onnx"
 KOKORO_VOICES_NAME = "voices-v1.0.bin"
-WHISPER_RUNTIME_FILES = (
-    "whisper-server.exe",
-    "whisper.dll",
-    "ggml.dll",
-    "ggml-base.dll",
-    "ggml-cpu.dll",
-)
+
+
+def whisper_server_basename() -> str:
+    return "whisper-server.exe" if os.name == "nt" else "whisper-server"
+
+
+def whisper_runtime_files() -> tuple[str, ...]:
+    if os.name == "nt":
+        return (
+            "whisper-server.exe",
+            "whisper.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu.dll",
+        )
+    return ("whisper-server",)
+
+
+WHISPER_RUNTIME_FILES = whisper_runtime_files()
 
 
 def data_root(value: str | None = None) -> Path:
@@ -48,9 +60,19 @@ def resolve_whisper_binary(
             candidates.append(path)
         else:
             candidates.extend((root / path, Path(app_root).resolve() / path))
+    basename = whisper_server_basename()
+    # Honor a platform-neutral configured path (.../whisper-server) on Windows.
+    if raw:
+        raw_path = Path(raw)
+        if raw_path.name.lower() in {"whisper-server", "whisper-server.exe"}:
+            candidates = [
+                root / raw_path.with_name(basename),
+                Path(app_root).resolve() / raw_path.with_name(basename),
+                *candidates,
+            ]
     candidates.extend((
-        whisper_drop_dir(str(root)) / "whisper-server.exe",
-        Path(app_root).resolve() / "bin" / "whisper" / "whisper-server.exe",
+        whisper_drop_dir(str(root)) / basename,
+        Path(app_root).resolve() / "bin" / "whisper" / basename,
     ))
     for candidate in candidates:
         if candidate.is_file():
@@ -60,7 +82,7 @@ def resolve_whisper_binary(
 
 def whisper_runtime_complete(binary: str | Path) -> bool:
     folder = Path(binary).expanduser().resolve().parent
-    return all((folder / name).is_file() for name in WHISPER_RUNTIME_FILES)
+    return all((folder / name).is_file() for name in whisper_runtime_files())
 
 
 def resolve_whisper_model(
