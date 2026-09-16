@@ -18,6 +18,7 @@ from execution_hosts import create_execution_runtime
 from coding.models import (
     CodingConflict,
     GitCommandError,
+    GitUnavailable,
     ReviewStale,
     UnsafeWorktreeRemoval,
 )
@@ -29,6 +30,19 @@ from work_fabric.scope import WorkScope
 
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="Git is unavailable")
+
+
+def test_missing_working_directory_is_not_unavailable_git(tmp_path):
+    git = GitProcess()
+    missing = tmp_path / "not-a-repository"
+    with pytest.raises(GitCommandError, match="working directory"):
+        git.run(str(missing), ["rev-parse", "--show-toplevel"])
+
+
+def test_missing_git_executable_is_unavailable(tmp_path):
+    git = GitProcess(executable=str(tmp_path / "no-such-git"))
+    with pytest.raises(GitUnavailable, match="unavailable"):
+        git.run(str(tmp_path), ["status"])
 
 
 def test_unique_commit_count_disambiguates_revisions_in_long_worktree_root(tmp_path):
