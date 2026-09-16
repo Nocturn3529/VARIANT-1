@@ -1,9 +1,11 @@
-import pytest
-import os
-import sys
 """Unit tests for vision_capture helpers."""
 
 from __future__ import annotations
+
+import os
+import sys
+
+import pytest
 
 from desktop import vision_capture as vc
 
