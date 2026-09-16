@@ -33,8 +33,8 @@ function hostSep(root: string): "\\" | "/" {
 
 function absolute(root: string, file: string): string {
   const sep = hostSep(root);
-  const base = root.replace(/[\\\/]$/, "");
-  const rel = String(file || "").replace(/[\\\/]+/g, sep);
+  const base = root.replace(/[\\/]$/, "");
+  const rel = String(file || "").replace(/[\\/]+/g, sep);
   return `${base}${sep}${rel}`;
 }
 const unstaged = (file: WorkbenchGitFile) => file.status === "??" || !!file.status[1]?.trim();

@@ -27,7 +27,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 |----|-------|--------|
 | M0 | Bootstrap this handoff doc; lock baseline | **done** — `3bd72c7e352d5f0549f084656421bc9f252a5110` |
 | M1 | Backend/kernel startup + basic Deck↔backend chat | **code landed** — `d331e2a4393f17283e38583a2b99930ee2c71813` (Linux smoke still pending) |
-| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** (this commit; Linux PTY smoke still pending) |
+| M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **code landed** (SHA pending) |
 | M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **path seams done** — `93d6c40a87259dd78b93ebaa45520c15b55d7777`; Unix hash recipes still open |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
 | M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
@@ -127,6 +127,22 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 - \execution_hosts/local.py\: lazy-import ConPTY only on \os.name == "nt"\; POSIX \PosixPtyProcess\ path unchanged.
 - Tests (Windows host): static review of path helpers; ode\ syntax not run on TSX here.
 - **Gap:** live Linux PTY + Files/Review open on a Unix project root.
+
+### M2 - Workbench path joins + ConPTY lazy import - _(SHA after commit)_
+
+- `ReviewPanel.tsx` / `FilesPanel.tsx`: host-aware path sep (`hostSep` / `withTrailingSep`); no hardcoded `\` joins.
+- `scripts/workbench-fixture-entry.ts`: parent-dir cut accepts `\` or `/`.
+- `execution_hosts/local.py`: ConPTY import is Windows-only inside `spawn_terminal`; POSIX still uses `PosixPtyProcess` (`pty`/`termios`). ConPTY remains Windows-only.
+- Tests (Windows host): byte-check of TS regexes; `ast.parse` on `local.py`.
+- **Gap:** live Linux PTY smoke; Deck UI path join on a Unix root.
+
+
+### M3 ? Unix llama recipes pinned (b10289)
+
+- Hash-verified CPU archives for linux-x64/arm64 and darwin-x64/arm64 (same upstream_tag as Windows).
+- `prepare-native-runtime.py` unpacks `.tar.gz` / `.tar.xz` / zip; Unix manifests `status: ready` with llama-server + runtime libs.
+- Smoke: extracted linux-x64 recipe to a temp dir on Windows host (22 files including `llama-server`).
+- Remaining: live `npm run prepare:native` on Linux/macOS hosts; optional GPU Unix recipes later.
 
 ## Remaining gaps
 

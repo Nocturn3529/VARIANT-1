@@ -87,15 +87,30 @@ def main():
                         publish(stream, row)
             selected.clear()
         else:
-            with tarfile.open(path, 'r|xz') as package:
-                for member in package:
-                    row = selected.get(member.name)
-                    if row is not None and member.isfile():
-                        with package.extractfile(member) as stream:
-                            publish(stream, row)
-                        del selected[member.name]
-                        if not selected:
-                            break
+            # llama.cpp ships .tar.gz (Unix) and .tar.xz (some Windows deps)
+            name = path.name.lower()
+            if name.endswith('.tar.gz') or name.endswith('.tgz'):
+                mode = 'r:gz'
+            elif name.endswith('.tar.xz'):
+                mode = 'r:xz'
+            elif name.endswith('.tar.bz2'):
+                mode = 'r:bz2'
+            else:
+                mode = 'r:*'
+            with tarfile.open(path, mode) as package:
+                for member, row in list(selected.items()):
+                    try:
+                        info = package.getmember(member)
+                    except KeyError:
+                        continue
+                    if not info.isfile():
+                        continue
+                    stream = package.extractfile(info)
+                    if stream is None:
+                        continue
+                    with stream:
+                        publish(stream, row)
+                    del selected[member]
         if selected:
             raise ValueError('Native archive is missing required members')
     licenses = ROOT / 'assets/licenses/native'

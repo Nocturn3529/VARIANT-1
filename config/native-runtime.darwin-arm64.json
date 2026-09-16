@@ -1,14 +1,95 @@
 {
   "platform": "darwin",
   "arch": "arm64",
-  "status": "stub",
-  "upstream_tag": null,
-  "upstream_commit": null,
-  "files": [],
-  "archives": [],
-  "license_sources": [],
-  "candidate_release_assets": [
-    "https://github.com/ggml-org/llama.cpp/releases (filter: darwin-arm64)"
+  "status": "ready",
+  "upstream_tag": "b10289",
+  "upstream_commit": "f9e832c10e9444cb168ddcb579cc62c154f3068b",
+  "files": [
+    {
+      "file": "llama-server",
+      "bytes": 33472,
+      "sha256": "02723fc39fbeebd9849ce4c9ca3799649df3cf91f101c2cd56b8756e1db54d28",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/llama-server"
+    },
+    {
+      "file": "libggml-base.0.18.1.dylib",
+      "bytes": 729848,
+      "sha256": "d351ca6eb920f3f59f95a508688a0af24569189770a7dab064d126bbf4099405",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml-base.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-blas.0.18.1.dylib",
+      "bytes": 58776,
+      "sha256": "a3bff3fe27f98071761ac0c4faac80191a83674027638e26735ef193a56d8ad4",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml-blas.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-cpu.0.18.1.dylib",
+      "bytes": 918064,
+      "sha256": "c5bd145518cb76c8f00fbb87697a83467a9c2c642e92cb639dbaf0caf50abc14",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml-cpu.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-metal.0.18.1.dylib",
+      "bytes": 884456,
+      "sha256": "91ab2d389ae7b59b8a489ee5e412c8e557f3525852982f04093e11afcbd54d08",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml-metal.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-rpc.0.18.1.dylib",
+      "bytes": 133776,
+      "sha256": "567b63994d2a15d9680886ce9eef18d7a3dcc67dde7454d87e35d32b1606c0ff",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml-rpc.0.18.1.dylib"
+    },
+    {
+      "file": "libggml.0.18.1.dylib",
+      "bytes": 59872,
+      "sha256": "4aa77cc2437c84df69370f32314ae91897184e7ca1abca4a1ce0b02c90e00ba5",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libggml.0.18.1.dylib"
+    },
+    {
+      "file": "libllama-common.0.0.10289.dylib",
+      "bytes": 7880552,
+      "sha256": "78c85c06b5884492eed67780b6cfd4b5aa2cf9f1c738bd9bbb0657d24d53b59e",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libllama-common.0.0.10289.dylib"
+    },
+    {
+      "file": "libllama-server-impl.dylib",
+      "bytes": 9532344,
+      "sha256": "b4e8b029477021ea8b8e788118f9eeb54b368eef9de0c45f487ad47996c90aa9",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libllama-server-impl.dylib"
+    },
+    {
+      "file": "libllama.0.0.10289.dylib",
+      "bytes": 2810240,
+      "sha256": "504dc0eb0665125161a92451bd888bd05f2fdeca670fee77f638dc53d0d8ef1c",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libllama.0.0.10289.dylib"
+    },
+    {
+      "file": "libmtmd.0.0.10289.dylib",
+      "bytes": 1216848,
+      "sha256": "3a85412fe2b0192b8be6a5b5026323afdc43d4bbd5e7abbc6251692ca2556fb8",
+      "source_archive": "llama-b10289-bin-macos-arm64.tar.gz",
+      "member": "llama-b10289/libmtmd.0.0.10289.dylib"
+    }
   ],
-  "note": "Stub recipe only ? not hash-verified yet. Prefer the same llama.cpp upstream_tag as config/native-runtime.json when filling archives/files. Until then, place a host-native llama-server (and shared libs) under bin/ manually."
+  "archives": [
+    {
+      "file": "llama-b10289-bin-macos-arm64.tar.gz",
+      "sha256": "4d27e69acd78f68114ceb73d6b7d0aceb90742fd9292efb23287831871f9ea36",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/llama-b10289-bin-macos-arm64.tar.gz"
+    }
+  ],
+  "license_sources": [],
+  "note": "Hash-verified CPU build from llama.cpp b10289 (llama-b10289-bin-macos-arm64.tar.gz). Ships llama-server + runtime shared libs only. Windows CUDA recipe remains config/native-runtime.json."
 }
