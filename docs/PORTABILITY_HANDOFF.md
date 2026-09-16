@@ -30,7 +30,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | M2 | Files/workbench path normalization + Unix PTY (ConPTY Windows-only) | **next** (Runtime) |
 | M3 | Native runtimes (llama.cpp / packaged backend binaries per OS) | **path seams done** — `93d6c40a87259dd78b93ebaa45520c15b55d7777`; Unix hash recipes still open |
 | M4 | Packaging (`electron-builder` linux + mac targets) | **targets done** — `c8cb94c7885c8df3521a75cd9876ff547f8b2e95`; no Linux builder smoke yet |
-| M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | pending |
+| M5 | Desktop automation driver seam; Win32/UIA unchanged; mac/linux stub or reduced | **in progress** — unsupported adapter seam |
 
 ## Known remaining Windows locks
 
@@ -94,6 +94,20 @@ Review these commits on `port/linux-macos-bootstrap` (do not merge without Noctu
 4. `93d6c40a87259dd78b93ebaa45520c15b55d7777` — M3 native paths (+ handoff updates)
 
 **Preserve Windows.** Highest residual risk: untested on real Linux; packaging targets unsmoked; no Unix llama recipes yet.
+
+
+### M3 — Unix llama recipe stubs
+
+- Added stub manifests: `config/native-runtime.linux-x64.json`, `linux-arm64`, `darwin-arm64`, `darwin-x64` (`status: stub`, empty files/archives).
+- `native-runtime-paths.js` resolves per-OS manifest; `prepare-native-runtime` / `check-native-runtime` consume `--manifest` / stubs with clear exit(2) until hashes are filled.
+- Windows `config/native-runtime.json` recipe unchanged.
+
+
+### M5 — desktop unsupported seam
+
+- Added `UnsupportedDesktopAdapter` (`backend/desktop_fabric/unsupported.py`).
+- `create_desktop_fabric` uses Win32/UIA adapter on Windows only; non-Windows gets explicit unsupported driver (no windll/UIA calls).
+- Win32/UIA code paths untouched.
 
 ## Remaining gaps
 
