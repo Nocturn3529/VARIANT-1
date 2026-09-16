@@ -8,7 +8,7 @@
  *   npm run test:python:desktop   // also runs real Windows app scenarios
  */
 
-const {execFileSync} = require('child_process');
+const {execFileSync, spawnSync} = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -110,18 +110,86 @@ function inventoryChanges(before, after) {
   return changed;
 }
 
-function makeTreeWritable(base) {
-  if (!fs.existsSync(base)) return;
+function makeTreeWritable(base, chmodErrors = []) {
+  if (!fs.existsSync(base)) return chmodErrors;
   for (const entry of fs.readdirSync(base, {withFileTypes: true})) {
     const full = path.join(base, entry.name);
-    if (entry.isDirectory() && !entry.isSymbolicLink()) makeTreeWritable(full);
+    if (entry.isDirectory() && !entry.isSymbolicLink()) makeTreeWritable(full, chmodErrors);
     try {
       fs.chmodSync(full, entry.isDirectory() ? 0o777 : 0o666);
-    } catch (_) {
-      // rmSync below remains the authority and reports a real cleanup failure.
+    } catch (error) {
+      chmodErrors.push(`${full}: ${error.code || ''} ${error.message}`);
     }
   }
-  try { fs.chmodSync(base, 0o777); } catch (_) {}
+  try { fs.chmodSync(base, 0o777); } catch (error) {
+    chmodErrors.push(`${base}: ${error.code || ''} ${error.message}`);
+  }
+  return chmodErrors;
+}
+
+function describePathChain(target, isolatedRoot) {
+  const lines = [];
+  let current = target;
+  const seen = new Set();
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    try {
+      const st = fs.lstatSync(current);
+      const mode = (st.mode & 0o7777).toString(8).padStart(4, '0');
+      let extra = '';
+      if (st.isSymbolicLink()) {
+        const dest = fs.readlinkSync(current);
+        extra = ` -> ${dest}`;
+      }
+      lines.push(
+        `  ${st.isDirectory() ? 'd' : st.isSymbolicLink() ? 'l' : 'f'} ${mode} uid=${st.uid} gid=${st.gid} nlink=${st.nlink} ${current}${extra}`
+      );
+    } catch (error) {
+      lines.push(`  missing ${current}: ${error.code || ''} ${error.message}`);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+    if (isolatedRoot && current.length < isolatedRoot.length) break;
+  }
+  return lines;
+}
+
+function describeIsolationFailure(error, tempRoot, chmodErrors) {
+  const lines = [
+    `TEST ISOLATION FAILURE: could not remove pytest temp directory: ${error.message}`,
+  ];
+  if (typeof process.getuid === 'function') {
+    lines.push(`euid=${process.getuid()} egid=${process.getgid()} cwd=${process.cwd()}`);
+  }
+  lines.push(`platform=${process.platform} fs=${os.type()} tmp=${tempRoot}`);
+  const failedPath = error.path || '';
+  if (failedPath) {
+    lines.push('path chain (lstat, isolated root only):');
+    lines.push(...describePathChain(failedPath, tempRoot));
+  }
+  if (chmodErrors.length) {
+    lines.push('chmod errors during makeTreeWritable:');
+    for (const item of chmodErrors.slice(0, 40)) lines.push(`  ${item}`);
+  }
+  try {
+    const mnt = spawnSync('findmnt', ['-T', failedPath || tempRoot, '-o', 'TARGET,FSTYPE,OPTIONS', '-n'], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (mnt.status === 0 && mnt.stdout.trim()) lines.push(`mount: ${mnt.stdout.trim()}`);
+  } catch (_) {}
+  try {
+    const lsof = spawnSync('lsof', ['-n', failedPath || tempRoot], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    if (lsof.stdout && lsof.stdout.trim()) {
+      lines.push('lsof:');
+      lines.push(...lsof.stdout.trim().split(/\r?\n/).slice(0, 20).map((row) => `  ${row}`));
+    }
+  } catch (_) {}
+  return lines.join('\n');
 }
 
 function removeTreeWithRetry(base, timeoutMs = 20000) {
@@ -196,11 +264,16 @@ try {
         });
       } catch (_) {}
     }
-    makeTreeWritable(tempRoot);
-    removeTreeWithRetry(tempRoot);
-    removeTreeWithRetry(tempBase);
+    const chmodErrors = makeTreeWritable(tempRoot);
+    try {
+      removeTreeWithRetry(tempRoot);
+      removeTreeWithRetry(tempBase);
+    } catch (cleanupError) {
+      console.error(describeIsolationFailure(cleanupError, tempRoot, chmodErrors));
+      process.exitCode = 1;
+    }
   } catch (error) {
-    console.error(`TEST ISOLATION FAILURE: could not remove pytest temp directory: ${error.message}`);
+    console.error(describeIsolationFailure(error, tempRoot, []));
     process.exitCode = 1;
   }
 }
