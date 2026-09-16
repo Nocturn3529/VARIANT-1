@@ -436,8 +436,15 @@ function createBackendManager(deps) {
         const pid = Number(trimmed.slice(0, sp));
         const command = trimmed.slice(sp + 1).trim();
         if (!Number.isFinite(pid) || pid <= 1) continue;
+        // Identity from /proc/<pid>/exe only — never from argv (command is ignored).
         const exe = resolvePosixEngineExecutable(pid, command);
-        if (!exe || !POSIX_ENGINE_NAMES.includes(path.basename(exe))) continue;
+        if (!exe) {
+          if (/(?:^|\/)(?:llama-server|whisper-server)(?:\s|$)/.test(command)) {
+            log(`[backend] skip posix engine cleanup pid=${pid}: executable identity unverified`);
+          }
+          continue;
+        }
+        if (!POSIX_ENGINE_NAMES.includes(path.basename(exe))) continue;
         if (!isOwnedPosixEnginePath(exe, uniqueRoots)) continue;
         try { process.kill(pid, 'SIGTERM'); } catch (_) {}
       }

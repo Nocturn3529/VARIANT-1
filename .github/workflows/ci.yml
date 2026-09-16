@@ -76,7 +76,9 @@ jobs:
           .venv/bin/python -m pip install -r requirements.txt
           .venv/bin/python -m pip check
       - name: Isolated backend regression suite
+        id: backend_linux_pytest
         run: node ../scripts/test-python.js
       - name: Posix PTY + unsupported desktop smoke
+        if: ${{ always() && !cancelled() }}
         working-directory: .
         run: backend/.venv/bin/python scripts/ci-linux-smoke.py

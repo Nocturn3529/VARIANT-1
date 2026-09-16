@@ -333,9 +333,15 @@ async function testProbeFailureFallsBackToOs(tempDir) {
 
 
 function testPosixEnginePathWithSpaces() {
-  const spaced = '/opt/VARIANT-1 App/bin/llama-server --host 127.0.0.1 --port 8080';
-  const exe = resolvePosixEngineExecutable(4242, spaced);
-  assert.strictEqual(exe, '/opt/VARIANT-1 App/bin/llama-server',
+  const spaced = '/opt/VARIANT-1 App/bin/llama-server';
+  const exe = resolvePosixEngineExecutable(4242, 'ignored argv', undefined, {
+    platform: 'linux',
+    readlinkSync: (target) => {
+      assert.strictEqual(target, '/proc/4242/exe');
+      return spaced;
+    },
+  });
+  assert.strictEqual(exe, spaced,
     'POSIX engine path must keep directories that contain spaces');
   assert.strictEqual(
     isOwnedPosixEnginePath(exe, ['/opt/VARIANT-1 App']),
@@ -345,15 +351,66 @@ function testPosixEnginePathWithSpaces() {
     isOwnedPosixEnginePath(exe, ['/opt/other-root']),
     false,
   );
-  const whisper = resolvePosixEngineExecutable(
-    7,
-    '/data/speech models/whisper-server -m tiny',
-  );
+  const whisper = resolvePosixEngineExecutable(7, '', undefined, {
+    platform: 'linux',
+    readlinkSync: () => '/data/speech models/whisper-server',
+  });
   assert.strictEqual(whisper, '/data/speech models/whisper-server');
-  // Whitespace split would wrongly yield '/opt/VARIANT-1' — ensure we never do that.
-  assert.notStrictEqual(spaced.split(/\s+/)[0], exe);
 }
 
+function testPosixEngineIgnoresArgvLookalikes() {
+  const enginePath = '/opt/VARIANT-1 App/bin/llama-server';
+  const decoys = [
+    `tail -f ${enginePath}`,
+    `cat ${enginePath}`,
+    `python3 -c "print('${enginePath}')"`,
+  ];
+  for (const command of decoys) {
+    const exe = resolvePosixEngineExecutable(501, command, undefined, {
+      platform: 'linux',
+      readlinkSync: () => '/usr/bin/tail',
+    });
+    assert.strictEqual(exe, '',
+      `argv lookalike must not select an engine: ${command}`);
+  }
+  // Even if argv names the engine path, unverified identity skips cleanup.
+  const fromArgvOnly = resolvePosixEngineExecutable(502, enginePath + ' --port 1', undefined, {
+    platform: 'linux',
+    readlinkSync: () => { const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err; },
+  });
+  assert.strictEqual(fromArgvOnly, '',
+    'stale/missing /proc/pid/exe must not fall back to argv');
+}
+
+function testPosixEngineMultipleAndStalePids() {
+  const map = {
+    10: '/opt/app/bin/llama-server',
+    11: '/opt/app/bin/whisper-server',
+    12: '/opt/app/bin/llama-server',
+  };
+  const deps = {
+    platform: 'linux',
+    readlinkSync: (target) => {
+      const pid = Number(String(target).split('/')[2]);
+      if (!(pid in map)) {
+        const err = new Error('ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return map[pid];
+    },
+  };
+  assert.strictEqual(resolvePosixEngineExecutable(10, '', undefined, deps), map[10]);
+  assert.strictEqual(resolvePosixEngineExecutable(11, '', undefined, deps), map[11]);
+  assert.strictEqual(resolvePosixEngineExecutable(12, '', undefined, deps), map[12]);
+  assert.strictEqual(resolvePosixEngineExecutable(99, 'llama-server', undefined, deps), '');
+  assert.strictEqual(resolvePosixEngineExecutable(0, '', undefined, deps), '');
+  assert.strictEqual(
+    resolvePosixEngineExecutable(10, '', undefined, {platform: 'win32'}),
+    '',
+    'non-linux platforms without a resolver must skip',
+  );
+}
 function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
   if (process.platform !== 'win32') return;
   const calls = [];

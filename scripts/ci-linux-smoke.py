@@ -41,9 +41,14 @@ def main() -> None:
         )
         assert type(proc).__name__ == "PosixPtyProcess"
         deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline and not any(b"ci-pty" in c for c in chunks):
+        blob = b""
+        while time.monotonic() < deadline:
+            blob = b"".join(chunks)
+            if b"ci-pty" in blob:
+                break
             time.sleep(0.05)
-        assert any(b"ci-pty" in c for c in chunks), f"missing sentinel in {chunks!r}"
+        blob = b"".join(chunks)
+        assert b"ci-pty" in blob, f"missing sentinel in {blob!r} (parts={chunks!r})"
         code = proc.wait(timeout=2.0)
         assert code == 0, f"echo exit code {code}"
     finally:
