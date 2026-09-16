@@ -156,6 +156,7 @@ if (!hasOption('--basetemp')) pytestArgs.push('--basetemp', baseTemp);
 
 const env = Object.assign({}, process.env);
 for (const name of pathOverrideVars) delete env[name];
+const testSecretstoreKey = path.join(tempRoot, 'secretstore.key');
 Object.assign(env, {
   TMP: tempDir,
   TEMP: tempDir,
@@ -163,6 +164,8 @@ Object.assign(env, {
   VARIANT1_DATA_DIR: testDataDir,
   VARIANT1_CONFIG: testConfigDir,
   VARIANT1_LLM_CONFIG: path.join(root, 'config', 'llm_config.default.json'),
+  // R2.c: isolate Fernet key material inside the runner temp tree.
+  VARIANT1_SECRETSTORE_KEY: testSecretstoreKey,
 });
 if (runDesktop) env.VARIANT1_DESKTOP_INTEGRATION = '1';
 

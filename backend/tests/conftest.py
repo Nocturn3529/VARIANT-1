@@ -74,6 +74,10 @@ os.environ["VARIANT1_LLM_CONFIG"] = str(
     (_PROJECT / "config" / "llm_config.default.json").resolve()
 )
 
+# R2.c: never touch the developer secretstore key during pytest.
+_TEST_SECRETSTORE_KEY = (_TEST_RUNTIME_ROOT / "secretstore.key").resolve()
+os.environ["VARIANT1_SECRETSTORE_KEY"] = str(_TEST_SECRETSTORE_KEY)
+
 
 def _contains(parent: Path, child: Path) -> bool:
     try:
