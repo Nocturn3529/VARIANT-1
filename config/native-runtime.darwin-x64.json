@@ -1,0 +1,14 @@
+{
+  "platform": "darwin",
+  "arch": "x64",
+  "status": "stub",
+  "upstream_tag": null,
+  "upstream_commit": null,
+  "files": [],
+  "archives": [],
+  "license_sources": [],
+  "candidate_release_assets": [
+    "https://github.com/ggml-org/llama.cpp/releases (filter: darwin-x64)"
+  ],
+  "note": "Stub recipe only ? not hash-verified yet. Prefer the same llama.cpp upstream_tag as config/native-runtime.json when filling archives/files. Until then, place a host-native llama-server (and shared libs) under bin/ manually."
+}
