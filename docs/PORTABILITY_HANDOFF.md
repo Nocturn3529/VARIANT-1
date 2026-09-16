@@ -12,7 +12,7 @@ Living document for the cross-platform port. **All port work happens in this wor
 | Baseline note | GitHub `main` tip (PR #1 docs merge, 2026-09-16) |
 | Upstream | `https://github.com/Nocturn3529/VARIANT-1.git` |
 | Original checkout | `C:\Users\noctu\Desktop\VARIANT-1` — **do not modify** for port work |
-| Branch tip (this doc) | `033277741c2293fa006bfdd5330e0ba333c6b4e7` |
+| Branch tip (this doc) | `TIP_PLACEHOLDER` |
 
 ## Goals
 
@@ -206,21 +206,43 @@ From the 24 failures at 42b87b5 (not re-run yet on this tip):
 A clean Windows suite does **not** settle Linux failures. Re-categorize with exact nodeids after the next `backend-linux` run on this tip.
 
 
-### Review follow-up — R3/R4 (ChatGPT re-review on eb52e83)
 
-- **R3:** d606824e85f0a83f75a76666cec24c0848a501ee — bundled-default-only llama/whisper path rewrite + tests.
-- **R4:** 74548984a71927efd566d28c619a8233efd4e232 — collect-python-notices closure/markers/hard errors + fixtures.
-- Tests: pytest test_llama_default_binary_resolve / test_speech_assets / test_collect_python_notices.
+### ChatGPT re-review round 2 (eb52e83) — 2026-09-16
 
-## Remaining gaps (post R1-R6)
+Review comment: https://github.com/Nocturn3529/VARIANT-1/pull/3#issuecomment-5700671135  
+CI at review: [run 35117989259](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35117989259) — Windows `frontend-scripts` **passed**; Linux `backend-linux` **15 failed** / 2783 passed / 22 skipped; smoke **skipped** after suite failure; + `EACCES` cleanup on temp `conversations.sqlite3`.
 
-Branch tip at handoff update: `033277741c2293fa006bfdd5330e0ba333c6b4e7`.
+| ID | SHA | Summary | Local verification |
+|----|-----|---------|-------------------|
+| **R2.a–c** | `d4c7449e6946809513b7512d593ae1ea58819b47` | Existing key: regular file, owner, mode 0600 (no symlink); decrypt never creates replacement key; `VARIANT1_SECRETSTORE_KEY` forced under test runtime in `conftest.py` + `test-python.js` | `pytest tests/test_secretstore.py` — **17 passed, 2 skipped** (Unix mode/symlink on Windows host) |
+| **R3** | `d606824e85f0a83f75a76666cec24c0848a501ee` | Rewrite only `bin/llama-server[.exe]` (and whisper equivalents); preserve `runtimes/.../llama-server` customs | `test_llama_default_binary_resolve` + `test_speech_assets` in combined **32 passed** |
+| **R4** | `74548984a71927efd566d28c619a8233efd4e232` | Requires-Dist closure; marker/comment parse; missing package/license = hard error | `test_collect_python_notices.py` included in **32 passed** |
+| **R5** | `7bd01802…` (with R6 CI) | `/proc/<pid>/exe` (Linux) or injected Darwin resolver only; **no** argv/command-text fallback | `node scripts/test-electron-backend.js` — **passed** (incl. spaced path + unrelated argv negatives) |
+| **R6** | same commit | Smoke step `if: always() && !cancelled()` so it runs after a failed suite; sentinel byte accumulation | Needs live Linux CI result on this tip |
 
-1. Re-run CI on pushed tip; confirm R1 clears `frontend-scripts` and R2 shrinks Linux failures; document remaining nodeids by category.
-2. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
-3. macOS prepare:native + builder evidence (no macOS CI job yet).
-4. `electron-builder --linux` (and later mac) on a real builder.
-5. Broader CI (frontend-linux / macOS).
+Docs notes: `bf4b573c` (R3/R4); this section supersedes tip SHA below.
+
+### Linux CI triage (run 35117989259 — exact nodeids)
+
+| Category | Nodeids | Action |
+|----------|---------|--------|
+| **A — Windows-assuming fixtures** | `test_desktop_fabric.py` ×5 (`ctypes.windll`); `test_phase12_eval_plan.py::test_canary_seeds_…` (`.venv/Scripts/python.exe`); `test_tools_safety.py::test_file_tools_expand_windows_percent_environment_vars`; `test_llama_runtime_efficiency.py::test_relative_model_pins_…` (expects `.exe` on Linux); `test_inference_platform.py::test_packaged_llamacpp_…` (`bundled-llamacpp` key) | Platform markers / OS-aware paths; **do not** weaken shared security asserts. R3 may already clear the `.exe` pin once CI re-runs. |
+| **B — Headless / env** | `test_artifact_unicode_images_hunt.py::test_pdf_preserves_cjk_…` (CJK font); `test_vision_capture.py::test_grab_active_monitor_…` (no `$DISPLAY`) | Install font / xvfb, or skip-with-reason only where justified. |
+| **C — Unsupported / env tooling** | `test_file_review.py::test_unchanged_or_non_git_…` (`GitUnavailable: /usr/bin/git`) | Confirm git on runner or mark appropriately. |
+| **D — Semantic / integrity** | `test_child_sessions.py::test_child_cancelled_in_spawn_tick_is_durably_terminal` (`completed` vs `cancelled`); `test_extensions_v2.py::test_extension_copy_must_match_preflight_digest`; `test_model_options.py::test_model_options_groups_…` (assert 2==1) | Diagnose as product bugs; keep asserts. |
+| **E — Cleanup infra** | `TEST ISOLATION FAILURE` `EACCES` unlink `conversations.sqlite3` under variant1-test-tmp | Close/unlock DB handles before rmtree; unrelated to R2–R5 product fixes. |
+
+Counts: 15 FAILED + 1 isolation cleanup error. Smoke skipped because suite step failed — addressed by `always()` on the smoke step in `7bd01802`.
+
+## Remaining gaps (post re-review round 2)
+
+Branch tip at handoff update: `TIP_PLACEHOLDER`.
+
+1. Re-run CI on this tip; confirm R6 smoke runs (even if pytest red) and record pass/fail; re-check which category-A items clear.
+2. Fixture/marker fixes for remaining category A; diagnose D items without weakening asserts.
+3. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
+4. macOS prepare:native + builder evidence.
+5. `electron-builder --linux` (and later mac) on a real builder.
 6. **Do not merge** until ChatGPT re-review + Nocturn approval.
 
 
