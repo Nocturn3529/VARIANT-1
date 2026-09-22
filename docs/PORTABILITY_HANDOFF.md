@@ -367,7 +367,7 @@ Local Windows before push: isolation-cleanup node tests 8 passed / 1 skipped; fo
 2. macOS `prepare:native` + builder evidence.
 3. `electron-builder --linux` (and later mac) on a real builder.
 4. Local Windows ConPTY SIGINT observation (`test_execution_hosts.py::test_signal_acceptance_is_separate_from_observed_effect[False-terminal]`), author-reported on this desktop, not reproduced in CI.
-5. Broader Japanese/Korean PDF claims need their own evidence; the bundled face qualifies the existing mixed Chinese/Latin export test.
+5. Japanese and Korean PDF claims still need their own evidence. Simplified Chinese now uses the Noto Sans SC Regular and Bold TrueType faces, not the six-character sample. A live Linux desktop pass is still separate.
 6. **Merging remains Nocturn's decision after ChatGPT re-review.** PR #3 stays draft.
 
 

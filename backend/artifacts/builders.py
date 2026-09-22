@@ -437,11 +437,11 @@ def _delimited(spec: Mapping[str, Any], delimiter: str) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
-def bundled_pdf_cjk_font_path() -> str:
+def bundled_pdf_cjk_font_path(*, bold: bool = False) -> str:
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "fonts",
-        "Variant1CJK-Regular.ttf",
+        "Variant1CJK-Bold.ttf" if bold else "Variant1CJK-Regular.ttf",
     )
 
 
@@ -453,9 +453,10 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
     from reportlab.pdfbase.ttfonts import TTFont
 
     package_fonts = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
-    bundled = bundled_pdf_cjk_font_path()
+    bundled_regular = bundled_pdf_cjk_font_path()
+    bundled_bold = bundled_pdf_cjk_font_path(bold=True)
     candidates = (
-        (bundled, bundled),
+        (bundled_regular, bundled_bold),
         (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"),
         (r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
         (r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\meiryob.ttc"),
@@ -480,6 +481,13 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
         for subfont in (range(8) if collection else (0,)):
             try:
                 regular = TTFont(regular_name, regular_path, subfontIndex=subfont)
+                if (
+                    os.path.normcase(os.path.abspath(bold_path))
+                    == os.path.normcase(os.path.abspath(regular_path))
+                    and os.path.normcase(os.path.abspath(regular_path))
+                    == os.path.normcase(os.path.abspath(bundled_regular))
+                ):
+                    raise OSError("bundled CJK bold face must not alias the regular file")
                 bold_source = bold_path if os.path.isfile(bold_path) else regular_path
                 bold = TTFont(bold_name, bold_source, subfontIndex=subfont)
                 pdfmetrics.registerFont(regular)

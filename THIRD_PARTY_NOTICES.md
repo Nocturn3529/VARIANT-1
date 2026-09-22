@@ -41,8 +41,9 @@ SOFTWARE.
 
 ## Noto Sans SC subset (PDF CJK)
 
-The packaged `backend/artifacts/fonts/Variant1CJK-Regular.ttf` face is a
-TrueType-outline subset of Noto Sans SC VF 2.004, instantiated at Regular.
+The packaged `backend/artifacts/fonts/Variant1CJK-Regular.ttf` and
+`Variant1CJK-Bold.ttf` faces are TrueType-outline instances of Noto Sans SC
+VF 2.004 at Regular (`wght=400`) and Bold (`wght=700`).
 It is distributed under the SIL Open Font License 1.1. The full upstream
 notice/license is included in `assets/licenses/NotoSansSC-OFL-1.1.txt` and
 `backend/artifacts/fonts/OFL.txt`. Project: https://github.com/notofonts/noto-cjk

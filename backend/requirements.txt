@@ -19,6 +19,7 @@ python-pptx>=1.0,<2.0  # host-owned PPTX artifact builder/structural validation
 openpyxl>=3.1,<4.0     # XLSX artifact builder/formula and structure validation
 reportlab>=4.2,<6.0    # deterministic PDF artifact builder
 pypdf>=6.0,<7.0        # PDF page/text structural validation
+pypdfium2>=4.30,<6     # render exported PDFs when checking embedded fonts
 lxml>=6.0,<7.0         # DOCX/PPTX dependency and HTML structural validation
 pathspec>=1.1.1,<2.0   # gitignore grammar shared with the desktop file tree
 XlsxWriter>=3.2,<4.0   # packaged workbook-engine compatibility for extensions
