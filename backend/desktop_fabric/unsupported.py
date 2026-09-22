@@ -32,8 +32,7 @@ class UnsupportedDesktopAdapter:
     def _reason(self) -> str:
         return (
             "Desktop automation is not supported on "
-            f"{self.platform}: Win32/UIA driver only. "
-            "Use Windows, or pass a custom DesktopLiveAdapter."
+            f"{self.platform}: no window or input driver is available for this host."
         )
 
     def catalog(self, *, backend_instance_id: str) -> tuple[list[AppRecord], list[WindowRecord]]:

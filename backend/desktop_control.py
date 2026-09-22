@@ -94,7 +94,7 @@ async def _focus_window(args):
         return await dtarget.focus_window(ctx, args)
     if platform.system() != "Windows":
         raise tools.ToolError(
-            "window focus is Windows-only."
+            "window focus is not available on this host."
         )
     _title, text, _controls = await dflow.perceive_ui(
         ctx, args, tool_name="computer.observe",

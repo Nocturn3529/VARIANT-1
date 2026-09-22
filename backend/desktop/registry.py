@@ -15,7 +15,7 @@ import tools
 COMPUTER_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     {
         "name": "list_windows",
-        "description": "List currently open targetable Windows windows.",
+        "description": "List currently open targetable windows.",
         "effect_class": "read",
         "parallel_safe": True,
         "touches_desktop": False,
@@ -192,7 +192,7 @@ def register(registry: tools.ToolRegistry, control: Any) -> None:
 
     registry.register(tools.Tool(
         "computer",
-        "Observe and control one exact Windows window; every action returns the "
+        "Observe and control one exact window; every action returns the "
         "resulting view for the next action. input_sent reports delivery; "
         "inspect the returned view and action_status to verify the requested change.",
         computer,

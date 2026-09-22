@@ -387,7 +387,7 @@ Follow-up on this branch: Deck terminal open lets the host choose the shell, and
 
 ### Desktop automation decision — 2026-09-23
 
-Linux and macOS stay on `UnsupportedDesktopAdapter` until a driver is actually present. Do not reimplement Win32 UI Automation in Python, and do not use a cursor-stealing library such as PyAutoGUI.
+Linux and macOS stay on `UnsupportedDesktopAdapter` until a driver is actually present. The model-facing `computer` wording is host-neutral, but that does not make the Win32 catalog, UI Automation, or `SendInput` path run on Linux or macOS. `create_desktop_fabric` never constructs `WindowsDesktopAdapter` off Windows. Do not reimplement Win32 UI Automation in Python, and do not use a cursor-stealing library such as PyAutoGUI.
 
 The inspectable model is Hermes Agent (`NousResearch/hermes-agent`, `tools/computer_use/`). It does not contain the OS drivers. It speaks MCP to [`cua-driver`](https://github.com/trycua/cua/tree/main/libs/cua-driver), which Hermes documents as the open equivalent of Codex background computer use. Official Codex computer use is not published as source.
 
