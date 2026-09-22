@@ -396,7 +396,7 @@ The inspectable model is Hermes Agent (`NousResearch/hermes-agent`, `tools/compu
 - Linux (`platform-linux`): AT-SPI over D-Bus, X11 via XTest, Wayland via portal/libei and compositor protocols. Its own notes say a real GNOME or KDE session is only partly proven.
 - macOS (`platform-macos`): Accessibility plus private SkyLight calls, pid-scoped input, Accessibility and Screen Recording permission. Not testable here.
 
-Next implementation, when started: a VARIANT adapter that launches a pinned `cua-driver` and maps its window list, capture, and actions onto the existing desktop fabric. Require a pid and window id or refuse. Linux VM first. The macOS binary can use the same client later; do not claim it without a Mac.
+The adapter is now `CuaDesktopAdapter`. On Linux and macOS, `create_desktop_fabric` starts `cua-driver mcp` when `VARIANT1_CUA_DRIVER` or `PATH` provides it, and otherwise stays on `UnsupportedDesktopAdapter`. Windows still uses `WindowsDesktopAdapter`. The adapter drops windows without a pid, driver window id, and verified process start time (`/proc` on Linux, `ps -o lstart` on macOS). It maps `list_windows`, `get_window_state`, and background actions onto the existing `computer` view. Refused driver actions are not reported as delivered, and an unproven screenshot is not stored as the window image. Tests use a fake driver. A live Mac run is still deferred, and a live Linux run still needs `cua-driver` inside a real desktop session.
 
 
 ## Review protocol

@@ -837,8 +837,8 @@ def create_desktop_fabric(
     elif sys.platform.startswith("win"):
         live_adapter = WindowsDesktopAdapter(desktop_control=desktop_control)
     else:
-        from .unsupported import UnsupportedDesktopAdapter
-        live_adapter = UnsupportedDesktopAdapter()
+        from .cua_adapter import select_non_windows_adapter
+        live_adapter = select_non_windows_adapter(sys.platform)
     return DesktopFabric(
         repository=repository, artifact_store=artifact_store,
         adapter=live_adapter, backend_instance_id=instance_id,
