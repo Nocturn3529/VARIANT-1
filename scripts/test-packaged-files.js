@@ -33,6 +33,9 @@ assert.strictEqual(read('backend/server.py').match(/^VERSION = "([^"]+)"/m)?.[1]
   'the backend handshake version must match the Electron release version');
 assert.strictEqual(Object.hasOwn(packageJson, 'author'), false,
   'a company/author identity must not be invented for VARIANT-1');
+assert.match(String(packageJson.build.linux && packageJson.build.linux.maintainer || ''),
+  /^[^<]+ <[^@\s]+@[^>\s]+>$/,
+  'deb packages need a maintainer without adding package.json author');
 assert.match(mainJs, /app\.setName\(['"]VARIANT-1['"]\)/,
   'Electron must establish the VARIANT-1 name before deriving userData');
 

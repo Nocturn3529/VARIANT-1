@@ -103,6 +103,8 @@ assert.doesNotMatch(reviewPanel, /review:discover|review:start|review:approve/,
   'manual durable Review ceremony must stay deleted from the UI');
 
 assert.match(terminalStore, /type:\s*"terminal:open"/);
+assert.doesNotMatch(terminalStore, /profile:\s*"powershell"/,
+  'Open Terminal must not demand PowerShell on every host');
 assert.match(terminalStore, /process:logs/,
   'Terminal and background-process mirrors must use Execution Fabric');
 assert.match(terminalSurface, /SerializeAddon[\s\S]*Unicode11Addon[\s\S]*WebLinksAddon/,

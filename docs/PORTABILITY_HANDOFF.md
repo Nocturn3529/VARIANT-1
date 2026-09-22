@@ -370,6 +370,21 @@ Local Windows before push: isolation-cleanup node tests 8 passed / 1 skipped; fo
 5. Japanese and Korean PDF claims still need their own evidence. Simplified Chinese now uses the Noto Sans SC Regular and Bold TrueType faces, not the six-character sample. A live Linux desktop pass is still separate.
 6. **Merging remains Nocturn's decision after ChatGPT re-review.** PR #3 stays draft.
 
+### Linux VM qualification — 2026-09-23
+
+Detached checkout of `dcb04fa203cd3ced57117ba5020fe2e30a4cbe78` on a Linux desktop VM. No merge, no push.
+
+| Step | Result |
+| --- | --- |
+| `npm ci` + `setup:backend` | Pass. `requirements.txt`; `backend/.venv/bin/python` 3.13.5 |
+| Deck start + one chat turn | Pass. Backend connected. Reply was “My local model isn't loaded yet.” |
+| Files + Review | Pass on `/workspace/VARIANT-1-linux-qual` |
+| Terminal | Backend PosixPty and `ci-linux-smoke` passed. Deck Open Terminal failed because the UI always requested `powershell`. |
+| `prepare:native` + unclean quit | Pass. `kill -9` leaves `llama-server`; the next launch sweeps it. No `whisper-server` in the linux-x64 recipe. |
+| Package | AppImage ran with `APPIMAGE_EXTRACT_AND_RUN=1` (FUSE denied on that box). `.deb` failed: no Linux maintainer. |
+
+Follow-up on this branch: Deck terminal open lets the host choose the shell, and `build.linux.maintainer` is set without adding `package.json` `author`.
+
 
 ## Review protocol
 

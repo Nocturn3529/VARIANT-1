@@ -141,6 +141,7 @@
         "AppImage",
         "deb"
       ],
+      "maintainer": "Nocturn <nocturn3529@gmail.com>",
       "category": "Development",
       "icon": "assets/tray/icon_256.png",
       "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
