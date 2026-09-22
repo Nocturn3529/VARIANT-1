@@ -408,8 +408,38 @@ function testPosixEngineMultipleAndStalePids() {
   assert.strictEqual(
     resolvePosixEngineExecutable(10, '', undefined, {platform: 'win32'}),
     '',
-    'non-linux platforms without a resolver must skip',
+    'Windows has no POSIX executable identity lookup',
   );
+}
+
+function testDarwinEngineUsesLsofTextNotArgv() {
+  const engine = '/Applications/VARIANT-1.app/Contents/Resources/bin/llama-server';
+  const calls = [];
+  const exe = resolvePosixEngineExecutable(4242, `tail -f ${engine}`, undefined, {
+    platform: 'darwin',
+    execFileSync(command, args) {
+      calls.push({command, args});
+      return ['p4242', 'ftxt', 'n' + engine].join('\n');
+    },
+  });
+  assert.strictEqual(exe, engine);
+  assert.deepStrictEqual(calls, [{
+    command: '/usr/sbin/lsof',
+    args: ['-a', '-p', '4242', '-d', 'txt', '-F', 'n'],
+  }]);
+  assert.strictEqual(isOwnedPosixEnginePath(exe, ['/Applications/VARIANT-1.app']), true);
+  assert.strictEqual(resolvePosixEngineExecutable(7, engine + ' --port 1', undefined, {
+    platform: 'darwin',
+    execFileSync() { return 'n/usr/bin/tail\n'; },
+  }), '');
+  assert.strictEqual(resolvePosixEngineExecutable(8, engine, undefined, {
+    platform: 'darwin',
+    execFileSync() { throw new Error('lsof missing'); },
+  }), '');
+  assert.strictEqual(resolvePosixEngineExecutable(9, '', undefined, {
+    platform: 'darwin',
+    execFileSync() { return 'n/bin/llama-server\nn/bin/whisper-server\n'; },
+  }), '');
 }
 function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
   if (process.platform !== 'win32') return;
@@ -911,6 +941,9 @@ async function main() {
     await testAliveStartingBackendRecoversDuringStartupGrace(tempDir);
     await testProbeFailureFallsBackToOs(tempDir);
     testPosixEnginePathWithSpaces();
+    testPosixEngineIgnoresArgvLookalikes();
+    testPosixEngineMultipleAndStalePids();
+    testDarwinEngineUsesLsofTextNotArgv();
     testPackagedEngineCleanupUsesOwnedRoots(tempDir);
     await testOverlayReceivesOnlyScopedActivityStatus(tempDir);
     await testReadinessFailureSchedulesOnlyOneRestart(tempDir);

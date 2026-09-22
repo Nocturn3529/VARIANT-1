@@ -103,6 +103,9 @@ assert.doesNotMatch(reviewPanel, /review:discover|review:start|review:approve/,
   'manual durable Review ceremony must stay deleted from the UI');
 
 assert.match(terminalStore, /type:\s*"terminal:open"/);
+assert.doesNotMatch(terminalPanel, /truePty \? "ConPTY"/,
+  'a real PTY must show its transport, not the Windows ConPTY label');
+assert.match(terminalPanel, /active\.transport/);
 assert.doesNotMatch(terminalStore, /profile:\s*"powershell"/,
   'Open Terminal must not demand PowerShell on every host');
 assert.match(terminalStore, /process:logs/,

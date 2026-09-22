@@ -364,7 +364,7 @@ Local Windows before push: isolation-cleanup node tests 8 passed / 1 skipped; fo
 ### Remaining gaps
 
 1. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
-2. macOS `prepare:native` + builder evidence.
+2. macOS `prepare:native`, dmg/zip, and a live Mac run. Orphan identity now uses `lsof` text-file lookup; that code is untested on a Mac.
 3. `electron-builder --linux` (and later mac) on a real builder.
 4. Local Windows ConPTY SIGINT observation (`test_execution_hosts.py::test_signal_acceptance_is_separate_from_observed_effect[False-terminal]`), author-reported on this desktop, not reproduced in CI.
 5. Japanese and Korean PDF claims still need their own evidence. Simplified Chinese now uses the Noto Sans SC Regular and Bold TrueType faces, not the six-character sample. A live Linux desktop pass is still separate.
@@ -383,7 +383,7 @@ Detached checkout of `dcb04fa203cd3ced57117ba5020fe2e30a4cbe78` on a Linux deskt
 | `prepare:native` + unclean quit | Pass. `kill -9` leaves `llama-server`; the next launch sweeps it. No `whisper-server` in the linux-x64 recipe. |
 | Package | AppImage ran with `APPIMAGE_EXTRACT_AND_RUN=1` (FUSE denied on that box). `.deb` failed: no Linux maintainer. |
 
-Follow-up on this branch: Deck terminal open lets the host choose the shell, and `build.linux.maintainer` is set without adding `package.json` `author`.
+Follow-up on this branch: Deck terminal open lets the host choose the shell, and `build.linux.maintainer` is set without adding `package.json` `author`. Retest at `b66462eb` passed Open Terminal (`posix_pty`, `pwd`) and the `.deb`. The terminal badge now shows the transport name instead of labeling every real PTY as ConPTY. macOS orphan cleanup resolves the executable with `lsof -d txt` and still ignores argv. Live macOS tests remain deferred. Desktop automation on Linux and macOS is still an explicit unsupported adapter; what to do with that is undecided.
 
 
 ## Review protocol

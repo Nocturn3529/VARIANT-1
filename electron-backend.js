@@ -436,7 +436,7 @@ function createBackendManager(deps) {
         const pid = Number(trimmed.slice(0, sp));
         const command = trimmed.slice(sp + 1).trim();
         if (!Number.isFinite(pid) || pid <= 1) continue;
-        // Identity from /proc/<pid>/exe only — never from argv (command is ignored).
+        // Identity from /proc or macOS lsof text file — never from argv.
         const exe = resolvePosixEngineExecutable(pid, command);
         if (!exe) {
           if (/(?:^|\/)(?:llama-server|whisper-server)(?:\s|$)/.test(command)) {
