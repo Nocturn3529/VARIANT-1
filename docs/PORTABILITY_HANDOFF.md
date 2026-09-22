@@ -383,7 +383,20 @@ Detached checkout of `dcb04fa203cd3ced57117ba5020fe2e30a4cbe78` on a Linux deskt
 | `prepare:native` + unclean quit | Pass. `kill -9` leaves `llama-server`; the next launch sweeps it. No `whisper-server` in the linux-x64 recipe. |
 | Package | AppImage ran with `APPIMAGE_EXTRACT_AND_RUN=1` (FUSE denied on that box). `.deb` failed: no Linux maintainer. |
 
-Follow-up on this branch: Deck terminal open lets the host choose the shell, and `build.linux.maintainer` is set without adding `package.json` `author`. Retest at `b66462eb` passed Open Terminal (`posix_pty`, `pwd`) and the `.deb`. The terminal badge now shows the transport name instead of labeling every real PTY as ConPTY. macOS orphan cleanup resolves the executable with `lsof -d txt` and still ignores argv. Live macOS tests remain deferred. Desktop automation on Linux and macOS is still an explicit unsupported adapter; what to do with that is undecided.
+Follow-up on this branch: Deck terminal open lets the host choose the shell, and `build.linux.maintainer` is set without adding `package.json` `author`. Retest at `b66462eb` passed Open Terminal (`posix_pty`, `pwd`) and the `.deb`. The terminal badge now shows the transport name instead of labeling every real PTY as ConPTY. macOS orphan cleanup resolves the executable with `lsof -d txt` and still ignores argv. Live macOS tests remain deferred.
+
+### Desktop automation decision — 2026-09-23
+
+Linux and macOS stay on `UnsupportedDesktopAdapter` until a driver is actually present. Do not reimplement Win32 UI Automation in Python, and do not use a cursor-stealing library such as PyAutoGUI.
+
+The inspectable model is Hermes Agent (`NousResearch/hermes-agent`, `tools/computer_use/`). It does not contain the OS drivers. It speaks MCP to [`cua-driver`](https://github.com/trycua/cua/tree/main/libs/cua-driver), which Hermes documents as the open equivalent of Codex background computer use. Official Codex computer use is not published as source.
+
+`cua-driver` already splits platforms:
+
+- Linux (`platform-linux`): AT-SPI over D-Bus, X11 via XTest, Wayland via portal/libei and compositor protocols. Its own notes say a real GNOME or KDE session is only partly proven.
+- macOS (`platform-macos`): Accessibility plus private SkyLight calls, pid-scoped input, Accessibility and Screen Recording permission. Not testable here.
+
+Next implementation, when started: a VARIANT adapter that launches a pinned `cua-driver` and maps its window list, capture, and actions onto the existing desktop fabric. Require a pid and window id or refuse. Linux VM first. The macOS binary can use the same client later; do not claim it without a Mac.
 
 
 ## Review protocol
