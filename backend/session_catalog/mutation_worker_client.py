@@ -209,16 +209,17 @@ class MutationWorkerClient:
         finally:
             original_error = sys.exception()
             try:
-                for attempt in range(6):
+                for attempt in range(16):
                     try:
                         directory.cleanup()
                         break
                     except PermissionError:
                         # All owned processes have been retired. Windows may
-                        # briefly retain a sharing handle after their exit.
-                        if attempt == 5:
+                        # retain a sharing handle after their exit. A busy
+                        # runner can hold the worker directory for a few seconds.
+                        if attempt == 15:
                             raise
-                        await asyncio.sleep(0.05 * (attempt + 1))
+                        await asyncio.sleep(min(0.25 * (attempt + 1), 0.5))
             except OSError as exc:
                 if original_error is None:
                     raise MutationWorkerError(

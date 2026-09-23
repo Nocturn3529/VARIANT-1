@@ -375,6 +375,15 @@ Closed on this branch, after [run 35800474099](https://github.com/Nocturn3529/VA
 - Windows ConPTY Ctrl+C no longer inherits a host ignore (`7a9c3a4c`). Local signal, raw-TUI, and ignore-bit tests passed.
 - Ordinary Japanese (`こんにちは`) renders with the shipped SC faces. Hangul uses `Variant1CJKKR-Regular.ttf` and `Variant1CJKKR-Bold.ttf` (`e25be788`). These are language subsets, not a full CJK font.
 
+[Run 35854761497](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35854761497) at `04545d4d`:
+
+| Check | Result |
+| --- | --- |
+| frontend-scripts | **success** |
+| macos-package | **success**. Setup installed pinned cua-driver, `prepare:native` ran, `llama-server --version` ran, and the unsigned dmg/zip was produced after the icon was raised to 1024 pixels. |
+| backend-linux | **success**. Pytest passed, then cua-driver listed, focused, and observed an `xterm` window under Xvfb. `xmessage` was not enough: it publishes no pid, and the adapter refuses that window. |
+| backend (Windows) | **failure**. 2889 passed, 10 skipped, 1 failed: `test_result_retires_child_holding_worker_directory[8]`. The worker directory was still shared for longer than the cleanup retry. The retry now waits a few seconds. |
+
 ### Linux VM qualification — 2026-09-23
 
 Detached checkout of `dcb04fa203cd3ced57117ba5020fe2e30a4cbe78` on a Linux desktop VM. No merge, no push.
