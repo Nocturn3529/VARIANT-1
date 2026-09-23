@@ -7,6 +7,12 @@ installation, see [Setup](SETUP.md).
 
 ## One model-facing execution path
 
+Disposable mutation workers retain process-tree ownership until all descendants
+have exited, before deleting their workspace. Retirement is protected against
+repeated cancellation and has a separate bounded cleanup allowance. Candidate
+errors remain candidate errors when cleanup also fails; cleanup failures have
+their own diagnostic category. Persistent CPython cell policy is unchanged.
+
 Models use the historical `ipython(category, code)` action. Despite the name,
 it runs a custom CPython REPL with top-level await, not Jupyter or IPython.
 

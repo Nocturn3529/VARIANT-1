@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 import json
 import os
 import secrets
@@ -108,7 +108,24 @@ class MutationWorkerClient:
         command: list[str],
     ) -> tuple[asyncio.subprocess.Process, KernelJobObject]:
         environment = self._environment(work, gate, token)
-        process = await asyncio.create_subprocess_exec(
+        job = KernelJobObject(
+            max_processes=self.limits.max_processes,
+            process_memory_bytes=self.limits.process_memory_bytes,
+            job_memory_bytes=self.limits.job_memory_bytes,
+            cpu_percent=self.limits.cpu_percent,
+        )
+        try:
+            process = await self._spawn(command, work, environment)
+        except BaseException as exc:
+            try:
+                job.close()
+            except Exception as close_error:
+                exc.add_note(f"Mutation owner cleanup: {close_error}")
+            raise
+        return process, job
+
+    async def _spawn(self, command, work, environment):
+        return await asyncio.create_subprocess_exec(
             *command,
             cwd=work,
             env=environment,
@@ -123,13 +140,91 @@ class MutationWorkerClient:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             start_new_session=os.name != "nt",
         )
-        job = KernelJobObject(
-            max_processes=self.limits.max_processes,
-            process_memory_bytes=self.limits.process_memory_bytes,
-            job_memory_bytes=self.limits.job_memory_bytes,
-            cpu_percent=self.limits.cpu_percent,
-        )
-        return process, job
+
+    @staticmethod
+    async def _retire(process, job) -> None:
+        """Settle descendants before releasing ownership or deleting their cwd."""
+        async def cleanup():
+            errors = []
+            try:
+                try:
+                    if process.stdin is not None:
+                        process.stdin.close()
+                except Exception as exc:
+                    errors.append(exc)
+                # A Windows venv launcher may exit before its interpreter.
+                # Terminate the complete Job first; waiting on just the launcher
+                # does not establish that inherited pipes/cwd handles are closed.
+                try:
+                    job.terminate()
+                except Exception as exc:
+                    errors.append(exc)
+                try:
+                    if process.returncode is None:
+                        with suppress(ProcessLookupError):
+                            process.kill()
+                except Exception as exc:
+                    errors.append(exc)
+                try:
+                    deadline = asyncio.get_running_loop().time() + 5.0
+                    while job.active_process_count():
+                        if asyncio.get_running_loop().time() >= deadline:
+                            raise TimeoutError("mutation process tree did not retire")
+                        await asyncio.sleep(0.01)
+                except Exception as exc:
+                    errors.append(exc)
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5.0)
+                except Exception as exc:
+                    errors.append(exc)
+            finally:
+                try:
+                    job.close()
+                except Exception as exc:
+                    errors.append(exc)
+            if errors:
+                error = MutationWorkerError(
+                    "worker_cleanup", "mutation worker retirement failed"
+                )
+                for cause in errors:
+                    error.add_note(f"{type(cause).__name__}: {cause}")
+                raise error from errors[0]
+
+        task = asyncio.create_task(cleanup(), name="mutation-worker-retire")
+        cancellation = None
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError as exc:
+                cancellation = exc
+        task.result()
+        if cancellation is not None:
+            raise cancellation
+
+    @asynccontextmanager
+    async def _workspace(self):
+        directory = tempfile.TemporaryDirectory(prefix="mutation-", dir=self.root)
+        try:
+            yield directory.name
+        finally:
+            original_error = sys.exception()
+            try:
+                for attempt in range(6):
+                    try:
+                        directory.cleanup()
+                        break
+                    except PermissionError:
+                        # All owned processes have been retired. Windows may
+                        # briefly retain a sharing handle after their exit.
+                        if attempt == 5:
+                            raise
+                        await asyncio.sleep(0.05 * (attempt + 1))
+            except OSError as exc:
+                if original_error is None:
+                    raise MutationWorkerError(
+                        "worker_cleanup", "mutation workspace cleanup failed"
+                    ) from exc
+                original_error.add_note(f"Mutation workspace cleanup: {exc}")
 
     async def _run_once(
         self,
@@ -137,7 +232,7 @@ class MutationWorkerClient:
         *,
         proxy_call: Callable[[str, dict[str, Any], str], Awaitable[dict[str, Any]]],
     ) -> dict[str, Any]:
-        with tempfile.TemporaryDirectory(prefix="mutation-", dir=self.root) as work:
+        async with self._workspace() as work:
             gate = os.path.join(work, "parent-owned.gate")
             token = secrets.token_urlsafe(32)
             command = self._command()
@@ -231,13 +326,13 @@ class MutationWorkerClient:
                         )
                     return message
             finally:
-                if process.returncode is None:
-                    with suppress(ProcessLookupError):
-                        process.kill()
-                with suppress(Exception):
-                    await asyncio.wait_for(process.wait(), timeout=2.0)
-                with suppress(Exception):
-                    job.terminate_and_close()
+                original_error = sys.exception()
+                try:
+                    await self._retire(process, job)
+                except Exception as cleanup_error:
+                    if original_error is None:
+                        raise
+                    original_error.add_note(f"Mutation cleanup: {cleanup_error}")
 
     async def run(
         self,
@@ -248,7 +343,9 @@ class MutationWorkerClient:
         try:
             message = await asyncio.wait_for(
                 self._run_once(request, proxy_call=proxy_call),
-                timeout=self.limits.timeout_s,
+                # The candidate's own deadline is unchanged. Retirement must
+                # not be cancelled just as a valid result arrives at that limit.
+                timeout=self.limits.timeout_s + 15.0,
             )
         except MutationWorkerError:
             raise

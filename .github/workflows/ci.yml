@@ -28,6 +28,8 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install --upgrade pip
           .\.venv\Scripts\python.exe -m pip install -r requirements.lock
           .\.venv\Scripts\python.exe -m pip check
+      - name: Mutation worker retirement regression
+        run: node ../scripts/test-python.js tests/test_mutation_worker_cleanup.py -q
       - name: Isolated backend regression suite
         run: node ../scripts/test-python.js
 
