@@ -39,14 +39,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-## Noto Sans SC subset (PDF CJK)
+## Noto Sans CJK subsets (PDF)
 
-The packaged `backend/artifacts/fonts/Variant1CJK-Regular.ttf` and
-`Variant1CJK-Bold.ttf` faces are TrueType-outline instances of Noto Sans SC
-VF 2.004 at Regular (`wght=400`) and Bold (`wght=700`).
-It is distributed under the SIL Open Font License 1.1. The full upstream
-notice/license is included in `assets/licenses/NotoSansSC-OFL-1.1.txt` and
-`backend/artifacts/fonts/OFL.txt`. Project: https://github.com/notofonts/noto-cjk
+The packaged faces under `backend/artifacts/fonts/` are TrueType-outline
+instances of Noto Sans VF 2.004 at Regular (`wght=400`) and Bold (`wght=700`):
+
+- `Variant1CJK-Regular.ttf` and `Variant1CJK-Bold.ttf` from Noto Sans SC
+- `Variant1CJKKR-Regular.ttf` and `Variant1CJKKR-Bold.ttf` from Noto Sans KR
+
+Ordinary Japanese is covered by the SC subset (kana and the shared BMP
+ideographs). Hangul uses the KR pair. They are distributed under the SIL Open
+Font License 1.1. The full upstream notice/license is included in
+`assets/licenses/NotoSansSC-OFL-1.1.txt` and `backend/artifacts/fonts/OFL.txt`.
+Project: https://github.com/notofonts/noto-cjk
 
 ## Geist fonts
 

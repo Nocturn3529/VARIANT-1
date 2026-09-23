@@ -437,11 +437,19 @@ def _delimited(spec: Mapping[str, Any], delimiter: str) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
-def bundled_pdf_cjk_font_path(*, bold: bool = False) -> str:
+def bundled_pdf_cjk_font_path(*, bold: bool = False, script: str = "sc") -> str:
+    names = {
+        "sc": ("Variant1CJK-Regular.ttf", "Variant1CJK-Bold.ttf"),
+        "kr": ("Variant1CJKKR-Regular.ttf", "Variant1CJKKR-Bold.ttf"),
+    }
+    try:
+        regular_name, bold_name = names[script]
+    except KeyError as exc:
+        raise ValueError(f"unknown bundled PDF CJK script {script}") from exc
     return os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "fonts",
-        "Variant1CJK-Bold.ttf" if bold else "Variant1CJK-Regular.ttf",
+        bold_name if bold else regular_name,
     )
 
 
@@ -455,8 +463,15 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
     package_fonts = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
     bundled_regular = bundled_pdf_cjk_font_path()
     bundled_bold = bundled_pdf_cjk_font_path(bold=True)
+    kr_regular = bundled_pdf_cjk_font_path(script="kr")
+    kr_bold = bundled_pdf_cjk_font_path(script="kr", bold=True)
+    bundled_faces = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (bundled_regular, kr_regular)
+    }
     candidates = (
         (bundled_regular, bundled_bold),
+        (kr_regular, kr_bold),
         (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"),
         (r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
         (r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\meiryob.ttc"),
@@ -484,8 +499,7 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
                 if (
                     os.path.normcase(os.path.abspath(bold_path))
                     == os.path.normcase(os.path.abspath(regular_path))
-                    and os.path.normcase(os.path.abspath(regular_path))
-                    == os.path.normcase(os.path.abspath(bundled_regular))
+                    and os.path.normcase(os.path.abspath(regular_path)) in bundled_faces
                 ):
                     raise OSError("bundled CJK bold face must not alias the regular file")
                 bold_source = bold_path if os.path.isfile(bold_path) else regular_path
