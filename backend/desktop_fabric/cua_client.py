@@ -19,6 +19,17 @@ class CuaDriverError(RuntimeError):
     """The cua-driver process failed or returned an MCP error."""
 
 
+def bundled_cua_driver_path() -> str | None:
+    """The copy setup installs under bin/cua-driver, not a Hermes or Codex install."""
+
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
+    name = "cua-driver.exe" if os.name == "nt" else "cua-driver"
+    candidate = os.path.join(root, "bin", "cua-driver", name)
+    if os.path.isfile(candidate):
+        return candidate
+    return None
+
+
 def resolve_cua_driver_command() -> list[str] | None:
     """Return ``[binary, "mcp"]`` or None when the driver is not enabled."""
 
@@ -27,7 +38,10 @@ def resolve_cua_driver_command() -> list[str] | None:
         return None
     if override:
         return [override, "mcp"]
-    found = shutil.which("cua-driver")
+    bundled = bundled_cua_driver_path()
+    if bundled:
+        return [bundled, "mcp"]
+    found = shutil.which("cua-driver") or shutil.which("cua-driver.exe")
     if not found:
         return None
     return [found, "mcp"]

@@ -97,6 +97,8 @@ try {
       '`npm run setup:backend`; packaged VARIANT-1 provisions it on first use.');
   }
 
+  run(process.execPath, [path.join('scripts', 'install-cua-driver.js')]);
+
   console.log('\nBackend ready. Speech model weights are user-supplied under models/speech/.');
   console.log('Run `npm start`.');
 } catch (err) {
