@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from kernel_runtime.job_object import KernelJobObject
 from kernel_runtime.worker_path import packaged_kernel_executable
+from process_tree import CREATE_SUSPENDED
 
 from .mutation_contracts import (
     MutationWorkerError,
@@ -125,6 +126,12 @@ class MutationWorkerClient:
         return process, job
 
     async def _spawn(self, command, work, environment):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if os.name == "nt":
+            # Assign the job before the venv launcher can start the real
+            # interpreter. Otherwise that child, and its children, escape
+            # termination.
+            flags |= CREATE_SUSPENDED
         return await asyncio.create_subprocess_exec(
             *command,
             cwd=work,
@@ -137,7 +144,7 @@ class MutationWorkerClient:
             # Leave one byte of headroom for the newline delimiter so the
             # explicit protocol quota below remains the authoritative bound.
             limit=max(1024, int(self.limits.max_frame_bytes)) + 1,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            creationflags=flags,
             start_new_session=os.name != "nt",
         )
 
@@ -245,6 +252,10 @@ class MutationWorkerClient:
             )
             try:
                 job.assign_pid(int(process.pid))
+                if os.name == "nt":
+                    import psutil
+
+                    psutil.Process(int(process.pid)).resume()
                 with open(gate, "x", encoding="utf-8", newline="") as handle:
                     handle.write(token)
                     handle.flush()

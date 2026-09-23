@@ -382,7 +382,7 @@ Closed on this branch, after [run 35800474099](https://github.com/Nocturn3529/VA
 | frontend-scripts | **success** |
 | macos-package | **success**. Setup installed pinned cua-driver, `prepare:native` ran, `llama-server --version` ran, and the unsigned dmg/zip was produced after the icon was raised to 1024 pixels. |
 | backend-linux | **success**. Pytest passed, then cua-driver listed, focused, and observed an `xterm` window under Xvfb. `xmessage` was not enough: it publishes no pid, and the adapter refuses that window. |
-| backend (Windows) | **failure**. 2889 passed, 10 skipped, 1 failed: `test_result_retires_child_holding_worker_directory[8]`. The worker directory was still shared for longer than the cleanup retry. The retry now waits a few seconds. |
+| backend (Windows) | **failure** on [run 35858838415](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35858838415) too: 2888 passed, 10 skipped, 2 failed. Attempt 13 left the sleep child alive, so the child had started before the worker was assigned to its Job. The Windows worker is now created suspended, assigned, then resumed. |
 
 ### Linux VM qualification — 2026-09-23
 
