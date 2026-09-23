@@ -171,7 +171,7 @@
         "zip"
       ],
       "category": "public.app-category.developer-tools",
-      "icon": "assets/tray/icon_256.png",
+      "icon": "assets/tray/icon_1024.png",
       "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
       "extraResources": [
         {
