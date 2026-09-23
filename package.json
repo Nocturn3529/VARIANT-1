@@ -118,7 +118,8 @@
             "ggml-cuda.dll",
             "ggml-rpc.dll",
             "libomp140.x86_64.dll",
-            "cua-driver/**/*",
+            "cua-driver/cua-driver.exe",
+            "cua-driver/VERSION",
             "cublas64_13.dll",
             "cublasLt64_13.dll",
             "cudart64_13.dll"
@@ -152,7 +153,8 @@
           "to": "bin",
           "filter": [
             "llama-server",
-            "cua-driver/**/*",
+            "cua-driver/cua-driver",
+            "cua-driver/VERSION",
             "libllama*",
             "libmtmd*",
             "libggml*",
@@ -177,7 +179,8 @@
           "to": "bin",
           "filter": [
             "llama-server",
-            "cua-driver/**/*",
+            "cua-driver/cua-driver",
+            "cua-driver/VERSION",
             "libllama*",
             "libmtmd*",
             "libggml*",

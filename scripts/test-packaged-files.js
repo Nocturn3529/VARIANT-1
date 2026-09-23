@@ -207,6 +207,8 @@ const WINDOWS_NATIVE_FILTER = [
   'ggml-cuda.dll',
   'ggml-rpc.dll',
   'libomp140.x86_64.dll',
+  'cua-driver/cua-driver.exe',
+  'cua-driver/VERSION',
   'cublas64_13.dll',
   'cublasLt64_13.dll',
   'cudart64_13.dll',
@@ -233,6 +235,10 @@ for (const platform of ['linux', 'mac']) {
     `${platform} native runtime packaging must use an explicit filter`);
   assert.ok(unixNative.filter.includes('llama-server'),
     `${platform} native filter must include llama-server`);
+  assert.ok(unixNative.filter.includes('cua-driver/cua-driver'),
+    `${platform} native filter must include the pinned cua-driver binary`);
+  assert.ok(unixNative.filter.includes('cua-driver/VERSION'),
+    `${platform} native filter must include the pinned cua-driver version`);
   assert.ok(!unixNative.filter.includes('llama-server.exe'),
     `${platform} native filter must not require Windows llama-server.exe`);
   assert.ok(!unixNative.filter.some(item => String(item).endsWith('.dll')),
