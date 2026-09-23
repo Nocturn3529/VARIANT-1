@@ -363,12 +363,17 @@ Local Windows before push: isolation-cleanup node tests 8 passed / 1 skipped; fo
 
 ### Remaining gaps
 
-1. Live Linux Deck UI chat + Files/Review + unclean-quit orphan sweep.
-2. macOS `prepare:native`, dmg/zip, and a live Mac run. Orphan identity now uses `lsof` text-file lookup; that code is untested on a Mac.
-3. `electron-builder --linux` (and later mac) on a real builder.
-4. Local Windows ConPTY SIGINT observation (`test_execution_hosts.py::test_signal_acceptance_is_separate_from_observed_effect[False-terminal]`), author-reported on this desktop, not reproduced in CI.
-5. Japanese and Korean PDF claims still need their own evidence. Simplified Chinese now uses the Noto Sans SC Regular and Bold TrueType faces, not the six-character sample. A live Linux desktop pass is still separate.
-6. **Merging remains Nocturn's decision after ChatGPT re-review.** PR #3 stays draft.
+1. **Live macOS session.** `macos-package` on `macos-latest` runs `setup:backend`, `prepare:native`, `bin/llama-server --version`, and an unsigned dmg/zip. That is a GitHub-hosted Mac, not a machine Nocturn owns. Signing and notarization are out of scope.
+2. **Merging remains Nocturn's decision.** PR #3 stays draft. `main` was not changed.
+
+Closed on this branch, after [run 35800474099](https://github.com/Nocturn3529/VARIANT-1/actions/runs/35800474099) failed and `d204fdda` never started:
+
+- That run's Windows and Linux suites each failed one test: `test_subprocess_launches_remain_in_explicit_drivers`, because `cua_client.py` starts the driver and `cua_adapter.py` runs `ps` for a macOS process start time. Both are now on the explicit driver list (`c8d40ab`).
+- The same run's frontend job failed `test-packaged-files.js` because `cua-driver/**/*` is a broad glob. The installer filter now names `cua-driver/cua-driver.exe` (Windows) or `cua-driver/cua-driver` (Linux and macOS) plus `cua-driver/VERSION`.
+- GitHub skipped checks on `d204fdda` because `.github/workflows/ci.yml` conflicted with `main`. Merge `3e7b949` keeps main's mutation-worker step and this branch's Linux cua-driver session plus the macOS package job. Local `test_mutation_worker_cleanup.py`: 23 passed.
+- Linux Deck, Files, Review, terminal, orphan sweep, `.deb`, and AppImage passed on the VM at `b66462eb`. `ubuntu-latest` now also installs pinned cua-driver 0.28.2 and must list, focus, and observe one X11 window under Xvfb.
+- Windows ConPTY Ctrl+C no longer inherits a host ignore (`7a9c3a4c`). Local signal, raw-TUI, and ignore-bit tests passed.
+- Ordinary Japanese (`こんにちは`) renders with the shipped SC faces. Hangul uses `Variant1CJKKR-Regular.ttf` and `Variant1CJKKR-Bold.ttf` (`e25be788`). These are language subsets, not a full CJK font.
 
 ### Linux VM qualification — 2026-09-23
 
