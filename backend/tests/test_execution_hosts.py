@@ -349,6 +349,26 @@ def test_conpty_ctrl_c_reaches_raw_tui_without_claiming_exit(tmp_path):
         runtime.shutdown()
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows CTRL+C ignore bit")
+def test_host_ctrl_c_ignore_bit_tracks_the_console_handler():
+    import ctypes
+    from ctypes import wintypes
+
+    from execution_hosts.windows_conpty import _host_ignores_ctrl_c
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
+    kernel32.SetConsoleCtrlHandler.restype = wintypes.BOOL
+    was = _host_ignores_ctrl_c()
+    try:
+        assert kernel32.SetConsoleCtrlHandler(None, True)
+        assert _host_ignores_ctrl_c() is True
+        assert kernel32.SetConsoleCtrlHandler(None, False)
+        assert _host_ignores_ctrl_c() is False
+    finally:
+        assert kernel32.SetConsoleCtrlHandler(None, bool(was))
+
+
 @pytest.mark.parametrize("written,accepted", [(0, False), (1, True)])
 def test_conpty_signal_requires_the_control_byte_to_be_written(written, accepted):
     from execution_hosts.windows_conpty import WindowsConPtyProcess
