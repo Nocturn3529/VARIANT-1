@@ -66,6 +66,8 @@ class CuaDriverClient:
         self._messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._reader: threading.Thread | None = None
         self._write_lock = threading.Lock()
+        self._stderr_lock = threading.Lock()
+        self._stderr_text = ""
         self._id = 0
         self._closed = False
 
@@ -77,7 +79,7 @@ class CuaDriverClient:
                 self.command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 env=self.env,
             )
         except OSError as exc:
@@ -86,6 +88,9 @@ class CuaDriverClient:
             target=self._read_loop, name="cua-driver-mcp", daemon=True,
         )
         self._reader.start()
+        threading.Thread(
+            target=self._read_stderr, name="cua-driver-mcp-err", daemon=True,
+        ).start()
         self._request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
@@ -154,16 +159,22 @@ class CuaDriverClient:
         process = self._process
         if process is None or process.stdin is None:
             raise CuaDriverError("cua-driver is not running")
+        # MCP stdio is one JSON-RPC message per line. Content-Length framing
+        # is not a message, so cua-driver 0.28 never answers it.
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        header = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
-        process.stdin.write(header + body)
+        process.stdin.write(body + b"\n")
         process.stdin.flush()
+
+    def _stderr_suffix(self) -> str:
+        with self._stderr_lock:
+            detail = self._stderr_text.strip()
+        return f": {detail}" if detail else ""
 
     def _next(self, timeout_s: float) -> dict[str, Any]:
         try:
             message = self._messages.get(timeout=timeout_s)
         except queue.Empty as exc:
-            raise CuaDriverError("cua-driver timed out") from exc
+            raise CuaDriverError(f"cua-driver timed out{self._stderr_suffix()}") from exc
         if message is None:
             raise CuaDriverError("cua-driver closed the connection")
         return message
@@ -176,31 +187,37 @@ class CuaDriverClient:
             return
         try:
             while not self._closed:
-                headers: dict[str, str] = {}
-                while True:
-                    line = stream.readline()
-                    if not line:
-                        self._messages.put(None)
-                        return
-                    if line in {b"\r\n", b"\n"}:
-                        break
-                    decoded = line.decode("ascii", "replace")
-                    if ":" not in decoded:
-                        continue
-                    key, value = decoded.split(":", 1)
-                    headers[key.strip().lower()] = value.strip()
-                length = int(headers.get("content-length") or "0")
-                if length <= 0:
-                    continue
-                body = stream.read(length)
-                if len(body) < length:
+                line = stream.readline()
+                if not line:
                     self._messages.put(None)
                     return
-                payload = json.loads(body.decode("utf-8"))
+                text = line.decode("utf-8", "replace").strip()
+                if not text:
+                    continue
+                payload = json.loads(text)
                 if isinstance(payload, dict):
                     self._messages.put(payload)
         except Exception:
             self._messages.put(None)
+
+    def _read_stderr(self) -> None:
+        process = self._process
+        stream = process.stderr if process is not None else None
+        if stream is None:
+            return
+        kept = bytearray()
+        try:
+            while not self._closed:
+                chunk = stream.read(1024)
+                if not chunk:
+                    break
+                kept.extend(chunk)
+                if len(kept) > 4000:
+                    del kept[:-4000]
+                with self._stderr_lock:
+                    self._stderr_text = kept.decode("utf-8", "replace")
+        except Exception:
+            return
 
 
 def unwrap_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:

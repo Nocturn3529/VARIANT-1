@@ -163,24 +163,16 @@ def test_missing_driver_stays_unsupported(monkeypatch):
     assert isinstance(adapter, UnsupportedDesktopAdapter)
 
 
-def test_stdio_client_speaks_content_length_mcp():
+def test_stdio_client_speaks_newline_delimited_mcp():
     script = r"""
 import json, sys
 def read_message():
-    headers = {}
-    while True:
-        line = sys.stdin.buffer.readline()
-        if line in (b"\r\n", b"\n", b""):
-            break
-        key, value = line.decode().split(":", 1)
-        headers[key.strip().lower()] = value.strip()
-    length = int(headers.get("content-length") or 0)
-    if length <= 0:
+    line = sys.stdin.buffer.readline()
+    if not line:
         return None
-    return json.loads(sys.stdin.buffer.read(length))
+    return json.loads(line.decode())
 def write_message(payload):
-    body = json.dumps(payload).encode()
-    sys.stdout.buffer.write(f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+    sys.stdout.buffer.write(json.dumps(payload).encode() + b"\n")
     sys.stdout.buffer.flush()
 while True:
     message = read_message()
