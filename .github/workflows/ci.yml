@@ -95,7 +95,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            xvfb x11-utils xfonts-base libx11-6 libxtst6 libxext6 libxcb1 \
+            xvfb x11-utils xterm xfonts-base libx11-6 libxtst6 libxext6 libxcb1 \
             dbus-x11 at-spi2-core
       - name: cua-driver list, focus, and observe
         if: ${{ always() && !cancelled() }}

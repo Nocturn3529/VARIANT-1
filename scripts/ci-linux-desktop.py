@@ -24,16 +24,18 @@ def main() -> None:
     if not command:
         raise SystemExit("pinned cua-driver was not resolved")
     print("cua_driver_command", command)
+    # xmessage does not publish _NET_WM_PID, so the driver returns pid null
+    # and the adapter correctly refuses the window. xterm publishes its pid.
     window_proc = subprocess.Popen(
-        ["xmessage", "-title", TITLE, "-timeout", "60", "-buttons", "close:0", TITLE],
-        stdout=subprocess.PIPE,
+        ["xterm", "-T", TITLE, "-geometry", "80x24+20+20", "-e", "sleep", "60"],
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
     adapter = CuaDesktopAdapter(command=command, platform="linux")
     try:
         if window_proc.poll() is not None:
             _out, err = window_proc.communicate()
-            raise SystemExit(f"xmessage exited early: {err.decode('utf-8', 'replace')}")
+            raise SystemExit(f"xterm exited early: {err.decode('utf-8', 'replace')}")
         adapter.open()
         deadline = time.monotonic() + 20
         window = None
