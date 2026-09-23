@@ -22,6 +22,7 @@ from capability_broker import CapabilityCall, CapabilityRef, InvocationContext
 from core_invariants import cancellation_is_requested
 from tool_core import json_safe
 from run_context import Variant1RunContext, bind_run_context, current_run_context
+from process_tree import CREATE_SUSPENDED, resume_owned_process
 
 from .bridge import KernelBridgeServer
 from .capsules import KernelCapsuleError
@@ -909,13 +910,14 @@ class KernelLease:
                     stderr=log_handle,
                     bufsize=0,
                     close_fds=True,
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                                   | (CREATE_SUSPENDED if os.name == "nt" else 0)),
                     start_new_session=os.name != "nt",
                 )
             finally:
                 log_handle.close()
             try:
-                self.job.assign_pid(int(self.process.pid))
+                resume_owned_process(self.process, self.job)
             except BaseException:
                 with suppress(Exception):
                     self.process.kill()

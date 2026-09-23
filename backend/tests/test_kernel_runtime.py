@@ -1441,6 +1441,34 @@ async def test_capability_deadline_is_not_bridge_idle_timeout(kernel_stack, code
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows launcher ownership")
+async def test_kernel_launcher_is_owned_before_interpreter_starts(kernel_stack, monkeypatch):
+    import psutil
+    from kernel_runtime.job_object import KernelJobObject
+
+    manager, runtimes, _ = kernel_stack
+    assign = KernelJobObject.assign_pid
+    early_children = []
+
+    def delayed_assign(job, pid):
+        time.sleep(0.2)
+        early_children.extend(psutil.Process(pid).children(recursive=True))
+        return assign(job, pid)
+
+    monkeypatch.setattr(KernelJobObject, "assign_pid", delayed_assign)
+    runtimes.ensure_runtime("owned-launch", is_new=True)
+    try:
+        result = await manager.execute(
+            chat_id="owned-launch", code="print(7)", run_id="owned-launch",
+            outer_tool_call_id="owned-launch",
+        )
+        assert result.ok, result.to_dict()
+        assert early_children == []
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_persistent_kernel_executes_state_and_typed_read_proxy(kernel_stack):
     manager, runtimes, _ = kernel_stack
     runtimes.ensure_runtime("chat-a", is_new=True)

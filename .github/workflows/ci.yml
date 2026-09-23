@@ -29,7 +29,7 @@ jobs:
           .\.venv\Scripts\python.exe -m pip install -r requirements.lock
           .\.venv\Scripts\python.exe -m pip check
       - name: Mutation worker retirement regression
-        run: node ../scripts/test-python.js tests/test_mutation_worker_cleanup.py -q
+        run: node ../scripts/test-python.js tests/test_mutation_worker_cleanup.py tests/test_kernel_runtime.py::test_kernel_launcher_is_owned_before_interpreter_starts -q
       - name: Isolated backend regression suite
         run: node ../scripts/test-python.js
 
