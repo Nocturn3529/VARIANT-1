@@ -1,0 +1,172 @@
+{
+  "platform": "linux",
+  "arch": "x64",
+  "status": "ready",
+  "upstream_tag": "b10289",
+  "upstream_commit": "f9e832c10e9444cb168ddcb579cc62c154f3068b",
+  "files": [
+    {
+      "file": "llama-server",
+      "bytes": 17896,
+      "sha256": "5f38db2db4efaa1cf435fbf5f6427c03715cede76125c853f68018a6a4a00f98",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/llama-server"
+    },
+    {
+      "file": "libggml-base.so.0.18.1",
+      "bytes": 910680,
+      "sha256": "bc4ad4bf1a4b530edefe87d7810949963e6a8b708d52d8db0dc1c14188cc45b3",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-base.so.0.18.1"
+    },
+    {
+      "file": "libggml-cpu-alderlake.so",
+      "bytes": 1141184,
+      "sha256": "066906c06e12fa6c8a72a3b87d7be76137dd8ff687e559fc45713c108c367613",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-alderlake.so"
+    },
+    {
+      "file": "libggml-cpu-cannonlake.so",
+      "bytes": 1286176,
+      "sha256": "1cff542b64e417fcf1f71ed7177e12eb4e7c1022fa959525d340d212cbca0cbf",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-cannonlake.so"
+    },
+    {
+      "file": "libggml-cpu-cascadelake.so",
+      "bytes": 1282080,
+      "sha256": "a742e3b1576a6d9c16c50fcb4e045af880fb49634356fff1c4c1053433162fa5",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-cascadelake.so"
+    },
+    {
+      "file": "libggml-cpu-cooperlake.so",
+      "bytes": 1282144,
+      "sha256": "4ed30298f402d1b3f2cf3c6995c34c2f0b90ead9834294f151a93b032e004d87",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-cooperlake.so"
+    },
+    {
+      "file": "libggml-cpu-haswell.so",
+      "bytes": 1141184,
+      "sha256": "155eb9bbd263822346f33d1f0612dc69b3269ee2fa18e9b4dbf637e1ab240dae",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-haswell.so"
+    },
+    {
+      "file": "libggml-cpu-icelake.so",
+      "bytes": 1282080,
+      "sha256": "282a2f11091e9aacd7efda3cd33e0cc92e53ddf5e0e90d15b2393b6196d039d6",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-icelake.so"
+    },
+    {
+      "file": "libggml-cpu-ivybridge.so",
+      "bytes": 1094656,
+      "sha256": "abd957ac6f41d0ba22682602e063deea3861d28088934135097f0043a2ae1e08",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-ivybridge.so"
+    },
+    {
+      "file": "libggml-cpu-piledriver.so",
+      "bytes": 1090560,
+      "sha256": "6b4e6f00f936791a0b5e66b7c8a8a0fb2a6cd3b0150acfb14dc5dc11757407e1",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-piledriver.so"
+    },
+    {
+      "file": "libggml-cpu-sandybridge.so",
+      "bytes": 1081248,
+      "sha256": "fd8d67a1ea8f2e37ccd3a1308731af903d698d6069980711e3483909f14aa7f1",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-sandybridge.so"
+    },
+    {
+      "file": "libggml-cpu-sapphirerapids.so",
+      "bytes": 1548480,
+      "sha256": "d9092412e44f9d2ec07432c0a9110065863ac8d01d972df6c0e9a06d3963021f",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-sapphirerapids.so"
+    },
+    {
+      "file": "libggml-cpu-skylakex.so",
+      "bytes": 1286176,
+      "sha256": "d5256e9738827e0c1d4f13107e2d284950e117e303cbb598649abd399a30415d",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-skylakex.so"
+    },
+    {
+      "file": "libggml-cpu-sse42.so",
+      "bytes": 882048,
+      "sha256": "cdbca7612d26f574ecc696a142701b9d13b7c947834e7785df5eee34c1511630",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-sse42.so"
+    },
+    {
+      "file": "libggml-cpu-x64.so",
+      "bytes": 878128,
+      "sha256": "e0027ee90105a950198866d9704dc2e8d5e63b4fb52deaf1bced671b8996700b",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-x64.so"
+    },
+    {
+      "file": "libggml-cpu-zen4.so",
+      "bytes": 1282144,
+      "sha256": "ce81e04328400f170dc973304a996bfe49e1eef09a7d516d327c822e6acdbf99",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu-zen4.so"
+    },
+    {
+      "file": "libggml-rpc.so",
+      "bytes": 159272,
+      "sha256": "78195d07074ff422ef2a75c7ed681456ed7dfca39b27cbafd3e56c49d96d23dc",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml-rpc.so"
+    },
+    {
+      "file": "libggml.so.0.18.1",
+      "bytes": 54936,
+      "sha256": "ffd6a736ad58e2d9407ed427252520ffbd4bca8dd5de467ecb2bd446a7a3d75b",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libggml.so.0.18.1"
+    },
+    {
+      "file": "libllama-common.so.0.0.10289",
+      "bytes": 6195400,
+      "sha256": "7ccfe3cd5b806b058c76bd030539bbd28f603c49459248a98e6d82ec2c6c61bc",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libllama-common.so.0.0.10289"
+    },
+    {
+      "file": "libllama-server-impl.so",
+      "bytes": 7464752,
+      "sha256": "f3bf3e481800e27d8eda2b1a3f705bd25b8ea600aa855946a472f738866b41dc",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libllama-server-impl.so"
+    },
+    {
+      "file": "libllama.so.0.0.10289",
+      "bytes": 4165752,
+      "sha256": "03bc634ac6f5452719296a055b355842b9930ef8ee7869adcbcabf790b0d96ac",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libllama.so.0.0.10289"
+    },
+    {
+      "file": "libmtmd.so.0.0.10289",
+      "bytes": 1640528,
+      "sha256": "73e250bed71f61d65ca8c6732d0066cd74fafd399fac7bf4a2711ced3b234130",
+      "source_archive": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "member": "llama-b10289/libmtmd.so.0.0.10289"
+    }
+  ],
+  "archives": [
+    {
+      "file": "llama-b10289-bin-ubuntu-x64.tar.gz",
+      "sha256": "b86c74a636b94deacc3c5fd94c498c16a3ce85bd312b875a813c5c125f64d931",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/llama-b10289-bin-ubuntu-x64.tar.gz"
+    }
+  ],
+  "license_sources": [],
+  "note": "Hash-verified CPU build from llama.cpp b10289 (llama-b10289-bin-ubuntu-x64.tar.gz). Ships llama-server + runtime shared libs only. Windows CUDA recipe remains config/native-runtime.json."
+}

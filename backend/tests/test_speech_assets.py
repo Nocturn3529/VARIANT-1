@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from speech.assets import (
+    resolve_whisper_binary,
     KOKORO_MODEL_NAME,
     KOKORO_VOICES_NAME,
     kokoro_drop_dir,
@@ -74,3 +75,104 @@ def test_kokoro_requires_the_compatible_user_pair(tmp_path):
     )
     assert selected_model == model.resolve()
     assert selected_voices == voices.resolve()
+
+
+def test_whisper_binary_only_adapts_bundled_defaults(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    data = tmp_path / "data"
+    bundled = app / "bin" / "whisper" / "whisper-server.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"runtime")
+    custom_dir = app / "runtimes" / "cpu"
+    custom_dir.mkdir(parents=True)
+    custom = custom_dir / "whisper-server"
+    custom.write_bytes(b"custom")
+
+    monkeypatch.setattr(
+        "speech.assets.whisper_server_basename",
+        lambda: "whisper-server.exe",
+    )
+    # Bundled default pin gets .exe adaptation on Windows.
+    resolved_default = resolve_whisper_binary(
+        "bin/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved_default == bundled.resolve()
+
+    # Custom same-basename relative must keep parent and configured name.
+    resolved_custom = resolve_whisper_binary(
+        "runtimes/cpu/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved_custom == custom.resolve()
+
+
+def test_whisper_binary_preserves_absolute_custom(tmp_path):
+    abs_bin = tmp_path / "opt" / "whisper-server"
+    abs_bin.parent.mkdir(parents=True)
+    abs_bin.write_bytes(b"abs")
+    bundled = tmp_path / "data" / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
+    resolved = resolve_whisper_binary(
+        str(abs_bin),
+        app_root=str(tmp_path / "app"),
+        data_dir=str(tmp_path / "data"),
+    )
+    assert resolved == abs_bin.resolve()
+
+
+def test_whisper_binary_preserves_parent_relative_when_bundled_exists(tmp_path):
+    app = tmp_path / "workspace" / "app"
+    data = tmp_path / "workspace" / "data"
+    bundled = data / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
+    sibling = tmp_path / "workspace" / "models" / "speech" / "whisper" / "whisper-server"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_bytes(b"sibling")
+
+    resolved = resolve_whisper_binary(
+        "../models/speech/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == sibling.resolve()
+
+
+def test_whisper_binary_preserves_repeated_parent_segments(tmp_path):
+    app = tmp_path / "outer" / "workspace" / "app"
+    data = tmp_path / "outer" / "workspace" / "data"
+    bundled = data / "models" / "speech" / "whisper" / "whisper-server"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"bundled")
+    uncle = tmp_path / "outer" / "models" / "speech" / "whisper" / "whisper-server"
+    uncle.parent.mkdir(parents=True)
+    uncle.write_bytes(b"uncle")
+
+    resolved = resolve_whisper_binary(
+        "../../models/speech/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == uncle.resolve()
+
+
+def test_whisper_binary_dot_slash_still_adapts_bundled_default(tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    data = tmp_path / "data"
+    bundled = app / "bin" / "whisper" / "whisper-server.exe"
+    bundled.parent.mkdir(parents=True)
+    bundled.write_bytes(b"runtime")
+    monkeypatch.setattr(
+        "speech.assets.whisper_server_basename",
+        lambda: "whisper-server.exe",
+    )
+    resolved = resolve_whisper_binary(
+        "./bin/whisper/whisper-server",
+        app_root=str(app),
+        data_dir=str(data),
+    )
+    assert resolved == bundled.resolve()

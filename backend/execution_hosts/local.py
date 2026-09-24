@@ -18,7 +18,6 @@ from process_tree import (
     dispose_process_tree,
     process_started_at,
 )
-from .windows_conpty import WindowsConPtyProcess, conpty_available
 from .pipe_reader import PipeInput, PipeReader, join_readers, stop_readers
 
 
@@ -574,6 +573,7 @@ def spawn_terminal(
     force_pipe_fallback: bool = False,
 ):
     if os.name == "nt" and not force_pipe_fallback:
+        from .windows_conpty import WindowsConPtyProcess, conpty_available
         if conpty_available():
             try:
                 return WindowsConPtyProcess(

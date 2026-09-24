@@ -6,6 +6,7 @@ import asyncio
 from dataclasses import replace
 import inspect
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -14,6 +15,8 @@ import uuid
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, closing
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 from capability_broker import current_capability_invocation
 from core_invariants import sqlite_session_connection
@@ -182,6 +185,9 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         self._change_publisher = None
         self._change_loop: asyncio.AbstractEventLoop | None = None
         self._pending_change_events: dict[tuple[str, str], dict[str, Any]] = {}
+        self._spawn_pumps: dict[str, asyncio.Task] = {}
+        self._spawn_pump_errors: list[BaseException] = []
+        self._spawn_pump_seq = 0
         self.work = work
         self._work_registered = False
         with self._connect() as conn:
@@ -785,10 +791,51 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         work = self._require_work()
         job_id = self._admit_job(child_id)
         # Narrow embedded/test compositions can drive one scheduler turn
-        # without installing a second scheduler loop.
+        # without installing a second scheduler loop. Do not await that turn
+        # here: spawn() must return while the handle is still queued so a
+        # same-tick cancel can win the queued CAS before the worker runs.
         if not work.started:
-            await work.scheduler.run_once()
+            self._schedule_unstarted_pump(child_id)
         return job_id
+
+    def _schedule_unstarted_pump(self, child_id: str) -> None:
+        work = self._require_work()
+        if work.started:
+            return
+        prefix = child_id + ":"
+        for key, existing in self._spawn_pumps.items():
+            if key.startswith(prefix) and not existing.done():
+                return
+        self._spawn_pump_seq += 1
+        token = f"{child_id}:{self._spawn_pump_seq}"
+        task = asyncio.create_task(
+            work.scheduler.run_once(),
+            name=f"child-spawn-pump-{token}",
+        )
+        self._spawn_pumps[token] = task
+
+        def _complete(done: asyncio.Task, *, expected=task, key=token) -> None:
+            try:
+                exc = done.exception()
+            except asyncio.CancelledError:
+                exc = None
+            if exc is not None:
+                self._spawn_pump_errors.append(exc)
+                _LOG.error("child spawn pump failed", exc_info=exc)
+            if self._spawn_pumps.get(key) is expected:
+                self._spawn_pumps.pop(key, None)
+
+        task.add_done_callback(_complete)
+
+    async def drain_spawn_pumps(self) -> None:
+        tasks = [task for task in list(self._spawn_pumps.values()) if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for key, task in list(self._spawn_pumps.items()):
+            if task.done():
+                self._spawn_pumps.pop(key, None)
 
     async def _work_handler(self, execution: JobExecutionContext) -> JobResult:
         manifest = dict(execution.job.input_manifest or {})

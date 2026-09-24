@@ -381,7 +381,13 @@ class ExtensionPackageService:
             )
             self._check_cancelled(cancellation_requested)
             staged_files, staged_digest = source_manifest(staged_source)
-            if staged_digest != digest or staged_files != files:
+            current_files, current_digest = source_manifest(source_root)
+            if (
+                staged_digest != digest
+                or staged_files != files
+                or staged_digest != current_digest
+                or staged_files != current_files
+            ):
                 raise ExtensionPackageError(
                     "extension source changed during staging; nothing was published"
                 )

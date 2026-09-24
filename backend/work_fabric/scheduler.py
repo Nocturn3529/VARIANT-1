@@ -57,6 +57,8 @@ class WorkScheduler:
         self._active: dict[str, asyncio.Task] = {}
         self._active_kinds: dict[str, str] = {}
         self._stopping = asyncio.Event()
+        self._admission = asyncio.Lock()
+        self._followup_task: asyncio.Task | None = None
 
     @property
     def running(self) -> bool:
@@ -315,13 +317,53 @@ class WorkScheduler:
                 self._active.pop(job_id, None)
                 self._active_kinds.pop(job_id, None)
             if finished.cancelled():
+                self._schedule_followup()
                 return
             try:
                 finished.result()
             except Exception:
                 _LOG.exception("uncaught Work Fabric scheduler task failure")
+            self._schedule_followup()
 
         task.add_done_callback(done)
+
+    def _schedule_followup(self) -> None:
+        if self._stopping.is_set() or self.running:
+            return
+        existing = self._followup_task
+        if existing is not None and not existing.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(
+            self._followup_once(), name="work-scheduler-followup"
+        )
+        self._followup_task = task
+
+        def done(finished: asyncio.Task, *, expected=task) -> None:
+            if self._followup_task is expected:
+                self._followup_task = None
+            if finished.cancelled():
+                return
+            try:
+                finished.result()
+            except Exception:
+                _LOG.exception("uncaught Work Fabric scheduler follow-up failure")
+
+        task.add_done_callback(done)
+
+    async def _followup_once(self) -> None:
+        try:
+            while not self.running and not self._stopping.is_set():
+                count = await self.run_once()
+                if count <= 0:
+                    break
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            _LOG.exception("Work Fabric scheduler follow-up failed")
 
     def cancel_active(self, job_id: str) -> bool:
         """Interrupt the locally owned handler after durable cancel admission."""
@@ -333,6 +375,10 @@ class WorkScheduler:
         return True
 
     async def run_once(self) -> int:
+        async with self._admission:
+            return await self._admit_locked()
+
+    async def _admit_locked(self) -> int:
         available = self.max_concurrency - len(self._active)
         if available <= 0 or not self._handlers:
             return 0
@@ -391,14 +437,23 @@ class WorkScheduler:
         loop_task = self._loop_task
         self._loop_task = None
         self._stopping.set()
+        followup = self._followup_task
+        self._followup_task = None
         if loop_task is not None:
             loop_task.cancel()
+        if followup is not None:
+            followup.cancel()
         active = tuple(self._active.values())
         for task in active:
             task.cancel()
         if loop_task is not None:
             try:
                 await loop_task
+            except asyncio.CancelledError:
+                pass
+        if followup is not None:
+            try:
+                await followup
             except asyncio.CancelledError:
                 pass
         if active:

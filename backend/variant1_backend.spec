@@ -39,6 +39,7 @@ hiddenimports += collect_submodules("peers")
 hiddenimports += collect_submodules("coding")
 hiddenimports += collect_submodules("goals")
 hiddenimports += collect_submodules("artifacts")
+datas += [("artifacts/fonts", "artifacts/fonts")]
 hiddenimports += collect_submodules("web_search")
 hiddenimports += collect_submodules("browser_fabric")
 hiddenimports += collect_submodules("desktop_fabric")

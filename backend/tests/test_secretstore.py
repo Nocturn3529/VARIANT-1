@@ -1,4 +1,8 @@
 import base64
+import os
+import stat
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -7,6 +11,7 @@ from security import secretstore
 
 def test_empty_secret_remains_empty():
     assert secretstore.decrypt("") == ""
+    assert secretstore.encrypt("") == ""
 
 
 def test_unknown_secret_format_fails_closed():
@@ -41,3 +46,294 @@ def test_valid_dpapi_payload_is_unprotected(monkeypatch):
     )
     token = "dpapi:" + base64.b64encode(b"ciphertext").decode("ascii")
     assert secretstore.decrypt(token) == "key:ciphertext"
+
+
+def test_encrypt_uses_dpapi_on_windows(monkeypatch):
+    monkeypatch.setattr(secretstore, "IS_WIN", True)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    monkeypatch.setattr(
+        secretstore, "_dpapi_protect", lambda data: b"wrapped:" + data,
+        raising=False,
+    )
+    token = secretstore.encrypt("super-secret")
+    assert token.startswith("dpapi:")
+    blob = base64.b64decode(token[len("dpapi:"):], validate=True)
+    assert blob == b"wrapped:super-secret"
+
+
+def test_fernet_roundtrip_off_windows(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "secretstore.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    token = secretstore.encrypt("unix-secret")
+    assert token.startswith("fernet:")
+    assert secretstore.decrypt(token) == "unix-secret"
+    assert key_path.is_file()
+    if not sys.platform.startswith("win"):
+        mode = stat.S_IMODE(key_path.stat().st_mode)
+        assert mode == 0o600
+    token2 = secretstore.encrypt("another")
+    assert secretstore.decrypt(token2) == "another"
+
+
+def test_fernet_save_read_remove_style_flow(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(tmp_path / "k.key"))
+    stored = secretstore.encrypt("provider-api-key")
+    assert secretstore.decrypt(stored) == "provider-api-key"
+    other = secretstore.encrypt("other-key")
+    assert secretstore.decrypt(other) == "other-key"
+
+
+def test_unavailable_store_rejects_encrypt(monkeypatch):
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_DISABLED", "1")
+    with pytest.raises(secretstore.SecretStoreError, match="disabled"):
+        secretstore.encrypt("nope")
+    assert secretstore.is_available() is False
+
+
+def test_is_available_true_when_fernet_ready(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(tmp_path / "avail.key"))
+    assert secretstore.is_available() is True
+    assert not (tmp_path / "avail.key").exists()
+
+
+def test_encrypt_never_emits_plain_prefix(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(tmp_path / "plaincheck.key"))
+    token = secretstore.encrypt("x")
+    assert not token.startswith("plain:")
+
+
+def test_fernet_token_rejected_on_windows(monkeypatch):
+    monkeypatch.setattr(secretstore, "IS_WIN", True)
+    with pytest.raises(secretstore.SecretStoreError, match="on Windows"):
+        secretstore.decrypt("fernet:gAAAAABnot-a-real-token")
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix keyfile mode checks")
+def test_rejects_world_readable_existing_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "loose.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    token = secretstore.encrypt("before")
+    os.chmod(key_path, 0o644)
+    with pytest.raises(secretstore.SecretStoreError, match="0600"):
+        secretstore.encrypt("after")
+    with pytest.raises(secretstore.SecretStoreError, match="0600"):
+        secretstore.decrypt(token)
+    assert secretstore.is_available() is False
+    assert key_path.is_file()
+    assert key_path.is_file()
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix symlink checks")
+def test_rejects_symlink_key(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    real = tmp_path / "real.key"
+    link = tmp_path / "link.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(real))
+    secretstore.encrypt("seed")
+    os.chmod(real, 0o644)  # even if mode ok on target, link itself is rejected
+    os.chmod(real, 0o600)
+    link.symlink_to(real)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(link))
+    with pytest.raises(secretstore.SecretStoreError, match="symlink"):
+        secretstore.encrypt("nope")
+    with pytest.raises(secretstore.SecretStoreError, match="symlink"):
+        secretstore.decrypt("fernet:" + "x" * 20)
+
+
+def test_rejects_empty_key_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "empty.key"
+    key_path.write_bytes(b"")
+    if not sys.platform.startswith("win"):
+        os.chmod(key_path, 0o600)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    with pytest.raises(secretstore.SecretStoreError, match="empty|Invalid"):
+        secretstore.encrypt("x")
+
+
+def test_decrypt_missing_key_does_not_create_replacement(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "gone.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    token = secretstore.encrypt("keep-me")
+    assert key_path.is_file()
+    key_path.unlink()
+    before = list(tmp_path.iterdir())
+    with pytest.raises(secretstore.SecretStoreError, match="missing|restore"):
+        secretstore.decrypt(token)
+    after = list(tmp_path.iterdir())
+    assert after == before
+    assert not key_path.exists()
+
+
+def test_decrypt_wrong_key_preserves_keyfile(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_a = tmp_path / "a.key"
+    key_b = tmp_path / "b.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_a))
+    token = secretstore.encrypt("alpha")
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_b))
+    secretstore.encrypt("beta")  # create other key
+    key_b_bytes = key_b.read_bytes()
+    with pytest.raises(secretstore.SecretStoreError, match="Invalid Fernet|missing"):
+        secretstore.decrypt(token)
+    assert key_b.read_bytes() == key_b_bytes
+    assert key_a.is_file()
+
+
+def test_test_isolation_env_uses_runtime_key_path(monkeypatch, tmp_path):
+    """R2.c: when VARIANT1_SECRETSTORE_KEY is set under the test root, HOME is unused."""
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    fake_home = tmp_path / "home"
+    fake_home.mkdir()
+    monkeypatch.setenv("HOME", str(fake_home))
+    if sys.platform.startswith("win"):
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
+    runtime_key = tmp_path / "runtime" / "secretstore.key"
+    runtime_key.parent.mkdir()
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(runtime_key))
+    secretstore.encrypt("isolated")
+    assert runtime_key.is_file()
+    default_under_home = fake_home / ".variant1" / "secretstore.key"
+    assert not default_under_home.exists()
+
+
+def test_rejects_corrupt_key_bytes(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "corrupt.key"
+    key_path.write_bytes(b"not-a-fernet-key")
+    if not sys.platform.startswith("win"):
+        os.chmod(key_path, 0o600)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    with pytest.raises(secretstore.SecretStoreError, match="Invalid"):
+        secretstore.encrypt("x")
+    assert key_path.read_bytes() == b"not-a-fernet-key"
+
+
+def test_create_keyfile_is_exclusive(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "excl.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    token = secretstore.encrypt("first")
+    original = key_path.read_bytes()
+    from cryptography.fernet import Fernet
+
+    with pytest.raises(secretstore.SecretStoreError, match="already exists|concurrent"):
+        secretstore._create_keyfile(key_path, Fernet.generate_key())
+    assert key_path.read_bytes() == original
+    assert secretstore.decrypt(token) == "first"
+
+
+def test_encrypt_recovers_when_create_loses_race(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "race-init.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    first = secretstore.encrypt("alpha")
+    calls = {"n": 0}
+    real_lstat = os.lstat
+
+    def lstat_missing_once(p, *args, **kwargs):
+        target = Path(p)
+        if target == key_path:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise FileNotFoundError(str(p))
+        return real_lstat(p, *args, **kwargs)
+
+    monkeypatch.setattr(os, "lstat", lstat_missing_once)
+    second = secretstore.encrypt("beta")
+    assert secretstore.decrypt(second) == "beta"
+    assert secretstore.decrypt(first) == "alpha"
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix opened-fd key checks")
+def test_rejects_replacement_between_validate_and_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    key_path = tmp_path / "toctou.key"
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    token = secretstore.encrypt("before")
+    from cryptography.fernet import Fernet
+
+    original_open = os.open
+    replaced = {"done": False}
+
+    def racing_open(path, flags, *args, **kwargs):
+        dir_fd = kwargs.get("dir_fd")
+        is_key = False
+        if dir_fd is not None:
+            is_key = path == key_path.name and not (
+                flags & getattr(os, "O_DIRECTORY", 0)
+            )
+        else:
+            is_key = os.path.normpath(str(path)) == os.path.normpath(str(key_path))
+        if is_key and not replaced["done"]:
+            key_path.write_bytes(Fernet.generate_key())
+            os.chmod(key_path, 0o644)
+            replaced["done"] = True
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", racing_open)
+    with pytest.raises(secretstore.SecretStoreError, match="0600"):
+        secretstore.encrypt("after")
+    with pytest.raises(secretstore.SecretStoreError, match="0600|Invalid"):
+        secretstore.decrypt(token)
+    assert replaced["done"] is True
+    assert stat.S_IMODE(key_path.stat().st_mode) == 0o644
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix parent-path checks")
+def test_rejects_world_writable_parent(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    parent = tmp_path / "wide"
+    parent.mkdir()
+    os.chmod(parent, 0o777)
+    key_path = parent / "k.key"
+    from cryptography.fernet import Fernet
+
+    key_path.write_bytes(Fernet.generate_key())
+    os.chmod(key_path, 0o600)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    with pytest.raises(secretstore.SecretStoreError, match="writable by others|parent"):
+        secretstore.encrypt("nope")
+    assert secretstore.is_available() is False
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Unix parent-path checks")
+def test_rejects_symlink_parent_into_world_writable(monkeypatch, tmp_path):
+    monkeypatch.setattr(secretstore, "IS_WIN", False)
+    monkeypatch.delenv("VARIANT1_SECRETSTORE_DISABLED", raising=False)
+    world = tmp_path / "world"
+    world.mkdir()
+    os.chmod(world, 0o777)
+    link = tmp_path / "link"
+    link.symlink_to(world)
+    from cryptography.fernet import Fernet
+
+    key_path = link / "secretstore.key"
+    (world / "secretstore.key").write_bytes(Fernet.generate_key())
+    os.chmod(world / "secretstore.key", 0o600)
+    monkeypatch.setenv("VARIANT1_SECRETSTORE_KEY", str(key_path))
+    with pytest.raises(secretstore.SecretStoreError, match="writable by others|parent|symlink"):
+        secretstore.encrypt("nope")
+    assert secretstore.is_available() is False

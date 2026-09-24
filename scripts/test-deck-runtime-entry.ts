@@ -1981,6 +1981,7 @@ async function testDurableTerminalRuntime(): Promise<void> {
   const open = sent.find(command => command.type === "terminal:open");
   assert.ok(open, "opening a terminal must use the backend WebSocket command");
   assert.equal(open?.cwd, "C:/workspace");
+  assert.equal(open?.profile, undefined, "the host chooses powershell or sh");
   ingestTerminal({
     type: "terminal:accepted",
     operation: "open",

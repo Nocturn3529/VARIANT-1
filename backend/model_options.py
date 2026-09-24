@@ -27,6 +27,11 @@ def _text(value: Any, limit: int = 500) -> str:
     return str(value or "").strip()[:limit]
 
 
+def _portable_path_key(path: str) -> str:
+    """Compare configured and scanned model paths across host separators."""
+    return os.path.normcase(os.path.normpath(str(path).replace("\\", "/")))
+
+
 def _unique_models(values: Any) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
@@ -250,7 +255,7 @@ def _local_provider(host: Any, current: dict) -> dict | None:
         if not isinstance(item, dict):
             continue
         path = _text(item.get("path"), 2000)
-        key = os.path.normcase(os.path.normpath(path)) if path else ""
+        key = _portable_path_key(path) if path else ""
         if not path or key in seen:
             continue
         seen.add(key)
@@ -264,17 +269,15 @@ def _local_provider(host: Any, current: dict) -> dict | None:
             "reasoning_efforts": [],
         })
     if configured:
-        configured_key = os.path.normcase(os.path.normpath(configured))
-        suffix = configured_key.lstrip("\\/")
+        configured_key = _portable_path_key(configured)
+        suffix = configured_key.replace("\\", "/").lstrip("/")
         matches = [path for path in scanned_paths if (
-            os.path.normcase(os.path.normpath(path)) == configured_key
-            or os.path.normcase(os.path.normpath(path)).endswith(
-                os.sep + suffix.replace("/", os.sep).replace("\\", os.sep)
-            )
+            _portable_path_key(path) == configured_key
+            or _portable_path_key(path).replace("\\", "/").endswith("/" + suffix)
         )]
         if len(matches) == 1:
             configured = matches[0]
-        key = os.path.normcase(os.path.normpath(configured))
+        key = _portable_path_key(configured)
         if key not in seen:
             rows.append({
                 "id": configured,

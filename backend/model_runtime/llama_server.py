@@ -21,6 +21,38 @@ from process_tree import (
 
 _NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 
+def _default_llama_relpath() -> str:
+    """Packaged/default llama-server path for the current OS."""
+    name = "llama-server.exe" if sys.platform.startswith("win") else "llama-server"
+    return "bin/" + name
+
+
+# Only these packaged pins are rewritten to the host default under bin/.
+_BUNDLED_LLAMA_RELPATHS = frozenset({
+    "bin/llama-server",
+    "bin/llama-server.exe",
+})
+
+
+def resolve_llama_binary_relpath(configured: object | None = None) -> str:
+    """Map a packaged/default binary pin to the host OS.
+
+    Rewrites only recognized bundled defaults (``bin/llama-server[.exe]``) or
+    empty. Absolute paths, parent-relative customs, and same-basename pins
+    under other directories (e.g. ``runtimes/cpu/llama-server``) are preserved.
+    """
+    raw = str(configured or "").strip()
+    if not raw:
+        return _default_llama_relpath()
+    if os.path.isabs(raw):
+        return os.path.normpath(raw)
+    norm = raw.replace("\\", "/")
+    if norm.startswith("./"):
+        norm = norm[2:]
+    if norm.lower() in {item.lower() for item in _BUNDLED_LLAMA_RELPATHS}:
+        return _default_llama_relpath()
+    return norm
+
 # LLMScheduler currently admits one local generation at a time. Keep the
 # server's KV allocation aligned instead of accepting its auto slot count.
 _LOCAL_PARALLEL_SLOTS = 1
@@ -82,7 +114,7 @@ class LlamaServer:
         self.data_dir = data_dir or app_root
         self.host = cfg.get("host", "127.0.0.1")
         self.autostart = cfg.get("autostart", True)
-        self.binary = _abs(app_root, cfg.get("binary", "bin/llama-server.exe"))
+        self.binary = _abs(app_root, resolve_llama_binary_relpath(cfg.get("binary")))
         _m = cfg.get("model", "")
         self.model = resolve_user_model_path(self.data_dir, _m) if _m else ""
         _mp = cfg.get("mmproj", "")

@@ -1,5 +1,5 @@
 {
-  "_comment": "Clean default config seeded into a fresh install's userData on first run. No model path, no API keys, no machine-specific data \u2014 the real config/llm_config.json (with the developer's model + keys) is intentionally NOT shipped.",
+  "_comment": "Clean default config seeded into a fresh install's userData on first run. No model path, no API keys, no machine-specific data — the real config/llm_config.json (with the developer's model + keys) is intentionally NOT shipped.",
   "mode": "local",
   "subagents": {
     "max_depth": 4,
@@ -8,7 +8,7 @@
     "max_admitted": 16
   },
   "local": {
-    "binary": "bin/llama-server.exe",
+    "binary": "bin/llama-server",
     "model": "",
     "host": "127.0.0.1",
     "port": 8080,
@@ -154,7 +154,7 @@
     ]
   },
   "voice": {
-    "binary": "models/speech/whisper/whisper-server.exe",
+    "binary": "models/speech/whisper/whisper-server",
     "model": "models/speech/whisper/whisper.bin",
     "host": "127.0.0.1",
     "port": 8081,

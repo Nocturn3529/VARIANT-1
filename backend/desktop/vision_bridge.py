@@ -203,7 +203,7 @@ async def attach_visual_state(
 async def screenshot(ctx: Any, args):
     """Capture the current target and attach it to the next model turn."""
     if platform.system() != "Windows":
-        raise tools.ToolError("computer.observe screenshots are Windows-only.")
+        raise tools.ToolError("computer.observe screenshots are not available on this host.")
 
     bundle = await vision_capture(ctx, prefer_window=True)
     ctx._deliver_image(base64.b64encode(bundle.png).decode("ascii"))

@@ -145,6 +145,8 @@ def test_subprocess_launches_remain_in_explicit_drivers():
         "execution_hosts/windows_conpty.py",  # shared ConPTY driver
         "extensions/worker_host.py",           # shared-owner plugin worker
         "extensions/owned_stdio.py",           # suspended/owned MCP stdio driver
+        "desktop_fabric/cua_client.py",        # pinned cua-driver MCP process
+        "desktop_fabric/cua_adapter.py",       # darwin process start time for window identity
         "kernel_runtime/lease.py",             # one fenced IPykernel generation
         "model_runtime/hardware.py",           # bounded hardware probes
         "model_runtime/hermes_proxy.py",       # user-selected OAuth proxy service

@@ -11,6 +11,7 @@ from io import BytesIO, StringIO
 import hashlib
 import html
 import json
+import logging
 import math
 import os
 import re
@@ -20,6 +21,7 @@ from typing import Any, Mapping, Sequence
 from core_invariants import canonical_json_bytes, strict_json_value
 
 BUILDER_VERSION = "variant1-artifact-builders.2"
+_LOG = logging.getLogger(__name__)
 _MAX_BLOCKS = 2_000
 _MAX_ROWS = 50_000
 _MAX_CELLS = 500_000
@@ -435,6 +437,22 @@ def _delimited(spec: Mapping[str, Any], delimiter: str) -> bytes:
     return output.getvalue().encode("utf-8-sig")
 
 
+def bundled_pdf_cjk_font_path(*, bold: bool = False, script: str = "sc") -> str:
+    names = {
+        "sc": ("Variant1CJK-Regular.ttf", "Variant1CJK-Bold.ttf"),
+        "kr": ("Variant1CJKKR-Regular.ttf", "Variant1CJKKR-Bold.ttf"),
+    }
+    try:
+        regular_name, bold_name = names[script]
+    except KeyError as exc:
+        raise ValueError(f"unknown bundled PDF CJK script {script}") from exc
+    return os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "fonts",
+        bold_name if bold else regular_name,
+    )
+
+
 @lru_cache(maxsize=1)
 def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], ...]:
     """Register available outline fonts and retain their actual glyph maps."""
@@ -443,13 +461,25 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
     from reportlab.pdfbase.ttfonts import TTFont
 
     package_fonts = os.path.join(os.path.dirname(reportlab.__file__), "fonts")
+    bundled_regular = bundled_pdf_cjk_font_path()
+    bundled_bold = bundled_pdf_cjk_font_path(bold=True)
+    kr_regular = bundled_pdf_cjk_font_path(script="kr")
+    kr_bold = bundled_pdf_cjk_font_path(script="kr", bold=True)
+    bundled_faces = {
+        os.path.normcase(os.path.abspath(path))
+        for path in (bundled_regular, kr_regular)
+    }
     candidates = (
+        (bundled_regular, bundled_bold),
+        (kr_regular, kr_bold),
         (r"C:\Windows\Fonts\msyh.ttc", r"C:\Windows\Fonts\msyhbd.ttc"),
         (r"C:\Windows\Fonts\malgun.ttf", r"C:\Windows\Fonts\malgunbd.ttf"),
         (r"C:\Windows\Fonts\meiryo.ttc", r"C:\Windows\Fonts\meiryob.ttc"),
         (r"C:\Windows\Fonts\segoeui.ttf", r"C:\Windows\Fonts\segoeuib.ttf"),
         (r"C:\Windows\Fonts\seguisym.ttf", r"C:\Windows\Fonts\seguisym.ttf"),
         ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
+        ("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Bold.ttc"),
         ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
         (os.path.join(package_fonts, "Vera.ttf"), os.path.join(package_fonts, "VeraBd.ttf")),
     )
@@ -460,16 +490,44 @@ def _pdf_font_pool() -> tuple[tuple[str, str, dict[int, int], dict[int, int]], .
         index = len(loaded)
         regular_name = f"Variant1Unicode{index}"
         bold_name = f"Variant1UnicodeBold{index}"
-        try:
-            regular = TTFont(regular_name, regular_path)
-            bold = TTFont(bold_name, bold_path if os.path.isfile(bold_path) else regular_path)
-            pdfmetrics.registerFont(regular)
-            pdfmetrics.registerFont(bold)
-            loaded.append((
-                regular_name, bold_name,
-                dict(regular.face.charToGlyph), dict(bold.face.charToGlyph),
-            ))
-        except Exception:
+        collection = regular_path.lower().endswith((".ttc", ".otc"))
+        last_error: BaseException | None = None
+        registered = False
+        for subfont in (range(8) if collection else (0,)):
+            try:
+                regular = TTFont(regular_name, regular_path, subfontIndex=subfont)
+                if (
+                    os.path.normcase(os.path.abspath(bold_path))
+                    == os.path.normcase(os.path.abspath(regular_path))
+                    and os.path.normcase(os.path.abspath(regular_path)) in bundled_faces
+                ):
+                    raise OSError("bundled CJK bold face must not alias the regular file")
+                bold_source = bold_path if os.path.isfile(bold_path) else regular_path
+                bold = TTFont(bold_name, bold_source, subfontIndex=subfont)
+                pdfmetrics.registerFont(regular)
+                pdfmetrics.registerFont(bold)
+                regular_map = dict(regular.face.charToGlyph)
+                bold_map = dict(bold.face.charToGlyph)
+                _LOG.info(
+                    "PDF outline font registered path=%s subfont=%s cmap=%s has_U+4E2D=%s",
+                    regular_path,
+                    subfont,
+                    len(regular_map),
+                    0x4E2D in regular_map,
+                )
+                loaded.append((regular_name, bold_name, regular_map, bold_map))
+                registered = True
+                break
+            except Exception as exc:
+                last_error = exc
+                _LOG.info(
+                    "PDF outline font skipped path=%s subfont=%s: %s: %s",
+                    regular_path,
+                    subfont,
+                    type(exc).__name__,
+                    exc,
+                )
+        if not registered and last_error is not None:
             continue
     if not loaded:
         raise ValueError("PDF needs an installed Unicode outline font")

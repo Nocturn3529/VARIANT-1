@@ -112,6 +112,49 @@ def _check_hresult(value: int, operation: str) -> None:
         raise OSError(int(value), f"{operation} failed with HRESULT 0x{int(value) & 0xffffffff:08x}")
 
 
+def _host_ignores_ctrl_c() -> bool:
+    """Whether CreateProcess would copy CTRL+C-ignore into the child.
+
+    The flag lives in the 64-bit RTL_USER_PROCESS_PARAMETERS.ConsoleFlags
+    (bit 0) and is what SetConsoleCtrlHandler(NULL, TRUE/FALSE) updates.
+    ConPTY turns ETX into a console control event, so a child that inherits
+    the ignore drops that event.
+    """
+    if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
+        return False
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    ntdll = ctypes.WinDLL("ntdll")
+
+    class _ProcessBasicInformation(ctypes.Structure):
+        _fields_ = [
+            ("ExitStatus", ctypes.c_void_p),
+            ("PebBaseAddress", ctypes.c_void_p),
+            ("AffinityMask", ctypes.c_void_p),
+            ("BasePriority", ctypes.c_void_p),
+            ("UniqueProcessId", ctypes.c_void_p),
+            ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+        ]
+
+    ntdll.NtQueryInformationProcess.argtypes = [
+        wintypes.HANDLE, ctypes.c_ulong, ctypes.c_void_p,
+        ctypes.c_ulong, ctypes.c_void_p,
+    ]
+    ntdll.NtQueryInformationProcess.restype = ctypes.c_long
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    info = _ProcessBasicInformation()
+    status = int(ntdll.NtQueryInformationProcess(
+        kernel32.GetCurrentProcess(), 0, ctypes.byref(info),
+        ctypes.sizeof(info), None,
+    ))
+    if status != 0 or not info.PebBaseAddress:
+        return False
+    # PEB.ProcessParameters is the pointer at offset 0x20 on 64-bit Windows.
+    params = ctypes.c_void_p.from_address(info.PebBaseAddress + 0x20).value
+    if not params:
+        return False
+    return bool(ctypes.c_uint32.from_address(params + 0x18).value & 1)
+
+
 class WindowsConPtyProcess:
     """One real pseudoconsole and its initial process."""
 
@@ -236,6 +279,8 @@ class WindowsConPtyProcess:
             ctypes.POINTER(wintypes.DWORD),
         ]
         k32.PeekNamedPipe.restype = wintypes.BOOL
+        k32.SetConsoleCtrlHandler.argtypes = [ctypes.c_void_p, wintypes.BOOL]
+        k32.SetConsoleCtrlHandler.restype = wintypes.BOOL
 
     def _spawn(
         self, argv: tuple[str, ...], cwd: str, env: dict[str, str],
@@ -313,14 +358,25 @@ class WindowsConPtyProcess:
             EXTENDED_STARTUPINFO_PRESENT = 0x00080000
             CREATE_UNICODE_ENVIRONMENT = 0x00000400
             CREATE_SUSPENDED = 0x00000004
-            if not k32.CreateProcessW(
-                None, command_line, None, None, False,
-                EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT
-                | CREATE_SUSPENDED,
-                ctypes.cast(env_buffer, ctypes.c_void_p), cwd,
-                ctypes.cast(ctypes.byref(startup), ctypes.POINTER(STARTUPINFOW)),
-                ctypes.byref(process_info),
-            ):
+            # Enable CTRL+C only for this CreateProcess. The child must not
+            # inherit a host ignore, and the host's previous setting is put back
+            # before any ETX is written.
+            child_would_inherit_ignore = _host_ignores_ctrl_c()
+            if child_would_inherit_ignore and not k32.SetConsoleCtrlHandler(None, False):
+                _raise_last_error("SetConsoleCtrlHandler(enable CTRL+C)")
+            try:
+                created = bool(k32.CreateProcessW(
+                    None, command_line, None, None, False,
+                    EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT
+                    | CREATE_SUSPENDED,
+                    ctypes.cast(env_buffer, ctypes.c_void_p), cwd,
+                    ctypes.cast(ctypes.byref(startup), ctypes.POINTER(STARTUPINFOW)),
+                    ctypes.byref(process_info),
+                ))
+            finally:
+                if child_would_inherit_ignore and not k32.SetConsoleCtrlHandler(None, True):
+                    _raise_last_error("SetConsoleCtrlHandler(restore CTRL+C ignore)")
+            if not created:
                 _raise_last_error("CreateProcessW(ConPTY)")
             self._process_handle = process_info.hProcess
             self.pid = int(process_info.dwProcessId)

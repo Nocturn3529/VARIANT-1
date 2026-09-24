@@ -1,0 +1,88 @@
+{
+  "platform": "darwin",
+  "arch": "x64",
+  "status": "ready",
+  "upstream_tag": "b10289",
+  "upstream_commit": "f9e832c10e9444cb168ddcb579cc62c154f3068b",
+  "files": [
+    {
+      "file": "llama-server",
+      "bytes": 20760,
+      "sha256": "721790e96eb2660278d308f8d31a6eece6bc2173f86e33b34b0e7080ee06aa3c",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/llama-server"
+    },
+    {
+      "file": "libggml-base.0.18.1.dylib",
+      "bytes": 711160,
+      "sha256": "395b4c22864d2e0513216c97a8699d4236a638b73908111df40843ee8576359b",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libggml-base.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-blas.0.18.1.dylib",
+      "bytes": 33688,
+      "sha256": "e297f57007e6b2234833c5cba2941d16a79048ae1ca8e1174604bb77e8cfe8f2",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libggml-blas.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-cpu.0.18.1.dylib",
+      "bytes": 1346208,
+      "sha256": "35dd557baf3dac3f3d7eedaf486cb3fab44ebcb0c0fb11d120c460d7ef9cef62",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libggml-cpu.0.18.1.dylib"
+    },
+    {
+      "file": "libggml-rpc.0.18.1.dylib",
+      "bytes": 113472,
+      "sha256": "e8782431dfe85d442faf581f79207374afb663a39cd842266c127d9d657c71e5",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libggml-rpc.0.18.1.dylib"
+    },
+    {
+      "file": "libggml.0.18.1.dylib",
+      "bytes": 43088,
+      "sha256": "dae7f2c68846801b0661d22c23d5cb6f4b6a27633b63146c5f43f2fe2398d420",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libggml.0.18.1.dylib"
+    },
+    {
+      "file": "libllama-common.0.0.10289.dylib",
+      "bytes": 8271816,
+      "sha256": "1c7ecf4f642bbc301f3c1f62c05bcb7181485f10cdb8fdf00489037d2342a113",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libllama-common.0.0.10289.dylib"
+    },
+    {
+      "file": "libllama-server-impl.dylib",
+      "bytes": 9836416,
+      "sha256": "74f92d318c237be9fb908f33031d6fdefbf5c889b9f9432ba2f94900ae6d271c",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libllama-server-impl.dylib"
+    },
+    {
+      "file": "libllama.0.0.10289.dylib",
+      "bytes": 3042424,
+      "sha256": "529b2052e41bd17cddfaa2a1be79c5f4f433f394c50cfc5cdd5c32c8394d8f3f",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libllama.0.0.10289.dylib"
+    },
+    {
+      "file": "libmtmd.0.0.10289.dylib",
+      "bytes": 1321568,
+      "sha256": "4c9458dbfac104d5f419dce8b0fe3b4757da72d4ef4093a6c61efe0a3b9d0c8a",
+      "source_archive": "llama-b10289-bin-macos-x64.tar.gz",
+      "member": "llama-b10289/libmtmd.0.0.10289.dylib"
+    }
+  ],
+  "archives": [
+    {
+      "file": "llama-b10289-bin-macos-x64.tar.gz",
+      "sha256": "daaeb63cbf60f56518d5b60de5350af35196918edc73b03160af2b35e6a0f87d",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10289/llama-b10289-bin-macos-x64.tar.gz"
+    }
+  ],
+  "license_sources": [],
+  "note": "Hash-verified CPU build from llama.cpp b10289 (llama-b10289-bin-macos-x64.tar.gz). Ships llama-server + runtime shared libs only. Windows CUDA recipe remains config/native-runtime.json."
+}

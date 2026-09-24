@@ -12,8 +12,8 @@ from . import errors as derr
 def _ensure_gates(ctx):
     if platform.system() != "Windows":
         raise ctx._tagged_tool_error(
-            "desktop control is Windows-only.",
-            derr.tool_unavailable_error("Windows-only", tool="desktop"),
+            "desktop control is not available on this host.",
+            derr.tool_unavailable_error("no desktop driver", tool="desktop"),
         )
 
 

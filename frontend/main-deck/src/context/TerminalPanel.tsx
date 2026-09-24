@@ -61,7 +61,7 @@ export function TerminalPanel({chatId = ""}: {chatId?:string}) {
     <div className="workbench-terminal-main">
       <header className="workbench-terminal-toolbar">
         <span title={process?.command || active?.cwd}>{process?.command || active?.cwd || (state.connected ? "Terminal ready" : "Terminal offline")}</span>
-        <em>{process ? `process · ${process.state}` : active ? (active.state === "running" ? (active.truePty ? "ConPTY" : active.transport) : active.state) : ""}</em>
+        <em>{process ? `process · ${process.state}` : active ? (active.state === "running" ? (active.transport || (active.truePty ? "pty" : "")) : active.state) : ""}</em>
         <ConnectorControl chatId={chatId} terminalId={state.activeId}/>
         <button title="Refresh terminals" onClick={() => refreshExecution(chatId)}>↻</button>
         <button title="Send Ctrl+C to the program; it may cancel input without exiting" disabled={!active || !!process} onClick={() => interruptTerminal(chatId)}>Interrupt</button>

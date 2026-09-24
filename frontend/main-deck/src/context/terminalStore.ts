@@ -417,7 +417,7 @@ function openBackendTerminal(cwd?: string): Promise<boolean> {
   });
   if (!store.send({
     type: "terminal:open", request_id: id, cwd: cwd || undefined,
-    profile: "powershell", cols: 120, rows: 30,
+    cols: 120, rows: 30,
   })) {
     pendingOpen.get(id)?.(false);
     pendingOpen.delete(id);

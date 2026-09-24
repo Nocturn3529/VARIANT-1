@@ -126,6 +126,12 @@ class MutationWorkerClient:
         return process, job
 
     async def _spawn(self, command, work, environment):
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if os.name == "nt":
+            # Assign the job before the venv launcher can start the real
+            # interpreter. Otherwise that child, and its children, escape
+            # termination.
+            flags |= CREATE_SUSPENDED
         return await asyncio.create_subprocess_exec(
             *command,
             cwd=work,
@@ -138,8 +144,7 @@ class MutationWorkerClient:
             # Leave one byte of headroom for the newline delimiter so the
             # explicit protocol quota below remains the authoritative bound.
             limit=max(1024, int(self.limits.max_frame_bytes)) + 1,
-            creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0)
-                           | (CREATE_SUSPENDED if os.name == "nt" else 0)),
+            creationflags=flags,
             start_new_session=os.name != "nt",
         )
 
@@ -211,16 +216,17 @@ class MutationWorkerClient:
         finally:
             original_error = sys.exception()
             try:
-                for attempt in range(6):
+                for attempt in range(16):
                     try:
                         directory.cleanup()
                         break
                     except PermissionError:
                         # All owned processes have been retired. Windows may
-                        # briefly retain a sharing handle after their exit.
-                        if attempt == 5:
+                        # retain a sharing handle after their exit. A busy
+                        # runner can hold the worker directory for a few seconds.
+                        if attempt == 15:
                             raise
-                        await asyncio.sleep(0.05 * (attempt + 1))
+                        await asyncio.sleep(min(0.25 * (attempt + 1), 0.5))
             except OSError as exc:
                 if original_error is None:
                     raise MutationWorkerError(

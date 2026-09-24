@@ -1,7 +1,7 @@
 {
   "name": "variant1",
   "version": "0.1.1-preview.1",
-  "description": "VARIANT-1 \u2014 a local-first, model-agnostic Adaptive AI Host",
+  "description": "VARIANT-1 — a local-first, model-agnostic Adaptive AI Host",
   "main": "main.js",
   "license": "MIT",
   "private": true,
@@ -78,26 +78,6 @@
     ],
     "extraResources": [
       {
-        "from": "bin",
-        "to": "bin",
-        "filter": [
-          "llama-server.exe",
-          "llama-server-impl.dll",
-          "llama-common.dll",
-          "llama.dll",
-          "mtmd.dll",
-          "ggml.dll",
-          "ggml-base.dll",
-          "ggml-cpu-*.dll",
-          "ggml-cuda.dll",
-          "ggml-rpc.dll",
-          "libomp140.x86_64.dll",
-          "cublas64_13.dll",
-          "cublasLt64_13.dll",
-          "cudart64_13.dll"
-        ]
-      },
-      {
         "from": "config",
         "to": "config",
         "filter": [
@@ -120,7 +100,32 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/tray/icon_256.png"
+      "icon": "assets/tray/icon_256.png",
+      "artifactName": "VARIANT-1-${version}-${arch}-Setup.${ext}",
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "llama-server.exe",
+            "llama-server-impl.dll",
+            "llama-common.dll",
+            "llama.dll",
+            "mtmd.dll",
+            "ggml.dll",
+            "ggml-base.dll",
+            "ggml-cpu-*.dll",
+            "ggml-cuda.dll",
+            "ggml-rpc.dll",
+            "libomp140.x86_64.dll",
+            "cua-driver/cua-driver.exe",
+            "cua-driver/VERSION",
+            "cublas64_13.dll",
+            "cublasLt64_13.dll",
+            "cudart64_13.dll"
+          ]
+        }
+      ]
     },
     "nsis": {
       "oneClick": false,
@@ -133,7 +138,59 @@
         "url": ""
       }
     ],
-    "artifactName": "VARIANT-1-${version}-${arch}-Setup.${ext}"
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "maintainer": "Nocturn <nocturn3529@gmail.com>",
+      "category": "Development",
+      "icon": "assets/tray/icon_256.png",
+      "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "llama-server",
+            "cua-driver/cua-driver",
+            "cua-driver/VERSION",
+            "libllama*",
+            "libmtmd*",
+            "libggml*",
+            "*.so",
+            "*.so.*",
+            "*.dylib"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/tray/icon_1024.png",
+      "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "bin",
+          "to": "bin",
+          "filter": [
+            "llama-server",
+            "cua-driver/cua-driver",
+            "cua-driver/VERSION",
+            "libllama*",
+            "libmtmd*",
+            "libggml*",
+            "*.so",
+            "*.so.*",
+            "*.dylib"
+          ]
+        }
+      ]
+    }
   },
   "repository": {
     "type": "git",
