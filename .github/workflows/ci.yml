@@ -202,3 +202,46 @@ jobs:
             dist/*.deb
           if-no-files-found: error
           retention-days: 14
+
+  linux-qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: linux-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: Install the deb on the runner host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+      - name: Installed payload is complete
+        run: |
+          test -x /opt/VARIANT-1/variant-1
+          /opt/VARIANT-1/resources/bin/llama-server --version
+          test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
+          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
+      - name: Display server libraries for Electron
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xvfb x11-utils libgtk-3-0 libnotify4 libnss3 libxss1 \
+            libxtst6 libxrandr2 libasound2 libatspi2.0-0 libsecret-1-0
+      - name: Packaged Main Deck smoke (installed binary, Xvfb)
+        env:
+          VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant-1
+          VARIANT1_E2E_CDP_PORT: "9341"
+        run: xvfb-run -a node scripts/test-deck-electron-smoke.js
+      - name: Uninstall removes the payload
+        if: ${{ always() }}
+        run: |
+          sudo apt-get remove -y variant-1 || true
+          if [ -e /opt/VARIANT-1 ]; then
+            echo "::error::uninstall left /opt/VARIANT-1 behind"
+            exit 1
+          fi
