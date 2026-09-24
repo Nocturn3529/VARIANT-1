@@ -26,6 +26,68 @@ from .mutation_contracts import (
 
 WORKER_PROTOCOL = "variant1.astb.mutation-worker.v2"
 
+def _collect_result_pids(value: Any, found: list[int], depth: int = 0) -> None:
+    """Collect pids the candidate explicitly named under pid-like keys.
+
+    Only values under keys named pid/pids/process_id/process_ids count:
+    a candidate's result often carries ordinary integers (coordinates,
+    counts) that must never be treated as owned processes. Windows pid 4
+    (System) and other system pids can never retire, so a loose scan would
+    turn every coordinate-bearing result into a spurious worker_cleanup.
+    """
+    if depth > 6:
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if str(key).lower() in ("pid", "pids", "process_id", "process_ids"):
+                _collect_named_pid_value(item, found)
+            elif depth < 4:
+                _collect_result_pids(item, found, depth + 1)
+        return
+    if isinstance(value, (list, tuple)):
+        if depth < 4:
+            for item in value:
+                _collect_result_pids(item, found, depth + 1)
+
+
+def _collect_named_pid_value(item: Any, found: list[int]) -> None:
+    if isinstance(item, bool):
+        return
+    if isinstance(item, int):
+        # Real Win32 pids are positive; 0 and negatives are never processes.
+        if 0 < item < 10_000_000:
+            found.append(item)
+        return
+    if isinstance(item, (list, tuple)):
+        for entry in item:
+            _collect_named_pid_value(entry, found)
+    if isinstance(item, dict):
+        for key, entry in item.items():
+            if str(key).lower() in ("pid", "process_id"):
+                _collect_named_pid_value(entry, found)
+
+
+def _named_result_pids(message: dict[str, Any]) -> list[int]:
+    """Pids the candidate explicitly named, keyed by 'pid'-like names."""
+    found: list[int] = []
+    _collect_result_pids(message.get("result"), found)
+    return sorted(set(found))
+
+
+async def _wait_for_pids_to_exit(pids: list[int], *, timeout_s: float) -> list[int]:
+    """Bounded poll; returns the pids that were still alive at the deadline."""
+    import psutil
+
+    deadline = time.monotonic() + timeout_s
+    alive = list(pids)
+    while alive:
+        alive = [pid for pid in alive if psutil.pid_exists(pid)]
+        if not alive or time.monotonic() >= deadline:
+            return alive
+        await asyncio.sleep(0.05)
+    return []
+
+
 class MutationWorkerClient:
     """Runs one candidate in one parent-owned, same-user disposable process.
 
@@ -149,8 +211,16 @@ class MutationWorkerClient:
         )
 
     @staticmethod
-    async def _retire(process, job) -> None:
-        """Settle descendants before releasing ownership or deleting their cwd."""
+    async def _retire(process, job, named_pids: list[int] | None = None) -> None:
+        """Settle descendants before releasing ownership or deleting their cwd.
+
+        ``named_pids`` are pids the candidate explicitly named in its result.
+        A process that escaped the Job Object (created between the in-worker
+        venv launcher's spawn and its own job assignment) is invisible to
+        ``active_process_count()``, so retirement must verify it directly:
+        a live named pid means the candidate left an owned process behind.
+        """
+        named_pids = list(named_pids or ())
         async def cleanup():
             errors = []
             try:
@@ -184,6 +254,25 @@ class MutationWorkerClient:
                     await asyncio.wait_for(process.wait(), timeout=5.0)
                 except Exception as exc:
                     errors.append(exc)
+                # A named pid that survived job termination escaped ownership
+                # (spawned by candidate code in the in-worker launcher's
+                # pre-assignment window). It must not outlive retirement.
+                if named_pids:
+                    try:
+                        alive = await _wait_for_pids_to_exit(
+                            named_pids, timeout_s=5.0
+                        )
+                    except Exception as exc:
+                        errors.append(exc)
+                    else:
+                        if alive:
+                            errors.append(
+                                MutationWorkerError(
+                                    "worker_cleanup",
+                                    "candidate-named process survived retirement: "
+                                    + ", ".join(str(pid) for pid in alive),
+                                )
+                            )
             finally:
                 try:
                     job.close()
@@ -240,6 +329,7 @@ class MutationWorkerClient:
         *,
         proxy_call: Callable[[str, dict[str, Any], str], Awaitable[dict[str, Any]]],
     ) -> dict[str, Any]:
+        _retire_pids: list[int] = []
         async with self._workspace() as work:
             gate = os.path.join(work, "parent-owned.gate")
             token = secrets.token_urlsafe(32)
@@ -255,6 +345,17 @@ class MutationWorkerClient:
                 # Assign the suspended launcher so every interpreter/descendant
                 # inherits ownership, then resume and open the Python gate.
                 await resume_owned_process_and_reap(process, job)
+                # Prove membership before any candidate code can run: the gate
+                # file is what lets the worker proceed, so requiring the
+                # worker pid in the job here closes the last window in which
+                # candidate children could spawn outside ownership (the
+                # attempt-17 class). IsProcessInJob-style "in any job" checks
+                # are always true on CI runners (the runner's own job).
+                if os.name == "nt" and not job.contains_pid(int(process.pid)):
+                    raise MutationWorkerError(
+                        "worker_cleanup",
+                        "mutation worker is not in its Job Object before the gate",
+                    )
                 with open(gate, "x", encoding="utf-8", newline="") as handle:
                     handle.write(token)
                     handle.flush()
@@ -335,11 +436,12 @@ class MutationWorkerClient:
                             str(error.get("message") or "candidate failed"),
                             traceback=str(message.get("traceback") or "")[-8000:],
                         )
+                    _retire_pids = _named_result_pids(message)
                     return message
             finally:
                 original_error = sys.exception()
                 try:
-                    await self._retire(process, job)
+                    await self._retire(process, job, _retire_pids)
                 except Exception as cleanup_error:
                     if original_error is None:
                         raise
