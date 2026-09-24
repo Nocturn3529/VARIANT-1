@@ -137,3 +137,111 @@ jobs:
         run: |
           ls -lh dist
           find dist -name '*.dmg' -o -name '*.zip' | grep -q .
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Backend setup, including pinned cua-driver
+        run: npm run setup:backend
+      - name: Pinned cua-driver is installed
+        run: |
+          test -x bin/cua-driver/cua-driver
+          grep -qx 0.28.2 bin/cua-driver/VERSION
+      - name: Prepare native llama-server
+        run: npm run prepare:native
+      - name: llama-server runs
+        run: bin/llama-server --version
+      - name: Build the main deck
+        run: npm run build:deck
+      - name: Build the frozen backend
+        run: npm run build:backend
+      - name: Check native runtime inputs
+        run: node scripts/check-native-runtime.js
+      - name: Unsigned AppImage and deb
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --linux --publish never
+      - name: Package artifacts exist
+        run: |
+          ls -lh dist
+          find dist -name '*.AppImage' | grep -q .
+          find dist -name '*.deb' | grep -q .
+      - name: AppImage launches
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          appimage="$(find dist -name '*.AppImage' | head -1)"
+          echo "launch check on $appimage"
+          "$appimage" --version || true
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: linux-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: Install the deb on the runner host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+      - name: Installed payload is complete
+        run: |
+          test -x /opt/VARIANT-1/variant-1
+          /opt/VARIANT-1/resources/bin/llama-server --version
+          test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
+          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
+      - name: Display server libraries for Electron
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            xvfb x11-utils libgtk-3-0 libnotify4 libnss3 libxss1 \
+            libxtst6 libxrandr2 libasound2 libatspi2.0-0 libsecret-1-0
+      - name: Packaged Main Deck smoke (installed binary, Xvfb)
+        env:
+          VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant-1
+          VARIANT1_E2E_CDP_PORT: "9341"
+        run: xvfb-run -a node scripts/test-deck-electron-smoke.js
+      - name: Uninstall removes the payload
+        if: ${{ always() }}
+        run: |
+          sudo apt-get remove -y variant-1 || true
+          if [ -e /opt/VARIANT-1 ]; then
+            echo "::error::uninstall left /opt/VARIANT-1 behind"
+            exit 1
+          fi
