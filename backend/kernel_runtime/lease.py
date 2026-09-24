@@ -22,6 +22,7 @@ from capability_broker import CapabilityCall, CapabilityRef, InvocationContext
 from core_invariants import cancellation_is_requested
 from tool_core import json_safe
 from run_context import Variant1RunContext, bind_run_context, current_run_context
+from process_tree import CREATE_SUSPENDED, resume_owned_process
 
 from .bridge import KernelBridgeServer
 from .capsules import KernelCapsuleError
@@ -920,9 +921,12 @@ class KernelLease:
                     "close_fds": True,
                 }
                 if os.name == "nt":
-                    # Hide the console window; Job Object ownership follows assign_pid.
-                    popen_kwargs["creationflags"] = getattr(
-                        subprocess, "CREATE_NO_WINDOW", 0
+                    # Hide the console window and start suspended: the launcher
+                    # must enter its Job Object before it can start interpreter
+                    # children (same ownership fix as the mutation worker).
+                    popen_kwargs["creationflags"] = (
+                        getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                        | CREATE_SUSPENDED
                     )
                 else:
                     # POSIX process-group seam (OwnedProcessTree / KernelJobObject).
@@ -931,13 +935,24 @@ class KernelLease:
             finally:
                 log_handle.close()
             try:
-                self.job.assign_pid(int(self.process.pid))
+                attached = resume_owned_process(self.process, self.job)
             except BaseException:
                 with suppress(Exception):
                     self.process.kill()
                 with suppress(Exception):
                     self.job.terminate_and_close()
                 raise
+            if attached is None:
+                # The launcher exited before Job assignment; its pipes may hold
+                # buffered output but no live worker remains. Retire the job
+                # and fail the lease instead of waiting on a dead worker gate.
+                with suppress(Exception):
+                    self.process.kill()
+                with suppress(Exception):
+                    self.job.terminate_and_close()
+                raise KernelUnavailable(
+                    "CPython REPL launcher exited before Job assignment"
+                )
             with open(self.gate_file, "x", encoding="utf-8", newline="") as handle:
                 handle.write(self._gate_token)
                 handle.flush()

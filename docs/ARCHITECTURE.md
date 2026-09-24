@@ -12,6 +12,9 @@ have exited, before deleting their workspace. Retirement is protected against
 repeated cancellation and has a separate bounded cleanup allowance. Candidate
 errors remain candidate errors when cleanup also fails; cleanup failures have
 their own diagnostic category. Persistent CPython cell policy is unchanged.
+Windows persistent and mutation workers start suspended, enter their Job Object,
+and then resume. This also owns the real interpreter created by a venv launcher;
+a Python-level gate alone cannot prevent that earlier launcher fork.
 
 Models use the historical `ipython(category, code)` action. Despite the name,
 it runs a custom CPython REPL with top-level await, not Jupyter or IPython.

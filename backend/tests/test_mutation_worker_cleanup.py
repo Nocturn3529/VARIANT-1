@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import time
 
 import psutil
 import pytest
@@ -51,6 +52,40 @@ async def test_candidate_error_survives_repeated_retirement(tmp_path):
             )
         assert caught.value.code == "candidate_contract_error"
         assert list((tmp_path / "workers").iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows venv launcher ownership")
+async def test_launcher_cannot_spawn_interpreter_before_job_assignment(tmp_path, monkeypatch):
+    from kernel_runtime.job_object import KernelJobObject
+
+    assign = KernelJobObject.assign_pid
+    children_before_assignment = []
+    owner = None
+
+    def delayed_assign(job, pid):
+        nonlocal owner
+        owner = job
+        time.sleep(0.2)
+        children_before_assignment.extend(psutil.Process(pid).children(recursive=True))
+        return assign(job, pid)
+
+    monkeypatch.setattr(KernelJobObject, "assign_pid", delayed_assign)
+    worker = MutationWorkerClient(str(tmp_path / "workers"))
+
+    async def verify_owner(name, arguments, request_id):
+        with owner._handle_lock:
+            assert arguments["pid"] in owner._windows_process_ids()
+        return {"ok": True, "result": "owned"}
+
+    report = await worker.run(
+        {"mode": "execute", "source": (
+            "import os\ndef run(arguments):\n    return tools.owner(pid=os.getpid())\n"
+         ), "arguments": {}, "proxy_contracts": {"tools.owner": {"parameters": ["pid"]}}},
+        proxy_call=verify_owner,
+    )
+    assert report["result"] == "owned"
+    assert children_before_assignment == [], "Launcher ran before process-tree ownership"
 
 
 @pytest.mark.asyncio

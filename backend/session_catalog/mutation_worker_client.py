@@ -15,7 +15,7 @@ from typing import Any, Awaitable, Callable
 
 from kernel_runtime.job_object import KernelJobObject
 from kernel_runtime.worker_path import packaged_kernel_executable
-from process_tree import CREATE_SUSPENDED
+from process_tree import CREATE_SUSPENDED, resume_owned_process_and_reap
 
 from .mutation_contracts import (
     MutationWorkerError,
@@ -251,11 +251,10 @@ class MutationWorkerClient:
                 command=command,
             )
             try:
-                job.assign_pid(int(process.pid))
-                if os.name == "nt":
-                    import psutil
-
-                    psutil.Process(int(process.pid)).resume()
+                # The venv launcher can fork before Python reaches the gate.
+                # Assign the suspended launcher so every interpreter/descendant
+                # inherits ownership, then resume and open the Python gate.
+                await resume_owned_process_and_reap(process, job)
                 with open(gate, "x", encoding="utf-8", newline="") as handle:
                     handle.write(token)
                     handle.flush()
