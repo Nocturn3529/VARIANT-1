@@ -262,6 +262,34 @@ class OwnedProcessTree:
             raise ValueError("owned subprocess must expose a positive integer pid") from exc
         return self.assign_pid(pid)
 
+    def contains_pid(self, pid: int) -> bool:
+        """True when ``pid`` is a member of this owned tree right now.
+
+        Membership, not liveness: a freshly assigned worker must appear in
+        the Job Object's process list before its gate opens, proving the
+        suspend-assign-resume sequence actually placed it (a runner whose
+        CREATE_SUSPENDED flag did not hold would otherwise admit a worker
+        whose children can escape the job). On POSIX, membership is the
+        recorded process group.
+        """
+        clean_pid = int(pid)
+        if clean_pid <= 0:
+            return False
+        with self._handle_lock:
+            if self._closed:
+                return False
+            if not self._is_windows:
+                try:
+                    return os.getpgid(clean_pid) in self._pgids
+                except (ProcessLookupError, PermissionError):
+                    return False
+            if not self._handle:
+                return False
+            try:
+                return clean_pid in self._windows_process_ids()
+            except OSError:
+                return False
+
     def active_process_count(self) -> int:
         """Count living members of the owned group, including orphaned children."""
         with self._handle_lock:

@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import subprocess
 import sys
 import time
 
@@ -155,3 +156,129 @@ async def test_retirement_failure_still_kills_and_reaps_and_is_not_transport_err
         await MutationWorkerClient._retire(Process(), Job())
     assert caught.value.code == "worker_cleanup"
     assert events == ["kill", "tree_empty", "reap", "close"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object escape path")
+async def test_named_pid_outside_the_job_fails_retirement(tmp_path):
+    """A candidate-named pid outside the Job Object must not retire green.
+
+    The attempt-17 CI failure was a sleeper spawned in the in-worker venv
+    launcher's pre-assignment window: outside the job, invisible to
+    active_process_count(), and green after escaping. Deterministic replay:
+    the TEST process (outside the mutation job) owns the sleeper and the
+    candidate merely names its pid.
+    """
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    try:
+        worker = MutationWorkerClient(str(tmp_path / "workers"))
+
+        async def unused_proxy(*args):
+            raise AssertionError("This candidate does not use proxies")
+
+        with pytest.raises(MutationWorkerError) as report:
+            await worker.run(
+                {
+                    "mode": "execute",
+                    "source": (
+                        "def run(arguments):\n"
+                        "    return {'pid': arguments['outside_pid']}\n"
+                    ),
+                    "arguments": {"outside_pid": sleeper.pid},
+                    "proxy_contracts": {},
+                },
+                proxy_call=unused_proxy,
+            )
+        assert report.value.code == "worker_cleanup"
+        message = report.value.details.get(
+            "message", str(report.value)
+        ) + "".join(str(note) for note in getattr(report.value, "__notes__", []))
+        assert "survived retirement" in str(report.value.__cause__ or message) or (
+            "survived retirement" in message
+            or any("survived retirement" in str(cause) for cause in [report.value.__cause__])
+        )
+        assert str(sleeper.pid) in (
+            str(report.value.__cause__ or "") + message
+        )
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Object gate membership")
+async def test_gate_refuses_worker_missing_from_job(
+    tmp_path, monkeypatch
+):
+    """The gate must not open for a worker that is not in the job.
+
+    If a runner's CREATE_SUSPENDED assignment did not hold, the worker
+    could reach candidate code while outside ownership; children spawned
+    then escape termination. The parent must verify membership (not
+    liveness, not 'in any job') before creating parent-owned.gate.
+    """
+    from session_catalog import mutation_worker_client as mwc
+
+    worker = MutationWorkerClient(str(tmp_path / "workers"))
+
+    async def unused_proxy(*args):
+        raise AssertionError("This candidate does not use proxies")
+
+    real_contains = mwc.__dict__.get("contains_pid")
+
+    class FakeJob:
+        def __init__(self):
+            self.closed = False
+
+        def contains_pid(self, pid):
+            return False
+
+        def terminate(self):
+            pass
+
+        def active_process_count(self):
+            return 0
+
+        def close(self):
+            self.closed = True
+
+        def terminate_and_close(self):
+            self.closed = True
+
+    # Patch the gate check only: resume keeps real behavior, the
+    # membership query reports the worker missing.
+    original_run_once = worker._run_once
+
+    async def run_once_missing_membership(request, *, proxy_call):
+        import session_catalog.mutation_worker_client as module
+
+        original_contains = module.KernelJobObject.contains_pid
+
+        def missing(self, pid):
+            return False
+
+        monkeypatch.setattr(module.KernelJobObject, "contains_pid", missing)
+        try:
+            return await original_run_once(request, proxy_call=proxy_call)
+        finally:
+            monkeypatch.setattr(
+                module.KernelJobObject, "contains_pid", original_contains
+            )
+
+    worker._run_once = run_once_missing_membership
+
+    with pytest.raises(MutationWorkerError) as report:
+        await worker.run(
+            {
+                "mode": "execute",
+                "source": "def run(arguments):\n    return {'ok': True}\n",
+                "arguments": {},
+                "proxy_contracts": {},
+            },
+            proxy_call=unused_proxy,
+        )
+    assert report.value.code == "worker_cleanup"
+    assert "not in its Job Object before the gate" in str(report.value.__cause__ or report.value)
