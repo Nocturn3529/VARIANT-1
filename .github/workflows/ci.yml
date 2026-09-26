@@ -186,13 +186,17 @@ jobs:
           ls -lh dist
           find dist -name '*.AppImage' | grep -q .
           find dist -name '*.deb' | grep -q .
-      - name: AppImage launches
+      - name: AppImage is a runnable image
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           appimage="$(find dist -name '*.AppImage' | head -1)"
-          echo "launch check on $appimage"
-          "$appimage" --version || true
+          test -n "$appimage"
+          test -x "$appimage"
+          # --appimage-version is answered by the AppImage runtime itself, so it
+          # proves the image executes without needing a display. The previous
+          # `"$appimage" --version || true` masked every failure and asserted nothing.
+          "$appimage" --appimage-version
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
         with:
@@ -223,7 +227,10 @@ jobs:
           sudo apt-get install -y ./dist/*.deb
       - name: Installed payload is complete
         run: |
-          test -x /opt/VARIANT-1/variant-1
+          # electron-builder derives the deb package name and the installed
+          # executable from package.json "name" (variant1), not productName
+          # (VARIANT-1). Assert the names the package actually produces.
+          test -x /opt/VARIANT-1/variant1
           /opt/VARIANT-1/resources/bin/llama-server --version
           test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
           test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
@@ -234,14 +241,20 @@ jobs:
             libxtst6 libxrandr2 libasound2 libatspi2.0-0 libsecret-1-0
       - name: Packaged Main Deck smoke (installed binary, Xvfb)
         env:
-          VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant-1
+          VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant1
           VARIANT1_E2E_CDP_PORT: "9341"
         run: xvfb-run -a node scripts/test-deck-electron-smoke.js
       - name: Uninstall removes the payload
         if: ${{ always() }}
         run: |
-          sudo apt-get remove -y variant-1 || true
+          # Purge rather than remove so packaged conffiles cannot survive, and
+          # never mask the package name: `apt-get remove -y variant-1 || true`
+          # silently matched nothing and left the whole payload in place.
+          if ! sudo apt-get purge -y variant1; then
+            echo "::error::apt-get purge variant1 failed - wrong package name?"
+          fi
           if [ -e /opt/VARIANT-1 ]; then
             echo "::error::uninstall left /opt/VARIANT-1 behind"
+            ls -la /opt/VARIANT-1 || true
             exit 1
           fi
