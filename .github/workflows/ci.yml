@@ -190,7 +190,7 @@ jobs:
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
-          appimage="$(find dist -name '*.AppImage' | head -1)"
+          appimage="$(find dist -name '*.AppImage' -print -quit)"
           test -n "$appimage"
           test -x "$appimage"
           # --appimage-version is answered by the AppImage runtime itself, so it
@@ -258,3 +258,66 @@ jobs:
             ls -la /opt/VARIANT-1 || true
             exit 1
           fi
+
+  macos-qualify:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    needs: macos-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-packages
+          path: dist
+      # The macOS counterpart of the Linux qualification bar: unpack the shipped
+      # artifact, prove the payload is complete and runnable, exercise the
+      # packaged Main Deck, then remove the app and prove nothing is left.
+      #
+      # The bundle and its executable are DISCOVERED, never hardcoded. The Linux
+      # job failed twice because it assumed names electron-builder derives from
+      # package.json; the same trap applies to the .app payload, and the exact
+      # spelling cannot be confirmed from a Windows host.
+      - name: Unpack the app bundle
+        run: |
+          set -eu
+          # find -print -quit, not `find | head -1`: under pipefail the early
+          # close gives find a SIGPIPE and fails the step.
+          zip="$(find dist -name '*.zip' -print -quit)"
+          test -n "$zip"
+          mkdir -p unpacked
+          ditto -x -k "$zip" unpacked
+          app="$(find unpacked -maxdepth 2 -name '*.app' -print -quit)"
+          test -n "$app"
+          exe="$(find "$app/Contents/MacOS" -maxdepth 1 -type f -print -quit)"
+          test -n "$exe"
+          test -x "$exe"
+          printf 'APP=%s\nEXE=%s\n' "$app" "$exe" >> "$GITHUB_ENV"
+          echo "app=$app"
+          echo "exe=$exe"
+      - name: Installed payload is complete
+        run: |
+          set -eu
+          test -x "$EXE"
+          test -x "$APP/Contents/Resources/bin/llama-server"
+          "$APP/Contents/Resources/bin/llama-server" --version
+          test -x "$APP/Contents/Resources/bin/cua-driver/cua-driver"
+          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "0.28.2"
+      - name: Packaged Main Deck smoke (unpacked app)
+        env:
+          VARIANT1_E2E_EXECUTABLE: ${{ env.EXE }}
+          VARIANT1_E2E_CDP_PORT: "9342"
+        run: node scripts/test-deck-electron-smoke.js
+      - name: Removal leaves nothing behind
+        if: ${{ always() }}
+        run: |
+          set -eu
+          rm -rf "$APP"
+          if [ -e "$APP" ]; then
+            echo "::error::removal left $APP behind"
+            exit 1
+          fi
+          echo "removed $APP"
