@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import deque
 from contextlib import suppress
 from contextvars import copy_context
 from dataclasses import replace
@@ -47,36 +48,41 @@ if TYPE_CHECKING:
     from .manager import KernelRuntimeManager
 
 
-def _drain_boot_output(transport: Any, sink: list[str]) -> None:
+# How many native-output frames to keep from the tail of a boot. Bounded so a
+# chatty worker cannot grow the lease's footprint, and a tail rather than a
+# prefix because the cause is printed last.
+_BOOT_OUTPUT_FRAMES = 64
+
+
+def _drain_boot_output(transport: Any, sink: "deque[str]") -> None:
     """Move whatever the transport already buffered into the boot report."""
     queue = getattr(transport, "queue", None)
     if queue is None:
         return
-    while len(sink) < 64:
+    while True:
         try:
             event = queue.get_nowait()
         except asyncio.QueueEmpty:
             return
         except Exception:
             return
-        text = str(event.get("text") or "").strip()
+        text = str(event.get("text") or "")
         if text:
             sink.append(text)
 
 
-def _boot_output_detail(chunks: list[str]) -> str:
+def _boot_output_detail(chunks: "deque[str]") -> str:
     """Flatten native output captured during boot into one reportable string.
 
-    The worker's stderr is chunked arbitrarily by the drain thread, so a
-    traceback arrives split across frames and interleaved with any stdout a
-    chatty import produces. Joining without a separator would weld lines
-    together and hide the traceback, and the whole value of this is that the
-    real cause is readable.
+    Chunks are kept exactly as received, with no separator inserted. They are
+    contiguous slices of one stream, so concatenating them raw reconstructs it;
+    injecting newlines would instead split a token that happened to straddle a
+    read boundary and turn "dependency mismatch" into two broken lines, which
+    defeats the entire purpose of reporting it.
     """
     if not chunks:
         return ""
-    joined = "".join(chunk if chunk.endswith("\n") else chunk + "\n" for chunk in chunks)
-    return joined.strip()[-4000:]
+    return "".join(chunks).strip()[-4000:]
 
 
 class _ReplTransport:
@@ -833,6 +839,13 @@ class KernelLease:
         self.state = "starting"
         os.makedirs(self.root, exist_ok=False)
         _restrict_path(self.root, directory=True)
+        # Declared before the startup try, not inside it. The except handlers
+        # below read this to report native output, and the failure they handle
+        # can arrive long before the worker exists -- a descriptor write, a
+        # bridge bind, an env build, the spawn itself. Initialising it at the
+        # boot loop turned every one of those into an UnboundLocalError, which
+        # is not a KernelUnavailable and so also escaped the manager's retry.
+        boot_output: deque[str] = deque(maxlen=_BOOT_OUTPUT_FRAMES)
         try:
             _write_private_json(self.descriptor_file, self._descriptor_document())
             self._capability_gate = _CapabilityConcurrencyGate(self.manager.fanout_limit(self.chat_id))
@@ -1003,7 +1016,11 @@ class KernelLease:
             # here, so a real RuntimeError reached the host as nothing more
             # than "REPL worker closed its output". Keep them, and report them
             # with the failure, so the lease names the actual cause.
-            boot_output: list[str] = []
+            #
+            # The buffer is a bounded tail declared above: the cause is the last
+            # thing a failing worker prints, so one that stopped collecting once
+            # full would keep the chatter and drop the reason. That matters most
+            # in the fallback case where the durable worker.log copy is absent.
             while ready is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1027,8 +1044,8 @@ class KernelLease:
                 if str(event.get("type") or "") == "ready":
                     ready = event
                     continue
-                text = str(event.get("text") or "").strip()
-                if text and len(boot_output) < 64:
+                text = str(event.get("text") or "")
+                if text:
                     boot_output.append(text)
             if (
                 int(ready.get("generation") or 0) != self.generation
