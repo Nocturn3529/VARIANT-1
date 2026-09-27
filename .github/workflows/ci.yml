@@ -129,6 +129,16 @@ jobs:
         run: npm run prepare:native
       - name: llama-server runs
         run: bin/llama-server --version
+      # These three steps were missing here while linux-package had them. The
+      # app packaged without a Deck bundle and without a frozen backend, so
+      # macos-qualify launched an app that could never reach a connected
+      # workbench: "Timed out waiting for connected workbench".
+      - name: Build the main deck
+        run: npm run build:deck
+      - name: Build the frozen backend
+        run: npm run build:backend
+      - name: Check native runtime inputs
+        run: node scripts/check-native-runtime.js
       - name: Unsigned dmg and zip
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -137,6 +147,14 @@ jobs:
         run: |
           ls -lh dist
           find dist -name '*.dmg' -o -name '*.zip' | grep -q .
+      - name: Frozen backend is in the packaged app
+        run: |
+          set -eu
+          # The frozen backend has to be inside the bundle, not just built on
+          # the runner, or the packaged app has no way to start a backend.
+          app="$(find dist -name '*.app' -maxdepth 3 -print -quit)"
+          test -n "$app"
+          find "$app/Contents/Resources" -name 'Variant1Backend*' -print -quit | grep -q .
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
@@ -186,17 +204,27 @@ jobs:
           ls -lh dist
           find dist -name '*.AppImage' | grep -q .
           find dist -name '*.deb' | grep -q .
-      - name: AppImage is a runnable image
-        env:
-          APPIMAGE_EXTRACT_AND_RUN: "1"
+      - name: AppImage carries a runnable payload
         run: |
+          set -eu
+          # This job installs no display libraries, so the image cannot be
+          # launched here. An earlier version tried anyway and died with exit
+          # 127 on a missing shared library. Assert what is provable without a
+          # GUI instead: the AppImage is executable, it extracts, and the
+          # extracted image contains a launcher and a desktop entry. The real
+          # launch is a separate step in linux-qualify, which installs the
+          # display libraries and xvfb.
           appimage="$(find dist -name '*.AppImage' -print -quit)"
           test -n "$appimage"
           test -x "$appimage"
-          # --appimage-version is answered by the AppImage runtime itself, so it
-          # proves the image executes without needing a display. The previous
-          # `"$appimage" --version || true` masked every failure and asserted nothing.
-          "$appimage" --appimage-version
+          abs="$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")"
+          work="$(mktemp -d)"
+          ( cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 "$abs" --appimage-extract >/dev/null )
+          root="$work/squashfs-root"
+          test -d "$root"
+          test -n "$(find "$root" -maxdepth 1 -type f -perm -u+x -print -quit)"
+          test -n "$(find "$root" -maxdepth 1 -name '*.desktop' -print -quit)"
+          echo "AppImage extracts to a launcher and a desktop entry"
       - name: Upload Linux packages
         uses: actions/upload-artifact@v4
         with:
@@ -244,6 +272,32 @@ jobs:
           VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant1
           VARIANT1_E2E_CDP_PORT: "9341"
         run: xvfb-run -a node scripts/test-deck-electron-smoke.js
+      # The AppImage cannot be driven by test-deck-electron-smoke.js, which
+      # spawns an executable path, whereas an AppImage has to be launched
+      # through its own runtime. Launch it here instead and assert it comes up
+      # and serves a debugging endpoint. This is the step that needs the
+      # display libraries installed above, which is why the packaging job
+      # cannot do it.
+      - name: AppImage starts and serves CDP (Xvfb)
+        run: |
+          set -eu
+          appimage="$(find dist -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          abs="$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")"
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a "$abs" --remote-debugging-port=9343 >/tmp/appimage.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ready=""
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:9343/json/version >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::AppImage did not publish a CDP endpoint"
+            tail -40 /tmp/appimage.log || true
+            exit 1
+          fi
+          echo "AppImage launched and published a CDP endpoint"
       - name: Uninstall removes the payload
         if: ${{ always() }}
         run: |

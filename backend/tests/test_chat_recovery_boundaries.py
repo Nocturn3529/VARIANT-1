@@ -131,6 +131,13 @@ async def test_stop_from_socket_viewing_b_does_not_interrupt_its_running_a(tmp_p
         for admission in admissions: registry.finish_run(admission, status="test cleanup")
 
 
+# How long a turn may take to be scheduled and reach engine warmup. This is a
+# liveness budget, not a performance one: it exists so a real deadlock still
+# fails instead of hanging forever. It must stay well below the pytest timeout
+# and well above the scheduling delay of a loaded CI runner.
+WARMUP_ARRIVAL_TIMEOUT_S = 30.0
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("navigation", ["before_start", "during_warmup", "cancel_warmup"])
 async def test_admitted_chat_survives_navigation_before_setup(
@@ -190,7 +197,12 @@ async def test_admitted_chat_survives_navigation_before_setup(
     ))
     registry.bind_admission_task(admission, turn)
     try:
-        await asyncio.wait_for(entered.wait(), timeout=2)
+        # Liveness, not promptness: this only asks whether the turn ever
+        # reaches warmup. There is no upper bound on how long a loaded event
+        # loop takes to schedule the task, and a 2s budget here fails on a busy
+        # CI runner while passing on an idle machine. The two timeouts below
+        # are promptness assertions and stay tight on purpose.
+        await asyncio.wait_for(entered.wait(), timeout=WARMUP_ARRIVAL_TIMEOUT_S)
         if navigation == "during_warmup":
             registry.move_attachment(session.attachment_id, second)
             release.set()
