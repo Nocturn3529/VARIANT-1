@@ -5859,33 +5859,44 @@ async def test_boot_failure_before_worker_spawn_still_reports_kernel_unavailable
     assert "UnboundLocalError" not in str(caught.value)
 
 
-@pytest.mark.asyncio
-async def test_boot_report_survives_a_failing_diagnostic_channel(
-    kernel_stack, monkeypatch
-):
-    """A failure while writing the report must not replace the real error."""
-    manager, runtimes, _ = kernel_stack
+def test_boot_report_survives_a_failing_diagnostic_channel(monkeypatch):
+    """A worker must still boot when it cannot take the reporting handle.
+
+    Replaces an earlier version that patched os.dup in the pytest process and
+    then ran manager.execute. The worker runs in a separate interpreter, so that
+    patch could never reach it and the test passed whether or not the property
+    held. main() is driven in-process here, with its collaborators stubbed, so
+    the os.dup(2) failure is genuine.
+    """
     import kernel_runtime.repl_worker as repl_module
 
     real_dup = os.dup
+    attempted = []
 
-    def exploding_dup(fd):
+    def dup_then_refuse(fd):
+        attempted.append(fd)
         if fd == 2:
             raise OSError("cannot duplicate stderr")
         return real_dup(fd)
 
-    monkeypatch.setattr(repl_module.os, "dup", exploding_dup)
-    runtimes.ensure_runtime("report-fail", is_new=True)
-    manager.catalog_service.select("report-fail", "build")
-    # A worker that cannot take the reporting handle must still boot normally;
-    # -1 only means the traceback falls back to the private pipe.
-    result = await manager.execute(
-        chat_id="report-fail", code="print(11)", run_id="r1",
-        outer_tool_call_id="c1",
+    class _StubWorker:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def serve(self):
+            return 0
+
+    monkeypatch.setattr(repl_module.os, "dup", dup_then_refuse)
+    monkeypatch.setattr(
+        repl_module, "_prepare_private_protocol_streams",
+        lambda: (None, None, None, None),
     )
-    assert result.ok, result.to_dict()
-    assert "11" in result.output.text()
-    await manager.shutdown()
+    monkeypatch.setattr(repl_module, "_owner_watchdog", lambda: None)
+    monkeypatch.setattr(repl_module, "ReplWorker", _StubWorker)
+
+    # The duplicate of fd 2 really was attempted, and main() still returned.
+    assert repl_module.main() == 0
+    assert 2 in attempted, "the test never exercised the failing duplicate"
 
 
 def test_boot_output_buffer_keeps_the_tail_not_the_prefix():
@@ -6008,33 +6019,6 @@ def test_boot_report_does_not_take_descriptor_ownership(monkeypatch):
         "the report must not close the descriptor the finally block still owns"
     )
 
-def test_boot_report_write_failure_never_masks_the_original_error(monkeypatch):
-    """A failure to report must not replace the failure being reported.
-
-    _report_boot_failure runs while an exception is already propagating. If it
-    raised, the operator would see a dead log handle instead of the real cause,
-    which is the exact opposite of what this change is for.
-    """
-    import kernel_runtime.repl_worker as repl_module
-
-    def refuse(*_args, **_kwargs):
-        raise OSError("log handle is gone")
-
-    monkeypatch.setattr(repl_module.os, "fdopen", refuse)
-    scratch = os.open(os.devnull, os.O_WRONLY)
-    try:
-        # Must return normally rather than raise.
-        repl_module._report_boot_failure(scratch, RuntimeError("the real cause"))
-    finally:
-        os.close(scratch)
-
-
-def test_boot_report_ignores_a_missing_handle():
-    """A worker that never acquired the handle still reports nothing loudly."""
-    from kernel_runtime.lease import _boot_output_detail  # noqa: F401
-    import kernel_runtime.repl_worker as repl_module
-
-    assert repl_module._report_boot_failure(-1, RuntimeError("boom")) is None
 
 def test_boot_report_write_failure_never_masks_the_original_error(monkeypatch):
     """A failure to report must not replace the failure being reported.
