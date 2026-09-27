@@ -1218,7 +1218,13 @@ def main() -> int:
     # real exception -- is regularly lost. Writing the traceback here first
     # makes the cause durable, and the lease prefers worker.log when both
     # channels have something.
-    inherited_stderr = os.dup(2)
+    #
+    # Acquiring the handle is best-effort on purpose. It is only reporting
+    # sugar, so a worker must never fail to boot because the duplicate could not
+    # be taken; -1 simply means the traceback is left to the private pipe.
+    inherited_stderr = -1
+    with suppress(OSError):
+        inherited_stderr = os.dup(2)
     try:
         control, protocol, raw_stdout_fd, raw_stderr_fd = (
             _prepare_private_protocol_streams()
@@ -1235,19 +1241,21 @@ def main() -> int:
         except KeyboardInterrupt:
             return 130
     except BaseException:
-        with suppress(Exception):
-            report = os.fdopen(
-                inherited_stderr, "w", encoding="utf-8", errors="backslashreplace"
-            )
-            with report:
-                report.write(
-                    "VARIANT-1 kernel worker failed during boot or serve:\n"
+        if inherited_stderr >= 0:
+            with suppress(Exception):
+                report = os.fdopen(
+                    inherited_stderr, "w", encoding="utf-8", errors="backslashreplace"
                 )
-                traceback.print_exc(file=report)
+                with report:
+                    report.write(
+                        "VARIANT-1 kernel worker failed during boot or serve:\n"
+                    )
+                    traceback.print_exc(file=report)
         raise
     finally:
-        with suppress(OSError):
-            os.close(inherited_stderr)
+        if inherited_stderr >= 0:
+            with suppress(OSError):
+                os.close(inherited_stderr)
 
 
 __all__ = ["ReplWorker", "main"]
