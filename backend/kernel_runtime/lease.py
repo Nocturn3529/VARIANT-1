@@ -47,6 +47,38 @@ if TYPE_CHECKING:
     from .manager import KernelRuntimeManager
 
 
+def _drain_boot_output(transport: Any, sink: list[str]) -> None:
+    """Move whatever the transport already buffered into the boot report."""
+    queue = getattr(transport, "queue", None)
+    if queue is None:
+        return
+    while len(sink) < 64:
+        try:
+            event = queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return
+        except Exception:
+            return
+        text = str(event.get("text") or "").strip()
+        if text:
+            sink.append(text)
+
+
+def _boot_output_detail(chunks: list[str]) -> str:
+    """Flatten native output captured during boot into one reportable string.
+
+    The worker's stderr is chunked arbitrarily by the drain thread, so a
+    traceback arrives split across frames and interleaved with any stdout a
+    chatty import produces. Joining without a separator would weld lines
+    together and hide the traceback, and the whole value of this is that the
+    real cause is readable.
+    """
+    if not chunks:
+        return ""
+    joined = "".join(chunk if chunk.endswith("\n") else chunk + "\n" for chunk in chunks)
+    return joined.strip()[-4000:]
+
+
 class _ReplTransport:
     """One threaded pipe reader feeding the owning asyncio lease."""
 
@@ -963,6 +995,15 @@ class KernelLease:
             )
             deadline = time.monotonic() + self.manager.limits.boot_timeout_s
             ready: dict[str, Any] | None = None
+            # Native output produced while booting is the only place a
+            # dependency, profile, or import failure can surface. The worker
+            # replaces fd 1 and fd 2 with private pipes before serve() runs, so
+            # its traceback never reaches worker.log; _drain_raw_fd re-emits it
+            # as protocol events instead. Those events used to be discarded
+            # here, so a real RuntimeError reached the host as nothing more
+            # than "REPL worker closed its output". Keep them, and report them
+            # with the failure, so the lease names the actual cause.
+            boot_output: list[str] = []
             while ready is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -975,8 +1016,20 @@ class KernelLease:
                     )
                 except asyncio.TimeoutError:
                     continue
+                except BaseException:
+                    # The worker is gone, but the transport queue can still hold
+                    # the frames it managed to flush first. The final lines of a
+                    # boot traceback -- the ones naming the actual exception --
+                    # routinely arrive in that backlog, so drain it before
+                    # propagating, or the cause is lost with the process.
+                    _drain_boot_output(self.transport, boot_output)
+                    raise
                 if str(event.get("type") or "") == "ready":
                     ready = event
+                    continue
+                text = str(event.get("text") or "").strip()
+                if text and len(boot_output) < 64:
+                    boot_output.append(text)
             if (
                 int(ready.get("generation") or 0) != self.generation
                 or str(ready.get("nonce") or "") != self.nonce
@@ -998,8 +1051,10 @@ class KernelLease:
             )
         except asyncio.TimeoutError as exc:
             await self.close(reason="boot_timeout", hard=True)
+            timeout_detail = _boot_output_detail(boot_output)
             raise KernelUnavailable(
                 f"VARIANT-1 CPython REPL generation {self.generation} timed out"
+                + (f"; boot output: {timeout_detail}" if timeout_detail else "")
             ) from exc
         except BaseException as exc:
             self.state = "unhealthy"
@@ -1013,10 +1068,15 @@ class KernelLease:
                     errors="replace",
                 ) as handle:
                     worker_detail = handle.read()[-4000:].strip()
+            # worker.log only covers failures raised before the worker swapped
+            # fd 2 for its private pipe. Past that point the worker's own stderr
+            # arrives as protocol events, so report whichever channel has
+            # something rather than neither.
+            reported = worker_detail or _boot_output_detail(boot_output)
             await self.close(reason="boot_failed", hard=True)
             if isinstance(exc, KernelUnavailable):
                 raise KernelUnavailable(
-                    str(exc) + (f"; worker: {worker_detail}" if worker_detail else "")
+                    str(exc) + (f"; worker: {reported}" if reported else "")
                 ) from exc
             raise KernelUnavailable(
                 f"VARIANT-1 CPython REPL generation {self.generation} failed to start: {exc}"
@@ -1025,7 +1085,7 @@ class KernelLease:
                     if worker_exit is not None
                     else "; worker_exit=running"
                 )
-                + (f"; worker: {worker_detail}" if worker_detail else "")
+                + (f"; worker: {reported}" if reported else "")
             ) from exc
 
     def _accept_repl_resource(self, content: Any) -> None:

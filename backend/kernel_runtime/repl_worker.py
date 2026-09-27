@@ -1210,20 +1210,44 @@ def _owner_watchdog() -> None:
 
 
 def main() -> int:
-    control, protocol, raw_stdout_fd, raw_stderr_fd = (
-        _prepare_private_protocol_streams()
-    )
-    _owner_watchdog()
-    worker = ReplWorker(
-        control=control,
-        protocol=protocol,
-        raw_stdout_fd=raw_stdout_fd,
-        raw_stderr_fd=raw_stderr_fd,
-    )
+    # Keep a private handle on the inherited stderr, which is the host's
+    # worker.log. A boot failure is otherwise unreportable: the private protocol
+    # pipes installed below take over fd 2, and the thread that drains them into
+    # protocol events is a daemon the interpreter may kill during shutdown
+    # before it has flushed, so the tail of a traceback -- the lines naming the
+    # real exception -- is regularly lost. Writing the traceback here first
+    # makes the cause durable, and the lease prefers worker.log when both
+    # channels have something.
+    inherited_stderr = os.dup(2)
     try:
-        return asyncio.run(worker.serve())
-    except KeyboardInterrupt:
-        return 130
+        control, protocol, raw_stdout_fd, raw_stderr_fd = (
+            _prepare_private_protocol_streams()
+        )
+        _owner_watchdog()
+        worker = ReplWorker(
+            control=control,
+            protocol=protocol,
+            raw_stdout_fd=raw_stdout_fd,
+            raw_stderr_fd=raw_stderr_fd,
+        )
+        try:
+            return asyncio.run(worker.serve())
+        except KeyboardInterrupt:
+            return 130
+    except BaseException:
+        with suppress(Exception):
+            report = os.fdopen(
+                inherited_stderr, "w", encoding="utf-8", errors="backslashreplace"
+            )
+            with report:
+                report.write(
+                    "VARIANT-1 kernel worker failed during boot or serve:\n"
+                )
+                traceback.print_exc(file=report)
+        raise
+    finally:
+        with suppress(OSError):
+            os.close(inherited_stderr)
 
 
 __all__ = ["ReplWorker", "main"]
