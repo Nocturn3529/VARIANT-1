@@ -1410,7 +1410,14 @@ async def test_real_ask_user_wait_uses_bridge_heartbeat_and_retires_cancelled_qu
 @pytest.mark.parametrize('code', [
     "print(tools.read_file(path='slow'))",
     "print(await tools.read_file.async_(path='slow'))",
-    "print(await tools.read_file.async_(path='slow', _deadline_ms=800))",
+    # The handler sleeps 300ms and the bridge idle timeout is 100ms, so this
+    # case exists to show an explicit capability deadline is honoured instead
+    # of being replaced by the bridge timeout. 800ms left only 500ms of headroom
+    # over the sleep, which a loaded CI runner exceeded (observed 1048ms).
+    # 3000ms keeps the ordering the test is about -- deadline well above the
+    # sleep, and still far above the 100ms bridge timeout -- while removing the
+    # load sensitivity.
+    "print(await tools.read_file.async_(path='slow', _deadline_ms=3000))",
 ])
 async def test_capability_deadline_is_not_bridge_idle_timeout(kernel_stack, code):
     manager, runtimes, _ = kernel_stack

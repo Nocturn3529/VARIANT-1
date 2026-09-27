@@ -129,6 +129,16 @@ jobs:
         run: npm run prepare:native
       - name: llama-server runs
         run: bin/llama-server --version
+      # These three steps were missing here while linux-package had them. The
+      # app packaged without a Deck bundle and without a frozen backend, so
+      # macos-qualify launched an app that could never reach a connected
+      # workbench: "Timed out waiting for connected workbench".
+      - name: Build the main deck
+        run: npm run build:deck
+      - name: Build the frozen backend
+        run: npm run build:backend
+      - name: Check native runtime inputs
+        run: node scripts/check-native-runtime.js
       - name: Unsigned dmg and zip
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
@@ -137,3 +147,243 @@ jobs:
         run: |
           ls -lh dist
           find dist -name '*.dmg' -o -name '*.zip' | grep -q .
+      - name: Frozen backend is in the packaged app
+        run: |
+          set -eu
+          # The frozen backend has to be inside the bundle, not just built on
+          # the runner, or the packaged app has no way to start a backend.
+          app="$(find dist -name '*.app' -maxdepth 3 -print -quit)"
+          test -n "$app"
+          find "$app/Contents/Resources" -name 'Variant1Backend*' -print -quit | grep -q .
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-packages
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Backend setup, including pinned cua-driver
+        run: npm run setup:backend
+      - name: Pinned cua-driver is installed
+        run: |
+          test -x bin/cua-driver/cua-driver
+          grep -qx 0.28.2 bin/cua-driver/VERSION
+      - name: Prepare native llama-server
+        run: npm run prepare:native
+      - name: llama-server runs
+        run: bin/llama-server --version
+      - name: Build the main deck
+        run: npm run build:deck
+      - name: Build the frozen backend
+        run: npm run build:backend
+      - name: Check native runtime inputs
+        run: node scripts/check-native-runtime.js
+      - name: Unsigned AppImage and deb
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --linux --publish never
+      - name: Package artifacts exist
+        run: |
+          ls -lh dist
+          find dist -name '*.AppImage' | grep -q .
+          find dist -name '*.deb' | grep -q .
+      - name: AppImage carries a runnable payload
+        run: |
+          set -eu
+          # This job installs no display libraries, so the image cannot be
+          # launched here. An earlier version tried anyway and died with exit
+          # 127 on a missing shared library. Assert what is provable without a
+          # GUI instead: the AppImage is executable, it extracts, and the
+          # extracted image contains a launcher and a desktop entry. The real
+          # launch is a separate step in linux-qualify, which installs the
+          # display libraries and xvfb.
+          appimage="$(find dist -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          test -x "$appimage"
+          abs="$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")"
+          work="$(mktemp -d)"
+          ( cd "$work" && APPIMAGE_EXTRACT_AND_RUN=1 "$abs" --appimage-extract >/dev/null )
+          root="$work/squashfs-root"
+          test -d "$root"
+          test -n "$(find "$root" -maxdepth 1 -type f -perm -u+x -print -quit)"
+          test -n "$(find "$root" -maxdepth 1 -name '*.desktop' -print -quit)"
+          echo "AppImage extracts to a launcher and a desktop entry"
+      - name: Upload Linux packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: linux-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built Linux packages
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-packages
+          path: dist
+      - name: Install the deb on the runner host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+      - name: Installed payload is complete
+        run: |
+          # electron-builder derives the deb package name and the installed
+          # executable from package.json "name" (variant1), not productName
+          # (VARIANT-1). Assert the names the package actually produces.
+          test -x /opt/VARIANT-1/variant1
+          /opt/VARIANT-1/resources/bin/llama-server --version
+          test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
+          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
+      - name: Display server libraries for Electron
+        run: |
+          # libasound2 is a virtual package on Ubuntu 24.04 (noble) after the
+          # 64-bit time_t transition; the real package is libasound2t64.
+          # Asking for the old name aborts the job with
+          # "E: Package 'libasound2' has no installation candidate" before any
+          # display assertion runs. libasound2t64 has provided it since 24.04.
+          sudo apt-get install -y --no-install-recommends \
+            xvfb x11-utils libgtk-3-0 libnotify4 libnss3 libxss1 \
+            libxtst6 libxrandr2 libasound2t64 libatspi2.0-0 libsecret-1-0
+      - name: Packaged Main Deck smoke (installed binary, Xvfb)
+        env:
+          VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant1
+          VARIANT1_E2E_CDP_PORT: "9341"
+        run: xvfb-run -a node scripts/test-deck-electron-smoke.js
+      # The AppImage cannot be driven by test-deck-electron-smoke.js, which
+      # spawns an executable path, whereas an AppImage has to be launched
+      # through its own runtime. Launch it here instead and assert it comes up
+      # and serves a debugging endpoint. This is the step that needs the
+      # display libraries installed above, which is why the packaging job
+      # cannot do it.
+      - name: AppImage starts and serves CDP (Xvfb)
+        run: |
+          set -eu
+          appimage="$(find dist -name '*.AppImage' -print -quit)"
+          test -n "$appimage"
+          # upload-artifact zips the payload, so the exec bit electron-builder
+          # set is gone by the time download-artifact lays it down here:
+          # "Permission denied" from xvfb-run. linux-package checks test -x
+          # before uploading, where the bit is still set, so it cannot catch
+          # this. Restore it and assert it so a regression fails loudly.
+          chmod +x "$appimage"
+          test -x "$appimage"
+          abs="$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")"
+          APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a "$abs" --remote-debugging-port=9343 >/tmp/appimage.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true' EXIT
+          ready=""
+          for _ in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:9343/json/version >/dev/null 2>&1; then ready=1; break; fi
+            sleep 1
+          done
+          if [ -z "$ready" ]; then
+            echo "::error::AppImage did not publish a CDP endpoint"
+            tail -40 /tmp/appimage.log || true
+            exit 1
+          fi
+          echo "AppImage launched and published a CDP endpoint"
+      - name: Uninstall removes the payload
+        if: ${{ always() }}
+        run: |
+          # Purge rather than remove so packaged conffiles cannot survive, and
+          # never mask the package name: `apt-get remove -y variant-1 || true`
+          # silently matched nothing and left the whole payload in place.
+          if ! sudo apt-get purge -y variant1; then
+            echo "::error::apt-get purge variant1 failed - wrong package name?"
+          fi
+          if [ -e /opt/VARIANT-1 ]; then
+            echo "::error::uninstall left /opt/VARIANT-1 behind"
+            ls -la /opt/VARIANT-1 || true
+            exit 1
+          fi
+
+  macos-qualify:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    needs: macos-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built macOS packages
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-packages
+          path: dist
+      # The macOS counterpart of the Linux qualification bar: unpack the shipped
+      # artifact, prove the payload is complete and runnable, exercise the
+      # packaged Main Deck, then remove the app and prove nothing is left.
+      #
+      # The bundle and its executable are DISCOVERED, never hardcoded. The Linux
+      # job failed twice because it assumed names electron-builder derives from
+      # package.json; the same trap applies to the .app payload, and the exact
+      # spelling cannot be confirmed from a Windows host.
+      - name: Unpack the app bundle
+        run: |
+          set -eu
+          # find -print -quit, not `find | head -1`: under pipefail the early
+          # close gives find a SIGPIPE and fails the step.
+          zip="$(find dist -name '*.zip' -print -quit)"
+          test -n "$zip"
+          mkdir -p unpacked
+          ditto -x -k "$zip" unpacked
+          app="$(find unpacked -maxdepth 2 -name '*.app' -print -quit)"
+          test -n "$app"
+          exe="$(find "$app/Contents/MacOS" -maxdepth 1 -type f -print -quit)"
+          test -n "$exe"
+          test -x "$exe"
+          printf 'APP=%s\nEXE=%s\n' "$app" "$exe" >> "$GITHUB_ENV"
+          echo "app=$app"
+          echo "exe=$exe"
+      - name: Installed payload is complete
+        run: |
+          set -eu
+          test -x "$EXE"
+          test -x "$APP/Contents/Resources/bin/llama-server"
+          "$APP/Contents/Resources/bin/llama-server" --version
+          test -x "$APP/Contents/Resources/bin/cua-driver/cua-driver"
+          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "0.28.2"
+      - name: Packaged Main Deck smoke (unpacked app)
+        env:
+          VARIANT1_E2E_EXECUTABLE: ${{ env.EXE }}
+          VARIANT1_E2E_CDP_PORT: "9342"
+        run: node scripts/test-deck-electron-smoke.js
+      - name: Removal leaves nothing behind
+        if: ${{ always() }}
+        run: |
+          set -eu
+          rm -rf "$APP"
+          if [ -e "$APP" ]; then
+            echo "::error::removal left $APP behind"
+            exit 1
+          fi
+          echo "removed $APP"
