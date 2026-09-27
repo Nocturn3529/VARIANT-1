@@ -283,25 +283,51 @@ async function removeIsolatedProfile() {
     assert.strictEqual(dirResult?.ok, true, dirResult?.error || 'directory read failed');
     assert.ok(dirResult.entries.some(row => row.name === 'package.json'));
 
-    await client.evaluate(`(() => {
-      if (!document.querySelector('.workbench-browser webview')) {
-        document.querySelector('.chat-workbar__button[aria-label="Browser"]').click();
-      }
-      return true;
-    })()`);
-    try {
-      await waitFor(client, `document.querySelector('.workbench-browser webview')`, 'browser webview');
-    } catch (error) {
-      const diagnostic = await client.evaluate(`JSON.stringify({
-        previews: localStorage.getItem('variant1.workbench.preview-tabs.v1'),
-        layout: localStorage.getItem('variant1.workbench.layout.v1'),
-        labels: [...document.querySelectorAll('.workbench-tab')].map(row => row.textContent),
-      })`);
+      await client.evaluate(`(() => {
+        if (!document.querySelector('.workbench-browser__guest')) {
+          document.querySelector('.chat-workbar__button[aria-label="Browser"]').click();
+        }
+        return true;
+      })()`);
+      // The page is a native view owned by the main process; the renderer only
+      // keeps a geometry shim (retainedBrowserView.ts creates a div and hands
+      // bounds/viewport to workbenchBrowser({action:"attach"})). There is
+      // deliberately no <webview> element in the DOM, so assert the shim and
+      // then data-browser-ready, which registerWorkbenchBrowser sets once the
+      // main process confirms the attach and dom-ready has landed.
+      try {
+        await waitFor(client, `document.querySelector('.workbench-browser__host > .workbench-browser__guest')`,
+          'browser guest shim', 20000);
+        await waitFor(client, `document.querySelector('.workbench-browser__guest[data-browser-ready="true"]')`,
+          'browser page ready', 30000);
+      } catch (error) {
+        const diagnostic = await client.evaluate(`JSON.stringify({
+          previews: localStorage.getItem('variant1.workbench.preview-tabs.v1'),
+          layout: localStorage.getItem('variant1.workbench.layout.v1'),
+          labels: [...document.querySelectorAll('.workbench-tab')].map(row => row.textContent),
+          browserSurface: !!document.querySelector('.workbench-browser'),
+          guestCount: document.querySelectorAll('.workbench-browser__guest').length,
+          guests: [...document.querySelectorAll('.workbench-browser__guest')].map(g => ({
+            tag: g.tagName,
+            ready: g.dataset ? g.dataset.browserReady ?? null : null,
+            generation: g.dataset ? g.dataset.browserGeneration ?? null : null,
+            document: g.dataset ? g.dataset.browserDocument ?? null : null,
+            retained: g.dataset ? g.dataset.retainedBrowser ?? null : null,
+            connected: g.isConnected,
+            inHost: !!g.closest('.workbench-browser__host'),
+            rect: (() => { const r=g.getBoundingClientRect(); return {w:Math.round(r.width),h:Math.round(r.height)}; })(),
+          })),
+          groups: [...document.querySelectorAll('.workbench-group')].map(g => ({
+            id: g.dataset.groupId,
+            tabs: [...g.querySelectorAll('[data-pane-tab]')].map(t => t.getAttribute('data-pane-tab')),
+            content: ((g.querySelector('.workbench-group__content')||{}).innerHTML||'').slice(0,200),
+          })),
+        }, null, 1)`);
       throw new Error(`${error.message}\nBrowser state: ${diagnostic}\nRenderer errors:\n${rendererErrors.join('\n')}`);
     }
     let browser = await client.evaluate(`(() => ({
       bars: document.querySelectorAll('.workbench-browser__bar').length,
-      guests: document.querySelectorAll('.workbench-browser webview').length,
+      guests: document.querySelectorAll('.workbench-browser__guest').length,
       tabs: [...document.querySelectorAll('.workbench-tab')].filter(row => /Browser/.test(row.textContent)).length,
       fabricAdmin: !!document.querySelector('.browser-fabric-destination'),
     }))()`);
@@ -322,7 +348,7 @@ async function removeIsolatedProfile() {
     }
     browser = await client.evaluate(`(() => ({
       browserTabs: [...document.querySelectorAll('.workbench-tab')].filter(row => /Browser/.test(row.textContent)).length,
-      browserGuests: document.querySelectorAll('.workbench-browser webview').length,
+      browserGuests: document.querySelectorAll('.workbench-browser__guest').length,
       previewGroups: [...document.querySelectorAll('.workbench-group')].filter(group => group.querySelector('.workbench-browser')).length,
     }))()`);
     assert.ok(browser.browserTabs >= 2);
