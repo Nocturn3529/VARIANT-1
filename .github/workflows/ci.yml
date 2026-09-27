@@ -288,6 +288,13 @@ jobs:
           set -eu
           appimage="$(find dist -name '*.AppImage' -print -quit)"
           test -n "$appimage"
+          # upload-artifact zips the payload, so the exec bit electron-builder
+          # set is gone by the time download-artifact lays it down here:
+          # "Permission denied" from xvfb-run. linux-package checks test -x
+          # before uploading, where the bit is still set, so it cannot catch
+          # this. Restore it and assert it so a regression fails loudly.
+          chmod +x "$appimage"
+          test -x "$appimage"
           abs="$(cd "$(dirname "$appimage")" && pwd)/$(basename "$appimage")"
           APPIMAGE_EXTRACT_AND_RUN=1 xvfb-run -a "$abs" --remote-debugging-port=9343 >/tmp/appimage.log 2>&1 &
           pid=$!
