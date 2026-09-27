@@ -264,9 +264,14 @@ jobs:
           test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
       - name: Display server libraries for Electron
         run: |
+          # libasound2 is a virtual package on Ubuntu 24.04 (noble) after the
+          # 64-bit time_t transition; the real package is libasound2t64.
+          # Asking for the old name aborts the job with
+          # "E: Package 'libasound2' has no installation candidate" before any
+          # display assertion runs. libasound2t64 has provided it since 24.04.
           sudo apt-get install -y --no-install-recommends \
             xvfb x11-utils libgtk-3-0 libnotify4 libnss3 libxss1 \
-            libxtst6 libxrandr2 libasound2 libatspi2.0-0 libsecret-1-0
+            libxtst6 libxrandr2 libasound2t64 libatspi2.0-0 libsecret-1-0
       - name: Packaged Main Deck smoke (installed binary, Xvfb)
         env:
           VARIANT1_E2E_EXECUTABLE: /opt/VARIANT-1/variant1

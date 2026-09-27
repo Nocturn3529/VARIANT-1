@@ -184,6 +184,21 @@ async function removeIsolatedProfile() {
     });
     await client.call('Runtime.enable');
     await client.call('Network.enable');
+    // Pin the viewport before asserting any layout.
+    //
+    // The workbench goes compact at DECK_BREAKPOINT.narrow (830px) and hides
+    // every side pane when it does, so `.workbench-files` stops being rendered
+    // at all. Without this, the assertions below silently depended on whatever
+    // default window size the runner happened to produce: it passed on
+    // windows-latest and ubuntu-latest, then failed on macos-latest with
+    // "Files must be a standing live pane" because that window came up narrow.
+    // Setting the metrics makes the layout deterministic on every platform
+    // instead of accidentally correct on some of them.
+    await client.call('Emulation.setDeviceMetricsOverride', {
+      width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+    });
+    await waitFor(client,
+      `window.innerWidth > 830`, 'wide workbench viewport', 15000);
     await waitFor(client,
       `document.body.dataset.backendState === 'connected' && document.body.dataset.browserHost === 'registered' && document.querySelector('.workbench .chat-workspace')`,
       'connected workbench', 45000);
