@@ -236,9 +236,23 @@ async function removeIsolatedProfile() {
     // Revealing Files via its real shortcuts (Ctrl/Cmd+J, or the action palette
     // "Focus Files" command) does not mount the pane either, so this cannot be
     // asserted from the harness until that is fixed.
-    assert.ok(initial.files >= 1,
-      'Files pane never renders: the default hidden map suppresses files/review/terminal '
-      + `(saw ${initial.files} .workbench-files, ${initial.groups} groups, ${initial.sashes} sashes)`);
+    // Files is collapsed at rest by design -- the store seeds hidden with
+    // files/review/terminal when nothing is saved -- so the meaningful
+    // assertion is that it is REACHABLE, not that it is standing. This used to
+    // assert a standing Files pane and failed on Windows, macOS, and Linux
+    // alike, because nothing could open it: Workbench.tsx restated the store's
+    // hidden defaults on every render, so revealPane's write was reverted
+    // immediately.
+    //
+    // Ctrl/Cmd+J toggles the Files pane; 2|4 is Ctrl|Meta so one expression
+    // covers Windows and Linux (ctrl) and macOS (meta). Guarded so a rerun
+    // cannot toggle an already-open pane shut.
+    if (!(await client.evaluate(`!!document.querySelector('.workbench-files')`))) {
+      const filesKey = {modifiers: 2 | 4, key: 'j', code: 'KeyJ', windowsVirtualKeyCode: 74, nativeVirtualKeyCode: 74};
+      await client.call('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...filesKey});
+      await client.call('Input.dispatchKeyEvent', {type: 'keyUp', ...filesKey});
+    }
+    await waitFor(client, `document.querySelector('.workbench-files')`, 'Files pane', 20000);
 
     // The workbench-root and directory-read checks go through the preload IPC
     // bridge, so they hold regardless of whether the Files pane renders.

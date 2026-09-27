@@ -557,7 +557,17 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
     return rows;
   }, [api, preview.tabs, preview.pages, sessions.items, projects,chatViews,chatId]);
 
-  const hidden: Record<string, boolean> = {...state.hidden, [PANE.workspace]: false,files:true,review:true,terminal:true};
+  // Reflect the store's hidden map; do not restate its defaults here.
+  //
+  // This used to force `files:true, review:true, terminal:true` on every render.
+  // The store already owns that default for a fresh profile
+  // (workbenchStore seeds hidden with exactly those three when nothing is
+  // saved), so duplicating it here did not just restate the default, it
+  // overwrote every later change: revealPane and togglePane set hidden[files]
+  // to false in the store, and the next render put it straight back to true.
+  // The right-hand region was therefore unreachable, not merely collapsed --
+  // Files, Review, the browser view, and the terminal could never be opened.
+  const hidden: Record<string, boolean> = {...state.hidden, [PANE.workspace]: false};
   for(const id of descriptors.keys()) {
     const owner=paneOwner(id) || (id.startsWith("preview:") ? preview.tabs.find(t=>previewPaneId(t.id)===id)?.ownerChatId : "");
     const group=findGroupOfPane(state.layout,id);
