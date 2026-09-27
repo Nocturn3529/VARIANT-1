@@ -387,3 +387,162 @@ jobs:
             exit 1
           fi
           echo "removed $APP"
+
+  # The Windows installer had been produced and checked by hand, so no run in this
+  # workflow ever built it. That is why the 0.1.1-preview.1 release shipped three
+  # platforms from three different commits: Linux and macOS were rebuilt here
+  # while Windows was not rebuilt at all. A version bump is only meaningful if all
+  # three come out of the same tree, so Windows is packaged and qualified here on
+  # the same bar as the other two.
+  windows-package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Backend setup, including pinned cua-driver
+        run: npm run setup:backend
+      - name: Pinned cua-driver is installed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path bin\cua-driver\cua-driver.exe)) { throw 'cua-driver.exe missing' }
+          if ((Get-Content bin\cua-driver\VERSION -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
+      - name: Prepare native llama-server
+        run: npm run prepare:native
+      - name: llama-server runs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & bin\llama-server.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+      - name: Build the main deck
+        run: npm run build:deck
+      - name: Build the frozen backend
+        run: npm run build:backend
+      - name: Check native runtime inputs
+        run: node scripts/check-native-runtime.js
+      - name: Unsigned NSIS installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npx electron-builder --win --x64 --publish never
+      - name: Package artifacts exist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem dist | Format-Table Name, Length
+          $setup = Get-ChildItem dist -Filter *.exe
+          if (-not $setup) { throw 'no installer produced in dist' }
+      - name: Frozen backend is in the packaged payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The frozen backend has to be inside the installed payload, not merely
+          # built on the runner, or the packaged app cannot start a backend. The
+          # macOS job shipped an .app without it and the Deck smoke could never
+          # reach a connected workbench.
+          $payload = Get-ChildItem dist -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
+          if (-not $payload) { throw 'Variant1Backend not found in the packaged payload' }
+          $payload | ForEach-Object { Write-Host "frozen backend: $($_.FullName)" }
+      - name: Upload Windows packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-packages
+          path: |
+            dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  windows-qualify:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    needs: windows-package
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Download built Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-packages
+          path: dist
+      # Every path here is DISCOVERED, never hardcoded. The Linux qualification
+      # job failed twice by assuming names electron-builder derives from
+      # package.json, and the same trap applies to the NSIS payload.
+      - name: Silent install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = (Get-ChildItem dist -Filter *.exe | Select-Object -First 1).FullName
+          if (-not $setup) { throw 'no installer in dist' }
+          $target = Join-Path $env:RUNNER_TEMP 'variant1-install'
+          # NSIS silent install. /D must be last and unquoted.
+          $proc = Start-Process -FilePath $setup -ArgumentList '/S', "/D=$target" -Wait -PassThru
+          Write-Host "installer exit: $($proc.ExitCode)"
+          # An NSIS installer re-launches itself as a child, so -Wait can return
+          # before the payload is fully written. Poll instead of trusting it.
+          $deadline = (Get-Date).AddSeconds(180)
+          $app = $null
+          while ((Get-Date) -lt $deadline) {
+            if (Test-Path $target) {
+              $app = Get-ChildItem $target -Filter *.exe -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -notlike 'Uninstall*' } |
+                Select-Object -First 1
+              if ($app) { break }
+            }
+            Start-Sleep -Seconds 3
+          }
+          if (-not $app) { throw "silent install never produced an application executable under $target" }
+          "INSTALL=$target" >> $env:GITHUB_ENV
+          "APPEXE=$($app.FullName)" >> $env:GITHUB_ENV
+          Write-Host "app: $($app.FullName)"
+      - name: Installed payload is complete
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path $env:APPEXE)) { throw "missing $env:APPEXE" }
+          $bin = Join-Path (Split-Path $env:APPEXE -Parent) 'resources\bin'
+          $llama = Get-ChildItem $bin -Filter 'llama-server.exe' -ErrorAction SilentlyContinue
+          if (-not $llama) { throw "llama-server.exe missing under $bin" }
+          & $llama.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+          $cua = Join-Path $bin 'cua-driver\cua-driver.exe'
+          if (-not (Test-Path $cua)) { throw "cua-driver.exe missing under $bin" }
+          if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
+          $frozen = Get-ChildItem (Split-Path $env:APPEXE -Parent) -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
+          if (-not $frozen) { throw 'frozen backend missing from the installed payload' }
+      - name: Packaged Main Deck smoke (installed binary)
+        env:
+          VARIANT1_E2E_EXECUTABLE: ${{ env.APPEXE }}
+          VARIANT1_E2E_CDP_PORT: "9344"
+        run: node scripts/test-deck-electron-smoke.js
+      - name: Uninstall removes the payload
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (-not $env:INSTALL) { Write-Host 'nothing installed'; exit 0 }
+          $uninstaller = Get-ChildItem $env:INSTALL -Filter 'Uninstall*.exe' -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($uninstaller) {
+            $proc = Start-Process -FilePath $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
+            Write-Host "uninstaller exit: $($proc.ExitCode)"
+          } else {
+            Write-Host '::warning::no uninstaller found; removing the directory directly'
+            Remove-Item -Recurse -Force $env:INSTALL -ErrorAction SilentlyContinue
+          }
+          if (Test-Path $env:INSTALL) {
+            Write-Host "::error::uninstall left $($env:INSTALL) behind"
+            Get-ChildItem $env:INSTALL | Format-Table Name
+            exit 1
+          }
+          Write-Host "removed $($env:INSTALL)"

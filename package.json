@@ -1,6 +1,6 @@
 {
   "name": "variant1",
-  "version": "0.1.1-preview.1",
+  "version": "0.1.1-preview.2",
   "description": "VARIANT-1 — a local-first, model-agnostic Adaptive AI Host",
   "main": "main.js",
   "license": "MIT",
