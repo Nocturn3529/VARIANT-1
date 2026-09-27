@@ -31,6 +31,22 @@ async def _until(predicate, *, timeout=5):
         await asyncio.sleep(0.01)
 
 
+# Budget for waits whose subject is the work scheduler, not elapsed time.
+#
+# The scheduler polls at poll_interval_s, 0.25s by default, so a two-step
+# dependent goal needs at least two sequential poll cycles before it can report
+# succeeded. Each cycle stretches when this suite shares a saturated 2-core
+# runner: on CI run 36318912557 this file's default 5s expired even though the
+# test takes 0.80s locally, a >6x stretch with no behavioural difference.
+#
+# The assertions guarded by this budget are about the goal completing, its steps
+# succeeding, a pause holding, and a dependant not being dispatched. None of them
+# is a latency claim, so the budget is explicit and generous instead of tight and
+# incidental. Tests that genuinely assert timing keep their own bound, and
+# tune poll_interval_s to make that bound meaningful.
+SCHEDULER_WAIT_S = 60.0
+
+
 def _goal(tmp_path, steps, *, handlers=None):
     work = WorkService.open(str(tmp_path / "work.sqlite3"))
     service = create_goal_service(work, handlers=handlers)
@@ -50,7 +66,7 @@ async def test_work_scheduler_completes_dependent_and_multibatch_goals(tmp_path,
     work, service, goal_id = _goal(tmp_path, steps)
     await work.start()
     try:
-        await _until(lambda: service.get(goal_id).status == "succeeded")
+        await _until(lambda: service.get(goal_id).status == "succeeded", timeout=SCHEDULER_WAIT_S)
         assert all(step.status == "succeeded" for step in service.repository.list_steps(goal_id))
         assert len(work.jobs.list(owner_kind="goal", owner_id=goal_id)) >= 2
     finally:
@@ -83,7 +99,7 @@ async def test_goal_retry_has_future_successor_and_respects_delay(tmp_path):
     work.scheduler.poll_interval_s = 0.05
     await work.start()
     try:
-        await _until(lambda: service.get(goal_id).status == "succeeded")
+        await _until(lambda: service.get(goal_id).status == "succeeded", timeout=SCHEDULER_WAIT_S)
         assert len(calls) == 2
         assert calls[1] - calls[0] >= 0.29
     finally:
@@ -104,15 +120,15 @@ async def test_goal_pause_survives_running_step_completion_until_resume(tmp_path
     ], handlers={"python": execute})
     await work.start()
     try:
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), SCHEDULER_WAIT_S)
         service.pause(goal_id, expected_version=service.get(goal_id).version, reason="user pause")
         release.set()
-        await _until(lambda: work.scheduler.active_count == 0)
+        await _until(lambda: work.scheduler.active_count == 0, timeout=SCHEDULER_WAIT_S)
         assert service.get(goal_id).status == "paused"
         assert service.repository.get_step(goal_id, "second").status == "pending"
         assert not work.jobs.list(owner_id=goal_id, statuses=("queued",))
         service.resume(goal_id, expected_version=service.get(goal_id).version)
-        await _until(lambda: service.get(goal_id).status == "succeeded")
+        await _until(lambda: service.get(goal_id).status == "succeeded", timeout=SCHEDULER_WAIT_S)
     finally:
         release.set()
         await work.shutdown()
@@ -134,10 +150,10 @@ async def test_goal_paused_during_wait_resolution_does_not_dispatch_dependant(tm
     service.register_wait_resolver("remote", resolve)
     await work.start()
     try:
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), SCHEDULER_WAIT_S)
         service.pause(goal_id, expected_version=service.get(goal_id).version, reason="user pause")
         release.set()
-        await _until(lambda: work.scheduler.active_count == 0)
+        await _until(lambda: work.scheduler.active_count == 0, timeout=SCHEDULER_WAIT_S)
         assert service.get(goal_id).status == "paused"
         assert service.repository.get_step(goal_id, "remote").status == "succeeded"
         assert service.repository.get_step(goal_id, "second").attempt_count == 0
