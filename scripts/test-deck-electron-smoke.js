@@ -247,12 +247,33 @@ async function removeIsolatedProfile() {
     // Ctrl/Cmd+J toggles the Files pane; 2|4 is Ctrl|Meta so one expression
     // covers Windows and Linux (ctrl) and macOS (meta). Guarded so a rerun
     // cannot toggle an already-open pane shut.
-    if (!(await client.evaluate(`!!document.querySelector('.workbench-files')`))) {
+    // Files is collapsed at rest by design and its shortcut is the real
+    // affordance, so open it and assert the pane mounts. Ctrl/Cmd+J toggles the
+    // Files pane; 2|4 is Ctrl|Meta so one expression covers Windows and Linux
+    // (ctrl) and macOS (meta).
+    if (!(await client.evaluate(`!!document.querySelector('.workbench-group[data-group-id="group-files"]')`))) {
       const filesKey = {modifiers: 2 | 4, key: 'j', code: 'KeyJ', windowsVirtualKeyCode: 74, nativeVirtualKeyCode: 74};
       await client.call('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...filesKey});
       await client.call('Input.dispatchKeyEvent', {type: 'keyUp', ...filesKey});
     }
-    await waitFor(client, `document.querySelector('.workbench-files')`, 'Files pane', 20000);
+    await waitFor(client, `document.querySelector('.workbench-group[data-group-id="group-files"] .workbench-pane-layer')`,
+      'Files pane group', 20000);
+    // The pane renders either the file tree or, when the chat has no project
+    // folder, the "No project selected" picker. Both are correct states; a fresh
+    // profile has no project, and pickFolder is a native dialog the smoke cannot
+    // drive, so requiring the tree here would only encode that gap.
+    const filesPane = await client.evaluate(`(() => {
+      const group=document.querySelector('.workbench-group[data-group-id="group-files"]');
+      return {tree:!!group.querySelector('.workbench-files'),
+              picker:!!group.querySelector('.workbench-preview__state'),
+              text:(group.textContent||'').trim().slice(0,60)};
+    })()`);
+    assert.ok(filesPane.tree || filesPane.picker,
+      `Files pane rendered neither a tree nor the project picker: ${filesPane.text}`);
+    // Rows only exist when there is a real project to list.
+    if (filesPane.tree) {
+      await waitFor(client, `document.querySelectorAll('.workbench-file-row').length > 0`, 'file tree rows');
+    }
 
     // The workbench-root and directory-read checks go through the preload IPC
     // bridge, so they hold regardless of whether the Files pane renders.

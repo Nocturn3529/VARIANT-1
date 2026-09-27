@@ -576,6 +576,35 @@ export function resetWorkbenchLayout(): void {
 }
 
 
+/**
+ * Adopt `owner` for any side pane the layout still names with a bare id.
+ *
+ * defaultLayout() writes "files"/"review"/"terminal", but pane descriptors are
+ * registered per chat as chatPaneId(...) -> "owned:<kind>:<sessionId>", and both
+ * revealPane and togglePane normalise their argument the same way. A layout
+ * holding bare ids therefore matches no descriptor: GroupView filters with
+ * `descriptors.has(id) && !hidden[id]`, so trackFor drops the whole right-hand
+ * region and Files, Review, the browser view, and the terminal can never be
+ * opened. keyboardPanes already treats a bare side pane as a legacy placeholder
+ * shown only while no chat is displayed, so mapping once a chat exists is the
+ * intended behaviour rather than a workaround.
+ *
+ * Idempotent: after mapping no bare side-pane id remains, so repeat calls return
+ * early. Safe to run on every displayed-session change.
+ */
+export function adoptWorkbenchOwner(owner: string): void {
+  if (!owner) return;
+  const current = store.getState().layout;
+  const stale = allPaneIds(current).some(id => id === PANE.files || id === PANE.review || id === PANE.terminal);
+  if (!stale) return;
+  // mapPresetLayout drops preview:/chatview: panes by design, so withLivePanes
+  // has to put them back -- the same pairing resetWorkbenchLayout uses.
+  const mapped = normalize(mapPresetLayout(current, owner));
+  if (!mapped) return;
+  replace({ layout: withLivePanes(mapped, owner) });
+}
+
+
 function keyboardPanes(group: NonNullable<ReturnType<typeof findGroupOfPane>>, state: WorkbenchState): string[] {
   if (group.minimized) return [];
   const detached = hasNativeWindow(nativePaneKey(group.id)), current = getSessionState().displayedSessionId || "";

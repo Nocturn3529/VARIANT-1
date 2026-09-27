@@ -58,6 +58,7 @@ import {
   hidePane,
   getWorkbenchState,
   moveWorkbenchPane,
+  adoptWorkbenchOwner,
   noteActiveGroup,
   noteHoveredGroup,
   PANE,
@@ -437,6 +438,11 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
   const state = useWorkbenchState();
   const preview = usePreviewState();
   const knownProjects=useRef<Record<string,string>>({});
+  // The startup layout names its side panes with bare ids, while descriptors are
+  // registered per chat. Remap as soon as the owning chat is known, before the
+  // effect below looks for chatPaneId("files", chatId) -- otherwise the right-hand
+  // region never mounts and nothing in it can be opened. Idempotent.
+  useEffect(()=>{ if(chatId)adoptWorkbenchOwner(chatId); },[chatId]);
   useEffect(()=>{
     const root=projects.projects[chatId]?.root;
     if(chatId && root && (!findGroupOfPane(getWorkbenchState().layout,chatPaneId("files",chatId)) || (knownProjects.current[chatId] && knownProjects.current[chatId]!==root)))revealPane(chatPaneId("files",chatId),"right");
