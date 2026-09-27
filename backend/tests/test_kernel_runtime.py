@@ -6007,3 +6007,58 @@ def test_boot_report_does_not_take_descriptor_ownership(monkeypatch):
     assert captured["closefd"] is False, (
         "the report must not close the descriptor the finally block still owns"
     )
+
+def test_boot_report_write_failure_never_masks_the_original_error(monkeypatch):
+    """A failure to report must not replace the failure being reported.
+
+    _report_boot_failure runs while an exception is already propagating. If it
+    raised, the operator would see a dead log handle instead of the real cause,
+    which is the exact opposite of what this change is for.
+    """
+    import kernel_runtime.repl_worker as repl_module
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("log handle is gone")
+
+    monkeypatch.setattr(repl_module.os, "fdopen", refuse)
+    scratch = os.open(os.devnull, os.O_WRONLY)
+    try:
+        # Must return normally rather than raise.
+        repl_module._report_boot_failure(scratch, RuntimeError("the real cause"))
+    finally:
+        os.close(scratch)
+
+
+def test_boot_report_ignores_a_missing_handle():
+    """A worker that never acquired the handle still reports nothing loudly."""
+    from kernel_runtime.lease import _boot_output_detail  # noqa: F401
+    import kernel_runtime.repl_worker as repl_module
+
+    assert repl_module._report_boot_failure(-1, RuntimeError("boom")) is None
+
+def test_boot_report_write_failure_never_masks_the_original_error(monkeypatch):
+    """A failure to report must not replace the failure being reported.
+
+    _report_boot_failure runs while an exception is already propagating. If it
+    raised, the operator would see a dead log handle instead of the real cause,
+    which is the exact opposite of what this change is for.
+    """
+    import kernel_runtime.repl_worker as repl_module
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("log handle is gone")
+
+    monkeypatch.setattr(repl_module.os, "fdopen", refuse)
+    scratch = os.open(os.devnull, os.O_WRONLY)
+    try:
+        # Must return normally rather than raise.
+        repl_module._report_boot_failure(scratch, RuntimeError("the real cause"))
+    finally:
+        os.close(scratch)
+
+
+def test_boot_report_is_a_no_op_without_a_handle():
+    """A worker that never acquired the handle reports nothing, and says so."""
+    import kernel_runtime.repl_worker as repl_module
+
+    assert repl_module._report_boot_failure(-1, RuntimeError("boom")) is None
