@@ -569,7 +569,7 @@ def test_cancelled_check_terminates_its_process_tree(tmp_path):
         cancellation.set()
         check = future.result(timeout=10)
 
-    assert check.state == "cancelled"
+    assert check.state == "cancelled", check.diagnostic
     assert "cancelled" in check.diagnostic
     time.sleep(1.2)
     assert not descendant_output.exists()
