@@ -31,7 +31,9 @@ jobs:
       - name: Mutation worker retirement regression
         run: node ../scripts/test-python.js tests/test_mutation_worker_cleanup.py tests/test_kernel_runtime.py::test_kernel_launcher_is_owned_before_interpreter_starts -q
       - name: Isolated backend regression suite
-        run: node ../scripts/test-python.js
+        # Print each test name before it runs. A blocked Windows worker used to
+        # leave only the last completed -q percentage, obscuring the hold point.
+        run: node ../scripts/test-python.js tests -vv
 
   frontend-scripts:
     runs-on: windows-latest
