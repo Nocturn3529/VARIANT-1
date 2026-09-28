@@ -104,11 +104,21 @@ def test_pipe_process_cannot_execute_before_job_assignment(tmp_path, monkeypatch
         assert not thread.is_alive()
         if "error" in observed:
             raise observed["error"]
+        # Wait for the content, not merely the file. Path.write_text is not
+        # atomic: the file becomes visible before its bytes land, so polling
+        # only for existence and then reading races the write. On a loaded
+        # runner that window is wide enough to read an empty string and fail
+        # with "assert '' == 'ran'".
+        written = False
         for _ in range(200):
-            if marker.exists():
-                break
+            try:
+                if marker.read_text(encoding="utf-8") == "ran":
+                    written = True
+                    break
+            except OSError:
+                pass
             time.sleep(0.01)
-        assert marker.read_text() == "ran"
+        assert written, f"child never wrote its marker; got {marker.read_text()!r}"
     finally:
         release.set()
         child = observed.get("child")
