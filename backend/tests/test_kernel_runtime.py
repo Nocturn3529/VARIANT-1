@@ -5820,3 +5820,229 @@ async def test_ordinary_active_admission_pins_ready_kernel_between_cells(kernel_
     finally:
         runtimes.finish_run(admission, status="complete")
         await manager.shutdown()
+
+
+
+
+# --- Boot diagnostics: failure-path regressions -----------------------------
+#
+# The happy path cannot cover this code. Everything below only runs when a
+# worker fails to start, which is exactly the case that used to report nothing
+# but "REPL worker closed its output".
+
+
+@pytest.mark.asyncio
+async def test_boot_failure_before_worker_spawn_still_reports_kernel_unavailable(
+    kernel_stack, monkeypatch
+):
+    """A failure before the boot loop must not escape as UnboundLocalError.
+
+    boot_output is read by the exception handlers, so it has to exist before
+    the startup try. If it does not, a descriptor-write failure raises
+    UnboundLocalError from the handler, which is not a KernelUnavailable and so
+    also bypasses the manager's retry.
+    """
+    manager, runtimes, _ = kernel_stack
+    import kernel_runtime.lease as lease_module
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("descriptor write refused")
+
+    monkeypatch.setattr(lease_module, "_write_private_json", refuse)
+    runtimes.ensure_runtime("early-boot", is_new=True)
+    manager.catalog_service.select("early-boot", "build")
+    with pytest.raises(KernelUnavailable) as caught:
+        await manager.execute(
+            chat_id="early-boot", code="print(1)", run_id="r1",
+            outer_tool_call_id="c1",
+        )
+    assert "UnboundLocalError" not in str(caught.value)
+
+
+def test_boot_report_survives_a_failing_diagnostic_channel(monkeypatch):
+    """A worker must still boot when it cannot take the reporting handle.
+
+    Replaces an earlier version that patched os.dup in the pytest process and
+    then ran manager.execute. The worker runs in a separate interpreter, so that
+    patch could never reach it and the test passed whether or not the property
+    held. main() is driven in-process here, with its collaborators stubbed, so
+    the os.dup(2) failure is genuine.
+    """
+    import kernel_runtime.repl_worker as repl_module
+
+    real_dup = os.dup
+    attempted = []
+
+    def dup_then_refuse(fd):
+        attempted.append(fd)
+        if fd == 2:
+            raise OSError("cannot duplicate stderr")
+        return real_dup(fd)
+
+    class _StubWorker:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def serve(self):
+            return 0
+
+    monkeypatch.setattr(repl_module.os, "dup", dup_then_refuse)
+    monkeypatch.setattr(
+        repl_module, "_prepare_private_protocol_streams",
+        lambda: (None, None, None, None),
+    )
+    monkeypatch.setattr(repl_module, "_owner_watchdog", lambda: None)
+    monkeypatch.setattr(repl_module, "ReplWorker", _StubWorker)
+
+    # The duplicate of fd 2 really was attempted, and main() still returned.
+    assert repl_module.main() == 0
+    assert 2 in attempted, "the test never exercised the failing duplicate"
+
+
+def test_boot_output_buffer_keeps_the_tail_not_the_prefix():
+    """The cause is printed last, so a full buffer must drop from the front.
+
+    Drives the real drain helper with a real queue over the production cap, so
+    this fails against a prefix-capped buffer instead of re-implementing one.
+    """
+    import asyncio
+    from collections import deque
+
+    from kernel_runtime.lease import (
+        _BOOT_OUTPUT_FRAMES,
+        _boot_output_detail,
+        _drain_boot_output,
+    )
+
+    class _Transport:
+        def __init__(self):
+            self.queue = asyncio.Queue()
+
+    transport = _Transport()
+    for index in range(_BOOT_OUTPUT_FRAMES * 3):
+        transport.queue.put_nowait({"type": "stderr", "text": f"chatter {index}\n"})
+    transport.queue.put_nowait(
+        {"type": "stderr", "text": "RuntimeError: the actual cause\n"}
+    )
+    buffer = deque(maxlen=_BOOT_OUTPUT_FRAMES)
+    _drain_boot_output(transport, buffer)
+    detail = _boot_output_detail(buffer)
+    assert "the actual cause" in detail
+    assert "chatter 0" not in detail
+    assert len(buffer) == _BOOT_OUTPUT_FRAMES
+
+
+def test_kernel_lease_collects_boot_output_into_a_bounded_tail():
+    """Structural check: the lease's own buffer is a tail, not a prefix.
+
+    The test above proves what a correctly built buffer does; it cannot catch
+    someone changing the lease to a prefix-capped list, because it supplies its
+    own deque. This asserts the declaration itself, so it is a source assertion
+    rather than a behavioural one and is kept deliberately narrow and exact.
+    """
+    import inspect
+    import re as _re
+
+    from kernel_runtime.lease import KernelLease
+
+    source = inspect.getsource(KernelLease.start)
+    match = _re.search(
+        r"boot_output:\s*deque\[str\]\s*=\s*deque\(maxlen=_BOOT_OUTPUT_FRAMES\)",
+        source,
+    )
+    assert match, (
+        "KernelLease.start must collect boot output into deque(maxlen=...) so "
+        "the newest frames -- the cause -- survive a full buffer"
+    )
+    # No length guard reintroduced alongside it: a `len(boot_output) < N` test
+    # stops collecting instead of evicting, which is the original defect.
+    assert not _re.search(r"len\(boot_output\)\s*<", source), (
+        "a length guard stops collecting rather than evicting the oldest frames"
+    )
+
+
+def test_boot_output_preserves_chunk_boundaries():
+    """Chunks are contiguous slices of one stream; joining must not add breaks.
+
+    Inserting a separator between frames splits any token that straddles a read
+    boundary, turning "mismatch" into two broken lines.
+    """
+    from collections import deque
+
+    from kernel_runtime.lease import _boot_output_detail
+
+    detail = _boot_output_detail(deque(["dependency mis", "match: psutil expected\n"]))
+    assert "dependency mismatch: psutil expected" in detail
+    assert "dependency mis\nmatch" not in detail
+
+
+def test_boot_output_detail_is_empty_when_nothing_was_captured():
+    from collections import deque
+
+    from kernel_runtime.lease import _boot_output_detail
+
+    assert _boot_output_detail(deque()) == ""
+    assert _boot_output_detail(deque(["   ", "\n"])) == ""
+
+
+def test_boot_report_does_not_take_descriptor_ownership(monkeypatch):
+    """The report handle must be closed exactly once, by the finally block.
+
+    fdopen without closefd=False closes the descriptor when its with-block ends,
+    and the finally then closes the same number again -- by which point the slot
+    may belong to an unrelated open, so the second close takes out a stranger's
+    handle. Asserted by intercepting the real os.fdopen call rather than by
+    reading the source, so a passing test means the behaviour, not a comment.
+    """
+    import kernel_runtime.repl_worker as repl_module
+
+    captured = {}
+    real_fdopen = os.fdopen
+
+    def spy(fd, *args, **kwargs):
+        captured["fd"] = fd
+        captured["closefd"] = kwargs.get("closefd", True)
+        return real_fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(repl_module.os, "fdopen", spy)
+    scratch = os.open(os.devnull, os.O_WRONLY)
+    try:
+        repl_module._report_boot_failure(scratch, RuntimeError("boom"))
+        # Ownership must still be ours afterwards. If the report closed the
+        # descriptor, this raises; and if the number had been recycled in the
+        # meantime, fstat would describe a stranger's handle instead.
+        os.fstat(scratch)
+    finally:
+        os.close(scratch)
+    assert captured["fd"] == scratch
+    assert captured["closefd"] is False, (
+        "the report must not close the descriptor the finally block still owns"
+    )
+
+
+def test_boot_report_write_failure_never_masks_the_original_error(monkeypatch):
+    """A failure to report must not replace the failure being reported.
+
+    _report_boot_failure runs while an exception is already propagating. If it
+    raised, the operator would see a dead log handle instead of the real cause,
+    which is the exact opposite of what this change is for.
+    """
+    import kernel_runtime.repl_worker as repl_module
+
+    def refuse(*_args, **_kwargs):
+        raise OSError("log handle is gone")
+
+    monkeypatch.setattr(repl_module.os, "fdopen", refuse)
+    scratch = os.open(os.devnull, os.O_WRONLY)
+    try:
+        # Must return normally rather than raise.
+        repl_module._report_boot_failure(scratch, RuntimeError("the real cause"))
+    finally:
+        os.close(scratch)
+
+
+def test_boot_report_is_a_no_op_without_a_handle():
+    """A worker that never acquired the handle reports nothing, and says so."""
+    import kernel_runtime.repl_worker as repl_module
+
+    assert repl_module._report_boot_failure(-1, RuntimeError("boom")) is None

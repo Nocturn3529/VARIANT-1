@@ -1209,21 +1209,71 @@ def _owner_watchdog() -> None:
     ).start()
 
 
+def _report_boot_failure(inherited_stderr: int, exc: BaseException) -> None:
+    """Write a boot failure to the host's inherited stderr, best effort.
+
+    `inherited_stderr` is the handle duplicated from fd 2 before the private
+    protocol pipes took it over, which is the host's worker.log. Ownership stays
+    with the caller: closefd=False, because the caller's finally closes this
+    descriptor and closing it twice can take out an unrelated open that reused
+    the slot in between.
+
+    Never raises. This runs while an exception is already propagating, and a
+    failure to report must not replace the real one.
+    """
+    if inherited_stderr < 0:
+        return
+    with suppress(Exception):
+        report = os.fdopen(
+            inherited_stderr,
+            "w",
+            encoding="utf-8",
+            errors="backslashreplace",
+            closefd=False,
+        )
+        with report:
+            report.write("VARIANT-1 kernel worker failed during boot or serve:\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=report)
+
+
 def main() -> int:
-    control, protocol, raw_stdout_fd, raw_stderr_fd = (
-        _prepare_private_protocol_streams()
-    )
-    _owner_watchdog()
-    worker = ReplWorker(
-        control=control,
-        protocol=protocol,
-        raw_stdout_fd=raw_stdout_fd,
-        raw_stderr_fd=raw_stderr_fd,
-    )
+    # Keep a private handle on the inherited stderr, which is the host's
+    # worker.log. A boot failure is otherwise unreportable: the private protocol
+    # pipes installed below take over fd 2, and the thread that drains them into
+    # protocol events is a daemon the interpreter may kill during shutdown
+    # before it has flushed, so the tail of a traceback -- the lines naming the
+    # real exception -- is regularly lost. Writing the traceback here first
+    # makes the cause durable, and the lease prefers worker.log when both
+    # channels have something.
+    #
+    # Acquiring the handle is best-effort on purpose. It is only reporting
+    # sugar, so a worker must never fail to boot because the duplicate could not
+    # be taken; -1 simply means the traceback is left to the private pipe.
+    inherited_stderr = -1
+    with suppress(OSError):
+        inherited_stderr = os.dup(2)
     try:
-        return asyncio.run(worker.serve())
-    except KeyboardInterrupt:
-        return 130
+        control, protocol, raw_stdout_fd, raw_stderr_fd = (
+            _prepare_private_protocol_streams()
+        )
+        _owner_watchdog()
+        worker = ReplWorker(
+            control=control,
+            protocol=protocol,
+            raw_stdout_fd=raw_stdout_fd,
+            raw_stderr_fd=raw_stderr_fd,
+        )
+        try:
+            return asyncio.run(worker.serve())
+        except KeyboardInterrupt:
+            return 130
+    except BaseException as exc:
+        _report_boot_failure(inherited_stderr, exc)
+        raise
+    finally:
+        if inherited_stderr >= 0:
+            with suppress(OSError):
+                os.close(inherited_stderr)
 
 
 __all__ = ["ReplWorker", "main"]
