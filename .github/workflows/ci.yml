@@ -33,7 +33,8 @@ jobs:
       - name: Isolated backend regression suite
         # Print each test name before it runs. A blocked Windows worker used to
         # leave only the last completed -q percentage, obscuring the hold point.
-        run: node ../scripts/test-python.js tests -vv
+        # Dump all Python thread stacks if one test runs for over five minutes.
+        run: node ../scripts/test-python.js tests -vv -o faulthandler_timeout=300
 
   frontend-scripts:
     runs-on: windows-latest
