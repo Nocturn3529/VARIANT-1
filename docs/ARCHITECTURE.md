@@ -60,6 +60,12 @@ Turning authoring off does not silently remove an already-active tool overlay.
 
 ## Authority and intervention
 
+Cancelling kernel boot retires the partially started lease before propagating
+the caller's original cancellation. Repeated cancellation cannot interrupt that
+cleanup, and cancellation is not converted into a retryable startup failure.
+The manager still retries genuine boot failures; a later explicit request can
+start a new generation after cancellation.
+
 The runtime operates with the current user's permissions; it is not a security
 sandbox. ASTB controls capability discovery, not ordinary Python's underlying
 authority. A selected project directory is not a filesystem security boundary.

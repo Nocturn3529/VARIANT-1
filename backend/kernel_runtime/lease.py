@@ -1066,6 +1066,26 @@ class KernelLease:
                 pid=int(self.process.pid),
                 transport="variant1.repl-protocol.v1",
             )
+        except asyncio.CancelledError as cancellation:
+            # Cancellation is caller intent, not a retryable boot failure.
+            # Own the entire close (including its lock acquisition) so repeated
+            # cancellation cannot return while a partial generation is live.
+            cleanup = asyncio.create_task(
+                self.close(reason="boot_cancelled", hard=True),
+                name=f"kernel-boot-cancel:{self.chat_id}:{self.generation}",
+            )
+            while not cleanup.done():
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            try:
+                cleanup.result()
+            except (Exception, asyncio.CancelledError) as cleanup_error:
+                cancellation.add_note(f"Kernel boot cleanup failed: {cleanup_error}")
+            raise cancellation
         except asyncio.TimeoutError as exc:
             await self.close(reason="boot_timeout", hard=True)
             timeout_detail = _boot_output_detail(boot_output)

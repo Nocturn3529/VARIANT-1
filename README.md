@@ -35,6 +35,8 @@ every provider, model, or desktop workflow.
   features depend on the model, provider, and configuration.
 - **Stay involved as work runs.** Steer or cancel execution, with explicit state
   and resource lifetimes. Stopping work does not undo actions already completed.
+  Cancelling kernel startup retires that generation without retrying or running
+  the cancelled request; a later explicit request can start normally.
 - **Adapt tools when needed.** Optional chat-local tool authoring can change
   executable tool methods. Authoring is off by default and does not train model weights.
 
