@@ -272,7 +272,12 @@ export type ChatUnknownMessage = Readonly<{
   originalType: string;
 } & StreamRouting>;
 
+export type ChatSessionAnnotatedMessage = Readonly<{
+  type: "chat:session:annotated"; id: string; run_id: string; request_id: string; ok: boolean;
+}>;
+
 export type ChatWsMessage =
+  | ChatSessionAnnotatedMessage
   | ChildrenChangedMessage
   | ChildrenMessage
   | GoalWorkEvent
@@ -471,6 +476,8 @@ export function parseChatWsMessage(
         error: str(row.error, "chat_rejected"),
         text: str(row.text, "Could not start this turn"),
       };
+    case "chat:session:annotated":
+      return {type:"chat:session:annotated",id:str(row.id),run_id:str(row.run_id),request_id:str(row.request_id),ok:row.ok===true};
     case "chat:appended":
       return {
         type: "chat:appended",

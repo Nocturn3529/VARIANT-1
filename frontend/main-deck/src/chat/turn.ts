@@ -12,7 +12,6 @@ import type {
   ChatTurnStep,
 } from "./types";
 import {
-  MAX_TURN_STEPS,
   emit,
   endSharedTurn,
   getChatState,
@@ -39,7 +38,8 @@ import {
 import {extractEvidence, mergeEvidence} from "./evidence";
 import {syncPaneFromActivity} from "../workbench/activityRouting";
 import {normalizeActivityStatus} from "./activityModel";
-import {boundedPreview} from "./preview";
+import {boundedPreview, retainTurnSteps} from "./preview";
+import {persistTrace} from "./annotations";
 
 function activityTimeMs(value: number | undefined): number {
   const numeric = Number(value) || 0;
@@ -77,7 +77,7 @@ export function pushTurnStep(partial: {
   if (key) {
     for (let i = steps.length - 1; i >= 0; i -= 1) {
       // A later thought belongs after the intervening cell, not in a completed thought.
-      const exactIdentity = !!partial.callId || !!partial.id;
+      const exactIdentity = !!partial.callId || !!partial.id || key.startsWith("loop:");
       if (steps[i].key === key && (exactIdentity || steps[i].status === "running")) {
         if (exactIdentity && steps[i].status !== "running" && steps[i].completedAt && partial.status === "running") return;
         const revision = steps[i].summaryRevision;
@@ -112,7 +112,7 @@ export function pushTurnStep(partial: {
           peerMessage:partial.peerMessage || steps[i].peerMessage,
           ts: partial.completedAt || partial.startedAt || Date.now(),
         };
-        patchChatState({turnSteps: steps.slice(-MAX_TURN_STEPS)});
+        patchChatState({turnSteps: retainTurnSteps(steps)});
         return;
       }
     }
@@ -139,7 +139,7 @@ export function pushTurnStep(partial: {
     peerMessage:partial.peerMessage,
     ts: partial.completedAt || partial.startedAt || Date.now(),
   });
-  patchChatState({turnSteps: steps.slice(-MAX_TURN_STEPS)});
+  patchChatState({turnSteps: retainTurnSteps(steps)});
 }
 
 /**
@@ -301,9 +301,10 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
     const completedAt = activityTimeMs(message.ts);
     const terminalStatus = normalizeActivityStatus(statusRaw, event);
     const steps = state.turnSteps.map(s => (
-      s.status === "running" ? {
+      s.status === "running" || s.summaryState === "running" ? {
         ...s,
         status: terminalStatus,
+        summaryState: s.summaryState === "running" ? (terminalStatus === "cancelled" || terminalStatus === "error" ? "cancelled" as const : "done" as const) : s.summaryState,
         completedAt,
         durationMs: s.startedAt ? Math.max(0, completedAt - s.startedAt) : s.durationMs,
         ts: completedAt,
@@ -318,7 +319,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
         ts: Date.now(),
       });
     }
-    patchChatState({turnSteps: steps.slice(-MAX_TURN_STEPS)});
+    patchChatState({turnSteps: retainTurnSteps(steps)});
     if (text) setSubtitle(text.slice(0, 90), "working");
     return;
   }
@@ -331,7 +332,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
         label: text.slice(0, 120),
         status: "done",
         key: event.startsWith("loop:")
-          ? `loop:${message.loop_id || message.kind || event}:${Date.now()}`
+          ? `loop:${message.loop_id || message.kind || "current"}`
           : undefined,
         evidence,
       });
@@ -391,7 +392,7 @@ export function finishStream(message: StreamDoneMessage) {
   // Finalize still-running rows so the committed expander is not stuck on Live.
   const steps = state.turnSteps.length
     ? state.turnSteps.map(s => (
-      s.status === "running" ? {
+      s.status === "running" || s.summaryState === "running" ? {
         ...s,
         status: cancelled ? "cancelled" as const : message.status ? normalizeActivityStatus(message.status, "task:done") : "done" as const,
         summaryState: s.summaryState === "running" ? (cancelled ? "cancelled" as const : "done" as const) : s.summaryState,
@@ -461,7 +462,7 @@ export function applySettledReceipt(
   patchChatState({messages});
   const targetSession = sessionId || state.sessionId || "";
   if (targetSession) {
-    sendChat({
+    persistTrace({
       type: "chat:session:annotate",
       id: targetSession,
       run_id: runId,
@@ -560,10 +561,10 @@ export function handleAppended(message: ChatAppendedMessage) {
           && (committedAssistant?.steps?.length || committedAssistant?.receipt)
           && (committedAssistant.runId || committedAssistant === [...nextMessages].reverse().find(row => row.role === "assistant"))
         ) {
-          sendChat({
+          persistTrace({
             type: "chat:session:annotate",
             id: sessionId,
-            ...(committedAssistant.runId ? {run_id: committedAssistant.runId} : {}),
+            run_id: committedAssistant.runId || message.run_id,
             steps: committedAssistant.steps || [],
             receipt: committedAssistant.receipt,
           });

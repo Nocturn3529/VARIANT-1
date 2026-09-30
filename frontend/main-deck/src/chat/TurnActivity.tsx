@@ -109,8 +109,9 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
   </section>;
 }
 
-export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=""}: {
+export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel="",tracePersistence}: {
   steps: readonly ChatTurnStep[]; live: boolean; streamText: string; turnStartedAt: number;ownerLabel?:string;
+  tracePersistence?: "pending" | "saved" | "failed";
 }) {
   const rows = traceRows(steps);
   const summary = traceSummary(steps);
@@ -129,6 +130,7 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
   const elapsed = useElapsed(live && !suspended, turnStartedAt);
   if (!rows.length) return live && !streamText ? <div className="turn-status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{ownerLabel ? `${ownerLabel} · ${liveLabel}` : liveLabel}</span><em>{formatActivityDuration(elapsed)}</em></div> : null;
   return <div className={`turn-activity-stack execution-trace${live && !suspended ? " is-live" : ""}`}>
+    {tracePersistence === "pending" || tracePersistence === "failed" ? <small className="trace-persistence" role="status">{tracePersistence === "pending" ? "Saving activity details…" : "Activity details not confirmed saved"}</small> : null}
     <button type="button" className="execution-trace__summary" aria-label="Execution trace" aria-expanded={open}
       onClick={() => { remember(key, !open); setChoice(!open); }}>
       {live && !suspended ? <TraceProgress mutation={mutation}/> : <Icon name={suspended ? "pause" : "kernel"}/>}

@@ -33,6 +33,8 @@ export type ChatEvidence = {
 
 /** Step row for the live turn or a finished assistant bubble. */
 export type ChatTurnStep = {
+  /** Earlier events omitted from this bounded trace; carried by its first row. */
+  omittedBefore?: number;
   summaryState?: "running" | "done" | "discarded" | "cancelled";
   summaryRevision?: number;
   peerMessage?:import("../protocol/peerActivity").PeerActivity;
@@ -106,6 +108,8 @@ export type ChatMessage = {
   receipt?: ChatTurnReceipt;
   /** The reply was visible but the backend could not commit its transcript. */
   durability?: "durable" | "failed";
+  /** Trace enrichment is acknowledged separately from the saved reply. */
+  tracePersistence?: "pending" | "saved" | "failed";
 };
 
 export type PendingActiveInput = {

@@ -11,7 +11,7 @@ import type {ChatAttachment, ChatState, SubtitleState} from "./types";
 
 export const CLIENT_ID = `deck-react-${Math.random().toString(36).slice(2, 10)}`;
 export const MAX_ATTACHMENTS = 6;
-export const MAX_TURN_STEPS = 48;
+export {MAX_TURN_STEPS} from "./preview";
 
 export let context: RuntimeContext | null = null;
 

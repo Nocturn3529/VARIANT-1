@@ -55,3 +55,16 @@ def test_activity_and_persistence_sanitize_before_clipping(monkeypatch):
 @pytest.mark.parametrize("status", ["cancelled", "interrupted", "timed_out", "skipped", "degraded", "unknown"])
 def test_saved_outcome_preserves_non_success(status):
     assert _compact_steps([{"label": "Action", "status": status}])[0]["status"] == status
+
+
+def test_compaction_keeps_the_terminal_tail_and_accumulates_omissions():
+    original = [{"id": str(i), "label": "Action", "status": "error" if i == 59 else "ok"} for i in range(60)]
+    saved = _compact_steps(original)
+    assert len(saved) == 48 and saved[0]["id"] == "12"
+    assert saved[-1]["status"] == "error"
+    assert saved[0]["omitted_before"] == 12
+    saved.extend({"id": str(i), "label": "Later", "status": "ok"} for i in range(60, 62))
+    again = _compact_steps(saved)
+    assert again[0]["id"] == "14" and again[0]["omitted_before"] == 14
+    long = _compact_steps([{"label": "Result", "result_preview": "X" * 2000}])[0]["result_preview"]
+    assert len(long) <= 800 and "2000 characters total" in long

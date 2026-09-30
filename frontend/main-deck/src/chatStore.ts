@@ -14,6 +14,7 @@
  * Public import path stays `./chatStore` for DeckApp / ChatDestination / mic.
  */
 import {useSyncExternalStore} from "react";
+import {resetTraceAnnotations} from "./chat/annotations";
 
 import type {ChatState} from "./chat/types";
 import {
@@ -108,6 +109,7 @@ export function useChatState(): ChatState {
 
 /** Test/helper: replace state (used sparingly). */
 export function __resetChatStoreForTests() {
+  resetTraceAnnotations();
   resetRecoveryNotices();
   invalidatePendingChatAttachments();
   resetSpeechForTests();

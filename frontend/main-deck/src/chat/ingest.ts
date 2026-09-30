@@ -28,6 +28,7 @@ import {
   handleTtsPreview,
 } from "./speech";
 import {beginTurnReceipt} from "./receipt";
+import {acknowledgeTrace} from "./annotations";
 import {ingestPauseState,currentPause} from "./pause";
 import {applyInputQueue,ingestInputQueueResult,refreshInputQueue,queueItem,markQueuedPromptDelivered,isQueueContinueStart,canAdoptQueueStart,startQueueContinuation,finishQueueContinuation} from "./inputQueue";
 import {activeTurnSessionIds,isSettledTurnEvent} from "../state/turnStore";
@@ -290,6 +291,8 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
     }
 
+    case "chat:session:annotated":
+      acknowledgeTrace(message);return;
     case "chat:appended":
       handleAppended(message);
       return;

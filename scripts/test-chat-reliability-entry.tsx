@@ -13,6 +13,7 @@ import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
 import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
 import {normalizeActivityStatus} from "../frontend/main-deck/src/chat/activityModel";
 import {traceSummary} from "../frontend/main-deck/src/chat/traceModel";
+import {persistTrace,traceAnnotationConnection,acknowledgeTrace,resetTraceAnnotations} from "../frontend/main-deck/src/chat/annotations";
 
 export async function run() {
   const sent:Array<Record<string,unknown>>=[];
@@ -183,6 +184,45 @@ export async function run() {
   for(const [raw,expected] of [["cancelled","cancelled"],["timed_out","timed_out"],["skipped","skipped"],["degraded","degraded"],["future_status","unknown"]])assert.equal(normalizeActivityStatus(raw,"tool:result"),expected);
   assert.equal(parseTurnSteps([{label:"Stopped",status:"cancelled"}])?.[0].status,"cancelled");
   assert.equal(parseTurnSteps([{label:"Unfinished",status:"running"}])?.[0].status,"interrupted");
+  done("trace-audit");
+  reset();setChatState({...getChatState(),messages:[{role:"assistant",runId:"saved-run",text:"Durable reply"},{role:"assistant",runId:"later-run",text:"Later reply"}]});
+  persistTrace({type:"chat:session:annotate",id:"A",run_id:"saved-run",steps:[]});
+  const firstAnnotation=sent.at(-1)!;
+  assert.equal(getChatState().messages[0].tracePersistence,"pending");
+  traceAnnotationConnection(false);traceAnnotationConnection(true);
+  const retried=sent.at(-1)!;assert.equal(retried.request_id,firstAnnotation.request_id,"retry preserves request identity");
+  acknowledgeTrace({id:"A",run_id:"saved-run",request_id:"stale",ok:true});assert.equal(getChatState().messages[0].tracePersistence,"pending");
+  acknowledgeTrace({id:"A",run_id:"saved-run",request_id:String(retried.request_id),ok:false});
+  assert.equal(getChatState().messages[0].tracePersistence,"failed");assert.equal(getChatState().messages[1].tracePersistence,undefined,"ack cannot mark a later turn");
+  traceAnnotationConnection(false);traceAnnotationConnection(true);
+  incoming({type:"chat:session:annotated",id:"A",run_id:"saved-run",request_id:retried.request_id,ok:true});
+  assert.equal(getChatState().messages[0].tracePersistence,"saved");
+  const settledCount=sent.length;traceAnnotationConnection(false);traceAnnotationConnection(true);assert.equal(sent.length,settledCount,"confirmed annotation is not resent");
+  persistTrace({type:"chat:session:annotate",id:"A",steps:[]});assert.equal(sent.length,settledCount,"uncorrelated legacy annotation cannot retry against latest");
+  resetTraceAnnotations();
+  const realTimeout=globalThis.setTimeout,realClearTimeout=globalThis.clearTimeout;
+  const annotationTimers=new Map<number,()=>void>();let nextAnnotationTimer=0;
+  try {
+    globalThis.setTimeout=((callback:()=>void)=>{const id=++nextAnnotationTimer;annotationTimers.set(id,callback);return id;}) as typeof globalThis.setTimeout;
+    globalThis.clearTimeout=((id:number)=>{annotationTimers.delete(id);}) as typeof globalThis.clearTimeout;
+    const beforeRetries=sent.length;
+    persistTrace({type:"chat:session:annotate",id:"A",run_id:"saved-run",steps:[]});
+    while(annotationTimers.size){const [id,callback]=annotationTimers.entries().next().value!;annotationTimers.delete(id);callback();}
+    assert.equal(sent.length-beforeRetries,3,"unacknowledged writes have a finite retry budget");
+    assert.equal(getChatState().messages[0].tracePersistence,"failed");
+  } finally {resetTraceAnnotations();globalThis.setTimeout=realTimeout;globalThis.clearTimeout=realClearTimeout;}
+  reset();sendUserMessage("Long trace");start("trace-audit");
+  for(let index=0;index<60;index++)audit("tool:result",{call_id:`long-${index}`,status:index===59?"error":"ok",text:`Result ${index}`});
+  assert.equal(getChatState().turnSteps.length,48);assert.equal(getChatState().turnSteps[0].omittedBefore,12);
+  assert.equal(getChatState().turnSteps.at(-1)?.status,"error");
+  for(let index=0;index<60;index++)audit("loop:progress",{tool:"",loop_id:"progress",status:"ok",text:`Progress ${index}`});
+  assert.equal(getChatState().turnSteps.length,48,"loop progress coalesces instead of evicting sixty calls");
+  assert.equal(getChatState().turnSteps[0].omittedBefore,13);
+  assert.equal(getChatState().turnSteps.at(-1)?.label,"Progress 59");
+  assert.equal(traceSummary(getChatState().turnSteps).errors,1);
+  assert.ok(traceSummary(getChatState().turnSteps).label.includes("47 actions"),"progress notes are not actions");
+  const retained=parseTurnSteps(Array.from({length:60},(_,index)=>({id:`history-${index}`,label:"Action",status:index===59?"error":"ok"})))!;
+  assert.equal(retained[0].id,"history-12");assert.equal(retained[0].omittedBefore,12);
   done("trace-audit");
   console.log("Chat reliability: terminal idempotence, trace outcomes/identity/previews, durable enrichment, active-prefix/optimistic-tail reconciliation and replay side-effect isolation passed");
 }

@@ -58,7 +58,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
     "children:snapshot", "children:detail", "children:rejected", "children:changed",
     "goal:accepted", "goal:rejected", "goal:current", "work:event",
     "hello", "orphaned_task", "config", "engine", "chat:session", "chat:runtime", "chat:appended", "chat:transcript_failed",
-    "chat:session:error", "chat:queued", "chat:queue_rejected", "chat:queue_progress", "chat:queue_settled", "chat:rejected",
+    "chat:session:error", "chat:session:annotated", "chat:queued", "chat:queue_rejected", "chat:queue_progress", "chat:queue_settled", "chat:rejected",
     "chat:runtime:mutation:set:done", "chat:runtime:mutation:set:rejected", "chat:pause_state", "chat:queue_snapshot", "chat:queue_result",
     "start", "token", "thinking", "tool:activity",
     "activity", "done", "run:settled", "cancelling", "error", "speak", "tts:preview",
