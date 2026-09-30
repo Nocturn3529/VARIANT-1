@@ -1,10 +1,17 @@
 'use strict';
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const http = require('node:http');
 const path = require('node:path');
 
 module.exports = async function testNativePopouts({client, CdpClient, getJson, waitFor, websocketFrames, rendererErrors, root, getOutput}) {
   const childClients = [];
+  const pageFixture = http.createServer((_request, response) => {
+    response.writeHead(200, {'Content-Type': 'text/html'});
+    response.end('<!doctype html><title>Native transfer fixture</title><p>Retained browser document</p>');
+  });
+  await new Promise(resolve => pageFixture.listen(0, '127.0.0.1', resolve));
+  const fixtureUrl = `http://127.0.0.1:${pageFixture.address().port}/`;
   const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
   async function childFor(id) {
     const deadline = Date.now() + 15000;
@@ -28,9 +35,19 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await child.evaluate(`(() => { const button = document.querySelector('[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']'); if (!button) throw new Error('Missing ${label}'); button.click(); return true; })()`);
   }
   async function dock(child, label, parentSelector) {
-    try { await child.evaluate(`setTimeout(() => document.querySelector('[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']').click(), 0); true`); }
+    try { await child.evaluate(`(() => {
+      const button = document.querySelector('.native-window-chrome button[aria-label^="Dock "]');
+      if (!button) throw new Error('Native dock control is missing');
+      setTimeout(() => button.click(), 0); return true;
+    })()`); }
     catch (error) { if (!/CDP target closed/.test(error.message)) throw error; }
-    await waitFor(client, parentSelector, `docked ${label}`);
+    try { await waitFor(client, parentSelector, `docked ${label}`); }
+    catch (error) {
+      const state = await client.evaluate(`({text:document.body.innerText.slice(-1800),
+        hidden:localStorage.getItem('variant1.workbench.hidden.v1'),
+        layout:localStorage.getItem('variant1.workbench.layout.v1')})`);
+      throw new Error(error.message + '\nDock state: ' + JSON.stringify(state));
+    }
   }
   try {
     await click(client, 'Python runtime and backend status');
@@ -90,8 +107,36 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
 
     assert.equal(await client.evaluate(`[...document.querySelectorAll('button')].filter(button=>button.getAttribute('aria-label')==='Detach Chats panel').length`),0,'history remains docked');
 
+    // This isolated profile starts without a project. Select the repository
+    // through the real correlated backend contract before testing file rows.
+    const projectResult = await client.evaluate(`(async () => {
+      const info = await window.variant1Deck.getBackendInfo();
+      const chatId = document.querySelector('.history-item__select[aria-current="true"]').closest('[data-session-id]').dataset.sessionId;
+      return new Promise((resolve, reject) => {
+        const socket = new WebSocket('ws://127.0.0.1:' + info.port + '/ws?token=' + encodeURIComponent(info.token));
+        const requestId = crypto.randomUUID();
+        const timer = setTimeout(() => {socket.close(); reject(new Error('Project selection timeout'));}, 15000);
+        socket.onopen = () => socket.send(JSON.stringify({type:'chat:project:set',chat_id:chatId,root:${JSON.stringify(root)},request_id:requestId}));
+        socket.onmessage = event => {
+          const message = JSON.parse(event.data);
+          if (message.type !== 'chat:project:result' || message.request_id !== requestId) return;
+          clearTimeout(timer); socket.close(); resolve(message);
+        };
+        socket.onerror = () => {clearTimeout(timer); socket.close(); reject(new Error('Project selection connection failed'));};
+      });
+    })()`);
+    assert.equal(projectResult.ok, true, JSON.stringify(projectResult.error));
+    // Empty first-run panes are hidden until requested. Open Files deliberately
+    // before exercising its native ownership, rather than assuming old defaults.
+    if (!await client.evaluate(`!!document.querySelector('.workbench-group[data-group-id="group-files"]')`)) {
+      const key = {modifiers: process.platform === 'darwin' ? 4 : 2, key: 'j', code: 'KeyJ', windowsVirtualKeyCode: 74};
+      await client.call('Input.dispatchKeyEvent', {type: 'rawKeyDown', ...key});
+      await client.call('Input.dispatchKeyEvent', {type: 'keyUp', ...key});
+    }
+    await waitFor(client, `document.querySelector('.workbench-files')`, 'requested project Files pane');
     const filesId = await client.evaluate(`document.querySelector('.workbench-files').closest('[data-group-id]').dataset.groupId`);
-    await click(client, 'Detach Files panel');
+    const filesTitle = path.basename(root);
+    await click(client, `Detach ${filesTitle} panel`);
     const files = await childFor(`pane:${filesId}`);
     await waitFor(files, `document.querySelectorAll('.workbench-file-row').length > 0`, 'native file tree');
     await files.evaluate(`document.querySelector('.workbench-file-row').dispatchEvent(new MouseEvent('contextmenu', {bubbles: true, clientX: 100, clientY: 100})); true`);
@@ -109,7 +154,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     const savedLayout = await client.evaluate(`Object.entries(JSON.parse(localStorage.getItem('variant1.workbench.presets.v1'))).find(([, preset]) => preset.name === 'Native design QA')`);
     assert.ok(savedLayout?.[1]?.windows?.length > 0, 'layout persists its native placements');
     assert.equal(savedLayout[1].windows.find(window => window.id === `pane:${filesId}`).pinned, true);
-    await dock(files, 'Dock Files panel', `document.querySelector('.workbench-files')`);
+    await dock(files, `Dock ${filesTitle} panel`, `document.querySelector('.workbench-files')`);
     await client.evaluate(`(() => { const select = document.querySelector('[aria-label="Layout preset"]'); select.value = 'user-native-design-qa'; select.dispatchEvent(new Event('change', {bubbles: true})); return true; })()`);
     const restoredFiles = await childFor(`pane:${filesId}`);
     await waitFor(restoredFiles, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'true'`, 'saved pin state');
@@ -118,11 +163,19 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await click(client, 'Panels and windows');
     await waitFor(client, `document.querySelector('.command-palette')`, 'native window switcher');
     await client.evaluate(`[...document.querySelectorAll('.command-palette [role="option"]')].find(button => button.textContent.includes('Dock resource panels')).click(); true`);
-    await waitFor(client, `document.querySelector('.workbench-files') && !document.querySelector('.command-palette')`, 'Dock all from window switcher');
+    try {
+      await waitFor(client, `document.querySelector('.workbench-tab[data-pane-tab^="owned:files:"] [role="tab"]') && !document.querySelector('.command-palette')`, 'Dock all from window switcher');
+      await client.evaluate(`document.querySelector('.workbench-tab[data-pane-tab^="owned:files:"] [role="tab"]').click(); true`);
+      await waitFor(client, `document.querySelector('.workbench-files')`, 'Files selected after restoring a stacked preset');
+    }
+    catch (error) {
+      throw new Error(error.message + '\n' + await client.evaluate(`JSON.stringify({text:document.body.innerText.slice(-1400),hidden:localStorage.getItem('variant1.workbench.hidden.v1'),layout:localStorage.getItem('variant1.workbench.layout.v1')})`));
+    }
     await client.evaluate(`[...document.querySelectorAll('.workbench-editbar button')].find(button => button.textContent === 'Done').click(); true`);
     console.log('native design: procedural canvas, saved position/pin, window switcher, and Dock all passed');
 
     // An unsaved editor is adopted as the same DOM node; no project file is written.
+    await waitFor(client, `[...document.querySelectorAll('.workbench-file-row')].some(row => row.querySelector('.workbench-file-row__name')?.textContent === 'package.json')`, 'project file rows hydrated after docking');
     await client.evaluate(`[...document.querySelectorAll('.workbench-file-row')].find(row => row.querySelector('.workbench-file-row__name')?.textContent === 'package.json').dispatchEvent(new MouseEvent('dblclick', {bubbles: true})); true`);
     await waitFor(client, `document.querySelector('.workbench-file-preview')`, 'file preview');
     await client.evaluate(`[...document.querySelectorAll('.workbench-file-preview button')].find(button => button.textContent === 'Edit').click(); true`);
@@ -130,7 +183,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await client.evaluate(`window.__popoutEditor = document.querySelector('textarea[aria-label="Edit package.json"]'); window.__popoutEditor.focus(); window.__popoutEditor.select(); true`);
     await client.call('Input.insertText', {text: 'UNSAVED_NATIVE_POPOUT_CHECK'});
     const editorId = await client.evaluate(`window.__popoutEditor.closest('[data-group-id]').dataset.groupId`);
-    await client.evaluate(`Promise.all([...document.querySelectorAll('.workbench-browser .workbench-browser__guest')].map((guest, i) => guest.loadURL('about:blank#native-current-' + i)))`);
+    await client.evaluate(`Promise.all([...document.querySelectorAll('.workbench-browser .workbench-browser__guest')].map((guest, i) => guest.loadURL(${JSON.stringify(fixtureUrl)} + '#native-current-' + i)))`);
     const guestIds=await client.evaluate(`[...document.querySelectorAll('.workbench-browser .workbench-browser__guest')].map(guest=>guest.getWebContentsId())`);
     assert.ok(guestIds.length>0,"native browser transfer check needs a real guest");
     await client.evaluate(`Promise.all([...document.querySelectorAll('.workbench-browser .workbench-browser__guest')].map(guest=>guest.executeJavaScript('window.__nativeMoveMarker=41')))`);
@@ -150,11 +203,20 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await client.evaluate(`[...document.querySelectorAll('.workbench-file-preview button')].find(button => button.textContent === 'Cancel').click(); true`);
     console.log('native panes: file menu, unsaved editor identity, and current browser URLs passed');
 
-    await client.evaluate(`[...document.querySelectorAll('.workbench-tab')].find(tab => /Browser/.test(tab.textContent))?.querySelector('[role="tab"]')?.click(); true`);
+    await client.evaluate(`document.querySelector('.workbench-tab[data-pane-tab^="preview:url:"] [role="tab"]').click(); true`);
     await waitFor(client, `Array.from(document.querySelectorAll('.workbench-browser .workbench-browser__guest')).some(guest => guest.dataset.browserReady === 'true' && guest.getBoundingClientRect().width > 0)`, 'ready capture guest');
+    await client.evaluate(`[...document.querySelectorAll('[aria-label="Expand browser"]')].find(button=>button.getClientRects().length > 0).click(); true`);
+    await waitFor(client, `document.querySelector('.workbench-browser.is-expanded')`, 'full browser viewport before capture');
+    await client.evaluate(`window.variant1Deck.controlNativeWindow('deck', 'focus')`);
+    await waitFor(client, `document.visibilityState === 'visible'`, 'visible capture owner');
     await client.evaluate(`[...document.querySelectorAll('[aria-label="Capture screenshot"]')].find(button => button.getClientRects().length > 0).click(); true`);
-    await waitFor(client, `Array.from(document.querySelectorAll('.workbench-file-preview__media img')).some(image => image.src.startsWith('data:image/png;base64,') && image.naturalWidth > 0)`, 'production native browser capture');
+    try { await waitFor(client, `Array.from(document.querySelectorAll('.workbench-file-preview__media img')).some(image => image.src.startsWith('data:image/png;base64,') && image.naturalWidth > 0)`, 'production native browser capture'); }
+    catch (error) {
+      const state = await client.evaluate(`({captureErrors:[...document.querySelectorAll('.workbench-browser__capture-error')].map(row=>row.textContent),images:[...document.querySelectorAll('img')].map(image=>({src:image.src.slice(0,50),width:image.naturalWidth})),text:document.body.innerText.slice(-1000)})`);
+      throw new Error(error.message + '\nCapture state: ' + JSON.stringify(state));
+    }
     console.log('native browser: production preload, trusted capture IPC, and decoded PNG passed');
+    await client.evaluate(`document.querySelector('[aria-label="Restore browser pane"]')?.click(); true`);
 
     if (!await client.evaluate(`document.querySelector('.workbench-terminal-rail [data-terminal-id]') !== null`)) {
       await click(client,'New terminal');
@@ -199,17 +261,17 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
 
     const mainSize = await client.evaluate(`({width: outerWidth, height: outerHeight})`);
     await client.evaluate(`window.resizeTo(800, 680); true`);
+    await client.call('Emulation.setDeviceMetricsOverride', {width:800,height:680,deviceScaleFactor:1,mobile:false});
     await waitFor(client, `innerWidth <= 830`, 'compact main window');
     await click(client, 'Show chats');
     await waitFor(client, `document.querySelector('.workbench-side-overlay .history-panel')`, 'compact Chats drawer');
-    await client.evaluate(`document.querySelector('.workbench-side-overlay .workbench-tabs__detach').click(); true`);
-    const compactChats = await childFor(`pane:${historyId}`);
-    assert.ok(await compactChats.evaluate(`!!document.getElementById('history-search-input')`));
-    await dock(compactChats, 'Dock Chats panel', `document.querySelector('.workbench-side-overlay .history-panel')`);
+    assert.ok(await client.evaluate(`!!document.querySelector('.workbench-side-overlay #history-search-input')`));
+    assert.equal(await client.evaluate(`document.querySelector('.workbench-side-overlay [aria-label="Detach Chats panel"]') !== null`), false, 'Chats remains docked in compact mode too');
     await click(client, 'Close Chats panel');
     await client.evaluate(`window.resizeTo(${mainSize.width}, ${mainSize.height}); true`);
+    await client.call('Emulation.setDeviceMetricsOverride', {width:1440,height:900,deviceScaleFactor:1,mobile:false});
     await waitFor(client, `innerWidth > 830 && document.querySelector('.history-panel')`, 'restored main window');
-    console.log('native compact layout: drawer detaches and docks into the compact chat interface');
+    console.log('native compact layout: docked Chats drawer opens, closes, and returns to the wide layout');
 
     await click(client, 'Log monitor');
     let monitorTarget;
@@ -228,5 +290,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     console.log('native Log monitor: independent window, pin, maximize, and existing log bridge passed');
   } finally {
     for (const child of childClients) child.close();
+    pageFixture.closeAllConnections();
+    await new Promise(resolve => pageFixture.close(resolve));
   }
 };

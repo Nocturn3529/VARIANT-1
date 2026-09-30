@@ -20,6 +20,9 @@ const deadline = Date.now() + 90000;
 let output = '';
 
 const args = [
+  // Native window tests intentionally cover each other during transfer. Keep
+  // compositor frames available to capture checks in that test environment.
+  '--disable-backgrounding-occluded-windows',
   `--remote-debugging-port=${port}`,
   `--user-data-dir=${path.join(isolatedAppData, 'Chromium')}`,
 ];
