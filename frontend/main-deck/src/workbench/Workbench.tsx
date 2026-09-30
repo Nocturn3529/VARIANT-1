@@ -374,8 +374,8 @@ function GroupView({
       </div>
       {descriptor.newTab ? <button className="workbench-tabs__new" aria-label={`New ${descriptor.label}`} onClick={descriptor.newTab}>+</button> : null}
       {(!compact || window.variant1Deck?.supportsNativeWindows) && !isFloating && !native && !node.panes.includes(PANE.workspace) && !node.panes.includes(PANE.history) ? <button type="button" className="workbench-tabs__detach" aria-label={`Detach ${descriptor.label} panel`}
-        title={node.panes.some(id => descriptors.get(id)?.browser) ? "Open in a separate window (browser pages reload)" : "Detach panel"}
-        aria-description={node.panes.some(id => descriptors.get(id)?.browser) ? "Moving this panel reloads its browser pages at their current URLs." : undefined}
+        title={node.panes.some(id => descriptors.get(id)?.browser) ? "Open in a separate window (browser pages stay open)" : "Detach panel"}
+        aria-description={node.panes.some(id => descriptors.get(id)?.browser) ? "Browser pages and their live state stay open when moving this panel between windows." : undefined}
         onClick={() => detachWorkbenchPane(active)}><Icon name="popout"/></button> : null}
       {!native ? <button className="workbench-tabs__collapse" aria-label={node.minimized ? "Restore pane" : "Minimize pane"} onClick={() => toggleGroupMinimized(node.id)}><Icon name="down" className={node.minimized ? "is-reversed" : ""}/></button> : null}
     </header> : null}
@@ -401,10 +401,10 @@ function PaneMenu({menu, close}: {menu: Exclude<MenuState, null>; close: () => v
   const selected = preview.tabs[index];
   const native = hasNativeWindow(nativePaneKey(menu.groupId));
   const group = findGroupOfPane(getWorkbenchState().layout, menu.paneId);
-  const reloadsBrowser = group?.panes.some(id => preview.tabs.some(tab => previewPaneId(tab.id) === id && tab.target.kind === "url"));
+  const retainsBrowser = group?.panes.some(id => preview.tabs.some(tab => previewPaneId(tab.id) === id && tab.target.kind === "url"));
   function action(run: () => void): void { run(); close(); }
   return <SurfaceDocumentContext.Provider value={menu.ownerDocument}><PopupMenu className="workbench-menu" x={menu.x} y={menu.y} onClose={close}>
-    {menu.paneId !== PANE.workspace && menu.paneId !== PANE.history ? <button role="menuitem" title={reloadsBrowser ? "Browser pages reload when moving between windows" : undefined}
+    {menu.paneId !== PANE.workspace && menu.paneId !== PANE.history ? <button role="menuitem" title={retainsBrowser ? "Browser pages stay open when moving between windows" : undefined}
       onClick={() => action(() => native ? dockWorkbenchGroup(menu.groupId) : detachWorkbenchPane(menu.paneId))}>{native ? "Dock panel" : "Detach panel"}</button> : null}
     {selected?.target.kind === "url" ? <>
       <button role="menuitem" onClick={() => action(() => openBrowser("about:blank", {newTab: true,ownerChatId:selected?.ownerChatId}))}>New browser tab</button>
