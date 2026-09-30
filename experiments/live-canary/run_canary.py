@@ -1276,7 +1276,8 @@ class BackendProcess:
         mode = str(self.route["mode"])
         provider = str(self.route["provider"])
         model = str(self.route["model"])
-        configure_candidate_route(config, provider, model, EXPECTED_ADAPTER[next(key for key, value in MODEL_ROUTES.items() if value["provider"] == provider)])
+        adapter = next(spec.adapter for spec in MODEL_BY_KEY.values() if spec.provider == provider)
+        configure_candidate_route(config, provider, model, adapter)
         config["mode"] = mode
         config["subagent_enabled"] = True
         cloud = config.setdefault("cloud", {})

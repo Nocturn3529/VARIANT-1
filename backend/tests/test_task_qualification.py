@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "experiments" / "li
 from qualify import assess
 from qualification_budget import QualificationBudget, install_budget
 from run_canary import configure_candidate_route
+import run_canary
 from session_catalog.support import SupportMatrix, UnsupportedModelRoute
 
 
@@ -95,3 +96,21 @@ def test_isolated_candidate_admission_preserves_explicit_denies(monkeypatch):
     denied = {"action_surface": {"support_matrix": [{**coordinates, "status": "unqualified"}]}}
     with pytest.raises(UnsupportedModelRoute):
         configure_candidate_route(denied, "xai", "grok-4.7", "xai.responses")
+
+
+def test_candidate_backend_config_uses_the_selected_adapter_and_oauth_only(tmp_path, monkeypatch):
+    source = tmp_path / "source.json"
+    source.write_text(json.dumps({"action_surface": {"support_matrix": []}, "cloud": {
+        "keys": {"xai": "synthetic-key"}, "credential_pools": {"xai": ["synthetic-key"]},
+        "oauth": {"xai": {"access_token": "synthetic-encrypted-token"}}}}))
+    monkeypatch.setattr(run_canary, "SOURCE_CONFIG", source)
+    monkeypatch.setenv("VARIANT1_QUALIFICATION_CANDIDATE_ROUTE", "1")
+    monkeypatch.setenv("VARIANT1_QUALIFICATION_OAUTH_ONLY", "1")
+    backend = run_canary.BackendProcess(tmp_path, route={"mode": "cloud", "provider": "xai", "model": "grok-4.7"})
+    backend._prepare_config()
+    config = json.loads(backend.config_path.read_text())
+    assert config["action_surface"]["support_matrix"][0]["adapter"] == "xai.responses"
+    assert config["cloud"]["xai_credential_policy"] == "subscription_only"
+    assert "xai" not in config["cloud"]["keys"]
+    assert "xai" not in config["cloud"]["credential_pools"]
+    assert json.loads(source.read_text())["cloud"]["keys"]["xai"] == "synthetic-key"
