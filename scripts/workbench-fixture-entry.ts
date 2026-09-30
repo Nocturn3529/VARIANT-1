@@ -17,6 +17,13 @@ class FixtureSocket extends EventTarget {
   emit(value: unknown) { setTimeout(() => this.dispatchEvent(new MessageEvent("message", {data: JSON.stringify(value)})), 0); }
   send(raw: string) {
     const message = JSON.parse(raw);
+    if (message.type === "clarification:list") this.emit({type: "clarification:snapshot", chat_id: message.chat_id, request_id: message.request_id, pending: []});
+    if (message.type === "chat:project:set") this.emit({type: "chat:project:result", chat_id: message.chat_id, request_id: message.request_id, ok: true, project: {root: message.root, name: "Sample project"}});
+    if (message.type === "kernel:inventory:get") this.emit({type: "kernel:inventory:result", request_id: message.request_id,
+      items: [{chat_id: "fixture-welcome", title: "Sample retained session", generation: 3, state: "ready", busy: false, age_s: 540, idle_s: 120,
+        resources: {process: {rss_bytes: 64 * 1024 * 1024}, tree: {rss_bytes: 88 * 1024 * 1024, processes: 2, complete: true}, measurement_source: "live_interpreter", sampled_at: Date.now() / 1000}},
+        {chat_id: "fixture-other", title: "Sample working session", generation: 1, state: "busy", busy: true, age_s: 180, idle_s: 0,
+        resources: {process: {rss_bytes: 128 * 1024 * 1024}, tree: {}, measurement_source: "worker_snapshot", sampled_at: Date.now() / 1000 - 15}}]});
     if (message.type === "browser:settings:get") this.emit({type: "browser:settings", request_id: message.request_id,
       default: browserDefault, browsers: [{id: "fixture-chrome", label: "Chrome (fixture)", profiles: browserProfiles}]});
     if (message.type === "browser:state:get") {
@@ -61,6 +68,7 @@ function samplePdf() {
   return `data:application/pdf;base64,${btoa(pdf)}`;
 }
 window.variant1Deck = {
+  pickFolder: async () => root,
   getBackendInfo: async () => ({port: 8771, token: "isolated-fixture"}),
   getWorkbenchRoot: async () => ({ok: true, path: root}),
   readWorkbenchDirectory: async path => ({ok: true, entries: path === root ? [

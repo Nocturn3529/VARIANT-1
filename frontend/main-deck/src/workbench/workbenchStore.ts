@@ -47,6 +47,10 @@ const LAYOUT_KEY = "variant1.workbench.layout.v1";
 const HIDDEN_KEY = "variant1.workbench.hidden.v1";
 const CLOSED_KEY = "variant1.workbench.closed.v1";
 const PRESETS_KEY = "variant1.workbench.presets.v1";
+let restoredLayout = false;
+let restoredVisibility = false;
+let automaticEmptyChat: string | null = null;
+let initialOwnerAdopted = false;
 
 export type WorkbenchState = Readonly<{
   floating: Readonly<Record<string, {left: number; top: number; width: number; height: number}>>;
@@ -191,7 +195,7 @@ export function deleteWorkbenchPreset(id: string): void {
 function readLayout(): LayoutNode {
   try {
     const value: unknown = JSON.parse(window.localStorage?.getItem(LAYOUT_KEY) || "null");
-    if (isLayoutNode(value) && allPaneIds(value).includes(PANE.workspace)) return value;
+    if (isLayoutNode(value) && allPaneIds(value).includes(PANE.workspace)) { restoredLayout = true; return value; }
   } catch {
     // Fall back to the tested default when persisted layout is unavailable.
   }
@@ -202,6 +206,7 @@ function readHidden(): Record<string, boolean> {
   try {
     const value: unknown = JSON.parse(window.localStorage?.getItem(HIDDEN_KEY) || "null");
     if (value && typeof value === "object" && !Array.isArray(value)) {
+      restoredVisibility = true;
       return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([key]) => key !== PANE.workspace).map(([key, hidden]) => [key, !!hidden]));
     }
   } catch {
@@ -242,7 +247,8 @@ function persist(state: WorkbenchState): void {
   }
 }
 
-function replace(patch: Partial<WorkbenchState>): void {
+function replace(patch: Partial<WorkbenchState>, automatic = false): void {
+  if (!automatic && (patch.hidden || patch.layout)) automaticEmptyChat = null;
   const next = {...store.getState(), ...patch};
   store.replaceState(next);
   persist(next);
@@ -601,7 +607,22 @@ export function adoptWorkbenchOwner(owner: string): void {
   // has to put them back -- the same pairing resetWorkbenchLayout uses.
   const mapped = normalize(mapPresetLayout(current, owner));
   if (!mapped) return;
-  replace({ layout: withLivePanes(mapped, owner) });
+  let hidden = store.getState().hidden;
+  if (!initialOwnerAdopted && !restoredLayout && !restoredVisibility) {
+    hidden = {...hidden, [chatPaneId("files", owner)]: true,
+      [chatPaneId("review", owner)]: true, [chatPaneId("terminal", owner)]: true};
+    automaticEmptyChat = owner;
+  }
+  initialOwnerAdopted = true;
+  replace({ layout: withLivePanes(mapped, owner), hidden }, true);
+}
+
+/** Reveal the first selected project without overriding an operator's layout choice. */
+export function revealInitialProjectPane(owner: string): boolean {
+  if (!owner || automaticEmptyChat !== owner) return false;
+  automaticEmptyChat = null;
+  revealPane(chatPaneId("files", owner), "right");
+  return true;
 }
 
 
@@ -659,7 +680,11 @@ export function closeFocusedPane(): string | null {
   return groupValue.active;
 }
 
-export function __resetWorkbenchForTests(): void {
+export function __resetWorkbenchForTests(pristine = false): void {
+  restoredLayout = !pristine;
+  restoredVisibility = !pristine;
+  initialOwnerAdopted = false;
+  automaticEmptyChat = null;
   if(layoutSaveTimer)clearTimeout(layoutSaveTimer);layoutSaveTimer=null;
   store.replaceState({
     floating: {},

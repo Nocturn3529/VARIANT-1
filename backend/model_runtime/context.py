@@ -176,6 +176,20 @@ def normalize_model_route(
     return selected
 
 
+def model_route_configured(router: Any, route: dict) -> bool | None:
+    """Read configuration for this route without probing or changing a connection."""
+    if route.get("mode") == "local":
+        ready = getattr(router, "engine_ready", None)
+        return ready if isinstance(ready, bool) else None
+    configured = getattr(router, "has_cloud_key", None)
+    if not callable(configured):
+        return None
+    try:
+        return bool(configured(str(route.get("provider") or "")))
+    except Exception:
+        return None
+
+
 def session_model_route(sessions: Any, session_id: str, router: Any) -> dict:
     stored = {}
     getter = getattr(sessions, "get_model_route", None)
@@ -265,6 +279,7 @@ __all__ = [
     "UNKNOWN_CLOUD_BUDGET_TOKENS",
     "context_limit_tokens",
     "normalize_model_route",
+    "model_route_configured",
     "model_route_support_coordinates",
     "projection_budget_tokens",
     "session_model_route",

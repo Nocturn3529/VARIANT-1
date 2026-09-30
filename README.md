@@ -7,26 +7,33 @@ or cloud models into a desktop workspace for coding, research, and desktop work.
 Keep variables, imports, and helper functions available across calls within a
 live session, combine tools through Python, and inspect intermediate results.
 
-The current preview is for technically comfortable Windows users who want to
-inspect and adapt multi-step workflows. It uses an Electron/React interface and
-a CPython backend; see [Architecture](docs/ARCHITECTURE.md) for the technical design.
+The current preview is for technically comfortable users who want to inspect
+and adapt multi-step workflows. Windows is the primary source-development path;
+preview packages are also available for Linux and Apple Silicon macOS. It uses
+an Electron/React interface and a CPython backend; see
+[Architecture](docs/ARCHITECTURE.md) for the technical design.
 
 [Website](https://variant-1-silk.vercel.app/) · [Setup](docs/SETUP.md) ·
 [Architecture](docs/ARCHITECTURE.md) · [Issues](https://github.com/Nocturn3529/VARIANT-1/issues)
 
 ## Status
 
-VARIANT-1 is an early public **source preview**, under active development. A
-public Windows installer is still being prepared. Installers will be published
-in [GitHub Releases](https://github.com/Nocturn3529/VARIANT-1/releases) after build
-and installation checks are complete. Publishing the source does not certify
-every provider, model, or desktop workflow.
+VARIANT-1 is an early public **preview**, under active development. Unsigned
+Windows x64, Linux x86_64, and macOS arm64 packages are available in
+[GitHub Releases](https://github.com/Nocturn3529/VARIANT-1/releases), with checksums
+and release-specific installation instructions. Packaged launch checks do not
+certify every provider, model, hardware combination, or desktop workflow.
+
+Current source can contain fixes newer than the latest published installer.
+Use the release notes for the behavior and qualification of a downloaded build.
 
 ## What it provides
 
 - **Continue work within a live session.** Reuse Python variables, imports, and
   helper functions across calls instead of recreating that working state for
   each step. Live state is not a guarantee of recovery after a restart.
+  The Python runtime view shows retained sessions and offers explicit release
+  controls; closing a generation ends its live objects and background Python work.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB
   tool-discovery layer exposes capabilities as needed through shared backend services.
@@ -65,6 +72,8 @@ npm start
 ```
 
 After launch, configure a supported provider or local runtime in the app.
+The empty-chat guide helps connect a model, optionally choose a project, and
+prepare a first task. Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
 The Live2D cat and its floating overlay have been removed.
 

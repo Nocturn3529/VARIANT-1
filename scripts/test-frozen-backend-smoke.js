@@ -14,6 +14,7 @@ const os = require('os');
 const path = require('path');
 const {execFileSync, spawn} = require('child_process');
 const {randomUUID} = require('crypto');
+const {createHash} = require('crypto');
 
 const root = path.join(__dirname, '..');
 const executable = path.join(
@@ -81,6 +82,18 @@ for (const forbidden of [
 // stay until the SDK offers a client-only root; VARIANT-1 does not collect their
 // independent CLI, client-auth/WebSocket, server-main/WebSocket, or memory demo.
 fs.mkdirSync(path.join(smokeData, 'config'), {recursive: true});
+const defaults = path.join(root, 'config', 'llm_config.default.json');
+const defaultsHash = createHash('sha256').update(fs.readFileSync(defaults)).digest('hex');
+const smokeConfig = path.join(smokeData, 'config', 'llm_config.json');
+fs.copyFileSync(defaults, smokeConfig);
+const smokeEnv = {...process.env};
+for (const name of ['VARIANT1_AGENT_SNAPSHOT_DB', 'VARIANT1_AGENT_SNAPSHOT_DIR', 'VARIANT1_AUTOMATIONS',
+  'VARIANT1_BROWSER_FABRIC_DB', 'VARIANT1_BROWSER_PROFILE_ROOT', 'VARIANT1_CODING_DB',
+  'VARIANT1_CODING_WORKTREE_ROOT', 'VARIANT1_CONVERSATION_DB', 'VARIANT1_DESKTOP_FABRIC_DB',
+  'VARIANT1_EXECUTION_DB', 'VARIANT1_MESSAGING_CONFIG', 'VARIANT1_PATCH_JOURNAL_DIR',
+  'VARIANT1_TOOLS_CONFIG', 'VARIANT1_TRACE_PATH', 'VARIANT1_WORK_DB', 'VARIANT1_WORKSPACE_DB']) delete smokeEnv[name];
+Object.assign(smokeEnv, {VARIANT1_DATA_DIR:smokeData, VARIANT1_CONFIG:path.dirname(smokeConfig),
+  VARIANT1_LLM_CONFIG:smokeConfig, VARIANT1_SECRETSTORE_KEY:path.join(smokeData,'secretstore.key')});
 
 const frozenInternal = path.join(path.dirname(executable), '_internal');
 for (const optional of ['kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime']) {
@@ -91,8 +104,7 @@ let speechServer = null;
 const child = spawn(executable, ['--port-file', portFile, '--port', '0'], {
   cwd: path.join(root, 'backend'),
   env: {
-    ...process.env,
-    VARIANT1_DATA_DIR: smokeData,
+    ...smokeEnv,
     PYTHONUTF8: '1',
     PYTHONIOENCODING: 'utf-8',
   },
@@ -328,6 +340,8 @@ async function waitForHealth(record) {
       delay(5000),
     ]);
     fs.rmSync(scratch, {recursive: true, force: true});
+    assert.equal(createHash('sha256').update(fs.readFileSync(defaults)).digest('hex'), defaultsHash,
+      'frozen smoke must not modify the development default configuration');
   }
 })().catch(error => {
   console.error(error.stack || error);

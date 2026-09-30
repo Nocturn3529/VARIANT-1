@@ -3,6 +3,7 @@ import {Button} from "./ui/Button";
 import {KernelGlyph} from "./motion/KernelGlyph";
 import {Icon} from "./ui/Icon";
 import {currentStepLabel} from "./chat/activityModel";
+import {KernelInventory} from "./KernelInventory";
 
 export function kernelStatusLabel(connected: boolean, kernelState?: string): string {
   if (!connected) return "Kernel offline";
@@ -40,6 +41,7 @@ export function RuntimeDetails() {
       </dl>
       {runtime?.warning ? <p className="runtime-details__warning">{runtime.warning}</p> : null}
     </details>
+    <KernelInventory/>
     <div className="runtime-details__actions">
       {runtime?.kernelState === "busy" ? <Button onClick={() => action("stop_cell")} disabled={!connected || !sessionId}><Icon name="stop"/>Stop cell</Button> : null}
       <Button onClick={() => action("restart_kernel")} disabled={!connected || !sessionId || turnActive}><Icon name="refresh"/>Restart kernel</Button>

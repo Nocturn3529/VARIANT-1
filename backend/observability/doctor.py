@@ -37,35 +37,35 @@ def run_checks(snap: dict) -> dict:
 
     # --- API key hygiene ---------------------------------------------------
     key_tokens = snap.get("key_tokens", {}) or {}
-    any_key = False
+    credential_fix = "Re-enter the credential in Settings → API keys to encrypt it for this platform."
     for prov, tok in key_tokens.items():
         if not tok:
             continue
-        any_key = True
         if tok.startswith("dpapi:"):
-            continue  # properly encrypted
-        if tok.startswith("plain:"):
-            add("warn", f"{prov} key stored as plaintext (dev)",
-                "This key is a non-encrypted dev token.",
-                "Re-enter the key in the AI Engine panel on Windows to store it DPAPI-encrypted.")
+            if not is_win:
+                add("critical", f"{prov} key uses Windows-only encryption",
+                    "DPAPI credentials require the Windows account that saved them.", credential_fix)
+        elif tok.startswith("fernet:"):
+            if is_win:
+                add("critical", f"{prov} key uses Unix/macOS encryption",
+                    "Fernet credentials are supported on Unix/macOS; this Windows store uses DPAPI.", credential_fix)
+        elif tok.startswith("plain:"):
+            add("critical" if is_win else "warn", f"{prov} key stored as plaintext (dev)",
+                "Legacy plaintext credentials are disabled on Windows." if is_win
+                else "This is a non-encrypted legacy development credential.", credential_fix)
         else:
             add("critical", f"{prov} key is not encrypted",
-                "The stored token has no 'dpapi:' prefix — it may be plaintext.",
-                "Re-save the key in the AI Engine panel so it's encrypted with Windows DPAPI.")
-    if any_key and not is_win:
-        add("critical", "API keys can't be decrypted off Windows",
-            "DPAPI is Windows-only; saved keys won't decrypt here.",
-            "Run VARIANT-1 on the Windows account that saved the keys.")
+                "The stored credential has no recognized encryption format; it may be plaintext.", credential_fix)
 
     # --- cloud / engine readiness -----------------------------------------
     if mode == "cloud" and not snap.get("has_key"):
         add("warn", f"Cloud mode selected but no key for {provider or 'the provider'}",
             "Chat will fail until a key is saved for the active provider.",
-            "Add the API key in AI Engine, then click Test key.")
+            "Add or re-enter the credential in Settings → API keys, then test the connection.")
     if mode == "local" and not snap.get("engine_ready"):
         add("warn", "Local engine isn't ready",
             f"No model is loaded ({snap.get('model_name') or 'none selected'}).",
-            "Pick or download a model in AI Brain → Local.")
+            "Choose or download a model in Settings → Local models.")
 
     # --- MCP ---------------------------------------------------------------
     mcp = snap.get("mcp_servers", {}) or {}
@@ -73,7 +73,7 @@ def run_checks(snap: dict) -> dict:
     for n in mcp_errored:
         add("warn", f"MCP server '{n}' is in an error state",
             "Its tools won't be available.",
-            "Reconnect or fix the server config in the Tools panel.")
+            "Reconnect or correct the server configuration in Settings → Plugins.")
 
     # --- vision route ------------------------------------------------------
     vision = snap.get("vision", {}) or {}

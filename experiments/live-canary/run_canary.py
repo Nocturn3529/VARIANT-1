@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -221,11 +221,28 @@ def pin_frozen_local_model_paths(local: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-async def preflight_model(model_key: str) -> dict[str, Any]:
+def configure_candidate_route(config: dict, provider: str, model: str, adapter: str) -> None:
+    """Admit an explicit isolated test candidate while preserving operator denies."""
+    if os.environ.get("VARIANT1_QUALIFICATION_CANDIDATE_ROUTE") != "1": return
+    if str(BACKEND) not in sys.path: sys.path.insert(0, str(BACKEND))
+    from session_catalog.support import SupportMatrix
+    coordinates = dict(profile="trusted-local.v1", provider=provider, model=model, adapter=adapter)
+    matrix = SupportMatrix.from_config(config)
+    if matrix.qualification(**coordinates) is not None:
+        matrix.validate(**coordinates)
+        return
+    surface = config.setdefault("action_surface", dict(config.get("astb") or {}))
+    surface.setdefault("support_matrix", []).append({**coordinates, "status": "canary",
+        "evidence": "Explicit isolated qualification candidate; task outcomes not yet certified."})
+
+
+async def preflight_model(model_key: str, model_id: str | None = None) -> dict[str, Any]:
     """Check one route without sending an inference request or exposing secrets."""
 
     spec = MODEL_BY_KEY[model_key]
+    if model_id: spec = replace(spec, model=model_id, display_name=model_id)
     config = read_json(SOURCE_CONFIG)
+    configure_candidate_route(config, spec.provider, spec.model, spec.adapter)
     if str(BACKEND) not in sys.path:
         sys.path.insert(0, str(BACKEND))
     from session_catalog.support import SupportMatrix
@@ -1259,10 +1276,18 @@ class BackendProcess:
         mode = str(self.route["mode"])
         provider = str(self.route["provider"])
         model = str(self.route["model"])
+        adapter = next(spec.adapter for spec in MODEL_BY_KEY.values() if spec.provider == provider)
+        configure_candidate_route(config, provider, model, adapter)
         config["mode"] = mode
         config["subagent_enabled"] = True
         cloud = config.setdefault("cloud", {})
         cloud["fallback_chain"] = []
+        if os.environ.get("VARIANT1_QUALIFICATION_OAUTH_ONLY") == "1":
+            cloud["xai_credential_policy"] = "subscription_only"
+            (cloud.get("keys") or {}).pop("xai", None)
+            (cloud.get("credential_pools") or {}).pop("xai", None)
+            if not ((cloud.get("oauth") or {}).get("xai") or {}):
+                raise RuntimeError("Qualification requires the existing xAI OAuth connection")
         if mode == "cloud":
             cloud["provider"] = provider
             cloud[f"{provider}_model"] = model
@@ -1386,6 +1411,10 @@ class BackendProcess:
         else:
             raise ValueError(f"unknown canary target: {self.target!r}")
         env = dict(os.environ)
+        if env.get("VARIANT1_QUALIFICATION_OAUTH_ONLY") == "1": env.pop("XAI_API_KEY", None)
+        if env.get("VARIANT1_QUALIFICATION_BUDGET_FILE"):
+            if self.target != "source": raise ValueError("The optional request budget meter requires a source backend")
+            command[1] = str(ROOT / "experiments" / "live-canary" / "qualification_backend.py")
         env.update({
             "VARIANT1_DATA_DIR": str(self.data_dir),
             "VARIANT1_LLM_CONFIG": str(self.config_path),
@@ -1958,6 +1987,8 @@ def request_manifest_matches_surface(
         and str((row.get("route") or {}).get("provider") or "") == route["provider"]
         and str((row.get("route") or {}).get("model") or "") == route["model"]
         and str((row.get("route") or {}).get("adapter") or "") == adapter
+        and (not route.get("reasoning_effort")
+             or generation.get("reasoning_effort") == route["reasoning_effort"])
         and str((row.get("surface") or {}).get(
             "provider_tool_schema_revision") or "") == "ipython.portable.v6"
         and not bool(tools.get("schema_loss"))
@@ -2594,7 +2625,9 @@ async def run(args) -> int:
             f"{', '.join(ALL_CASES)}"
         )
     route = dict(MODEL_ROUTES[args.model])
-    preflight = await preflight_model(args.model)
+    if getattr(args, "model_id", None): route["model"] = args.model_id
+    if getattr(args, "reasoning_effort", None): route["reasoning_effort"] = args.reasoning_effort
+    preflight = await preflight_model(args.model, route["model"])
     if args.preflight_only:
         print(json.dumps(preflight, indent=2), flush=True)
         return 0
@@ -2834,6 +2867,7 @@ async def run(args) -> int:
         "xai_oauth_handoff": oauth_handoff,
     }
     write_json(run_root / "summary.json", summary)
+    if getattr(args, "result_path", None): write_json(Path(args.result_path), summary)
     print(f"Summary: {summary['passed']}/{summary['total']} at {run_root}", flush=True)
     return 0 if summary["all_passed"] else 1
 
@@ -2841,6 +2875,8 @@ async def run(args) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", choices=sorted(MODEL_ROUTES), default="grok")
+    parser.add_argument("--model-id", help="Explicit model override on the selected provider route")
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"))
     parser.add_argument("--mutation", action="store_true")
     parser.add_argument("--cases", nargs="+", default=["S1", "D4", "F8", "MIX"])
     parser.add_argument("--timeout", type=int, default=600)

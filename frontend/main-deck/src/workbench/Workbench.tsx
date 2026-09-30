@@ -59,6 +59,7 @@ import {
   getWorkbenchState,
   moveWorkbenchPane,
   adoptWorkbenchOwner,
+  revealInitialProjectPane,
   noteActiveGroup,
   noteHoveredGroup,
   PANE,
@@ -445,6 +446,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
   useEffect(()=>{ if(chatId)adoptWorkbenchOwner(chatId); },[chatId]);
   useEffect(()=>{
     const root=projects.projects[chatId]?.root;
+    if (chatId && root) revealInitialProjectPane(chatId);
     if(chatId && root && (!findGroupOfPane(getWorkbenchState().layout,chatPaneId("files",chatId)) || (knownProjects.current[chatId] && knownProjects.current[chatId]!==root)))revealPane(chatPaneId("files",chatId),"right");
     if(chatId)knownProjects.current[chatId]=root || "";
   },[chatId,projects.projects[chatId]?.root]);

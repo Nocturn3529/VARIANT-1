@@ -119,8 +119,11 @@ function ComposerCapabilities({
     sessionId,
   });
 
-  return <div className="composer__capabilities" role="group" aria-label="Session capabilities">
-    {mutationControl.visible ? <MutationSwitch
+  if (!mutationControl.visible) return null;
+  return <details className="composer-session-tools">
+    <summary>Session tools{mutationControl.checked ? " · Authoring on" : runtime?.activeSlots ? " · Active tools" : ""}</summary>
+    <div className="composer-session-tools__content" role="group" aria-label="Session capabilities">
+    <MutationSwitch
       sessionId={sessionId}
       className="composer-mutation-control"
       framed
@@ -133,8 +136,11 @@ function ComposerCapabilities({
       onChange={next => {
         if (sessionId) setMutationWriteEnabled(next,sessionId);
       }}
-    /> : null}
-  </div>;
+    />
+    <p>Advanced: allow this chat to author executable tools. Turning authoring off keeps already activated tools available.</p>
+    {runtime?.activeSlots ? <small>{runtime.activeSlots} active session tools</small> : null}
+    </div>
+  </details>;
 }
 
 const COMPOSER_COMMANDS = [

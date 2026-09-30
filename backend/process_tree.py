@@ -290,6 +290,24 @@ class OwnedProcessTree:
             except OSError:
                 return False
 
+    def member_pids(self) -> list[int]:
+        """Snapshot owned membership, including children reparented away from the worker."""
+        with self._handle_lock:
+            if self._closed:
+                return []
+            if self._is_windows:
+                return self._windows_process_ids() if self._handle else []
+            import psutil
+
+            members = []
+            for process in psutil.process_iter(['pid']):
+                try:
+                    if os.getpgid(process.pid) in self._pgids:
+                        members.append(process.pid)
+                except (ProcessLookupError, PermissionError, psutil.NoSuchProcess):
+                    continue
+            return members
+
     def active_process_count(self) -> int:
         """Count living members of the owned group, including orphaned children."""
         with self._handle_lock:

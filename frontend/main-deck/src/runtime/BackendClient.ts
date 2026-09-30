@@ -91,6 +91,7 @@ export class BackendClient {
 
   private socket: BackendSocket | null = null;
   private reconnectTimer: unknown = null;
+  private backendStatusUnsubscribe: (() => void) | null = null;
   private connecting = false;
   private started = false;
   private generation = 0;
@@ -117,7 +118,7 @@ export class BackendClient {
     if (this.started) return;
     this.started = true;
     this.connect();
-    this.api?.onBackendStatus?.(status => {
+    const unsubscribe = this.api?.onBackendStatus?.(status => {
       if (
         this.started
         && status?.status === "ready"
@@ -128,11 +129,22 @@ export class BackendClient {
         this.connect();
       }
     });
+    if (typeof unsubscribe === "function") {
+      if (this.started) this.backendStatusUnsubscribe = unsubscribe as () => void;
+      else unsubscribe();
+    }
   }
 
   stop(): void {
-    if (!this.started && !this.socket && !this.connecting) return;
+    if (!this.started && !this.socket && !this.connecting && !this.backendStatusUnsubscribe) return;
     this.started = false;
+    const unsubscribe = this.backendStatusUnsubscribe;
+    this.backendStatusUnsubscribe = null;
+    try {
+      unsubscribe?.();
+    } catch (error) {
+      this.log(`backend status cleanup failed: ${this.errorText(error)}`);
+    }
     this.cancelReconnect();
     this.generation += 1;
     this.connecting = false;

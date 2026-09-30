@@ -24,6 +24,7 @@ import {
 } from "../chatStore";
 import runtimeLib from "./runtimeLib";
 import {RichText} from "./RichText";
+import {ChatSetupGuide} from "./ChatSetupGuide";
 import {TurnActivity} from "./TurnActivity";
 import {
   ConversationTimeline,
@@ -610,8 +611,7 @@ export function ChatMessageList() {
     <div className="message-column" id="message-column" ref={columnRef}>
       {empty ? <div className="runtime-chat-empty">
           <KernelGlyph seed={`${sessionId}:${runtime?.kernelGeneration}`} mutation={runtime?.mutationEffectiveEnabled} size={112} ascii phase="idle"/>
-        <strong>What are we working on?</strong>
-        <small>A conversation with a persistent Python workspace.</small><small className="empty-chat-hint">Enter to send · Ctrl K for actions</small>
+        <ChatSetupGuide/>
       </div> : <>
         <div
           className="virt-pad virt-pad--top"

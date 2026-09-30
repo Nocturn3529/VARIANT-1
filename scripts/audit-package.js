@@ -36,6 +36,7 @@ assert.ok(!configFiles.some(name => ['llm_config.json', 'settings.json', 'tools.
 const defaults = JSON.parse(fs.readFileSync(path.join(folder, 'resources/config/llm_config.default.json'), 'utf8'));
 assert.equal(defaults.local.model, '');
 assert.equal(defaults.voice.auto_tts, false);
+assert.deepEqual(defaults.voice.tts, {}, 'fresh installs must not inherit test speech endpoints');
 console.log(JSON.stringify({passed: true, asar_entries: entries.length, resource_files: files.length,
   bytes: files.reduce((sum, row) => sum + row.bytes, 0), native_files_verified: runtime.files.length,
   largest_files: [...files].sort((a, b) => b.bytes - a.bytes).slice(0, 12)}, null, 2));

@@ -40,6 +40,7 @@ class KernelCheckpointPolicy:
         "chat_closed",
         "idle_or_absolute_eviction",
         "operator_restart",
+        "operator_release",
         "workspace_rebound",
     )
 

@@ -21,6 +21,8 @@ function pdfData() {
 }
 
 (async () => {
+  const deck = path.join(temp, "frontend/main-deck");
+  fs.mkdirSync(deck, {recursive: true});
   const component = path.join(root, "frontend/main-deck/src/workbench/PdfPreview.tsx").replaceAll("\\", "/");
   await esbuild.build({stdin: {contents: `
     import {createRoot} from 'react-dom/client';
@@ -28,11 +30,11 @@ function pdfData() {
     document.addEventListener('securitypolicyviolation', event => console.error('PDF_CSP', event.violatedDirective, event.blockedURI));
     createRoot(document.getElementById('variant1-react-root')).render(<PdfPreview source={${JSON.stringify(pdfData())}} label="Sample PDF"/>);
   `, loader: "tsx", resolveDir: root}, jsx: "automatic", bundle: true, platform: "browser", format: "esm",
-    outfile: path.join(temp, "renderer.js"), logLevel: "silent"});
+    outfile: path.join(deck, "renderer.js"), logLevel: "silent"});
   const html = fs.readFileSync(path.join(root, "frontend/main-deck/index.html"), "utf8")
     .replace('./dist/platform.css', './fixture.css').replace('./dist/platform.js', './renderer.js');
-  fs.writeFileSync(path.join(temp, "index.html"), html);
-  fs.writeFileSync(path.join(temp, "fixture.css"), 'html,body,#variant1-react-root,iframe {width:100%;height:100%;margin:0;border:0}');
+  fs.writeFileSync(path.join(deck, "index.html"), html);
+  fs.writeFileSync(path.join(deck, "fixture.css"), 'html,body,#variant1-react-root,iframe {width:100%;height:100%;margin:0;border:0}');
   const screenshot = path.join(require('./native-test-artifacts')(root,'artifacts','pdf'), "frontend-pdf-preview.png");
   fs.writeFileSync(path.join(temp, "main.cjs"), `
     const {app, BrowserWindow, protocol} = require('electron');
@@ -47,7 +49,7 @@ function pdfData() {
       const win = new BrowserWindow({show:false,width:760,height:800,webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false,backgroundThrottling:false}});
       const errors = [];
       win.webContents.on('console-message', event => { if (/PDF_CSP|Error/.test(event.message || '')) errors.push(event.message); });
-      await win.loadURL('variant1://app/index.html');
+      await win.loadURL('variant1://app/frontend/main-deck/index.html');
       const findViewer = frame => frame.url.startsWith('chrome-extension://') ? frame : frame.frames.map(findViewer).find(Boolean);
       const deadline = Date.now() + 10000;
       let ready = false;

@@ -75,6 +75,14 @@ def _fake_job(kernel32: _FakeKernel32) -> OwnedProcessTree:
     return job
 
 
+def test_membership_snapshot_includes_reparented_job_members(monkeypatch):
+    job = _fake_job(_FakeKernel32())
+    monkeypatch.setattr(job, '_windows_process_ids', lambda: [11, 22, 33])
+    assert job.member_pids() == [11, 22, 33]
+    job._closed = True
+    assert job.member_pids() == []
+
+
 @pytest.mark.parametrize('reused_pid', [False, True])
 def test_job_liveness_rechecks_children_born_during_parent_exit(monkeypatch, reused_pid):
     """An empty-looking first snapshot must not authorize killing a handoff."""
@@ -123,6 +131,7 @@ def test_posix_owned_group_liveness_ignores_zombies_and_other_groups(monkeypatch
     monkeypatch.setattr(os, 'getpgid', group, raising=False)
     try:
         assert job.active_process_count() == 1
+        assert job.member_pids() == [11, 12]
     finally:
         job._closed = True
     assert job.active_process_count() == 0

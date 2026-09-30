@@ -1,9 +1,10 @@
 # Architecture
 
-VARIANT-1 is a Windows AI workspace with an Electron interface, a Python backend,
-and separate persistent CPython workers for live chat runtimes. This guide
-explains how execution, state, and service ownership fit together. For source
-installation, see [Setup](SETUP.md).
+VARIANT-1 is an AI workspace with an Electron interface, a Python backend,
+and separate persistent CPython workers for live chat runtimes. Windows is the
+primary source-development path; preview packages also target Linux x86_64 and
+macOS arm64. This guide explains how execution, state, and service ownership fit
+together. For Windows source installation, see [Setup](SETUP.md).
 
 ## One model-facing execution path
 
@@ -35,11 +36,34 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+`session_catalog.service` publishes categories, mounts, and disclosure; its
+mutation manager delegates disposable execution to the mutation worker client.
+`kernel_runtime.lease` owns one worker generation, while `continuity` coordinates
+portable capture/restoration and `worker_bridge` carries capability proxies.
+The separate `resources` module observes the interpreter and its owned process
+tree without changing their lifetime. Resource protocols describe the process
+and ownership interfaces used by that observer.
+
 ## State lifetimes
 
 **Live state is not the same as saved history or restart recovery.** Variables,
 imports, and helper functions survive calls within one live Python generation.
 A reset, restart, eviction, or process failure can end that generation.
+
+Persistent kernels have no default cell deadline, resource quota, or automatic
+retirement based on idle time, age, or the number of live chats. Process-tree
+ownership and explicit shutdown still apply. Positive host overrides can enable
+quotas or retirement; disposable mutation workers have their own bounded policy.
+Resource status reports a disabled memory quota and its pressure ratio as `null`,
+while retaining available usage measurements. A configured quota with an unknown
+usage measurement also has an unknown pressure ratio.
+
+The Python runtime view inventories retained sessions and distinguishes live
+interpreter measurements from earlier worker snapshots. Tree RSS is a sum of
+owned processes and can count shared pages more than once. Releasing a session
+is explicit, generation-fenced, and refused while a run is admitted, including
+between cells. Optional checkpoint policy applies to operator release; default
+checkpointing and retirement behavior is unchanged.
 
 Portable checkpoints preserve supported values and report exclusions. They do
 not capture arbitrary clients, connections, threads, or live handles. Portable
@@ -76,6 +100,11 @@ cannot reverse an external effect that has already completed. Integration
 receipts should report uncertainty rather than imply success or rollback that
 has not been established.
 
+An interrupted cell can retain its generation and ordinary background Python
+tasks when interruption completes cooperatively. Terminal Stop can close the
+generation if work does not settle; closing or restarting the kernel ends its
+live state. Ordinary chat steering waits for the current cell to complete.
+
 ## Development ownership
 
 Keep persistent service ownership in the backend and render its state through
@@ -83,7 +112,23 @@ the frontend protocol. Handle resource/chat identity and stale asynchronous
 results explicitly. Test changes in isolation from personal models, accounts,
 browser profiles, and runtime data. See [Validation](VALIDATION.md).
 
-### Installer composition — 2026-09-16
+Each renderer's backend connection owns and releases its status subscription.
+This includes docked chats borrowing the parent window's bridge, whose callbacks
+must be removed when the child connection stops.
+
+Fresh workbenches keep empty side panes hidden until requested or a first project
+is selected. Saved layouts and explicit visibility changes take precedence.
+The empty chat guide reads configuration for the chat's selected model route
+from backend projections. Examples fill drafts without sending them.
+Mutation authoring is available under
+Session tools; disabling authoring preserves already activated overlays.
+
+### Installer composition
+
+Published prereleases provide unsigned Windows, Linux, and macOS packages.
+CI builds and checks packaged startup and installation/removal on those platforms.
+Release notes record the exact build source and qualification limits; a current
+source checkout can be newer than a published binary.
 
 The Live2D cat overlay has been removed, including its avatar window, preload,
 renderer, animation configuration, libraries, and model payload. Start hidden

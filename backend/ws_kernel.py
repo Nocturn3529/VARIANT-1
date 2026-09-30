@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from kernel_runtime import control as kernel_control
@@ -29,6 +30,41 @@ _mutation = CorrelatedResponder(
 
 
 def register(on):
+    @on("kernel:inventory:get")
+    async def kernel_inventory(srv, websocket, session, msg):
+        runtime = srv.require_runtime()
+        rows = await asyncio.to_thread(runtime.kernel.live_inventory)
+        if getattr(session, "view_role", "main") == "detached_chat":
+            rows = [row for row in rows if row["chat_id"] == _chat_id(srv, session)]
+        for row in rows:
+            saved = runtime.sessions.get_session(row["chat_id"]) or {}
+            row["title"] = str(saved.get("title") or row["chat_id"])
+            row["busy"] = runtime.session_runtimes.is_busy(row["chat_id"])
+        await websocket.send_json({"type": "kernel:inventory:result",
+                                   "request_id": _request_id(msg), "items": rows})
+
+    @on("kernel:release")
+    async def kernel_release(srv, websocket, session, msg):
+        chat_id = str(msg.get("chat_id") or "").strip()
+        request_id = _request_id(msg)
+        if not chat_id or (getattr(session, "view_role", "main") == "detached_chat"
+                           and chat_id != _chat_id(srv, session)):
+            await websocket.send_json({"type": "kernel:release:result", "request_id": request_id,
+                                       "chat_id": chat_id, "ok": False, "error": "invalid_chat_scope"})
+            return
+        try:
+            generation = msg.get("generation")
+            if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
+                raise ValueError("generation is required")
+            result = await srv.require_runtime().kernel.release_idle(chat_id, expected_generation=generation)
+            await websocket.send_json({"type": "kernel:release:result", "request_id": request_id,
+                                       "chat_id": chat_id, "ok": result["status"] in {"closed", "absent"},
+                                       "error": "Stop the active run before closing this kernel." if result["status"] == "busy" else "Kernel generation changed; refresh before closing." if result["status"] == "stale" else "",
+                                       "result": result})
+        except Exception:
+            await websocket.send_json({"type": "kernel:release:result", "request_id": request_id,
+                                       "chat_id": chat_id, "ok": False, "error": "Kernel cleanup failed; refresh to inspect its state."})
+
     @on("kernel:get")
     async def kernel_get(srv, websocket, session, msg):
         chat_id = _chat_id(srv, session)
