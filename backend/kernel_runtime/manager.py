@@ -32,6 +32,7 @@ from .contracts import (
 from .continuity import KernelContinuityCoordinator
 from .lease import KernelLease, _restrict_path, _safe_chat_dir
 from .output import OUTPUT_EVENT_SCHEMA, CellOutput
+from .resources import resource_status
 from .runtime_profile import CORE_RUNTIME_PROFILE, runtime_profile
 from .worker_path import packaged_kernel_executable
 from .capsules import (
@@ -281,7 +282,7 @@ class KernelRuntimeManager:
             current = self._leases.get(str(lease.chat_id))
             if current is not lease or lease._closed:
                 return {}
-            automatic = reason in {"capacity_eviction", "idle_or_absolute_eviction"}
+            automatic = reason in {"capacity_eviction", "idle_or_absolute_eviction", "operator_release"}
             registry = getattr(getattr(self, "catalog_service", None), "runtime_registry", None)
             claim = getattr(registry, "claim_kernel_retirement", None)
             fence = claim(lease.chat_id) if automatic and callable(claim) else nullcontext(True)
@@ -1237,62 +1238,30 @@ class KernelRuntimeManager:
         return True
 
     def _lease_resource_status(self, lease: KernelLease) -> dict[str, Any]:
-        snapshot = json.loads(json.dumps(lease._resource_snapshot or {}))
-        process = (
-            snapshot.get("process")
-            if isinstance(snapshot.get("process"), dict)
-            else {}
-        )
-        if lease.process is not None and lease.process.poll() is None:
-            try:
-                import psutil
+        return resource_status(lease, self.limits, self.capsule_limits)
 
-                live = psutil.Process(int(lease.process.pid))
-                memory = live.memory_info()
-                cpu = live.cpu_times()
-                process.update({
-                    "rss_bytes": int(memory.rss),
-                    "virtual_bytes": int(memory.vms),
-                    "cpu_user_s": float(cpu.user),
-                    "cpu_system_s": float(cpu.system),
-                    "threads": int(live.num_threads()),
-                })
-            except Exception:
-                pass
-        rss_value = process.get("rss_bytes")
-        rss = max(0, int(rss_value)) if rss_value is not None else None
-        configured_memory_limit = int(self.limits.process_memory_bytes)
-        memory_limit = configured_memory_limit if configured_memory_limit > 0 else None
-        namespace = (
-            snapshot.get("namespace")
-            if isinstance(snapshot.get("namespace"), dict)
-            else {
-                "values": 0,
-                "estimated_bytes": 0,
-                "contributors": [],
-                "contributors_truncated": False,
-            }
-        )
-        namespace_bytes = max(0, int(namespace.get("estimated_bytes") or 0))
-        capsule_limit = max(1, int(self.capsule_limits.max_total_value_bytes))
-        return {
-            "schema": "variant1.kernel-resource-status.v1",
-            "process": process,
-            "namespace": namespace,
-            "output": dict(lease._last_output_pressure),
-            "pressure": {
-                "process_memory_ratio": (
-                    round(min(1.0, rss / memory_limit), 6)
-                    if memory_limit is not None and rss is not None else None
-                ),
-                "process_memory_limit_bytes": memory_limit,
-                "capsule_estimate_ratio": round(
-                    min(1.0, namespace_bytes / capsule_limit), 6
-                ),
-                "capsule_limit_bytes": capsule_limit,
-            },
-            "snapshot_received_at": snapshot.get("received_at"),
-        }
+    def live_inventory(self) -> list[dict[str, Any]]:
+        now = time.monotonic()
+        return [
+            {"chat_id": lease.chat_id, "generation": lease.generation,
+             "state": lease.state, "age_s": max(0.0, now - lease.created_at),
+             "idle_s": max(0.0, now - lease.last_used_at),
+             "resources": self._lease_resource_status(lease)}
+            for lease in list(self._leases.values()) if not lease._closed
+        ]
+
+    async def release_idle(self, chat_id: str, *, expected_generation: int) -> dict[str, Any]:
+        lease = self._leases.get(str(chat_id))
+        if lease is None or lease._closed:
+            return {"status": "absent"}
+        if lease.generation != expected_generation:
+            return {"status": "stale"}
+        if lease.state != "ready":
+            return {"status": "busy"}
+        checkpoint = await self._close_lease_serialized(
+            lease, reason="operator_release", hard=True)
+        return {"status": "closed" if lease._closed else "busy",
+                "checkpoint": checkpoint}
 
     def status(self, chat_id: str) -> dict[str, Any]:
         lease = self._leases.get(str(chat_id))

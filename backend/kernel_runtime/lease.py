@@ -337,6 +337,7 @@ class KernelLease:
         self._namespace_inventory: tuple[str, ...] | None = None
         self._namespace_inventory_omitted = 0
         self._resource_snapshot: dict[str, Any] = {}
+        self.worker_pid: int | None = None
         self._last_output_pressure: dict[str, Any] = {}
         self._background_events: list[dict[str, Any]] = []
         self._worker_diagnostics: list[str] = []
@@ -1056,6 +1057,7 @@ class KernelLease:
                 raise KernelUnavailable("CPython REPL ready identity is stale")
             if not self.bridge.handshaken:
                 raise KernelUnavailable("REPL did not complete the capability handshake")
+            self.worker_pid = int(ready.get("pid") or self.process.pid)
             self.state = "ready"
             self.last_used_at = time.monotonic()
             self.manager.emit(
