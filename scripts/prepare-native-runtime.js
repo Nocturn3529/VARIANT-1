@@ -29,7 +29,7 @@ if (manifest.status === 'stub' || files.length === 0) {
   console.error(
     'Fill files/archives in that manifest, or place ' +
       require('./native-runtime-paths').llamaServerBasename() +
-      ' under bin/ manually. See docs/PORTABILITY_HANDOFF.md M3.'
+      ' under bin/ manually. See docs/RELEASING.md.'
   );
   process.exit(2);
 }
