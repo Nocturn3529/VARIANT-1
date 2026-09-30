@@ -45,8 +45,8 @@ async def run(args) -> int:
                "VARIANT1_QUALIFICATION_CANDIDATE_ROUTE": "1",
                "VARIANT1_QUALIFICATION_BUDGET_FILE": str(budget) if args.max_cost_usd is not None else None}
     if args.max_cost_usd is not None:
-        if args.model_id != "grok-4.7":
-            raise ValueError("Specify verified conservative rates before using a budget with another model")
+        if args.model != "grok" or args.model_id != "grok-4.7":
+            raise ValueError("Specify verified conservative rates before using a budget with another route or model")
         budget.write_text(json.dumps({"model": args.model_id, "reasoning_effort": args.reasoning_effort,
             "max_cost_usd": args.max_cost_usd, "context_tokens": 500000,
             "input_per_million": 4, "output_per_million": 12, "upper_spend_usd": 0,
@@ -99,7 +99,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", choices=sorted(run_canary.MODEL_ROUTES), default="grok")
     parser.add_argument("--model-id")
-    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default="low")
+    parser.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"),
+                        help="Pin a supported effort; the xAI route defaults to low")
     parser.add_argument("--cases", nargs="+", default=["S1", "F8", "KRN", "ART", "MCP", "CHILD"])
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--timeout", type=int, default=600)
@@ -108,6 +109,8 @@ def main() -> int:
     parser.add_argument("--oauth-only", action="store_true")
     parser.add_argument("--max-cost-usd", type=float)
     args = parser.parse_args()
+    if args.reasoning_effort is None and args.model == "grok":
+        args.reasoning_effort = "low"
     if args.oauth_only and args.model != "grok":
         parser.error("--oauth-only currently applies to the xAI qualification route")
     if not args.model_id:

@@ -1,5 +1,6 @@
 """Qualification cannot treat route discovery or an unknown bill as completion/free usage."""
 from pathlib import Path
+from types import SimpleNamespace
 import asyncio
 import json
 import sys
@@ -9,10 +10,31 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "experiments" / "live-canary"))
 from qualify import assess
+import qualify
 from qualification_budget import QualificationBudget, install_budget
 from run_canary import configure_candidate_route
 import run_canary
 from session_catalog.support import SupportMatrix, UnsupportedModelRoute
+
+
+@pytest.mark.parametrize("model,effort", [("grok", "low"), ("qwen", None)])
+def test_qualification_cli_preserves_other_provider_effort_defaults(monkeypatch, model, effort):
+    observed = []
+    async def run(args):
+        observed.append(args.reasoning_effort)
+        return 0
+    monkeypatch.setattr(qualify, "run", run)
+    monkeypatch.setattr(sys, "argv", ["qualify.py", "--model", model])
+    assert qualify.main() == 0
+    assert observed == [effort]
+
+
+@pytest.mark.asyncio
+async def test_budget_rates_are_not_reused_for_a_different_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_canary, "RUNS", tmp_path)
+    with pytest.raises(ValueError, match="rates"):
+        await qualify.run(SimpleNamespace(model="qwen", model_id="grok-4.7", reasoning_effort=None,
+                                        max_cost_usd=1, oauth_only=False))
 
 
 def test_all_repetitions_require_full_outcomes_and_measured_latency():
