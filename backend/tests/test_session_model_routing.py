@@ -275,6 +275,18 @@ def test_context_meter_recalculates_when_session_route_changes(tmp_path):
     assert snapshot["measurement"] == "estimated_projection"
 
 
+def test_configuration_projection_uses_the_selected_chat_route():
+    from model_runtime.context import model_route_configured
+    router = SimpleNamespace(mode="cloud", cloud_provider="anthropic", engine_ready=False,
+                             has_cloud_key=lambda provider: provider == "xai")
+    assert model_route_configured(router, {"mode": "cloud", "provider": "xai"}) is True
+    assert model_route_configured(router, {"mode": "cloud", "provider": "openai"}) is False
+    assert model_route_configured(router, {"mode": "local"}) is False
+    router.engine_ready = True
+    assert model_route_configured(router, {"mode": "local"}) is True
+    assert model_route_configured(SimpleNamespace(), {"mode": "cloud", "provider": "xai"}) is None
+
+
 class _Socket:
     def __init__(self):
         self.messages = []

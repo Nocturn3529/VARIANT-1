@@ -35,7 +35,7 @@ def _mutation_route(srv, sid: str) -> dict[str, str]:
 
 
 def _context_payload(srv, sid: str) -> dict:
-    from model_runtime.context import session_model_route
+    from model_runtime.context import model_route_configured, session_model_route
     from session_context import context_limit_for_router, latest_session_context
     from session_projection import current_projection, projection_model_route
 
@@ -45,13 +45,15 @@ def _context_payload(srv, sid: str) -> dict:
         snapshot_store=getattr(getattr(srv.require_runtime(), "session_runtimes", None), "snapshot_store", None),
     )
     snapshot = srv.router.model_request_manifest_snapshot()
-    return latest_session_context(
+    context = latest_session_context(
         snapshot,
         sid,
         context_limit_tokens=context_limit_for_router(srv.router, route),
         route=route,
         projected_messages=projected,
     )
+    context["model_configured"] = model_route_configured(srv.router, route)
+    return context
 
 
 def _session_payload(srv, sid: str):

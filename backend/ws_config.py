@@ -485,12 +485,15 @@ def register(on):
                     # The pinned route remains valid; the normal engine status
                     # and next-turn gate explain missing local runtime/model.
                     pass
-            await websocket.send_json(estimated_session_context(
+            from model_runtime.context import model_route_configured
+            context = estimated_session_context(
                 sid,
                 projected,
                 context_limit_tokens=srv.router.context_limit_tokens(target),
                 route=target,
-            ))
+            )
+            context["model_configured"] = model_route_configured(srv.router, target)
+            await websocket.send_json(context)
             return
         srv.router.set_mode(mode)
         if msg.get("provider"):

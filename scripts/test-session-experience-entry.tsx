@@ -9,6 +9,7 @@ import {ingest as ingestPlatform} from "../frontend/main-deck/src/store";
 import {getAppState} from "../frontend/main-deck/src/state/appStore";
 import {noteDisplayedSession} from "../frontend/main-deck/src/state/sessionStore";
 import {applyRuntimeSnapshot} from "../frontend/main-deck/src/chat/session";
+import {ingestSessionContext, requestSessionContext, setSessionContextConnection} from "../frontend/main-deck/src/sessionContextStore";
 import {setKernelInventoryContext, setKernelInventoryConnection, ingestKernelInventory,
   getKernelInventory, releaseKernel} from "../frontend/main-deck/src/kernelInventoryStore";
 
@@ -28,7 +29,18 @@ export async function run() {
   await act(async () => button("Connect model").click());
   assert.equal(getAppState().settingsCategory, "providers");
   await act(async () => ingestPlatform({type: "engine", model_ready: true}));
+  assert.ok(button("Use an example").disabled, "global readiness must not advertise another chat's route");
+  await act(async () => {
+    requestSessionContext("A");
+    setSessionContextConnection("connected");
+    ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7", model_configured: true});
+  });
   assert.ok(!button("Use an example").disabled);
+  await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7"}));
+  assert.ok(!button("Use an example").disabled, "usage-only projections preserve matching configuration observations");
+  await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "openai", model: "gpt-4o"}));
+  assert.ok(button("Use an example").disabled, "configuration observations cannot transfer to another model route");
+  await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7", model_configured: true}));
   await act(async () => button("Use an example").click());
   assert.match(getChatState().draft, /average/);
   assert.ok(!commands.some(command => command.type === "chat"), "examples fill drafts without sending inference");

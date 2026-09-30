@@ -800,6 +800,7 @@ function dispatchFixtures(): void {
     if (scenario === "empty" || scenario === "setup") {
       if (message.type === "chat:session") detail = {...message, session: {...message.session as Record<string, unknown>, messages: [], project: null}};
       if (["hello", "config", "engine"].includes(message.type)) detail = {...message, model_ready: scenario === "empty"};
+      if (message.type === "chat:context") detail = {...message, model_configured: scenario === "empty"};
     }
     document.dispatchEvent(new CustomEvent("variant1:fixture-message", {detail}));
   });

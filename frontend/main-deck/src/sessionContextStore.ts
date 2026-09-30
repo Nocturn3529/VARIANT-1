@@ -38,6 +38,7 @@ export type SessionContextState = Readonly<{
   route: "local" | "cloud" | "";
   provider: string;
   model: string;
+  modelConfigured: boolean | null;
   reasoningEffort: string;
   reasoningEfforts: string[];
   measurement: string;
@@ -94,6 +95,7 @@ function emptyState(sessionId: string): SessionContextState {
     route: "",
     provider: "",
     model: "",
+    modelConfigured: null,
     reasoningEffort: "",
     reasoningEfforts: [],
     measurement: "pending",
@@ -143,6 +145,8 @@ function parseSnapshot(message: Record<string, unknown>): SessionContextState | 
     route: message.route === "cloud" ? "cloud" : message.route === "local" ? "local" : "",
     provider: String(message.provider || ""),
     model: String(message.model || ""),
+    modelConfigured: typeof message.model_configured === "boolean" ? message.model_configured
+      : existing.route === message.route && existing.provider === String(message.provider || "") && existing.model === String(message.model || "") ? existing.modelConfigured : null,
     reasoningEffort: String(message.reasoning_effort || ""),
     reasoningEfforts: (Array.isArray(message.reasoning_efforts)
       ? message.reasoning_efforts
@@ -263,9 +267,11 @@ export function changeSessionSettings(id:string,command:WsCommand & {type:"mode:
 function settingRoute(value:unknown,previous:SessionContextState):Partial<SessionContextState> {
   if(!value || typeof value!=="object")return {};
   const row=value as Record<string,unknown>,mode=row.mode || row.route;
-  return {route:mode==="local"||mode==="cloud" ? mode : previous.route,
-    provider:typeof row.provider==="string" ? row.provider : previous.provider,
-    model:typeof row.model==="string" ? row.model : previous.model,
+  const route=mode==="local"||mode==="cloud" ? mode : previous.route;
+  const provider=typeof row.provider==="string" ? row.provider : previous.provider;
+  const model=typeof row.model==="string" ? row.model : previous.model;
+  return {route,provider,model,
+    modelConfigured:route===previous.route && provider===previous.provider && model===previous.model ? previous.modelConfigured : null,
     reasoningEffort:typeof row.reasoning_effort==="string" ? row.reasoning_effort : previous.reasoningEffort};
 }
 
