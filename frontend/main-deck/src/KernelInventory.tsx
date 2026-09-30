@@ -1,5 +1,5 @@
 import {useEffect, useState} from "react";
-import {useKernelInventory, refreshKernelInventory, releaseKernel} from "./kernelInventoryStore";
+import {useKernelInventory, refreshKernelInventory, releaseKernel, canReleaseKernel} from "./kernelInventoryStore";
 import {Button} from "./ui/Button";
 
 const memory = (bytes: number | null) => bytes === null ? "Unknown" : `${(bytes / 1024 / 1024).toFixed(1)} MiB`;
@@ -27,9 +27,9 @@ export function KernelInventory() {
       <small>{row.measurementSource.startsWith("live_") ? "Live sample" : row.sampledAt ? `Last worker snapshot: ${new Date(row.sampledAt * 1000).toLocaleTimeString()}` : "Measurement unavailable"}. Tree RSS sums may count shared memory more than once.</small>
       {confirm === `${row.chatId}:${row.generation}` ? <div className="kernel-release-confirm" role="group" aria-label={`Close ${row.title}`}>
         <p>Closing ends this generation's live objects and background Python work. Saved chat history stays available; checkpoint restoration is not guaranteed.</p>
-        <Button disabled={!state.connected || row.busy || row.state !== "ready" || !!state.closing[row.chatId]} onClick={() => {if (releaseKernel(row.chatId, row.generation)) setConfirm(null);}}>Close kernel</Button>
+        <Button disabled={!state.connected || !canReleaseKernel(row) || !!state.closing[row.chatId]} onClick={() => {if (releaseKernel(row.chatId, row.generation)) setConfirm(null);}}>Close kernel</Button>
         <Button tone="quiet" onClick={() => setConfirm(null)}>Cancel</Button>
-      </div> : <Button tone="quiet" disabled={!state.connected || row.busy || row.state !== "ready" || !!state.closing[row.chatId]} onClick={() => setConfirm(`${row.chatId}:${row.generation}`)}>{state.closing[row.chatId] ? "Closing…" : "Release session"}</Button>}
+      </div> : <Button tone="quiet" disabled={!state.connected || !canReleaseKernel(row) || !!state.closing[row.chatId]} onClick={() => setConfirm(`${row.chatId}:${row.generation}`)}>{state.closing[row.chatId] ? "Closing…" : "Release session"}</Button>}
     </li>)}</ul>
   </section>;
 }

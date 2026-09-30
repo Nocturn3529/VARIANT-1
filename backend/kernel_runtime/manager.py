@@ -1256,7 +1256,7 @@ class KernelRuntimeManager:
             return {"status": "absent"}
         if lease.generation != expected_generation:
             return {"status": "stale"}
-        if lease.state != "ready":
+        if lease.state not in {"ready", "unhealthy", "close_failed"}:
             return {"status": "busy"}
         checkpoint = await self._close_lease_serialized(
             lease, reason="operator_release", hard=True)

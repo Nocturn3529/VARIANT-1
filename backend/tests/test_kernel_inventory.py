@@ -38,6 +38,19 @@ async def test_inventory_measures_real_interpreter_and_release_preserves_other_c
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("state", ["unhealthy", "close_failed"])
+async def test_manual_release_can_retry_idle_unhealthy_cleanup(kernel_stack, state):
+    manager, runtimes, _ = kernel_stack
+    chat = "cleanup-retry"
+    runtimes.ensure_runtime(chat, is_new=True)
+    result = await manager.execute(chat_id=chat, code="value = 42", run_id=chat, outer_tool_call_id=chat)
+    assert result.ok
+    manager._leases[chat].state = state
+    assert (await manager.release_idle(chat, expected_generation=result.generation))["status"] == "closed"
+    assert manager.status(chat)["state"] == "absent"
+
+
+@pytest.mark.asyncio
 async def test_detached_inventory_and_release_cannot_access_another_chat():
     handlers = {}
     def on(*names):

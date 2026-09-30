@@ -17,6 +17,7 @@ const amount = (value: unknown): number | null => typeof value === "number" && N
 function finish(id: string) { clearTimeout(timers.get(id)); timers.delete(id); }
 export const useKernelInventory = store.useStore;
 export const getKernelInventory = store.getState;
+export const canReleaseKernel = (row: KernelInventoryRow) => !row.busy && ["ready", "unhealthy", "close_failed"].includes(row.state);
 export const setKernelInventoryContext = (context: RuntimeContext) => store.setContext(context);
 export function setKernelInventoryConnection(status: string) {
   const connected = status === "connected";
@@ -39,7 +40,7 @@ export function refreshKernelInventory(): boolean {
 }
 export function releaseKernel(chatId: string, expectedGeneration: number): boolean {
   const state = store.getState(), row = state.items.find(item => item.chatId === chatId);
-  if (!state.connected || !row || row.generation !== expectedGeneration || row.busy || row.state !== "ready" || state.closing[chatId]) return false;
+  if (!state.connected || !row || row.generation !== expectedGeneration || !canReleaseKernel(row) || state.closing[chatId]) return false;
   const requestId = crypto.randomUUID();
   store.setState({closing: {...state.closing, [chatId]: requestId}, error: ""});
   timers.set(requestId, setTimeout(() => {
