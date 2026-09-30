@@ -1,7 +1,7 @@
 /** Isolated UI fixture. No real files, credentials, backend, or native actions. */
 const root = "C:\\review-fixture";
 const files = new Map([
-  [`${root}\\sample.txt`, {text: "Original sample contents.\n", mtimeMs: 1}],
+  [`${root}\\sample.txt`, {text: "Updated sample contents.\n", mtimeMs: 1}],
   [`${root}\\notes\\note.md`, {text: "# Sample note\n\nA nested file for keyboard checks.\n", mtimeMs: 1}],
 ]);
 let facts = [{text: "Use concise answers."}];
@@ -92,7 +92,13 @@ window.variant1Deck = {
     files.set(next, file); files.delete(path);
     return {ok: true, path: next};
   },
-  getWorkbenchGitStatus: async () => ({ok: false, error: "No repository in this fixture"}),
+  getWorkbenchGitStatus: async () => ({ok:true,root,branch:"review-fixture",files:[
+    {path:"sample.txt",status:" M",added:1,removed:1},
+    {path:"notes/note.md",status:"??",added:3,removed:0},
+  ]}),
+  getWorkbenchGitDiff: async () => ({ok:true,diff:"diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-Original sample contents.\n+Updated sample contents.\n"}),
+  runWorkbenchGit: async action => ({ok:true,stdout:action==="create_pr"?"https://github.com/example/review-fixture/pull/1":""}),
+  openExternal: async () => ({ok:true}),
   onWorkbenchPathChanged: () => () => {},
   watchWorkbenchPath: async () => ({id: "fixture-watch"}),
   stopWorkbenchWatch: async () => ({ok: true}),

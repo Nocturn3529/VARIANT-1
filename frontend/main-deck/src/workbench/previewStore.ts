@@ -17,6 +17,7 @@ export type PreviewTarget = Readonly<{
   mediaType?: string;
   content?: string;
   renderMode?: "source" | "preview" | "diff";
+  line?: number;
 }>;
 
 export type PreviewTab = Readonly<{
@@ -194,7 +195,7 @@ export function adoptBrowserTab(id: string, url: string, ownerChatId = getSessio
   });
 }
 
-export function openFilePreview(path: string, label?: string, ownerChatId?:string): string {
+export function openFilePreview(path: string, label?: string, ownerChatId?:string, line?:number): string {
   const normalized = String(path || "").trim();
   return openPreview({
     kind: "file",
@@ -203,6 +204,7 @@ export function openFilePreview(path: string, label?: string, ownerChatId?:strin
     path: normalized,
     label: label || normalized.split(/[\\/]/).pop() || "Preview",
     renderMode: "source",
+    line: line && Number.isSafeInteger(line) ? Math.max(1,line) : undefined,
   },{ownerChatId});
 }
 

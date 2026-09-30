@@ -1,12 +1,19 @@
 import {useLayoutEffect, useRef, useState, type ReactNode} from "react";
 
 /** Fixed-height lists keep a bounded DOM even in repositories with many changes. */
-export function VirtualList<T>({items, rowHeight, label, render, itemKey}: {
+export function VirtualList<T>({items, rowHeight, label, render, itemKey,initialIndex}: {
   items: readonly T[]; rowHeight: number; label: string;
   render: (item: T, index: number) => ReactNode; itemKey: (item: T, index: number) => string;
+  initialIndex?: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
-  const [view, setView] = useState({top:0,height:400});
+  const [view, setView] = useState({top:Math.max(0,initialIndex || 0)*rowHeight,height:400});
+  useLayoutEffect(()=>{
+    if(initialIndex===undefined)return;
+    const top=Math.max(0,Math.min(initialIndex,Math.max(0,items.length-1)))*rowHeight;
+    host.current!.scrollTop=top;
+    setView(value=>value.top===top?value:{...value,top});
+  },[initialIndex,items.length,rowHeight]);
   useLayoutEffect(() => {
     const element = host.current!;
     const measure = () => setView(value => {

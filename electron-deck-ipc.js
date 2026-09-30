@@ -12,6 +12,7 @@ const { BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const { isAllowedExternalUrl } = require('./electron-security');
 const {createWorkbenchWatchers, createReadCache, limitReadConcurrency, sharePendingRead} = require('./electron-workbench-watchers');
 const { isEditableText } = require('./electron-workbench-files');
+const {projectGitDiff, COMMAND_BYTES} = require('./electron-workbench-diff');
 
 function normalizeAbsoluteLocalPath(rawPath) {
   if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) {
@@ -496,14 +497,18 @@ function registerDeckIpc(deps) {
 
   const readDiff = sharePendingRead(async key => {
     const [target,filePath,staged] = JSON.parse(key);
+    let root = '';
     try {
-      const root = await gitRoot(target);
-      const args = ['diff', '--no-ext-diff', '--no-color', '--unified=3'];
+      root = await gitRoot(target);
+      const selected = filePath ? repositoryFile(root, filePath).relative : '';
+      const args = ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--unified=3'];
       if (staged) args.push('--cached');
-      if (filePath) args.push('--', String(filePath));
-      const result = await readGit(args, { cwd: root, timeout: 60000, maxBuffer: 32 * 1024 * 1024 });
-      return { ok: true, root, diff: result.stdout };
+      if (selected) args.push('--', selected);
+      const result = await readGit(args, { cwd: root, timeout: 60000, maxBuffer: COMMAND_BYTES });
+      return { ok: true, root, ...projectGitDiff(result.stdout) };
     } catch (error) {
+      if (error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' && error.stdout && root)
+        return {ok:true,root,...projectGitDiff(error.stdout, true)};
       return { ok: false, error: String(error && error.stderr || error && error.message || error) };
     }
   });

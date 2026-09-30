@@ -6,6 +6,8 @@ import {useSurfaceDocument} from "../ui/SurfaceDocument";
 import {useEffect, useMemo, useRef, useState} from "react";
 import type {WorkbenchGitFile, WorkbenchGitStatus} from "../types";
 import {openFilePreview} from "../workbench/previewStore";
+import {DiffView} from "./DiffView";
+import {pullRequestUrl} from "../workbench/diffModel";
 
 function statusName(value: string): string {
   if (value === "??") return "Untracked";
@@ -47,6 +49,8 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
   const api = window.variant1Deck;
   const panel = useRef<HTMLElement>(null);
   const selectionEpoch = useRef(0);
+  const projectEpoch = useRef(0);
+  const activeDirectory = useRef(directory);activeDirectory.current=directory;
   const selectedRef = useRef("");
   const sideRef = useRef<DiffSide>("unstaged");
   const [side, setSide] = useState<DiffSide>("unstaged");
@@ -56,6 +60,11 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
   const [selected, setSelected] = useState("");
   const [diff, setDiff] = useState("");
   const [error, setError] = useState("");
+  const [diffInfo,setDiffInfo]=useState({truncated:false,binary:false});
+  const [diffLoading,setDiffLoading]=useState(false);
+  const [prUrl,setPrUrl]=useState("");
+  const [notice,setNotice]=useState("");
+  const [copied,setCopied]=useState(false);
   const [treeMode, setTreeMode] = useState(false);
   const [message, setMessage] = useState("");
   const [shipping, setShipping] = useState(false);
@@ -63,7 +72,9 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
 
   async function refresh(path = root): Promise<void> {
     if (!path) return;
+    const epoch=projectEpoch.current;
     const next = await api?.getWorkbenchGitStatus?.(path);
+    if(epoch!==projectEpoch.current)return;
     if (!next?.ok) {
       setStatus(next || {files: []});
       setError(next?.error || "This folder is not a Git repository.");
@@ -83,26 +94,38 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
     const row = rows.find(item => item.path === file);
     const preferred = requested || (selectedRef.current === file ? sideRef.current : undefined);
     const selectedSide: DiffSide = row?.status === "??" ? "untracked" : preferred === "staged" && row?.staged ? "staged" : row && unstaged(row) ? "unstaged" : "staged";
+    const changed = sideRef.current !== selectedSide || selectedRef.current !== file;
     sideRef.current = selectedSide; setSide(selectedSide);
     selectedRef.current = file; setSelected(file);
+    if(changed){setDiff("");setDiffInfo({truncated:false,binary:false});setDiffLoading(true);setCopied(false);}
+    try {
     if (row?.status === "??") {
       const content = await api?.readWorkbenchFile?.(absolute(path, file));
       if (epoch !== selectionEpoch.current) return;
-      setDiff(content?.ok ? content.binary ? "Binary file. Open the file preview to inspect it." : String(content.text || "") : String(content?.error || "Unable to read untracked file"));
+      setDiff(content?.ok ? content.binary ? "Binary file. Open the file preview to inspect it." : String(content.text || "") : "");
+      if(!content?.ok)setError(String(content?.error || "Unable to read untracked file"));
+      setDiffInfo({truncated:!!content?.truncated,binary:!!content?.binary});setDiffLoading(false);
       return;
     }
     const result = await api?.getWorkbenchGitDiff?.(path, file, selectedSide === "staged");
     if (epoch !== selectionEpoch.current) return;
-    setDiff(result?.ok ? String(result.diff || "") : String(result?.error || "Unable to read diff"));
+    setDiff(result?.ok ? String(result.diff || "") : "");
+    if(!result?.ok)setError(String(result?.error || "Unable to read diff"));
+    setDiffInfo({truncated:!!result?.truncated,binary:!!result?.binary});setDiffLoading(false);
+    } catch(error){if(epoch===selectionEpoch.current){setError(String(error));setDiff("");setDiffLoading(false);}}
   }
 
   useEffect(() => {
+    projectEpoch.current++;selectionEpoch.current++;
+    selectedRef.current="";sideRef.current="unstaged";setSide("unstaged");setPrUrl("");setNotice("");setDiffLoading(false);
     setRoot(directory); setStatus({files:[]}); setDiff(""); setSelected("");
     setError(directory ? "" : "Select a project for this chat to review changes.");
     if(directory)void refresh(directory);
   }, [directory, api]);
 
   const refreshCurrent = useRef(refresh); refreshCurrent.current = refresh;
+  useEffect(()=>setCopied(false),[diff]);
+  useEffect(()=>()=>{projectEpoch.current++;selectionEpoch.current++;},[]);
   useEffect(() => {
     if (!root) return;
     const visible = () => ownerDocument.visibilityState === "visible" && !!panel.current?.getClientRects().length;
@@ -111,13 +134,23 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
     ownerWindow.addEventListener("focus", focused);
     const interval = window.setInterval(focused, 30000);
     const stop = watchPath(api, root, focused, {scope: "workspace", delay: 50, onError: setError});
-    return () => {queue.dispose();stop();selectionEpoch.current++;ownerWindow.removeEventListener("focus",focused);window.clearInterval(interval);};
+    return () => {queue.dispose();stop();ownerWindow.removeEventListener("focus",focused);window.clearInterval(interval);};
   }, [root, api, ownerDocument]);
 
   async function mutate(action: string, file?: string): Promise<void> {
-    const result = await api?.runWorkbenchGit?.(action, root, file ? {file} : {});
-    if (!result?.ok) setError(String(result?.error || `${action} failed`));
-    else await refresh();
+    const createPr=action==="create_pr", requestDirectory=directory;
+    if(createPr && (shippingRef.current || !root))return;
+    if(createPr){shippingRef.current=true;setShipping(true);setNotice("");setPrUrl("");}
+    try {
+      const result = await api?.runWorkbenchGit?.(action, root, file ? {file} : {});
+      if(activeDirectory.current!==requestDirectory)return;
+      if (!result?.ok) setError(String(result?.error || `${action} failed`));
+      else {
+        if(createPr){setPrUrl(pullRequestUrl(result.stdout));setNotice("Pull request created.");}
+        await refresh();
+      }
+    } catch(error){if(activeDirectory.current===requestDirectory)setError(String(error));}
+    finally {if(createPr){shippingRef.current=false;setShipping(false);}}
   }
 
   async function ship(action: "commit" | "commit_push"): Promise<void> {
@@ -140,6 +173,11 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
       if (!result?.ok) {failure = String(result?.error || "Could not discard unstaged changes");break;}
     }
     await refresh(); if (failure) setError(failure);
+  }
+
+  async function copyPreview() {
+    try {await ownerWindow.navigator.clipboard.writeText(diff);setCopied(true);}
+    catch {setError("Could not copy the patch preview. Clipboard access is unavailable.");}
   }
 
   const rows = useMemo(() => {
@@ -166,7 +204,8 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
       }}>↶</button>
       <button title="Refresh" onClick={() => void refresh()}><Icon name="refresh"/></button>
     </header>
-    {error ? <div className="workbench-tool-error">{error}</div> : null}
+    {error ? <div role="alert" className="workbench-tool-error">{error}</div> : null}
+    {notice ? <div role="status" className="workbench-review__result">{notice} {prUrl ? <button onClick={()=>void api?.openExternal?.(prUrl)}>{prUrl} <Icon name="popout"/></button> : <span>Check GitHub for the new pull request.</span>}</div> : null}
     <div className="workbench-review__body">
       <aside className="workbench-review__files">
         <header><strong>Changes</strong><span>{files.length}</span></header>
@@ -191,22 +230,23 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
         {!files.length && !error ? <div className="workbench-tool-empty">No changes.</div> : null}
       </aside>
       <main className="workbench-review__diff">
-        {selected ? <header><strong>{selected}</strong>{side === "untracked" ? <span>Untracked file · full contents</span> : <>
+        {selected ? <header><strong title={selected}>{selected}</strong>{side === "untracked" ? <span>Untracked file · contents preview</span> : <>
           <button type="button" aria-pressed={side === "unstaged"} disabled={!files.some(file=>file.path===selected && unstaged(file))} onClick={()=>void selectFile(selected,root,files,"unstaged")}>Unstaged</button>
           <button type="button" aria-pressed={side === "staged"} disabled={!files.some(file=>file.path===selected && file.staged)} onClick={()=>void selectFile(selected,root,files,"staged")}>Staged</button>
-        </>}</header> : null}
-        <pre>{diff || (selected ? "No textual diff." : "Select a changed file.")}</pre>
+        </>}<button disabled={!diff || diffLoading} onClick={()=>void copyPreview()}>{copied?"Copied":"Copy preview"}</button></header> : null}
+        {diffLoading ? <div className="workbench-tool-empty" role="status">Loading patch…</div> : selected ? <DiffView key={`${selected}:${side}`} text={diff} fullContents={side==="untracked" && !diffInfo.binary} {...diffInfo}
+          onOpenLine={!files.some(file=>file.path===selected && missing(file)) ? line=>openFilePreview(absolute(status.root || root,selected),undefined,chatId,line) : undefined}/> : <div className="workbench-tool-empty">Select a changed file.</div>}
       </main>
     </div>
     <footer className="workbench-review__ship">
-      <textarea rows={2} placeholder="Commit message" value={message} onChange={event => setMessage(event.target.value)}/>
+      <textarea rows={2} aria-label="Commit message" placeholder="Commit message" value={message} onChange={event => setMessage(event.target.value)}/>
       <button disabled={!files.length || shipping || !!message.trim()} title={message.trim() ? "Clear your draft to use a suggested title" : "Suggest a title from changed filenames"} onClick={() => {
         const names = files.slice(0, 2).map(file => file.path.split("/").pop()).join(", ");
         setMessage(files.length === 1 ? `Update ${names}` : `Update ${files.length} files`);
       }}>Suggest title</button>
       <button disabled={!message.trim() || shipping || !files.some(file=>file.staged)} onClick={() => void ship("commit")}>Commit</button>
       <button disabled={!message.trim() || shipping || !files.some(file=>file.staged)} onClick={() => void ship("commit_push")}>Commit & Push</button>
-      <button disabled={shipping} onClick={() => void mutate("create_pr")}>Create PR</button>
+      <button disabled={shipping || !root} onClick={() => void mutate("create_pr")}>{shipping ? "Working…" : "Create PR"}</button>
     </footer>
   </section>;
 }
