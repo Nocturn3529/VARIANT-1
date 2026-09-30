@@ -1259,8 +1259,10 @@ class KernelRuntimeManager:
                 })
             except Exception:
                 pass
-        rss = max(0, int(process.get("rss_bytes") or 0))
-        memory_limit = max(1, int(self.limits.process_memory_bytes))
+        rss_value = process.get("rss_bytes")
+        rss = max(0, int(rss_value)) if rss_value is not None else None
+        configured_memory_limit = int(self.limits.process_memory_bytes)
+        memory_limit = configured_memory_limit if configured_memory_limit > 0 else None
         namespace = (
             snapshot.get("namespace")
             if isinstance(snapshot.get("namespace"), dict)
@@ -1279,7 +1281,10 @@ class KernelRuntimeManager:
             "namespace": namespace,
             "output": dict(lease._last_output_pressure),
             "pressure": {
-                "process_memory_ratio": round(min(1.0, rss / memory_limit), 6),
+                "process_memory_ratio": (
+                    round(min(1.0, rss / memory_limit), 6)
+                    if memory_limit is not None and rss is not None else None
+                ),
                 "process_memory_limit_bytes": memory_limit,
                 "capsule_estimate_ratio": round(
                     min(1.0, namespace_bytes / capsule_limit), 6
