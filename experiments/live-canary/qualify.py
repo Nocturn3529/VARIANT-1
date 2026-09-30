@@ -58,6 +58,8 @@ async def run(args) -> int:
         else: os.environ[key] = value
     results = []
     started = time.time()
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=run_canary.ROOT, text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=run_canary.ROOT, text=True).strip())
     try:
         for index in range(args.repetitions):
             result_path = root / f"round-{index + 1}.json"
@@ -75,12 +77,14 @@ async def run(args) -> int:
             else: os.environ[key] = value
         gate = assess(results, args.repetitions, args.cases, args.timeout * 1000)
         try:
-            commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=run_canary.ROOT, text=True).strip()
-            dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=run_canary.ROOT, text=True).strip())
+            completed_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=run_canary.ROOT, text=True).strip()
+            completed_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=run_canary.ROOT, text=True).strip())
         except subprocess.CalledProcessError:
-            commit, dirty = "unknown", True
+            completed_commit, completed_dirty = "unknown", True
         report = {"schema": "variant1.task-qualification.v1", "source_commit": commit,
-            "working_tree_dirty": dirty, "route": {"provider": run_canary.MODEL_ROUTES[args.model]["provider"], "model": args.model_id,
+            "working_tree_dirty": dirty, "completed_source_commit": completed_commit,
+            "working_tree_dirty_at_completion": completed_dirty,
+            "route": {"provider": run_canary.MODEL_ROUTES[args.model]["provider"], "model": args.model_id,
             "reasoning_effort": args.reasoning_effort, "oauth_only": args.oauth_only},
             "started_at": started, "completed_at": time.time(), "seed": args.seed,
             "gate": gate, "budget": json.loads(budget.read_text()) if budget.exists() else None,
@@ -106,7 +110,7 @@ def main() -> int:
     args = parser.parse_args()
     if not args.model_id:
         args.model_id = "grok-4.7" if args.model == "grok" else run_canary.MODEL_ROUTES[args.model]["model"]
-    if args.repetitions < 1 or args.timeout < 1 or (args.max_cost_usd is not None and args.max_cost_usd <= 0):
+    if args.repetitions < 1 or args.timeout < 1 or (args.max_cost_usd is not None and (not math.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0)):
         parser.error("Repetitions, timeout, and any specified budget must be positive")
     return asyncio.run(run(args))
 

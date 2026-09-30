@@ -8,6 +8,7 @@ This is qualification infrastructure, not a new application quota/default.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 import threading
 
@@ -22,6 +23,8 @@ class QualificationBudget:
     def reserve(self, payload: dict, wire_bytes: int) -> tuple[str, float]:
         with self.lock:
             state = json.loads(self.path.read_text(encoding="utf-8"))
+            if not math.isfinite(state["max_cost_usd"]) or state["max_cost_usd"] <= 0:
+                raise RuntimeError("The specified qualification budget must be finite and positive")
             if payload.get("model") != state["model"]:
                 raise RuntimeError("Qualification refuses an unexpected model route")
             effort = (payload.get("reasoning") or {}).get("effort") or payload.get("reasoning_effort")
@@ -33,7 +36,11 @@ class QualificationBudget:
             # A text token cannot consume fewer than one UTF-8 byte; special
             # token overhead is reserved separately. Vision is bounded by the
             # model's entire context, rather than guessed image token counts.
-            input_bound = min(state["context_tokens"], wire_bytes + 4096)
+            def has_media(value):
+                if isinstance(value, dict):
+                    return value.get("type") in {"image_url", "input_image", "input_audio", "input_video"} or "image_url" in value or any(has_media(item) for item in value.values())
+                return isinstance(value, list) and any(has_media(item) for item in value)
+            input_bound = state["context_tokens"] if has_media(payload) else min(state["context_tokens"], wire_bytes + 4096)
             reserved = (input_bound * state["input_per_million"] + maximum * state["output_per_million"]) / 1_000_000
             if state["upper_spend_usd"] + reserved > state["max_cost_usd"]:
                 raise RuntimeError("Qualification budget exhausted before provider dispatch")

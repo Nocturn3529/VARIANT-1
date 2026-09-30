@@ -85,6 +85,13 @@ def test_budget_blocks_before_dispatch_and_retains_unknown_reservations(tmp_path
         budget.reserve({**payload, "reasoning": {"effort": "high"}}, 10)
     with pytest.raises(RuntimeError, match="model"):
         budget.reserve({**payload, "model": "other"}, 10)
+    with pytest.raises(RuntimeError, match="exhausted"):
+        budget.reserve({**payload, "input": [{"type": "input_image", "image_url": "https://example.test/image"}]}, 10)
+    invalid = json.loads(path.read_text())
+    invalid["max_cost_usd"] = float("nan")
+    path.write_text(json.dumps(invalid))
+    with pytest.raises(RuntimeError, match="finite"):
+        budget.reserve(payload, 10)
 
 
 def test_isolated_candidate_admission_preserves_explicit_denies(monkeypatch):
