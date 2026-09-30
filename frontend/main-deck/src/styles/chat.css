@@ -656,3 +656,17 @@
 .chat-recovery-banner p { margin:4px 0 0; overflow-wrap:anywhere; color:var(--deck-text-secondary); }
 
 .execution-trace__owner { font:600 var(--deck-label-text) var(--font-ui); color:var(--deck-text-primary); }
+.chat-setup-guide { width: min(100%, 520px); text-align: left; }
+.chat-setup-guide > strong { display: block; text-align: center; }
+.chat-setup-guide > p { text-align: center; color: var(--deck-text-muted); }
+.chat-setup-guide ol { list-style: decimal; padding-left: 22px; margin: 22px 0; }
+.chat-setup-guide li { display: list-item; margin: 14px 0; }
+.chat-setup-guide li > div { display: inline-block; width: calc(100% - 130px); vertical-align: middle; }
+.chat-setup-guide li small { display: block; color: var(--deck-text-muted); font-size: 12px; }
+.chat-setup-guide li strong > small { display: inline; font-weight: normal; }
+.chat-setup-guide .deck-button { max-width: 125px; vertical-align: middle; }
+.composer-session-tools { position: relative; color: var(--deck-text-muted); font-size: 12px; }
+.composer-session-tools summary { cursor: pointer; padding: 7px; border-radius: 6px; }
+.composer-session-tools summary:focus-visible { outline: 2px solid var(--deck-text-primary); }
+.composer-session-tools__content { position: absolute; right: 0; bottom: calc(100% + 8px); width: 260px; max-width: 70vw; padding: 14px; border: 1px solid var(--deck-line); border-radius: 8px; background: var(--deck-surface-panel); z-index: 30; box-shadow: var(--deck-shadow); }
+.composer-session-tools__content p { line-height: 1.5; margin: 10px 0 0; }

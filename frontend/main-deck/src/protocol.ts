@@ -20,6 +20,7 @@ export type WsMessage<T extends string = string> = Readonly<{
 }>;
 
 export const REACT_MODULE_MESSAGE_TYPES = {
+  "react-runtime-kernels": ["kernel:inventory:result", "kernel:release:result"],
   "react-runtime-platform": [
     "hello", "config", "engine", "tools", "messaging:gateway", "messaging:error",
     "cloud:usage",

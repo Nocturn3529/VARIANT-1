@@ -795,7 +795,13 @@ const messages: FixtureMessage[] = [
 function dispatchFixtures(): void {
   document.dispatchEvent(new CustomEvent("variant1:fixture-state", {detail: "connected"}));
   messages.forEach(message => {
-    document.dispatchEvent(new CustomEvent("variant1:fixture-message", {detail: message}));
+    const scenario = new URLSearchParams(window.location.search).get("scenario");
+    let detail = message;
+    if (scenario === "empty" || scenario === "setup") {
+      if (message.type === "chat:session") detail = {...message, session: {...message.session as Record<string, unknown>, messages: [], project: null}};
+      if (["hello", "config", "engine"].includes(message.type)) detail = {...message, model_ready: scenario === "empty"};
+    }
+    document.dispatchEvent(new CustomEvent("variant1:fixture-message", {detail}));
   });
 }
 

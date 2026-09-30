@@ -1,4 +1,5 @@
 import {setPeerContext,setPeerConnection,ingestPeers,disposePeers} from "./peers/peerStore";
+import {setKernelInventoryContext, setKernelInventoryConnection, ingestKernelInventory} from "./kernelInventoryStore";
 import {detachedChatId,installDockedChatBridge} from "./runtime/viewIdentity";
 import { createRoot } from "react-dom/client";
 import "@xterm/xterm/css/xterm.css";
@@ -256,6 +257,7 @@ reg("react-runtime-browser-settings", storeModuleHooks({
 }));
 
 reg("react-runtime-peers",storeModuleHooks({setContext:setPeerContext,setConnection:setPeerConnection,ingest:ingestPeers}));
+reg("react-runtime-kernels", storeModuleHooks({setContext:setKernelInventoryContext,setConnection:setKernelInventoryConnection,ingest:ingestKernelInventory}));
 
 reg("react-runtime-plugins", storeModuleHooks({
   setContext: setPluginsContext,

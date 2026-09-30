@@ -36,6 +36,14 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+`session_catalog.service` publishes categories, mounts, and disclosure; its
+mutation manager delegates disposable execution to the mutation worker client.
+`kernel_runtime.lease` owns one worker generation, while `continuity` coordinates
+portable capture/restoration and `worker_bridge` carries capability proxies.
+The separate `resources` module observes the interpreter and its owned process
+tree without changing their lifetime. Resource protocols describe the process
+and ownership interfaces used by that observer.
+
 ## State lifetimes
 
 **Live state is not the same as saved history or restart recovery.** Variables,
@@ -49,6 +57,13 @@ quotas or retirement; disposable mutation workers have their own bounded policy.
 Resource status reports a disabled memory quota and its pressure ratio as `null`,
 while retaining available usage measurements. A configured quota with an unknown
 usage measurement also has an unknown pressure ratio.
+
+The Python runtime view inventories retained sessions and distinguishes live
+interpreter measurements from earlier worker snapshots. Tree RSS is a sum of
+owned processes and can count shared pages more than once. Releasing a session
+is explicit, generation-fenced, and refused while a run is admitted, including
+between cells. Optional checkpoint policy applies to operator release; default
+checkpointing and retirement behavior is unchanged.
 
 Portable checkpoints preserve supported values and report exclusions. They do
 not capture arbitrary clients, connections, threads, or live handles. Portable
@@ -100,6 +115,12 @@ browser profiles, and runtime data. See [Validation](VALIDATION.md).
 Each renderer's backend connection owns and releases its status subscription.
 This includes docked chats borrowing the parent window's bridge, whose callbacks
 must be removed when the child connection stops.
+
+Fresh workbenches keep empty side panes hidden until requested or a first project
+is selected. Saved layouts and explicit visibility changes take precedence.
+The empty chat guide reads model readiness from backend projections and fills
+example drafts without sending them. Mutation authoring is available under
+Session tools; disabling authoring preserves already activated overlays.
 
 ### Installer composition
 

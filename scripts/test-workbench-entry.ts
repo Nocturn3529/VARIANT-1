@@ -7,6 +7,7 @@ import {
   canCloseWorkbenchGroup,closeWorkbenchGroup,setWorkbenchSplitWeights,flushWorkbenchLayout,
   saveWorkbenchPreset,
   resetWorkbenchLayout,
+  adoptWorkbenchOwner, revealInitialProjectPane, chatPaneId, hidePane,
 } from "../frontend/main-deck/src/workbench/workbenchStore";
 import {collapseHistory, navigateTo, revealHistory} from "../frontend/main-deck/src/state/appStore";
 import {
@@ -19,6 +20,18 @@ import {openChatView,getChatViews} from "../frontend/main-deck/src/workbench/cha
 import {getTerminalSnapshot,ingestTerminal,disposeTerminalRuntime,setTerminalContext,setTerminalConnection} from "../frontend/main-deck/src/context/terminalStore";
 
 function testSizingAndCompactNavigation() {
+  __resetWorkbenchForTests(true);
+  adoptWorkbenchOwner("fresh");
+  assert.equal(getWorkbenchState().hidden[chatPaneId("files", "fresh")], true, "fresh chats keep empty panels closed");
+  assert.equal(revealInitialProjectPane("fresh"), true, "first selected project reveals its files");
+  assert.equal(getWorkbenchState().hidden[chatPaneId("files", "fresh")], false);
+  __resetWorkbenchForTests(true);
+  adoptWorkbenchOwner("fresh");
+  hidePane(chatPaneId("files", "fresh"));
+  assert.equal(revealInitialProjectPane("fresh"), false, "explicit visibility wins over automatic project reveal");
+  __resetWorkbenchForTests();
+  adoptWorkbenchOwner("saved");
+  assert.equal(revealInitialProjectPane("saved"), false, "restored layouts are preserved");
   __resetWorkbenchForTests();
   const state = getWorkbenchState();
   const context: TrackContext = {hidden: state.hidden, known: new Set(allPaneIds(state.layout)), compact: false, height: 720};

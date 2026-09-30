@@ -140,6 +140,9 @@ export type CloudUsageSnapshot = {
 };
 
 export type ConfigState = {
+  model_ready?: boolean;
+  engine_ready?: boolean;
+  startup_error?: string;
   mode?: string;
   local_prewarm?: boolean;
   local_engine_wanted?: boolean;

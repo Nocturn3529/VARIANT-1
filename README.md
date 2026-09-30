@@ -32,6 +32,8 @@ Use the release notes for the behavior and qualification of a downloaded build.
 - **Continue work within a live session.** Reuse Python variables, imports, and
   helper functions across calls instead of recreating that working state for
   each step. Live state is not a guarantee of recovery after a restart.
+  The Python runtime view shows retained sessions and offers explicit release
+  controls; closing a generation ends its live objects and background Python work.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB
   tool-discovery layer exposes capabilities as needed through shared backend services.
@@ -70,6 +72,8 @@ npm start
 ```
 
 After launch, configure a supported provider or local runtime in the app.
+The empty-chat guide helps connect a model, optionally choose a project, and
+prepare a first task. Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
 The Live2D cat and its floating overlay have been removed.
 
