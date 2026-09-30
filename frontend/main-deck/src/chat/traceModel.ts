@@ -24,8 +24,9 @@ export function traceSummary(steps: readonly ChatTurnStep[]) {
   const peers=actions.filter(step=>step.peerMessage).length;
   const tools = actions.length - cells - peers;
   const errors = actions.filter(stepFailed).length;
+  const stopped = actions.filter(step => step.status === "cancelled" || step.status === "interrupted").length;
   const thoughts = steps.filter(step => step.kind === "thinking" && step.detail?.trim()).length;
   const parts = [thoughts ? `${thoughts} ${thoughts === 1 ? "thought" : "thoughts"}` : "", cells ? `${cells} Python ${cells === 1 ? "cell" : "cells"}` : "",
-    tools ? `${tools} ${tools === 1 ? "action" : "actions"}` : "", peers ? `${peers} peer ${peers===1 ? "message" : "messages"}` : "", errors ? `${errors} ${errors === 1 ? "issue" : "issues"}` : ""].filter(Boolean);
+    tools ? `${tools} ${tools === 1 ? "action" : "actions"}` : "", peers ? `${peers} peer ${peers===1 ? "message" : "messages"}` : "", errors ? `${errors} ${errors === 1 ? "issue" : "issues"}` : "", stopped ? `${stopped} stopped` : ""].filter(Boolean);
   return {cells, errors, label: parts.join(" · ") || "Execution details"};
 }

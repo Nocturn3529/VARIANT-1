@@ -11,6 +11,8 @@ import {parseTurnSteps} from "../frontend/main-deck/src/chat/messages";
 import {getPreviewState,closePreview} from "../frontend/main-deck/src/workbench/previewStore";
 import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
 import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
+import {normalizeActivityStatus} from "../frontend/main-deck/src/chat/activityModel";
+import {traceSummary} from "../frontend/main-deck/src/chat/traceModel";
 
 export async function run() {
   const sent:Array<Record<string,unknown>>=[];
@@ -157,5 +159,30 @@ export async function run() {
     assert.equal(step.status,"done");
   }
   done("live-thoughts","Finished");
-  console.log("Chat reliability: terminal idempotence, late-event fences, durable enrichment, active-prefix/optimistic-tail reconciliation and replay side-effect isolation passed");
+  reset();sendUserMessage("Audit");start("trace-audit");
+  const audit=(event:string,extra:Record<string,unknown>={})=>incoming({type:"tool:activity",...route("trace-audit"),event,tool:"read_file",status:"running",surface:"both",...extra});
+  audit("tool:start",{call_id:"a"});audit("tool:result",{call_id:"a",status:"error",text:"Synthetic diagnostic"});
+  audit("tool:start",{call_id:"a"});
+  assert.equal(getChatState().turnSteps[0].status,"error","duplicate start cannot revive failure");
+  audit("tool:start",{call_id:"b"});audit("tool:result",{call_id:"b",status:"running",text:"Pending output"});
+  assert.equal(getChatState().turnSteps[1].resultPreview,"Pending output");assert.equal(getChatState().turnSteps[1].completedAt,undefined);
+  audit("tool:result",{call_id:"b",status:"cancelled_before_start",text:"Stopped"});
+  assert.equal(getChatState().turnSteps[1].status,"cancelled");
+  audit("tool:result",{call_id:"c",status:"ok",text:"X".repeat(400)});
+  assert.equal(getChatState().turnSteps[2].resultPreview?.length,400,"retain the full bounded backend projection");
+  const beforeSide=getChatState().turnSteps.length;
+  audit("note",{surface:"side",text:"Side note"});audit("loop:detail",{surface:"side",text:"Side detail"});
+  assert.equal(getChatState().turnSteps.length,beforeSide,"side-only frames cannot bypass the surface filter");
+  audit("tool:start",{call_id:"side-call",surface:"side"});audit("tool:result",{call_id:"side-call",surface:"side",status:"ok",text:"Correlated result"});
+  assert.equal(getChatState().turnSteps.at(-1)?.resultPreview,"Correlated result","legacy placement tags cannot hide exact call outcomes");
+  audit("tool:start",{args_preview:"first"});audit("tool:start",{args_preview:"second"});audit("tool:result",{status:"ok",text:"Unidentified result"});
+  assert.equal(getChatState().turnSteps.at(-1)?.argsPreview,undefined,"do not invent legacy concurrent pairing");
+  audit("task:done",{tool:"",status:"error",text:"Task failed"});
+  assert.ok(traceSummary(getChatState().turnSteps).errors>0,"terminal failure is visible without an individual result");
+  assert.equal(getChatState().turnSteps.at(-1)?.status,"error");
+  for(const [raw,expected] of [["cancelled","cancelled"],["timed_out","timed_out"],["skipped","skipped"],["degraded","degraded"],["future_status","unknown"]])assert.equal(normalizeActivityStatus(raw,"tool:result"),expected);
+  assert.equal(parseTurnSteps([{label:"Stopped",status:"cancelled"}])?.[0].status,"cancelled");
+  assert.equal(parseTurnSteps([{label:"Unfinished",status:"running"}])?.[0].status,"interrupted");
+  done("trace-audit");
+  console.log("Chat reliability: terminal idempotence, trace outcomes/identity/previews, durable enrichment, active-prefix/optimistic-tail reconciliation and replay side-effect isolation passed");
 }

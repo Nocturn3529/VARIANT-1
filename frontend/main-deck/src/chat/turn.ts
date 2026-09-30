@@ -39,6 +39,7 @@ import {
 import {extractEvidence, mergeEvidence} from "./evidence";
 import {syncPaneFromActivity} from "../workbench/activityRouting";
 import {normalizeActivityStatus} from "./activityModel";
+import {boundedPreview} from "./preview";
 
 function activityTimeMs(value: number | undefined): number {
   const numeric = Number(value) || 0;
@@ -78,6 +79,7 @@ export function pushTurnStep(partial: {
       // A later thought belongs after the intervening cell, not in a completed thought.
       const exactIdentity = !!partial.callId || !!partial.id;
       if (steps[i].key === key && (exactIdentity || steps[i].status === "running")) {
+        if (exactIdentity && steps[i].status !== "running" && steps[i].completedAt && partial.status === "running") return;
         const revision = steps[i].summaryRevision;
         if (partial.summaryState && revision !== undefined
           && (partial.summaryRevision === undefined || partial.summaryRevision <= revision)) return;
@@ -87,14 +89,14 @@ export function pushTurnStep(partial: {
         const detail = partial.appendDetail && incomingDetail
           ? (incomingDetail.startsWith(priorDetail)
             ? incomingDetail
-            : `${priorDetail}${incomingDetail}`).slice(-16_000)
+            : `${priorDetail}${incomingDetail}`)
           : partial.detail != null ? partial.detail : steps[i].detail;
         steps[i] = {
           ...steps[i],
           summaryState: partial.summaryState || steps[i].summaryState,
           summaryRevision: partial.summaryRevision ?? steps[i].summaryRevision,
           label: partial.label || steps[i].label,
-          detail,
+          detail: detail ? boundedPreview(detail, 16_000) : detail,
           status: partial.status || steps[i].status,
           kind: partial.kind || steps[i].kind,
           tool: partial.tool || steps[i].tool,
@@ -147,6 +149,10 @@ export function pushTurnStep(partial: {
 function activityShowsOnMainChat(message: StreamActivityMessage): boolean {
   const event = message.event;
   const tool = message.tool.trim();
+  if (event === "loop:detail") return false;
+  // The legacy activity placement tags tool lifecycle as side. Exact call
+  // events still belong to this chat's trace; generic side noise does not.
+  if (message.surface.toLowerCase() === "side") return !!message.call_id && ["tool:start","tool:result","tool:activity"].includes(event);
   if (event === "tool:start" || event === "tool:result" || event === "tool:activity") {
     return true;
   }
@@ -170,9 +176,9 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
   const event = message.event;
   const tool = message.tool.trim();
   const statusRaw = message.status.toLowerCase();
-  const text = (
+  const text = boundedPreview((
     message.text || message.args_preview || message.title || ""
-  ).replace(/\s+/g, " ").trim().slice(0, 140);
+  ).trim(), 800);
   const evidence = extractEvidence({
     tool,
     argsPreview: message.args_preview,
@@ -206,7 +212,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
     });
   }
 
-  if (event === "tool:start" || event === "tool:activity" || (tool && statusRaw === "running")) {
+  if (event === "tool:start" || (event === "tool:activity" && (!statusRaw || statusRaw === "running")) || (event !== "tool:result" && tool && statusRaw === "running")) {
     if (tool) noteReceiptTool(tool);
     settleRunningThinking();
     const startedAt = activityTimeMs(message.ts);
@@ -222,7 +228,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
       argsPreview: message.args_preview || undefined,
       startedAt,
       admissionMs: message.admission_ms,
-      key: callId ? `call:${callId}` : tool ? `legacy-tool:${tool}` : undefined,
+      key: callId ? `call:${callId}` : undefined,
       evidence,
     });
     if (text) setSubtitle(text.slice(0, 90), "working");
@@ -246,11 +252,11 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
       callId: callId || undefined,
       rawStatus: message.status || (status === "error" ? "error" : "ok"),
       resultPreview: text || undefined,
-      completedAt,
+      ...(status !== "running" ? {completedAt} : {}),
       startedAt: durationMs ? completedAt - durationMs : undefined,
       durationMs,
       admissionMs: message.admission_ms,
-      key: callId ? `call:${callId}` : tool ? `legacy-tool:${tool}` : undefined,
+      key: callId ? `call:${callId}` : undefined,
       evidence,
     });
     if (text) setSubtitle(text.slice(0, 90), "working");
@@ -293,10 +299,11 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
     // Finalize any still-running rows so the committed strip is not stuck on "Live".
     const state = getChatState();
     const completedAt = activityTimeMs(message.ts);
+    const terminalStatus = normalizeActivityStatus(statusRaw, event);
     const steps = state.turnSteps.map(s => (
       s.status === "running" ? {
         ...s,
-        status: "done" as const,
+        status: terminalStatus,
         completedAt,
         durationMs: s.startedAt ? Math.max(0, completedAt - s.startedAt) : s.durationMs,
         ts: completedAt,
@@ -307,7 +314,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
         id: newStepId(),
         kind: "note",
         label: text.slice(0, 100),
-        status: "done",
+        status: terminalStatus,
         ts: Date.now(),
       });
     }
@@ -386,7 +393,7 @@ export function finishStream(message: StreamDoneMessage) {
     ? state.turnSteps.map(s => (
       s.status === "running" ? {
         ...s,
-        status: "done" as const,
+        status: cancelled ? "cancelled" as const : message.status ? normalizeActivityStatus(message.status, "task:done") : "done" as const,
         summaryState: s.summaryState === "running" ? (cancelled ? "cancelled" as const : "done" as const) : s.summaryState,
         completedAt: nowMs,
         durationMs: s.startedAt ? Math.max(0, nowMs - s.startedAt) : s.durationMs,

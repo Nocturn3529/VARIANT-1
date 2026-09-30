@@ -1670,7 +1670,7 @@ function testHermesActivityProjection(): void {
   }
   assert.equal(normalizeActivityStatus("invalid_arguments", "tool:result"), "error");
   assert.equal(normalizeActivityStatus("needs_reconciliation", "tool:result"), "error");
-  assert.equal(normalizeActivityStatus("cancelled", "tool:result"), "error");
+  assert.equal(normalizeActivityStatus("cancelled", "tool:result"), "cancelled");
   assert.equal(normalizeActivityStatus("ok", "tool:result"), "ok");
   assert.equal(formatActivityDuration(1_250), "1.3s");
 

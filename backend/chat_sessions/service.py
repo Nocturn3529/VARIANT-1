@@ -111,6 +111,8 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
     for raw in raw_steps[:limit]:
         if not isinstance(raw, Mapping):
             continue
+        from observability.display_projection import safe_display_fields
+        raw = safe_display_fields(raw)
         label = str(raw.get("label") or "").strip()[:160]
         if not label:
             continue
@@ -121,8 +123,11 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         public_summary = kind == "thinking" and raw.get("source") == "provider_summary"
         if public_summary and status == "running":
             status = "cancelled"  # A persisted unfinished snapshot is not a live provider stream.
-        if status not in ({"ok", "error", "done", "cancelled", "discarded"} if public_summary else {"ok", "error", "done"}):
-            status = "done"
+        if status not in ({"ok", "error", "done", "cancelled", "discarded"} if public_summary else {
+            "ok", "error", "done", "cancelled", "interrupted", "timed_out",
+            "skipped", "degraded", "unknown",
+        }):
+            status = "interrupted" if status == "running" else "unknown"
         row: dict[str, Any] = {
             "id": str(raw.get("id") or "")[:40],
             "kind": kind,

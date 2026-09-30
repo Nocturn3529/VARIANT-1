@@ -96,11 +96,12 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
       || kindRaw === "thinking"
     ) ? kindRaw as ChatTurnStep["kind"] : "note";
     let status = String(row.status || "done") as ChatTurnStep["status"];
-    if (status !== "running" && status !== "ok" && status !== "error" && status !== "done") {
-      status = "done";
+    if (!["running", "ok", "error", "done", "cancelled", "interrupted", "timed_out", "skipped", "degraded", "unknown"].includes(status || "")) {
+      status = "unknown";
     }
     // Reloaded steps should never stay "Live".
-    if (status === "running") status = "done";
+    if (status === "running") status = "interrupted";
+    if (kind === "thinking" && (row.source === "provider_summary" || row.summary_source === "provider_summary")) status = "done";
     out.push({
       id: String(row.id || newStepId()),
       kind,

@@ -167,6 +167,8 @@ async def emit_activity(event: str, **fields) -> None:
     Run identity (run_id / source / desktop session) is read only from the
     bound ``Variant1RunContext``. Untagged emits are allowed but lack run_id.
     """
+    from observability.display_projection import safe_display_fields
+    fields = safe_display_fields(fields)
     ctx = current_run_context()
     msg = {"type": "activity", "event": event, "ts": round(time.time(), 3)}
     try:
@@ -250,6 +252,8 @@ def clip(s: str, n: int) -> str:
 
 def args_preview(args: dict) -> str:
     """Short one-line argument preview for tool activity events."""
+    from observability.display_projection import safe_display
+    args = safe_display(args)
     try:
         value = json.dumps(args, ensure_ascii=False, default=str)
     except Exception:

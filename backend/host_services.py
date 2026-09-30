@@ -165,6 +165,8 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
         artifact_store=session_artifacts,
         known_secret_resolver=host.router._known_model_secrets,
     ))
+    from observability.display_projection import set_display_secret_resolver
+    set_display_secret_resolver(host.router._known_model_secrets)
 
     if host._pending_extensions is None:
         from extensions import create_extension_v2_runtime

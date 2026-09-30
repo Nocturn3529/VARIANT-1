@@ -1,5 +1,5 @@
 import {activityPresentation} from "./activityPresentation";
-import {currentStepLabel} from "./activityModel";
+import {currentStepLabel, activityStatusLabel, stepFailed} from "./activityModel";
 import type {ChatTurnStep} from "./types";
 
 type Action = {present: string; past: string; failed: string};
@@ -23,8 +23,9 @@ export function traceActionLabel(step: ChatTurnStep, live: boolean): string {
     name = presentation.input?.match(/^\s*(?:[A-Za-z_]\w*\s*=\s*)?(?:await\s+)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(/)?.[1] || "";
   }
   const action = actions.find(([pattern]) => pattern.test(name))?.[1] || (presentation.python ? python : null);
-  if (!action) return currentStepLabel(step, live);
-  if (step.status === "error") return action.failed;
+  if (!action) return `${currentStepLabel(step, live)}${step.status && !["running","ok","done"].includes(step.status) ? ` · ${activityStatusLabel(step.status)}` : ""}`;
+  if (stepFailed(step)) return step.status === "timed_out" ? `${action.present} · timed out` : action.failed;
+  if (step.status && !["running","ok","done"].includes(step.status)) return `${action.present} · ${activityStatusLabel(step.status).toLowerCase()}`;
   if (step.status === "running") return live ? action.present : `${action.present} · interrupted`;
   return action.past;
 }

@@ -1,7 +1,7 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {RichText, thoughtPreview} from "./RichText";
 import {canRevealPaneForStep, revealPaneForStep} from "../workbench/activityRouting";
-import {formatActivityDuration, stepFailed} from "./activityModel";
+import {formatActivityDuration, stepFailed, activityStatusLabel} from "./activityModel";
 import {traceRows, traceSummary} from "./traceModel";
 import {traceActionLabel} from "./traceLabels";
 import {Icon} from "../ui/Icon";
@@ -82,10 +82,10 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
     <div className="trace-entry__heading">
       <button type="button" className="trace-entry__disclosure" aria-label={`${label}${presentation.python ? `, Python cell${presentation.executionCount !== null ? ` ${presentation.executionCount}` : ""}` : ""}${suspended && step.status === "running" ? `, ${suspended}` : ""}`}
         aria-expanded={hasDetails ? open : undefined} disabled={!hasDetails} onClick={() => { remember(key, !open); setChoice(!open); }}>
-        <span className="trace-entry__status" aria-hidden="true">{running ? <TraceProgress mutation={mutation}/> : <Icon name={failed ? "error" : step.status === "running" && suspended ? "pause" : thought ? "thought" : step.status === "running" ? "stop" : "check"}/>}</span>
+        <span className="trace-entry__status" aria-hidden="true">{running ? <TraceProgress mutation={mutation}/> : <Icon name={failed ? "error" : step.status === "cancelled" || step.status === "interrupted" ? "stop" : step.status === "skipped" || step.status === "degraded" || step.status === "unknown" ? "pause" : step.status === "running" && suspended ? "pause" : thought ? "thought" : step.status === "running" ? "stop" : "check"}/>}</span>
         <span className="trace-entry__name">{label}</span>
         {thought ? <span className="trace-entry__headline">{previewText}</span> : null}
-        <small>{[failed ? "Error" : running ? "Running" : step.status === "running" ? suspended || "Interrupted" : "", duration].filter(Boolean).join(" · ")}</small>
+        <small>{[running ? "Running" : step.status === "running" ? suspended || "Interrupted" : step.status && !["ok","done"].includes(step.status) ? activityStatusLabel(step.status) : "", duration].filter(Boolean).join(" · ")}</small>
         {hasDetails ? <Icon className={open ? "is-expanded" : ""} name="chevron"/> : null}
       </button>
       {!thought && canRevealPaneForStep(step) ? <button type="button" className="trace-entry__related" aria-label={`Open related surface for ${headline}`} title="Open related surface" onClick={() => revealPaneForStep(step)}><Icon name="popout"/></button> : null}
@@ -95,7 +95,7 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
         <dl className="trace-entry__metadata">
           {presentation.executionCount !== null ? <div><dt>Python cell</dt><dd>{presentation.executionCount}</dd></div> : null}
           {presentation.generation !== null ? <div><dt>Kernel</dt><dd>generation {presentation.generation}</dd></div> : null}
-          <div><dt>Status</dt><dd>{running ? "Running" : failed ? "Error" : step.status === "running" ? suspended || "Interrupted" : "Complete"}</dd></div>
+          <div><dt>Status</dt><dd>{running ? "Running" : step.status === "running" ? suspended || "Interrupted" : activityStatusLabel(step.status)}</dd></div>
         </dl>
         {presentation.input ? <section><strong>{presentation.python ? "Code" : "Input"}</strong><pre><code>{presentation.input}</code></pre></section> : null}
         {step.resultPreview ? <section><strong>{failed ? "Diagnostic" : "Result"}</strong><pre><code>{step.resultPreview}</code></pre></section> : null}

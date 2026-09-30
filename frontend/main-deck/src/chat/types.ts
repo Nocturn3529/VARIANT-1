@@ -40,7 +40,7 @@ export type ChatTurnStep = {
   kind: "tool" | "note" | "step" | "thinking";
   label: string;
   detail?: string;
-  status?: "running" | "ok" | "error" | "done";
+  status?: "running" | "ok" | "error" | "done" | "cancelled" | "interrupted" | "timed_out" | "skipped" | "degraded" | "unknown";
   tool?: string;
   /** Provider/host call identity; repeated uses of one tool never share it. */
   callId?: string;
