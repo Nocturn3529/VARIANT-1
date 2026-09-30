@@ -68,3 +68,16 @@ def test_compaction_keeps_the_terminal_tail_and_accumulates_omissions():
     assert again[0]["id"] == "14" and again[0]["omitted_before"] == 14
     long = _compact_steps([{"label": "Result", "result_preview": "X" * 2000}])[0]["result_preview"]
     assert len(long) <= 800 and "2000 characters total" in long
+
+
+def test_result_redaction_precedes_the_clip_boundary(monkeypatch):
+    from types import SimpleNamespace
+    from tool_runner import _safe_clip, _error_summary
+    secret = "opaque-managed-credential-with-no-pattern"
+    monkeypatch.setattr(display, "_resolver", lambda: [("managed", secret)])
+    ports = SimpleNamespace(clip=activity.clip)
+    text = "Ordinary result " + "x" * 350 + " " + secret
+    projected = _safe_clip(ports, text, 380)
+    assert "opaque-managed" not in projected
+    assert "opaque-managed" not in _error_summary(text, 380, sanitize=True)
+    assert secret in _error_summary(text, 1000), "local model diagnostics retain their original execution context"
