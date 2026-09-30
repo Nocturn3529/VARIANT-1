@@ -28,6 +28,18 @@ def test_all_repetitions_require_full_outcomes_and_measured_latency():
         assert not assess([invalid] * 3, 3, ["DESK"], 1000)["qualified"]
 
 
+def test_manifest_effort_is_audited_even_without_a_spend_cap():
+    row = {"surface": {"action_surface": "trusted-local.v1", "provider_tool_schema_revision": "ipython.portable.v6"},
+           "route": {"provider": "xai", "model": "grok-4.7", "adapter": "xai.responses"},
+           "generation": {"mode": "provider_tools", "reasoning_effort": "low"},
+           "tools": {"requested_count": 1, "rendered_count": 1,
+                     "requested": [{"name": "ipython"}], "rendered": [{"name": "ipython"}]}}
+    route = {"provider": "xai", "model": "grok-4.7", "reasoning_effort": "low"}
+    assert run_canary.request_manifest_matches_surface(row, route=route, adapter="xai.responses")
+    row["generation"]["reasoning_effort"] = "high"
+    assert not run_canary.request_manifest_matches_surface(row, route=route, adapter="xai.responses")
+
+
 @pytest.mark.asyncio
 async def test_http_meter_preserves_stream_and_blocks_before_network(tmp_path, monkeypatch):
     path = tmp_path / "budget.json"

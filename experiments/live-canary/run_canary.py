@@ -1987,6 +1987,8 @@ def request_manifest_matches_surface(
         and str((row.get("route") or {}).get("provider") or "") == route["provider"]
         and str((row.get("route") or {}).get("model") or "") == route["model"]
         and str((row.get("route") or {}).get("adapter") or "") == adapter
+        and (not route.get("reasoning_effort")
+             or generation.get("reasoning_effort") == route["reasoning_effort"])
         and str((row.get("surface") or {}).get(
             "provider_tool_schema_revision") or "") == "ipython.portable.v6"
         and not bool(tools.get("schema_loss"))

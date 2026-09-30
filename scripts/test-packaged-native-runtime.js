@@ -23,8 +23,12 @@ const cpuBackends = fs.readdirSync(runtime).filter(name => /^ggml-cpu-.+\.dll$/i
 assert.strictEqual(cpuBackends.length, 14, 'packaged runtime must retain all CPU dispatch backends');
 
 const packagedFiles = fs.readdirSync(runtime, {withFileTypes: true});
-assert.strictEqual(packagedFiles.filter(entry => entry.isDirectory()).length, 0,
-  'native runtime must not retain tool/demo subdirectories');
+assert.deepStrictEqual(packagedFiles.filter(entry => entry.isDirectory()).map(entry => entry.name).sort(), ['cua-driver'],
+  'only the supported desktop driver directory may accompany the native runtime');
+const desktopDriver = path.join(runtime, 'cua-driver');
+assert.deepStrictEqual(fs.readdirSync(desktopDriver).sort(), ['VERSION', 'cua-driver.exe'],
+  'desktop driver must exclude additional tools, caches, and private state');
+assert.equal(fs.readFileSync(path.join(desktopDriver, 'VERSION'), 'utf8').trim(), '0.28.2');
 assert.strictEqual(packagedFiles.filter(entry => entry.isFile()).length, 27,
   'native runtime manifest must stay at 27 files');
 for (const forbidden of [
@@ -52,8 +56,8 @@ execFileSync(path.join(root, 'backend/.venv/Scripts/python.exe'),
   [path.join(root, 'scripts/test-native-matrix.py'), '--runtime', runtime],
   {cwd: root, stdio: 'inherit', windowsHide: true});
 
-const bytes = fs.readdirSync(runtime).reduce(
-  (total, name) => total + fs.statSync(path.join(runtime, name)).size,
+const bytes = packagedFiles.filter(entry => entry.isFile()).reduce(
+  (total, entry) => total + fs.statSync(path.join(runtime, entry.name)).size,
   0,
 );
 console.log(

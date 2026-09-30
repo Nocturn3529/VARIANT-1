@@ -108,6 +108,8 @@ def main() -> int:
     parser.add_argument("--oauth-only", action="store_true")
     parser.add_argument("--max-cost-usd", type=float)
     args = parser.parse_args()
+    if args.oauth_only and args.model != "grok":
+        parser.error("--oauth-only currently applies to the xAI qualification route")
     if not args.model_id:
         args.model_id = "grok-4.7" if args.model == "grok" else run_canary.MODEL_ROUTES[args.model]["model"]
     if args.repetitions < 1 or args.timeout < 1 or (args.max_cost_usd is not None and (not math.isfinite(args.max_cost_usd) or args.max_cost_usd <= 0)):
