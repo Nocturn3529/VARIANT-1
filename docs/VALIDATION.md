@@ -19,8 +19,26 @@ configuration paths before importing backend services. Avoid importing
 
 The public source includes synthetic fixtures and the live-canary Python modules
 needed by regression tests. Historical run outputs and real-account benchmark
-data are excluded. Live canaries must use your own authorized accounts and an
-explicit budget; the repository does not supply a provider account.
+data are excluded. Live canaries use your own authorized accounts; the repository
+does not supply a provider account. Choose cases, repetitions, and usage according
+to the situation, the tests needed, and the user's specifications. A spend cap is
+optional unless the user specifies one; honor any specified spend or usage limit.
+Record observed usage, available cost information, and any uncertainty
+in how the selected account or subscription reports consumption.
+
+Repeat task qualification with `experiments/live-canary/qualify.py`, supplying
+the provider route, model ID, reasoning effort, cases, and repetitions. The
+default gate requires full task completion in three trials, with each case
+finishing within its declared timeout. A routing-only desktop result does not
+satisfy this gate. For example, use `--model grok --model-id grok-4.7
+--reasoning-effort low --oauth-only` for the existing xAI subscription route.
+
+`--max-cost-usd` is optional. When specified for a supported model, a source
+backend meter reserves conservative request costs before dispatch. Observed
+provider costs replace reservations; missing usage keeps its reservation.
+API-equivalent estimates do not certify a subscription's billing or quota rules.
+Evidence records exact source identity, route, seeds, outcomes, latency, and
+available cost measurements under the locally ignored canary run directory.
 
 ## Native desktop tests
 
