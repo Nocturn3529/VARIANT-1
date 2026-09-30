@@ -301,4 +301,31 @@ for (const name of cssFiles) {
   }
 }
 
+// References must resolve to a stylesheet definition or a deliberately supplied
+// component-local style property. Fallbacks must not hide misspelled root tokens.
+const allStyles = cssFiles.map(name => fs.readFileSync(path.join(stylesDir, name), 'utf8')).join('\n');
+const definitions = new Set([...allStyles.matchAll(/(--[\w-]+)\s*:/g)].map(match => match[1]));
+function sourceFiles(directory) {
+  return fs.readdirSync(directory, {withFileTypes:true}).flatMap(entry => {
+    const file = path.join(directory, entry.name);
+    return entry.isDirectory() ? sourceFiles(file) : /\.tsx?$/.test(file) ? [file] : [];
+  });
+}
+for (const file of sourceFiles(path.join(root, 'frontend/main-deck/src'))) {
+  for (const match of fs.readFileSync(file, 'utf8').matchAll(/["'](--[\w-]+)["']\s*:/g)) definitions.add(match[1]);
+}
+for (const match of allStyles.matchAll(/var\((--[\w-]+)/g)) assert.ok(definitions.has(match[1]), `undefined CSS property ${match[1]}`);
+const ink = token => new RegExp(`--${token}:\\s*(#[a-f0-9]{6})`, 'i').exec(designSystem)[1];
+function luminance(hex) {
+  const values = [1,3,5].map(index => parseInt(hex.slice(index,index+2),16)/255)
+    .map(value => value <= .04045 ? value/12.92 : ((value+.055)/1.055)**2.4);
+  return values[0]*.2126 + values[1]*.7152 + values[2]*.0722;
+}
+for (const token of ['deck-danger','deck-warning','deck-positive','deck-diff-added','deck-diff-deleted']) {
+  const ratio = (luminance(ink(token))+.05)/(luminance(ink('deck-surface-raised'))+.05);
+  assert.ok(ratio >= 4.5, `${token} status text must remain readable on raised surfaces`);
+}
+assert.match(index, /:root\[data-motion="reduced"\] \*/);
+assert.match(index, /animation-iteration-count:\s*1\s*!important/);
+assert.match(index, /transition-duration:\s*0ms\s*!important/);
 console.log('deck design system contract: ok');

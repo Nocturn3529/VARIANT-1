@@ -221,7 +221,7 @@
 .settings-section__header > div:first-child > span {
   display: block;
   color: var(--deck-text-faint);
-  font: 650 var(--deck-text-2xs) / 1.2 var(--font-mono);
+  font: 650 var(--deck-text-xs) / 1.2 var(--font-mono);
   letter-spacing: .1em;
   text-transform: uppercase;
 }
@@ -823,7 +823,7 @@
 .provider-account-row__remove { display: grid; width: 28px; height: 28px; margin-right: 8px; place-items: center; border: 0; border-radius: 5px; color: var(--deck-text-muted); background: transparent; cursor: pointer; }
 .provider-account-row__remove svg,
 .provider-key-row__icon svg { width: 14px; height: 14px; }
-.provider-account-row__remove:hover { color: var(--deck-danger); background: var(--deck-control-hover); }
+.provider-account-row__remove:hover { color: var(--deck-danger); background: var(--deck-surface-raised); }
 .provider-disclosure { justify-self: start; margin: 5px 8px; padding: 4px; border: 0; color: var(--deck-text-muted); background: transparent; font-size: var(--deck-text-xs); cursor: pointer; }
 .provider-disclosure:hover { color: var(--deck-text-primary); }
 .provider-oauth-overlay.deck-overlay { position: fixed; inset: 0; margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; border: 0; border-radius: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: var(--deck-canvas); }
@@ -926,7 +926,7 @@
 .provider-key-row__field input:focus { border-color: var(--deck-line-strong); }
 .provider-key-row__field .provider-key-row__masked { border-color: transparent; color: var(--deck-text-faint); background: transparent; cursor: pointer; }
 .provider-key-row__icon { display: grid; flex: 0 0 28px; height: 28px; place-items: center; border: 0; border-radius: 5px; color: var(--deck-text-muted); background: transparent; cursor: pointer; }
-.provider-key-row__icon:hover { color: var(--deck-danger); background: var(--deck-control-hover); }
+.provider-key-row__icon:hover { color: var(--deck-danger); background: var(--deck-surface-raised); }
 .provider-key-row__details {
   display: grid;
   grid-column: 1 / -1;
@@ -976,7 +976,7 @@
 .custom-endpoint-row small { overflow: hidden; color: var(--deck-text-faint); font-size: var(--deck-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .custom-endpoint-row__actions { display: flex; align-items: center; gap: 6px; }
 .custom-endpoint-row__actions > button:last-child { width: 28px; height: 28px; border: 0; border-radius: 5px; color: var(--deck-text-faint); background: transparent; font-size: 16px; cursor: pointer; }
-.custom-endpoint-row__actions > button:last-child:hover { color: var(--deck-danger); background: var(--deck-control-hover); }
+.custom-endpoint-row__actions > button:last-child:hover { color: var(--deck-danger); background: var(--deck-surface-raised); }
 .custom-endpoint-empty { display: grid; min-height: 96px; place-content: center; gap: 4px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); text-align: center; }
 .custom-endpoint-empty strong { color: var(--deck-text-muted); font-size: var(--deck-text-sm); }
 .custom-endpoint-editor { display: grid; gap: 12px; padding: 14px; }
@@ -1051,7 +1051,7 @@
   margin-top: 7px;
   overflow: hidden;
   color: var(--deck-text-muted);
-  font: var(--deck-text-2xs) / 1.35 "Geist Mono", "Cascadia Mono", monospace;
+  font: var(--deck-text-xs) / 1.35 "Geist Mono", "Cascadia Mono", monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1083,7 +1083,7 @@
 
 .gen-model-inventory__heading code {
   color: var(--deck-text-muted);
-  font: var(--deck-text-2xs) / 1.35 "Geist Mono", "Cascadia Mono", monospace;
+  font: var(--deck-text-xs) / 1.35 "Geist Mono", "Cascadia Mono", monospace;
 }
 
 .gen-model-inventory__actions {
@@ -1354,7 +1354,7 @@
   border-radius: 999px;
   color: var(--deck-text-faint);
   background: var(--deck-surface-raised);
-  font: var(--deck-text-2xs) var(--font-mono);
+  font: var(--deck-text-xs) var(--font-mono);
 }
 
 .plugins-settings__copy p {

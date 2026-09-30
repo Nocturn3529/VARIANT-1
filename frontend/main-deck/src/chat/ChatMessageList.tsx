@@ -323,12 +323,13 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
       live={turn.live}
       streamText={turn.streamingMessage?.text || ""}
       turnStartedAt={turnStartedAt}
+      scope={turn.key}
     /> : null}
 
     {hasResponse ? <div className="chat-turn__responses">
       {turn.assistants.map(({message, index}) => (
         <div className="chat-response-segment" key={`${index}-${message.ts || 0}-response`}>
-        {!turn.live ? <TurnActivity steps={message.steps || []} live={false} streamText="" turnStartedAt={turnStartedAt} tracePersistence={message.tracePersistence}/> : null}
+        {!turn.live ? <TurnActivity steps={message.steps || []} live={false} streamText="" turnStartedAt={turnStartedAt} tracePersistence={message.tracePersistence} scope={message.runId || turn.key}/> : null}
         <MessageArticle
           key={`${index}-${message.ts || 0}-assistant`}
           message={message}

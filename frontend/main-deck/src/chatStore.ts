@@ -15,6 +15,7 @@
  */
 import {useSyncExternalStore} from "react";
 import {resetTraceAnnotations} from "./chat/annotations";
+import {resetDisclosures} from "./chat/disclosures";
 
 import type {ChatState} from "./chat/types";
 import {
@@ -110,6 +111,7 @@ export function useChatState(): ChatState {
 /** Test/helper: replace state (used sparingly). */
 export function __resetChatStoreForTests() {
   resetTraceAnnotations();
+  resetDisclosures();
   resetRecoveryNotices();
   invalidatePendingChatAttachments();
   resetSpeechForTests();

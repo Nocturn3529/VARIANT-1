@@ -149,9 +149,10 @@ deckRuntime.subscribeState(() => {
     diagnostics.maxConcurrentSocketCount,
   );
 });
-const fixtureMode = new URLSearchParams(window.location.search).get("fixture") === "1";
+declare const __VARIANT1_FIXTURES__: boolean;
 const disposeBrowserDownloads = installBrowserDownloads(api);
-if (fixtureMode) {
+if (typeof __VARIANT1_FIXTURES__ !== "undefined" && __VARIANT1_FIXTURES__
+  && new URLSearchParams(window.location.search).get("fixture") === "1") {
   document.addEventListener("variant1:fixture-state", event => {
     const state = (event as CustomEvent).detail;
     if (state === "connecting" || state === "connected" || state === "offline") {
@@ -165,7 +166,7 @@ if (fixtureMode) {
     }
   });
   const fixtureLoader = document.createElement("script");
-  fixtureLoader.src = "./dev/fixture-loader.js";
+  fixtureLoader.src = new URL("../dev/fixture-loader.js", import.meta.url).href;
   document.head.appendChild(fixtureLoader);
 }
 window.addEventListener("beforeunload", () => {
@@ -383,7 +384,8 @@ window.addEventListener("unhandledrejection", event => {
 
 if(detachedChatId())switchSession(detachedChatId());
 deckRuntime.start();
-if (fixtureMode) {
+if (typeof __VARIANT1_FIXTURES__ !== "undefined" && __VARIANT1_FIXTURES__
+  && new URLSearchParams(window.location.search).get("fixture") === "1") {
   document.body.dataset.variant1FixtureReady = "1";
   document.dispatchEvent(new CustomEvent("variant1:fixture-ready"));
 }

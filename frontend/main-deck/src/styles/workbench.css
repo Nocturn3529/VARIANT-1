@@ -621,9 +621,9 @@ body:has(.settings-overlay) .workbench-terminal-surface { visibility: hidden; po
 .workbench-review__ship { flex-wrap: wrap; }
 .workbench-review__ship textarea { flex-basis: 100%; }
 
-.startup-cover {position:fixed;inset:0;z-index:900;background:#0e0e0e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:var(--deck-text,#ddd);}
+.startup-cover {position:fixed;inset:0;z-index:900;background:#0e0e0e;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;color:var(--deck-text-primary);}
 .startup-cover strong {font-size:14px;letter-spacing:.12em;}
-.startup-cover__line {font:10px var(--deck-font-mono,monospace);letter-spacing:.24em;text-transform:uppercase;color:#999;}
+.startup-cover__line {font:10px var(--font-mono);letter-spacing:.24em;text-transform:uppercase;color:#999;}
 .startup-cover__line span {animation:startup-blink 1.2s steps(2,end) infinite;}
 .startup-cover p {max-width:420px;text-align:center;font-size:12px;color:#aaa;}
 .startup-cover button {padding:8px 12px;border:1px solid #333;background:#181818;color:#ddd;}
@@ -633,7 +633,7 @@ body:has(.settings-overlay) .workbench-terminal-surface { visibility: hidden; po
 .compact-chat > .chat-workspace {flex:1;min-height:0;min-width:0;display:grid;}
 .compact-chat .chat-workbar {display:none;}
 
-.workbench-terminal-notice{padding:5px 10px;font-size:11px;color:var(--deck-muted,#999);border-bottom:1px solid var(--deck-line,#262626);}
+.workbench-terminal-notice{padding:5px 10px;font-size:11px;color:var(--deck-text-muted);border-bottom:1px solid var(--deck-line,#262626);}
 
 body[data-startup="loading"] .titlebar-workbench-tools{visibility:hidden;pointer-events:none;}
 
@@ -675,9 +675,9 @@ body[data-startup="loading"] :is(.titlebar__mark,.titlebar__name,.titlebar-workb
 .peer-dialog__tabs{display:flex;gap:4px;padding:0 16px 10px;border-bottom:1px solid var(--deck-line);}
 .peer-dialog__tabs>button:last-child{margin-left:auto;}
 .peer-dialog button{padding:6px 10px;border:1px solid var(--deck-line);border-radius:var(--deck-radius-sm);background:var(--deck-surface-panel);color:inherit;cursor:pointer;}
-.peer-dialog button:hover:not(:disabled){background:var(--deck-surface-hover,#252525);border-color:var(--deck-line-strong);}
+.peer-dialog button:hover:not(:disabled){background:var(--deck-surface-raised);border-color:var(--deck-line-strong);}
 .peer-dialog button:disabled{opacity:.45;cursor:default;}
-.peer-dialog button[aria-pressed=true]{background:var(--deck-surface-hover,#252525);border-color:var(--deck-text-muted);}
+.peer-dialog button[aria-pressed=true]{background:var(--deck-surface-raised);border-color:var(--deck-text-muted);}
 .peer-dialog__body{padding:16px;overflow:auto;min-height:0;flex:1 1 auto;max-height:50vh;overscroll-behavior:contain;}
 .peer-dialog__intro,.peer-dialog__tabs,.peer-compose{flex:none;}
 .peer-dialog input,.peer-dialog textarea,.peer-dialog select{border:1px solid var(--deck-line);border-radius:var(--deck-radius-sm);background:var(--deck-surface-panel);color:inherit;padding:8px;font:inherit;}
@@ -695,7 +695,7 @@ body[data-startup="loading"] :is(.titlebar__mark,.titlebar__name,.titlebar-workb
 .peer-message__route{overflow-wrap:anywhere;}.peer-message__content{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6;}
 .peer-message footer{font-size:var(--deck-text-xs);color:var(--deck-text-muted);}.peer-message time{margin-right:auto;}
 .peer-message details{margin-top:10px;font-size:var(--deck-text-xs);color:var(--deck-text-muted);}
-.peer-message dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;}.peer-message dd{margin:0;overflow-wrap:anywhere;font-family:var(--deck-font-mono,monospace);}
+.peer-message dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;}.peer-message dd{margin:0;overflow-wrap:anywhere;font-family:var(--font-mono);}
 .grok-peer-permission{border-top:1px solid var(--deck-line);padding-top:12px;margin-bottom:12px;}.grok-peer-permission pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:180px;overflow:auto;}
 
 .message.message--peer{display:block;width:100%;}

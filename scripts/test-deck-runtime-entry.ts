@@ -360,6 +360,9 @@ async function testBackendStatusSubscriptionOwnership(): Promise<void> {
 }
 
 async function testDeckRuntimeHydration(): Promise<void> {
+  const isolated = new DeckRuntime({api:null});
+  assert.throws(()=>isolated.ingestDevelopmentMessage({type:"config"}), /Fixture ingress is disabled/);
+  assert.throws(()=>isolated.setDevelopmentConnectionState("connected"), /Fixture ingress is disabled/);
   const scheduler = new FakeScheduler();
   const sockets: FakeSocket[] = [];
   const handled: string[] = [];

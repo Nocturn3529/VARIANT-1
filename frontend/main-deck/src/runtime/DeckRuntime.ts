@@ -12,6 +12,7 @@ import {requestInitialHydration} from "./initialHydration";
 
 type StateListener = (state: BackendConnectionState) => void;
 type VoidListener = () => void;
+declare const __VARIANT1_FIXTURES__: boolean;
 
 export type DeckRuntimeOptions = {
   api: BackendBridgeApi | null;
@@ -142,10 +143,12 @@ export class DeckRuntime {
    * always arrive through BackendClient.
    */
   ingestDevelopmentMessage(message: WsMessage): void {
+    if (typeof __VARIANT1_FIXTURES__ === "undefined" || !__VARIANT1_FIXTURES__) throw new Error("Fixture ingress is disabled");
     this.dispatchMessage(message);
   }
 
   setDevelopmentConnectionState(state: BackendConnectionState): void {
+    if (typeof __VARIANT1_FIXTURES__ === "undefined" || !__VARIANT1_FIXTURES__) throw new Error("Fixture ingress is disabled");
     this.currentState = state;
     if (typeof document !== "undefined") {
       document.body.dataset.backendState = state;

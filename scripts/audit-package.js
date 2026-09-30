@@ -7,6 +7,7 @@ const archive = path.join(folder, 'resources/app.asar');
 const entries = asar.listPackage(archive).map(name => name.replaceAll('\\', '/'));
 const forbiddenAsar = entries.filter(name => /^\/(artifacts|data|logs|attachments)\//.test(name)
   || /\/main-deck\/(src|dev)\//.test(name) || /\.(map|d\.ts)$/.test(name)
+  || /\/main-deck\/dist\/fixture(?:-platform)?\./.test(name)
   || /node_modules\/(react|react-dom|p5|@xterm)(\/|$)/.test(name)
   || /live2d|blackcat|electron-overlay|frontend\/renderer\.js/.test(name));
 assert.deepEqual(forbiddenAsar, [], 'private/development/retired files in app.asar');
