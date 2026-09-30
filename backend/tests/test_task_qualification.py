@@ -106,7 +106,8 @@ def test_candidate_backend_config_uses_the_selected_adapter_and_oauth_only(tmp_p
     monkeypatch.setattr(run_canary, "SOURCE_CONFIG", source)
     monkeypatch.setenv("VARIANT1_QUALIFICATION_CANDIDATE_ROUTE", "1")
     monkeypatch.setenv("VARIANT1_QUALIFICATION_OAUTH_ONLY", "1")
-    backend = run_canary.BackendProcess(tmp_path, route={"mode": "cloud", "provider": "xai", "model": "grok-4.7"})
+    backend = run_canary.BackendProcess(tmp_path, seed="synthetic", enable_mcp=False,
+        route={"mode": "cloud", "provider": "xai", "model": "grok-4.7"})
     backend._prepare_config()
     config = json.loads(backend.config_path.read_text())
     assert config["action_surface"]["support_matrix"][0]["adapter"] == "xai.responses"
