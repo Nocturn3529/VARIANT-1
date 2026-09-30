@@ -1,9 +1,10 @@
 # Architecture
 
-VARIANT-1 is a Windows AI workspace with an Electron interface, a Python backend,
-and separate persistent CPython workers for live chat runtimes. This guide
-explains how execution, state, and service ownership fit together. For source
-installation, see [Setup](SETUP.md).
+VARIANT-1 is an AI workspace with an Electron interface, a Python backend,
+and separate persistent CPython workers for live chat runtimes. Windows is the
+primary source-development path; preview packages also target Linux x86_64 and
+macOS arm64. This guide explains how execution, state, and service ownership fit
+together. For Windows source installation, see [Setup](SETUP.md).
 
 ## One model-facing execution path
 
@@ -41,6 +42,14 @@ Provider calls use the backend model-routing path.
 imports, and helper functions survive calls within one live Python generation.
 A reset, restart, eviction, or process failure can end that generation.
 
+Persistent kernels have no default cell deadline, resource quota, or automatic
+retirement based on idle time, age, or the number of live chats. Process-tree
+ownership and explicit shutdown still apply. Positive host overrides can enable
+quotas or retirement; disposable mutation workers have their own bounded policy.
+Resource status reports a disabled memory quota and its pressure ratio as `null`,
+while retaining available usage measurements. A configured quota with an unknown
+usage measurement also has an unknown pressure ratio.
+
 Portable checkpoints preserve supported values and report exclusions. They do
 not capture arbitrary clients, connections, threads, or live handles. Portable
 checkpointing and restoration are optional and disabled by default.
@@ -76,6 +85,11 @@ cannot reverse an external effect that has already completed. Integration
 receipts should report uncertainty rather than imply success or rollback that
 has not been established.
 
+An interrupted cell can retain its generation and ordinary background Python
+tasks when interruption completes cooperatively. Terminal Stop can close the
+generation if work does not settle; closing or restarting the kernel ends its
+live state. Ordinary chat steering waits for the current cell to complete.
+
 ## Development ownership
 
 Keep persistent service ownership in the backend and render its state through
@@ -83,7 +97,16 @@ the frontend protocol. Handle resource/chat identity and stale asynchronous
 results explicitly. Test changes in isolation from personal models, accounts,
 browser profiles, and runtime data. See [Validation](VALIDATION.md).
 
-### Installer composition — 2026-09-16
+Each renderer's backend connection owns and releases its status subscription.
+This includes docked chats borrowing the parent window's bridge, whose callbacks
+must be removed when the child connection stops.
+
+### Installer composition
+
+Published prereleases provide unsigned Windows, Linux, and macOS packages.
+CI builds and checks packaged startup and installation/removal on those platforms.
+Release notes record the exact build source and qualification limits; a current
+source checkout can be newer than a published binary.
 
 The Live2D cat overlay has been removed, including its avatar window, preload,
 renderer, animation configuration, libraries, and model payload. Start hidden
