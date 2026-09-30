@@ -8,6 +8,7 @@ import {
   type SocketEventMap,
 } from "../frontend/main-deck/src/runtime/BackendClient";
 import {DeckRuntime} from "../frontend/main-deck/src/runtime/DeckRuntime";
+import {installDockedChatBridge} from "../frontend/main-deck/src/runtime/viewIdentity";
 import {INITIAL_DECK_COMMANDS} from "../frontend/main-deck/src/runtime/initialHydration";
 import {
   __resetTurnStoreForTests,
@@ -320,6 +321,42 @@ async function testBackendClient(): Promise<void> {
   backendStatus?.({status: "ready"});
   await flush();
   assert.equal(sockets.length, 2, "backend-ready cannot restart a stopped client");
+}
+
+async function testBackendStatusSubscriptionOwnership(): Promise<void> {
+  const originalWindow = globalThis.window;
+  const listeners = new Set<(status: {status?: string}) => void>();
+  let unsubscribeCalls = 0;
+  let backendInfoCalls = 0;
+  const parent = {location: {origin: "variant1://app", pathname: "/frontend/main-deck/index.html"},
+    variant1Deck: {
+      getBackendInfo: async () => { backendInfoCalls += 1; return null; },
+      onBackendStatus: (listener: (status: {status?: string}) => void) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); unsubscribeCalls += 1; };
+      },
+    }};
+  try {
+    // Exercise the actual bridge used by docked chat iframes: its listener
+    // lives in the parent window and must be released when the child stops.
+    globalThis.window = {location: {origin: "variant1://app", search: "?detached_chat=child&docked=1"}, parent} as unknown as Window & typeof globalThis;
+    installDockedChatBridge();
+    const client = new BackendClient({api: window.variant1Deck!, scheduler: new FakeScheduler()});
+    for (let cycle = 0; cycle < 5; cycle += 1) {
+      client.start(); client.start();
+      await flush();
+      assert.equal(listeners.size, 1, "one parent subscription per started client");
+      client.stop(); client.stop();
+      assert.equal(listeners.size, 0, "stopping a docked client releases its parent subscription");
+    }
+    assert.equal(unsubscribeCalls, 5, "each subscription is disposed exactly once");
+    const callsAfterStop = backendInfoCalls;
+    listeners.forEach(listener => listener({status: "ready"}));
+    await flush();
+    assert.equal(backendInfoCalls, callsAfterStop, "closed docked chats do not receive parent events");
+  } finally {
+    globalThis.window = originalWindow;
+  }
 }
 
 async function testDeckRuntimeHydration(): Promise<void> {
@@ -2149,6 +2186,7 @@ function testChatResourceOwnership(): void {
 
 export async function run(): Promise<void> {
   await testBackendClient();
+  await testBackendStatusSubscriptionOwnership();
   await testDeckRuntimeHydration();
   testTurnStore();
   testSessionStore();
