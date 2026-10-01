@@ -94,6 +94,10 @@ export async function run() {
     assert.match(host.textContent!,/Select commits to review/,'global history does not pretend to be one branch diff');
     await act(async()=>document.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,clientX:800,clientY:500})));
     assert.equal(document.querySelector('[data-deck-menu]'),null,'outside empty space dismisses the menu');
+    window.variant1Deck!.getWorkbenchGitBranches=async()=>({ok:true,branches:[{ref:'refs/heads/newly-created',name:'newly-created',oid:'d'.repeat(40)}]});
+    await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-review__branch')!.click());
+    assert.ok(button('newly-created'),'opening branch menu refreshes the catalog without remounting Review');
+    await act(async()=>document.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,clientX:800,clientY:500})));
     await act(async()=>root.render(<DiffView text={"Binary files a/photo.png and b/photo.png differ\n"} binary/>));
     assert.match(host.textContent!,/Binary file changed/);
     await act(async()=>root.render(<DiffView text={"line\n".repeat(8000)} fullContents/>));
@@ -104,14 +108,19 @@ export async function run() {
     await act(async()=>root.render(<DiffView text={"@@ -0,0 +1 @@\n+const value = 1;\n"} language="ts"/>));
     assert.ok(host.querySelector('.token-keyword'),'changed code reuses the safe tokenizer');
     let resolveOld:((value:Record<string,unknown>)=>void)|undefined;
+    let resolveOldBranches:((value:Record<string,unknown>)=>void)|undefined;
     const api=window.variant1Deck!;
+    api.getWorkbenchGitBranches=async(directory)=>directory==='C:\\old-project' ? new Promise(resolve=>{resolveOldBranches=resolve;}) : {ok:true,branches:[{ref:'refs/heads/new-project-branch',name:'new-project-branch',oid:'e'.repeat(40)}]};
     api.getWorkbenchReviewFiles=async(directory)=>directory==='C:\\old-project'
       ? new Promise(resolve=>{resolveOld=resolve;})
       : {ok:true,root:directory,files:[{path:'current.ts',status:' M'}]};
     await act(async()=>{root.render(<ReviewPanel directory={"C:\\old-project"}/>);await pause();});
     await act(async()=>{root.render(<ReviewPanel directory={"C:\\new-project"}/>);await pause();});
     await act(async()=>{resolveOld!({ok:true,root:'C:\\old-project',files:[{path:'stale.ts',status:' M'}]});await pause();});
+    await act(async()=>{resolveOldBranches!({ok:true,branches:[{ref:'refs/heads/stale-project-branch',name:'stale-project-branch',oid:'f'.repeat(40)}]});await pause();});
     assert.match(host.textContent!,/current\.ts/);assert.doesNotMatch(host.textContent!,/stale\.ts/,'a prior project cannot overwrite the selected repository');
+    await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-review__branch')!.click());
+    assert.ok(button('new-project-branch'));assert.equal(button('stale-project-branch'),undefined,'late catalog responses cannot replace the new project branches');
     const tab=getPreviewState().tabs.at(-1)!;
     const sourceApi={readWorkbenchFile:async()=>({ok:true,text:Array.from({length:8000},(_,index)=>`Line ${index+1}`).join("\n"),editable:true,mtimeMs:1})} as RuntimeApi;
     await act(async()=>{root.render(<PreviewPane tabId={tab.id} api={sourceApi}/>);await pause();});

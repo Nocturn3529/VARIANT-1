@@ -20,6 +20,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
   const ownerDocument=useSurfaceDocument(),ownerWindow=ownerDocument.defaultView || window;
   const api=window.variant1Deck,panel=useRef<HTMLElement>(null);
   const epoch=useRef(0),historyEpoch=useRef(0);
+  const catalogEpoch=useRef(0),totalsEpoch=useRef(0);
   const commitAnchor=useRef(""),mutating=useRef(false);
   const [root,setRoot]=useState(directory),[currentBranch,setCurrentBranch]=useState("");
   const [branches,setBranches]=useState<WorkbenchGitBranch[]>([]),[branch,setBranch]=useState("HEAD");
@@ -36,6 +37,19 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
   const [closed,setClosed]=useState<ReadonlySet<string>>(new Set()),[menu,setMenu]=useState<Menu|null>(null);
   const [scroller,setScroller]=useState<HTMLElement|null>(null),[selected,setSelected]=useState(""),[notice,setNotice]=useState("");
   const [closedFolders,setClosedFolders]=useState<ReadonlySet<string>>(new Set());
+  async function loadBranches(){
+    const token=++catalogEpoch.current;if(!directory)return;
+    try{const value=await api?.getWorkbenchGitBranches?.(directory,{limit:200});if(token!==catalogEpoch.current)return;
+      setBranches(value?.branches || []);setDefaultBase(value?.defaultBaseRef || "");
+      const current=value?.branches?.find(row=>row.current);if(current)setCurrentBranch(current.name);
+      if(!value?.ok)setHistoryError(reviewError(value?.error || "Could not list branches."));
+    }catch(error){if(token===catalogEpoch.current)setHistoryError(String(error));}
+  }
+  async function loadBranchAggregate(){
+    const token=++totalsEpoch.current;if(!directory)return;
+    try{const value=await api?.getWorkbenchReviewFiles?.(directory,{scope:"branch",ref:branch,baseRef:baseRef || undefined});if(token===totalsEpoch.current)setBranchAggregate(value?.ok?value.aggregate || null:null);}
+    catch{if(token===totalsEpoch.current)setBranchAggregate(null);}
+  }
 
   async function refresh(){
     const token=++epoch.current;setAggregate(null);
@@ -68,16 +82,14 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
     let current=true;
     if(directory){
       void api?.getWorkbenchGitStatus?.(directory).then(value=>{if(current)setCurrentBranch(value.branch || "");}).catch(()=>{});
-      void api?.getWorkbenchGitBranches?.(directory,{limit:200}).then(value=>{if(current){setBranches(value.branches || []);setDefaultBase(value.defaultBaseRef || "");if(!value.ok)setHistoryError(value.error || "Could not list branches.");}}).catch(error=>{if(current)setHistoryError(String(error));});
+      void loadBranches();
     }
-    return()=>{current=false;epoch.current++;historyEpoch.current++;};
+    return()=>{current=false;epoch.current++;historyEpoch.current++;catalogEpoch.current++;};
   },[directory,api]);
   useEffect(()=>{setClosed(new Set());setFiles([]);setNotice("");void refresh();return()=>{epoch.current++;};},[directory,options,api]);
   useEffect(()=>{setCommits([]);setNextOffset(undefined);commitAnchor.current="";void loadHistory();return()=>{historyEpoch.current++;};},[directory,branch,baseRef,allBranches,api]);
   useEffect(()=>{
-    let current=true;setBranchAggregate(null);
-    if(directory)void api?.getWorkbenchReviewFiles?.(directory,{scope:"branch",ref:branch,baseRef:baseRef || undefined}).then(value=>{if(current && value.ok)setBranchAggregate(value.aggregate || null);}).catch(()=>{});
-    return()=>{current=false;};
+    setBranchAggregate(null);void loadBranchAggregate();return()=>{totalsEpoch.current++;};
   },[directory,branch,baseRef,api]);
   function chooseBranch(ref:string){setBranch(ref);setAllBranches(false);setOptions({scope:"branch",ref,baseRef:baseRef || undefined});setMenu(null);}
   const refreshRef=useRef(refresh);refreshRef.current=refresh;
@@ -88,7 +100,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
     const stop=watchPath(api,root,focused,{scope:"workspace",delay:150,onError:setError}),interval=ownerWindow.setInterval(focused,30000);
     return()=>{queue.dispose();stop();ownerWindow.removeEventListener("focus",focused);ownerWindow.clearInterval(interval);};
   },[root,api,ownerDocument]);
-  function disclose(event:MouseEvent<HTMLButtonElement>,kind:Menu["kind"],file?:WorkbenchGitFile){const rect=event.currentTarget.getBoundingClientRect();setMenu({kind,file,x:rect.left,y:rect.bottom+4});}
+  function disclose(event:MouseEvent<HTMLButtonElement>,kind:Menu["kind"],file?:WorkbenchGitFile){const rect=event.currentTarget.getBoundingClientRect();setMenu({kind,file,x:rect.left,y:rect.bottom+4});if(kind==="branch")void loadBranches();if(kind==="scope"){void loadHistory();void loadBranchAggregate();}}
   function selectCommit(oid:string,range=false){
     const anchor=commits.findIndex(row=>row.oid===commitAnchor.current),end=commits.findIndex(row=>row.oid===oid);
     if(range && anchor>=0 && end>=0){const ids=commits.slice(Math.min(anchor,end),Math.max(anchor,end)+1).map(row=>row.oid);if(ids.length>100){setError("Select up to 100 commits.");return;}setOptions({scope:"commit",commits:ids});}
@@ -150,7 +162,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
         <button role="menuitemradio" aria-checked={!allBranches && branch==="HEAD"} onClick={()=>chooseBranch("HEAD")}>Current branch · {currentBranch}</button>
         <div className="workbench-review__commits">{branches.filter(row=>row.name.toLowerCase().includes(branchQuery.toLowerCase())).map(row=><button key={row.ref} role="menuitemradio" aria-checked={!allBranches && branch===row.ref} title={row.ref} onClick={()=>chooseBranch(row.ref)}><span>{row.name}</span>{row.remote?<small>Remote</small>:null}</button>)}</div>
         <label className="workbench-review__menu-label">Comparison base<select aria-label="Comparison base" value={baseRef} onChange={event=>{const value=event.target.value;setBaseRef(value);if(options.scope==="branch")setOptions({scope:"branch",ref:branch,baseRef:value || undefined});}}><option value="">{defaultBase?`Default · ${branches.find(row=>row.ref===defaultBase)?.name || defaultBase}`:"Choose a base branch"}</option>{branches.map(row=><option key={row.ref} value={row.ref}>{row.name}</option>)}</select></label><p className="workbench-review__menu-hint">All commits compares a branch with its merge base. Browsing leaves your working branch unchanged.</p></>:null}
-      {menu.kind==="options"?<><button role="menuitem" onClick={()=>{setClosed(new Set());setMenu(null);}}>Expand all files</button><button role="menuitem" onClick={()=>{setClosed(new Set(files.map(file=>file.path)));setMenu(null);}}>Collapse all files</button><hr/><button role="menuitem" onClick={()=>{setMenu(null);void refresh();void loadHistory();}}>Refresh changes</button></>:null}
+      {menu.kind==="options"?<><button role="menuitem" onClick={()=>{setClosed(new Set());setMenu(null);}}>Expand all files</button><button role="menuitem" onClick={()=>{setClosed(new Set(files.map(file=>file.path)));setMenu(null);}}>Collapse all files</button><hr/><button role="menuitem" onClick={()=>{setMenu(null);void refresh();void loadHistory();void loadBranches();void loadBranchAggregate();}}>Refresh changes</button></>:null}
       {menu.kind==="file" && menu.file?<>
         {!["commit","branch"].includes(options.scope)?<button role="menuitem" disabled={reviewDeleted(menu.file)} onClick={()=>{openFilePreview(reviewPath(root,menu.file!.path),undefined,chatId);setMenu(null);}}>Open preview</button>:null}
         <button role="menuitem" onClick={()=>void copy(menu.file!)}>Copy path</button><button role="menuitem" onClick={()=>void copy(menu.file!,true)}>Copy patch</button>
