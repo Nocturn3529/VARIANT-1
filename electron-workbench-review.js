@@ -96,7 +96,7 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, workbenchGitSt
   const identity = value => ({scope:value.scope,baseOid:value.baseOid,headOid:value.headOid,commits:[...value.commits],...(value.baseRefOid ? {baseRefOid:value.baseRefOid} : {})});
   const diffArgs = (value, flags, paths = []) => [value.command,'--no-ext-diff','--no-textconv','--no-color','--find-renames',...flags,...value.selector,'--',...paths];
   async function list(root, value) {
-    const entries = new Map();
+    const entries = new Map();let branch;
     if (!value.unborn) {
       const tokens = terminated((await run(root,diffArgs(value,['--name-status','-z']))).stdout);
       for (let cursor=0;cursor<tokens.length;) {
@@ -135,7 +135,10 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, workbenchGitSt
       let status;
       if(workbenchGitStatus)status=await workbenchGitStatus(root);
       else {
-        const tokens=terminated((await run(root,['status','--porcelain=v1','-z'])).stdout),files=[];
+        const tokens=terminated((await run(root,['status','--porcelain=v1','-z','-b'])).stdout),files=[];
+        const header=tokens.shift() || '';
+        if(!header.startsWith('## '))throw new Error('invalid_git_status');
+        const branchName=/^## (?:No commits yet on |Initial commit on )?(.+?)(?:\.\.\.| \[|$)/.exec(header)?.[1];
         for(let cursor=0;cursor<tokens.length;) {
           const record=tokens[cursor++];
           if(record.length<4 || record[2]!==' ')throw new Error('invalid_git_status');
@@ -143,9 +146,10 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, workbenchGitSt
           if(/[RC]/.test(row.status))row.originalPath=tokens[cursor++];
           files.push(row);
         }
-        status={ok:true,files};
+        status={ok:true,files,branch:branchName};
       }
       if(!status?.ok || !Array.isArray(status.files))throw new Error('live_git_status_unavailable');
+      if(typeof status.branch==='string')branch=status.branch;
       const live=new Map();
       for(const row of status.files) {
         const name=safePath(root,row.path),xy=row.status;
@@ -165,7 +169,7 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, workbenchGitSt
       }
       for(const name of entries.keys())if(!admitted.has(name))throw new Error('review_status_changed_retry');
     }
-    return {files:[...entries.values()].slice(0,MAX_FILES),truncated:entries.size>MAX_FILES};
+    return {files:[...entries.values()].slice(0,MAX_FILES),truncated:entries.size>MAX_FILES,...(branch===undefined?{}:{branch})};
   }
   function observation(root,options={}) {
     const scope=options.scope || 'uncommitted';

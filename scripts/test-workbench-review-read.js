@@ -68,11 +68,12 @@ function repositoryFile(root,raw) {
     await put('renamed file.txt',baseLines.replace('line 150\n','staged 150\n'));await git('add','--','renamed file.txt');await put('renamed file.txt',baseLines.replace('line 150\n','working 150\n'));await put('fresh.txt','Untracked\n');await put('new binary.bin',Buffer.from([2,0,4]));
     const indexBefore=await fs.readFile(path.join(root,'.git','index'));
     const staged=await reader.diff(root,'renamed file.txt',{scope:'staged'});const unstaged=await reader.diff(root,'renamed file.txt',{scope:'unstaged'});const total=await reader.diff(root,'renamed file.txt',{scope:'uncommitted'});
-    const mixed=(await reader.files(root,{scope:'uncommitted'})).files.find(row=>row.path==='renamed file.txt');assert.equal(mixed.status,'MM');assert.equal(mixed.staged,true);assert.equal(mixed.unstaged,true);
+    const liveFiles=await reader.files(root,{scope:'uncommitted'});assert.equal(liveFiles.branch,'main');
+    const mixed=liveFiles.files.find(row=>row.path==='renamed file.txt');assert.equal(mixed.status,'MM');assert.equal(mixed.staged,true);assert.equal(mixed.unstaged,true);
     let statusCalls=0;
-    const injected=createGitReviewReader({readGit,gitRoot:async()=>root,repositoryFile,now:()=>clock,workbenchGitStatus:async()=>{statusCalls++;return {ok:true,files:[{path:'renamed file.txt',status:'MM'},{path:'fresh.txt',status:'??'},{path:'new binary.bin',status:'??'}]};}});
-    assert.equal((await injected.files(root,{scope:'staged'})).files[0].status,'MM');assert.equal(statusCalls,1);
-    await injected.files(root,{scope:'commit',commits:[second]});assert.equal(statusCalls,1,'historical review never merges live status');
+    const injected=createGitReviewReader({readGit,gitRoot:async()=>root,repositoryFile,now:()=>clock,workbenchGitStatus:async()=>{statusCalls++;return {ok:true,branch:'fixture/main',files:[{path:'renamed file.txt',status:'MM'},{path:'fresh.txt',status:'??'},{path:'new binary.bin',status:'??'}]};}});
+    const injectedLive=await injected.files(root,{scope:'staged'});assert.equal(injectedLive.files[0].status,'MM');assert.equal(injectedLive.branch,'fixture/main');assert.equal(statusCalls,1);
+    assert.equal((await injected.files(root,{scope:'commit',commits:[second]})).branch,undefined);assert.equal(statusCalls,1,'historical review never merges live status');
     assert.match(staged.diff,/\+staged 150/);assert.match(unstaged.diff,/-staged 150/);assert.match(total.diff,/-changed 150/);assert.match(total.diff,/\+working 150/);
     assert.ok(!(await reader.files(root,{scope:'staged'})).files.some(row=>row.untracked));assert.ok((await reader.files(root,{scope:'unstaged'})).files.find(row=>row.path==='fresh.txt').untracked);
     assert.equal((await reader.diff(root,'fresh.txt',{scope:'uncommitted'})).fullContents,true);const binary=await reader.diff(root,'new binary.bin',{scope:'unstaged'});assert.equal(binary.binary,true);assert.equal(binary.originalBytes,3);
