@@ -1,9 +1,14 @@
 /** Bounded, run-correlated delivery of client trace enrichment. */
 import type {ChatSessionAnnotateCommand} from "../protocol/chatCommands";
 import {getChatState, patchChatState, sendChat, withCachedChatState} from "./stateCore";
+import {registerChatProjectionCleanup,registerChatProjectionRetention} from "../state/chatProjectionLifecycle";
 
 type Pending = {command: ChatSessionAnnotateCommand; attempts: number; timer?: ReturnType<typeof setTimeout>};
 const pending = new Map<string, Pending>();
+registerChatProjectionRetention(id=>[...pending.values()].some(entry=>entry.command.id===id));
+registerChatProjectionCleanup(id=>{
+  for(const [identity,entry] of pending)if(entry.command.id===id){if(entry.timer)clearTimeout(entry.timer);pending.delete(identity);}
+});
 const key = (sessionId: string, runId: string) => `${sessionId}\0${runId}`;
 let online = true;
 

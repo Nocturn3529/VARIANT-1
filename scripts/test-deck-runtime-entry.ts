@@ -388,6 +388,7 @@ async function testDeckRuntimeHydration(): Promise<void> {
     id: "test-filtered-module",
     messageTypes: ["accepted"],
     start() { lifecycle.push("start"); },
+    stop() { lifecycle.push("stop"); },
     enter(_context, view) { lifecycle.push(`enter:${view}`); },
     settingsCategory(_context, category) { lifecycle.push(`settings:${category}`); },
     connection(_context, state) { lifecycle.push(`connection:${state}`); },
@@ -455,6 +456,8 @@ async function testDeckRuntimeHydration(): Promise<void> {
     "a new connection generation receives one fresh hydration burst",
   );
   runtime.stop();
+  runtime.stop();
+  assert.equal(lifecycle.filter(item=>item==="stop").length,1,"module cleanup runs once per active runtime lifetime");
 }
 
 function testTurnStore(): void {

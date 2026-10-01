@@ -38,7 +38,7 @@ assert.match(turnStore, /matchesEvent/);
 // the local variable names used by a particular store implementation.
 const Module = require('node:module');
 const compiled = new Module(path.join(__dirname, '.stream-isolation.cjs'), module);
-compiled._compile(require('esbuild').transformSync(turnStore, {loader: 'ts', format: 'cjs'}).code, compiled.id);
+compiled._compile(require('esbuild').buildSync({entryPoints:[path.join(root,'frontend/main-deck/src/state/turnStore.ts')],bundle:true,platform:'node',format:'cjs',write:false}).outputFiles[0].text, compiled.id);
 const turns = compiled.exports.turnController;
 turns.begin({sessionId: 'A', clientId: 'client-A', source: 'chat'});
 assert.equal(turns.matchesEvent({session_id: 'A', client_id: 'client-A', source: 'voice'}), false);

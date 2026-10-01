@@ -69,6 +69,8 @@ const tests = [
   "test-browser-settings.js",
   "test-chat-ownership.js",
   "test-chat-reliability.js",
+  "test-chat-performance.js",
+  "test-chat-lifecycle.js",
   "test-composer.js",
   "test-session-experience.js",
   "test-input-queue.js",

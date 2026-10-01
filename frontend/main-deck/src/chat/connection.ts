@@ -93,6 +93,8 @@ export function attachTurnBridge() {
   if (!api || typeof api.subscribe !== "function") return;
   api.subscribe((snap, prev) => {
     const state = getChatState();
+    const owner=snap.sessionId || prev?.sessionId;
+    if(state.sessionId && owner && owner!==state.sessionId)return;
     const was = !!(prev && prev.active);
     const now = !!snap.active;
     if (was === now && state.turnActive === now) {

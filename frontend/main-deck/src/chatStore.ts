@@ -13,7 +13,7 @@
  *
  * Public import path stays `./chatStore` for DeckApp / ChatDestination / mic.
  */
-import {useSyncExternalStore} from "react";
+import {useCallback, useRef, useSyncExternalStore} from "react";
 import {resetTraceAnnotations} from "./chat/annotations";
 import {resetDisclosures} from "./chat/disclosures";
 
@@ -106,6 +106,24 @@ if (typeof window !== "undefined") {
 
 export function useChatState(): ChatState {
   return useSyncExternalStore(subscribe, getDisplayedChatState, getDisplayedChatState);
+}
+
+export function shallowChatSelection<T extends object>(left:T,right:T):boolean {
+  const keys=Object.keys(left) as Array<keyof T>;
+  return keys.length===Object.keys(right).length && keys.every(key=>Object.is(left[key],right[key]));
+}
+
+/** Cache selected snapshots so unrelated root mutations do not repaint controls. */
+export function useChatSelection<T>(selector:(state:ChatState)=>T,equal:(left:T,right:T)=>boolean=Object.is):T {
+  const current=useRef({selector,equal});current.current={selector,equal};
+  const cached=useRef<{state:ChatState;selector:typeof selector;selection:T}|undefined>(undefined);
+  const snapshot=useCallback(()=>{
+    const state=getDisplayedChatState(),{selector,equal}=current.current,prior=cached.current;
+    if(prior?.state===state && prior.selector===selector)return prior.selection;
+    const selected=selector(state),selection=prior && equal(prior.selection,selected)?prior.selection:selected;
+    cached.current={state,selector,selection};return selection;
+  },[]);
+  return useSyncExternalStore(subscribe,snapshot,snapshot);
 }
 
 /** Test/helper: replace state (used sparingly). */

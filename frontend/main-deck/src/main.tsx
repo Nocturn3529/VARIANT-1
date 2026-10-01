@@ -42,6 +42,7 @@ import {
 } from "./memoryStore";
 import {
   enterOverview,
+  stopOverview,
   ingestOverview,
   setOverviewConnection,
   setOverviewContext,
@@ -185,6 +186,7 @@ function reg(
   id: ReactRuntimeModuleId,
   hooks: {
     start?: (ctx: RuntimeContext) => void;
+    stop?: (ctx: RuntimeContext) => void;
     enter?: (ctx: RuntimeContext, view: string) => void;
     settingsCategory?: (ctx: RuntimeContext, category: string) => void;
     /** Optional edge parser; Chat uses parseChatWsMessage. */
@@ -364,6 +366,7 @@ reg("react-runtime-overview", {
     setOverviewContext(ctx);
     enterOverview(view);
   },
+  stop(){stopOverview();},
 });
 
 deckRuntime.subscribeClose(() => {

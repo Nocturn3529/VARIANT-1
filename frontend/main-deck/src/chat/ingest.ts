@@ -432,9 +432,8 @@ function ingestOwnedChat(message: ChatWsMessage) {
         if (id) sendChat({type:"chat:runtime:get",id});
         return;
       }
-      patchChatState({stopPending:true});
       setSubtitle("Stopping task…", "working");
-      emit();
+      patchChatState({stopPending:true});
       return;
 
     case "error": {

@@ -147,7 +147,6 @@ export function markActiveInputDelivered(ticketId: string): boolean {
   });
   if (!changed) return false;
   patchChatState({messages});
-  emit();
   return true;
 }
 
@@ -405,8 +404,6 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   // Fresh STEPS strip for this send.
   patchChatState({turnSteps: []});
   const afterBegin = getChatState();
-  // patchChatState already emitted; ensure subtitle is visible.
-  emit();
   const payload: ChatSendCommand = {
     type: "chat",
     text: value,
@@ -468,9 +465,8 @@ export function cancelChatTurn(expectedSessionId?: string | null, expectedAdmiss
     emit();
     return;
   }
-  patchChatState({stopPending:true});
   setSubtitle("Stopping task…", "working");
-  emit();
+  patchChatState({stopPending:true});
 }
 
 export function refreshChat() {

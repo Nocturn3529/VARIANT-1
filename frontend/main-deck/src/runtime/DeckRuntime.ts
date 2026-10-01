@@ -27,6 +27,7 @@ export type DeckRuntimeModule = {
   id: string;
   messageTypes: readonly string[];
   start?: (context: RuntimeContext) => void;
+  stop?: (context: RuntimeContext) => void;
   enter?: (context: RuntimeContext, view: string) => void;
   settingsCategory?: (context: RuntimeContext, category: string) => void;
   /**
@@ -118,6 +119,7 @@ export class DeckRuntime {
   }
 
   stop(): void {
+    if(this.started)this.modules.forEach(module=>this.callModule(module,"stop"));
     this.started = false;
     this.client.stop();
   }

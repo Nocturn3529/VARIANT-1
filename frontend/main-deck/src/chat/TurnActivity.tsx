@@ -6,21 +6,12 @@ import {traceRows, traceSummary} from "./traceModel";
 import {traceActionLabel} from "./traceLabels";
 import {Icon} from "../ui/Icon";
 import type {ChatTurnStep} from "./types";
-import {useChatState} from "../chatStore";
+import {useChatSelection, shallowChatSelection} from "../chatStore";
+import {useElapsed} from "./elapsedClock";
 import {PEER_DELIVERY} from "../peers/peerModels";
 import {disclosureKey, disclosureChoice, rememberDisclosure as remember} from "./disclosures";
 
 // Virtualized turns retain disclosures across scroll and overlay visits.
-function useElapsed(active: boolean, startedAt: number): number {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return Math.max(0, now - startedAt);
-}
 function timeMs(value?: number) {
   const number = Number(value) || 0;
   return number > 0 && number < 1e12 ? number * 1000 : number;
@@ -113,7 +104,7 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
 }) {
   const rows = traceRows(steps);
   const summary = traceSummary(steps);
-  const chat = useChatState();
+  const chat = useChatSelection(state=>({sessionId:state.sessionId,runtime:state.runtime,connected:state.connected,pause:state.pause,stopPending:state.stopPending}),shallowChatSelection);
   const mutation = !!chat.runtime?.mutationEffectiveEnabled;
   const suspended = live ? !chat.connected ? "Reconnecting" : chat.pause?.state === "paused" ? "Paused" : "" : "";
   const liveLabel = suspended || (chat.stopPending ? "Stopping" : chat.pause?.state === "pausing" ? "Pausing" : "Working");

@@ -1,5 +1,7 @@
 /** Disclosure choices survive virtualization, scoped to their chat and run. */
+import {registerChatProjectionCleanup} from "../state/chatProjectionLifecycle";
 const choices = new Map<string, boolean>();
+registerChatProjectionCleanup(id=>resetDisclosures(id));
 export const disclosureKey = (chat: string, run: string, row: string) => JSON.stringify([chat, run, row]);
 export const disclosureChoice = (key: string) => choices.get(key);
 export function rememberDisclosure(key: string, open: boolean): void {
