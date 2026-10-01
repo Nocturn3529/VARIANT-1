@@ -19,12 +19,17 @@ export async function run() {
   activateChatState("draft");patchChatState({draft:"Keep this draft"});
   activateChatState("preparing");patchChatState({attachmentsPreparing:1});
   activateChatState("goal");patchChatState({goal:{synced:true,snapshot:{goal:{status:"paused"}} as any}});
+  for(const tracePersistence of ["pending","failed"] as const) {
+    activateChatState(`trace-${tracePersistence}`);
+    patchChatState({messages:[{role:"assistant",text:"Keep activity evidence",runId:`run-${tracePersistence}`,tracePersistence}]});
+  }
   activateChatState("settings");setSessionContextContext({send:()=>true,isOpen:()=>true,notify(){}});setSessionContextConnection("connected");requestSessionContext("settings");
   assert.equal(changeSessionSettings("settings",{type:"reasoning:effort:set",effort:"low"},"Low effort"),true);
   for(let index=0;index<12;index++)activateChatState(`inactive-${index}`);
   assert.ok(getCachedChatState("running")?.turnActive,'active work survives cache trimming');
   assert.equal(getCachedChatState("draft")?.draft,"Keep this draft");assert.equal(getCachedChatState("preparing")?.attachmentsPreparing,1);
   assert.equal(getCachedChatState("goal")?.goal.snapshot?.goal.status,"paused");assert.ok(getContextForSession("settings").settingsPending && getCachedChatState("settings"),'unfinished model settings survive cache pressure');
+  for(const status of ["pending","failed"])assert.equal(getCachedChatState(`trace-${status}`)?.messages[0].tracePersistence,status,'unconfirmed trace evidence survives without an active delivery queue');
   assert.equal(getCachedChatState("idle"),undefined);assert.equal(getContextForSession("idle").model,"");assert.equal(disclosureChoice(choice),undefined);
   activateChatState("idle");assert.equal(snapshotTurnReceipt(),undefined,'eviction releases the matching receipt projection');
   activateChatState("other-active");beginTurn({sessionId:"other-active",runId:"run-other"});

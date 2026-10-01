@@ -213,6 +213,15 @@ export async function run() {
     assert.equal(sent.length-beforeRetries,3,"unacknowledged writes have a finite retry budget");
     assert.equal(getChatState().messages[0].tracePersistence,"failed");
   } finally {resetTraceAnnotations();globalThis.setTimeout=realTimeout;globalThis.clearTimeout=realClearTimeout;}
+  reset();sendUserMessage("Missing append");start("lost-append");activity("lost-append","tool:start","lost-call",false);activity("lost-append","tool:result","lost-call",false);
+  incoming({type:"done",...route("lost-append"),text:"Committed reply",durable:true});
+  const withoutAppend=sent.at(-1)!;
+  assert.equal(withoutAppend.type,"chat:session:annotate","explicit commit proof does not depend on a later appended notification");
+  assert.equal(withoutAppend.run_id,"run-lost-append");assert.equal(getChatState().messages.at(-1)?.tracePersistence,"pending");
+  traceAnnotationConnection(false);traceAnnotationConnection(true);
+  assert.equal(sent.at(-1)?.request_id,withoutAppend.request_id,"a post-commit transport loss retains the correlated trace for retry");
+  incoming({type:"chat:session:annotated",id:"A",run_id:withoutAppend.run_id,request_id:withoutAppend.request_id,ok:true});
+  assert.equal(getChatState().messages.at(-1)?.tracePersistence,"saved");resetTraceAnnotations();
   reset();sendUserMessage("Long trace");start("trace-audit");
   for(let index=0;index<60;index++)audit("tool:result",{call_id:`long-${index}`,status:index===59?"error":"ok",text:`Result ${index}`});
   assert.equal(getChatState().turnSteps.length,48);assert.equal(getChatState().turnSteps[0].omittedBefore,12);

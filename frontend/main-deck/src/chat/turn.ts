@@ -415,6 +415,7 @@ export function finishStream(message: StreamDoneMessage) {
     text: finalText,
     ts: now,
     steps,
+    tracePersistence: steps?.length ? (message.durable === false ? "failed" : "pending") : undefined,
     receipt: snapshotTurnReceipt(),
     optimisticTurnId: state.activeTurnId || undefined,
     durability: message.durable === false || pending?.failed ? "failed" : undefined,
@@ -435,6 +436,12 @@ export function finishStream(message: StreamDoneMessage) {
     pendingActiveInputs: state.pendingActiveInputs,
   });
   endSharedTurn(cancelled ? "cancelled" : "complete");
+  // An explicit modern commit confirmation proves the run's assistant row
+  // exists even if the later appended notification is lost during a crash.
+  if(message.commitConfirmed && message.run_id && state.sessionId && steps?.length)persistTrace({
+    type:"chat:session:annotate",id:state.sessionId,run_id:message.run_id,steps,
+    receipt: cleaned.at(-1)?.receipt,
+  });
   if (pending?.appended) handleAppended(pending.appended);
   setSubtitle(cancelled ? "Task stopped" : "Connected locally", cancelled ? "idle" : "ready");
   emit();

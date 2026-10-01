@@ -211,6 +211,7 @@ export type StreamDoneMessage = Readonly<{
   type: "done";
   text: string;
   cancelled: boolean;
+  commitConfirmed: boolean;
   run_id?: string;
   status?: string;
   stop_reason?: string;
@@ -546,6 +547,7 @@ export function parseChatWsMessage(
         type: "done",
         text: str(row.text),
         cancelled: !!row.cancelled,
+        commitConfirmed: row.durable === true,
         run_id: optStr(row.run_id),
         status: optStr(row.status),
         stop_reason: optStr(row.stop_reason),

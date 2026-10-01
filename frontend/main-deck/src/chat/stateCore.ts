@@ -78,7 +78,8 @@ export function activateChatState(id: string): void {
     if (sessions.size <= 8) break;
     const goalStatus=value.goal.snapshot?.goal?.status;
     const activeGoal=!!goalStatus && !["succeeded","failed","cancelled","archived"].includes(goalStatus);
-    if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
+    const unconfirmedTrace=value.messages.some(message=>message.tracePersistence==="pending" || message.tracePersistence==="failed");
+    if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
       sessions.delete(key);revisions.delete(key);revokeRemovedAttachmentUrls(value, initialChatState());releaseChatProjection(key,"idle");
     }
   }
