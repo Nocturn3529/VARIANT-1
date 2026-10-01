@@ -75,6 +75,33 @@ Approved memory is a separate store: explicit user memories and approved inferre
 facts can be recalled in later turns. Saving a conversation does not imply that
 all of its live Python objects can be restored.
 
+The activity trace is a bounded display projection, not a complete output log.
+Live and saved ordinary traces keep the newest 48 events and record earlier
+omissions; provider summaries retain their separate storage bound. Tool failure,
+interruption, timeout, skipped/degraded work, and unknown outcomes remain distinct.
+Managed credentials and recognized secret patterns are sanitized before display
+clipping, activity broadcast, and annotation persistence. Execution inputs and
+internal outcome records keep their existing contracts; cloud-envelope secret
+egress remains a separate firewall.
+
+Client trace enrichment is written after the run's durable assistant commit.
+Session/run/request acknowledgments confirm that separate write. Unconfirmed
+activity saves have bounded retries and reconnect reconciliation; the frontend
+does not claim that an unconfirmed trace is saved merely because its reply is.
+Disclosure state is chat/run/call scoped. Shared elapsed timing and selected
+store subscriptions avoid unrelated control updates during token streaming.
+Idle projection eviction and confirmed deletion coordinate context, receipt,
+disclosure, and turn data without retiring a Python generation. Active work,
+drafts, pending input/preparation, and unfinished settings or annotation requests
+are protected; settled admission fences survive idle view eviction.
+
+Review uses a bounded unified Git patch projection with typed lines, old/new
+gutters, collapsible hunks, and virtualized rendering. It reports binary and
+truncated output explicitly, and current-file line navigation is distinct from
+per-turn edit attribution. Git/PR operations retain their existing sender, path,
+and recoverable-discard protections; successful PR creation surfaces its URL.
+Native browser moves retain their live pages rather than reloading them.
+
 ## Mutation
 
 Mutation means changing executable tool methods, not training model weights.
@@ -122,6 +149,11 @@ The empty chat guide reads configuration for the chat's selected model route
 from backend projections. Examples fill drafts without sending them.
 Mutation authoring is available under
 Session tools; disabling authoring preserves already activated overlays.
+
+Production renderer builds strip fixture event ingress. The separate development
+entry and fixture payloads are excluded from packages. Runtime stop hooks dispose
+view polling; leaving or closing Overview does not leave its telemetry timers
+running against an inactive connection.
 
 ### Installer composition
 

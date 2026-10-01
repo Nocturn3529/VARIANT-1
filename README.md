@@ -37,6 +37,11 @@ Use the release notes for the behavior and qualification of a downloaded build.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB
   tool-discovery layer exposes capabilities as needed through shared backend services.
+- **Inspect execution and changes.** Activity distinguishes failures, stopped
+  work, and uncertain outcomes. Bounded previews redact managed or recognized
+  credentials and mark omitted content. Review Git changes with line numbers,
+  added/removed lines, collapsible hunks, and links to current source lines.
+  Creating a pull request shows its result and URL.
 - **Choose supported local or cloud inference.** Use local models, your own API
   keys or custom endpoints, or supported provider-account connections. Available
   features depend on the model, provider, and configuration.
