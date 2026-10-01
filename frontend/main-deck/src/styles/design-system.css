@@ -43,10 +43,18 @@
   --deck-accent-line: #363636;
   /* Reserved for enabled mutation authority; ordinary controls stay neutral. */
   --deck-mutation: #39ff14;
-  --deck-positive: #c8c8c8;
+  --deck-positive: #abd3b4;
   --deck-positive-soft: #222222;
-  --deck-warning: #d8d8d8;
-  --deck-danger: #eaeaea;
+  --deck-warning: #e4c78d;
+  --deck-danger: #efaaa2;
+  /* Restricted to code changes; the telemetry palette stays monochrome. */
+  --deck-diff-added: #abd3b4;
+  --deck-diff-deleted: #efaaa2;
+  --deck-diff-modified: #e4c78d;
+  --deck-diff-unchanged: var(--deck-text-muted);
+  --deck-diff-surface: var(--deck-surface-panel);
+  --deck-diff-added-surface: rgba(171, 211, 180, .08);
+  --deck-diff-deleted-surface: rgba(239, 170, 162, .08);
   --deck-focus: rgba(255, 255, 255, .42);
 
   /* Mono telemetry. Labels distinguish resources and series. */

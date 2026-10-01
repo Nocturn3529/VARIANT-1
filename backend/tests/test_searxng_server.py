@@ -62,12 +62,24 @@ def test_public_status_defaults():
 
 
 @pytest.mark.asyncio
-async def test_start_reuses_already_healthy(tmp_path: Path):
+@pytest.mark.parametrize("docker_available", [False, True])
+async def test_start_reuses_already_healthy(tmp_path: Path, docker_available: bool):
     mgr = sx.SearxngServer({"autostart": True}, data_dir=str(tmp_path))
-    with patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=True)):
+    with (
+        patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=True)),
+        patch.object(mgr, "docker_available", return_value=docker_available),
+        patch.object(mgr, "_container_state", new=AsyncMock(return_value="missing")) as state,
+        patch.object(mgr, "_run_cli", new=AsyncMock(side_effect=AssertionError("unexpected live container command"))) as cli,
+    ):
         await mgr.start(force=True)
+    if docker_available:
+        state.assert_awaited_once()
+    else:
+        state.assert_not_awaited()
+    cli.assert_not_awaited()
     assert mgr.ready is True
     assert mgr.last_error == ""
+    assert mgr._owned is False
 
 
 @pytest.mark.asyncio

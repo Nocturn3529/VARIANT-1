@@ -33,6 +33,30 @@ def _request_sessions(ws):
     return _drain_until(ws, "chat:sessions")
 
 
+def test_trace_annotation_ack_is_correlated_and_cannot_target_a_later_run():
+    sessions = server.APP.require_runtime().sessions
+    sid = sessions.create_session()
+    sessions.append_messages(sid, [
+        {"role": "assistant", "text": "First reply", "run_id": "trace-first"},
+        {"role": "assistant", "text": "Later reply", "run_id": "trace-later"},
+    ])
+    client = TestClient(server.app)
+    with client.websocket_connect(f"/ws?token={server.AUTH_TOKEN}") as ws:
+        command = {"type": "chat:session:annotate", "id": sid, "run_id": "trace-first",
+                   "request_id": "trace-request", "steps": [{"label": "Stopped", "status": "cancelled"}]}
+        for _ in range(2):
+            ws.send_json(command)
+            ack = _drain_until(ws, "chat:session:annotated")
+            assert ack == {"type": "chat:session:annotated", "ok": True, "id": sid,
+                           "run_id": "trace-first", "request_id": "trace-request"}
+        messages = sessions.get_session(sid)["messages"]
+        assert messages[0]["steps"][0]["status"] == "cancelled"
+        assert not messages[1].get("steps")
+        ws.send_json({**command, "run_id": "missing-run", "request_id": "missing-request"})
+        rejected = _drain_until(ws, "chat:session:annotated")
+        assert rejected["ok"] is False and rejected["request_id"] == "missing-request"
+
+
 def test_chat_session_protocol_over_ws():
     client = TestClient(server.app)
     with client.websocket_connect(f"/ws?token={server.AUTH_TOKEN}") as ws:

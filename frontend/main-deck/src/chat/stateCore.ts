@@ -8,10 +8,11 @@ import {initialAgentTeam} from "../protocol/children";
 import type {RuntimeContext} from "../types";
 import {focusTurnSession, turnController, withTurnSession} from "../state/turnStore";
 import type {ChatAttachment, ChatState, SubtitleState} from "./types";
+import {canReleaseChatProjection,releaseChatProjection} from "../state/chatProjectionLifecycle";
 
 export const CLIENT_ID = `deck-react-${Math.random().toString(36).slice(2, 10)}`;
 export const MAX_ATTACHMENTS = 6;
-export const MAX_TURN_STEPS = 48;
+export {MAX_TURN_STEPS} from "./preview";
 
 export let context: RuntimeContext | null = null;
 
@@ -75,10 +76,22 @@ export function activateChatState(id: string): void {
   sessions.set(id, state);focusTurnSession(id);
   for (const [key, value] of sessions) {
     if (sessions.size <= 8) break;
-    if (key !== id && !value.turnActive && !value.draft && !value.attachments.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !value.agentTeam.active && !value.agentTeam.selectedId) {
-      sessions.delete(key);revokeRemovedAttachmentUrls(value, initialChatState());
+    const goalStatus=value.goal.snapshot?.goal?.status;
+    const activeGoal=!!goalStatus && !["succeeded","failed","cancelled","archived"].includes(goalStatus);
+    const unconfirmedTrace=value.messages.some(message=>message.tracePersistence==="pending" || message.tracePersistence==="failed");
+    if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
+      sessions.delete(key);revisions.delete(key);revokeRemovedAttachmentUrls(value, initialChatState());releaseChatProjection(key,"idle");
     }
   }
+}
+
+/** Only a confirmed backend deletion may discard a displayed chat projection. */
+export function forgetDeletedChatState(id:string):void {
+  const cached=getCachedChatState(id);
+  if(cached)revokeRemovedAttachmentUrls(cached,initialChatState());
+  sessions.delete(id);revisions.delete(id);
+  if(state.sessionId===id){state={...initialChatState(),connected:state.connected};focusTurnSession("");emit();}
+  releaseChatProjection(id,"deleted");
 }
 
 /** All mutations in this callback are synchronous projections of one event. */
@@ -106,6 +119,7 @@ function attachmentUrlsInState(value: ChatState): Set<string> {
 }
 
 function revokeRemovedAttachmentUrls(previous: ChatState, next: ChatState): void {
+  if(previous.attachments===next.attachments && previous.messages===next.messages)return;
   const retained = attachmentUrlsInState(next);
   for (const url of attachmentUrlsInState(previous)) {
     if (retained.has(url)) continue;

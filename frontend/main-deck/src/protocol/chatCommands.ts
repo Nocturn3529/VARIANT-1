@@ -42,6 +42,7 @@ export type ChatSessionAnnotateCommand = {
   type: "chat:session:annotate";
   id: string;
   run_id?: string;
+  request_id?: string;
   steps: unknown[];
   receipt?: unknown;
 };

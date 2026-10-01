@@ -602,6 +602,11 @@ function clearTimers() {
   }
 }
 
+export function stopOverview():void {
+  clearTimers();
+  if(store.getState().active)store.setState({active:false});
+}
+
 /** Quiet while offline — hardware polls every 1s and must not toast-spam. */
 function send(payload: WsCommand, {notify = false} = {}): boolean {
   if (store.send(payload)) return true;

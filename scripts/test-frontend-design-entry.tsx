@@ -39,12 +39,13 @@ export async function run() {
     assert.deepEqual(traceRows(cells).map(row => row.boundary), ["Kernel 01", "Kernel 01 → 02"]);
     assert.equal(traceSummary(cells).cells, 2);
     await act(async () => root.render(<TurnActivity steps={cells} live={false} streamText="" turnStartedAt={100}/>));
-    const summary = host.querySelector<HTMLButtonElement>('[aria-label="Execution trace"]')!;
+    const summary = host.querySelector<HTMLButtonElement>('.execution-trace__summary')!;
+    assert.match(summary.getAttribute("aria-label")!, /2 Python cells/);
     assert.equal(summary.getAttribute("aria-expanded"), "false");
     assert.equal(host.querySelectorAll(".trace-entry").length, 0);
     await act(async () => summary.click());
     assert.deepEqual([...host.querySelectorAll<HTMLElement>("[data-trace-id]")].map(row => row.dataset.traceId), cells.map(cell => cell.id));
-    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Ran Python, Python cell 41"]')!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Ran Python, Complete, Python cell 41"]')!.click());
     assert.match(host.textContent!, /Load measurements/);
     await act(async () => summary.click());
     await act(async () => root.render(<TurnActivity steps={[cells[0], {...cells[1], status: "error", resultPreview: "NameError: samples"}]} live={false} streamText="" turnStartedAt={100}/>));
@@ -101,6 +102,21 @@ export async function run() {
     await act(async () => root.render(<TurnActivity key="live-cell-test" steps={[{...browserCell, status: 'ok'}]} live={false} streamText="" turnStartedAt={Date.now()}/>));
     assert.equal(host.querySelector('.trace-progress'), null, 'settled run has no stale animation');
 
+    await act(async () => {setChatState({...initialChatState(),sessionId:"scope-a",connected:true});root.render(<TurnActivity key="scope-check" steps={cells} live={false} streamText="" turnStartedAt={100} scope="same-run"/>);});
+    await act(async () => host.querySelector<HTMLButtonElement>('.execution-trace__summary')!.click());
+    await act(async () => host.querySelector<HTMLButtonElement>('.trace-entry__disclosure')!.click());
+    assert.ok(host.querySelector('.trace-entry__body'));
+    await act(async () => setChatState({...initialChatState(),sessionId:"scope-b",connected:true}));
+    assert.equal(host.querySelector('.execution-trace__summary')!.getAttribute('aria-expanded'),'false','another chat does not borrow run disclosure state');
+    await act(async () => host.querySelector<HTMLButtonElement>('.execution-trace__summary')!.click());
+    assert.equal(host.querySelector('.trace-entry__body'),null,'same call IDs in another chat do not borrow row disclosure state');
+    const stopped:ChatTurnStep={id:"status-only",kind:"tool",tool:"custom_call",label:"Custom action",status:"cancelled",durationMs:1200,ts:100};
+    await act(async()=>root.render(<TurnActivity key="status-only" steps={[stopped]} live={false} streamText="" turnStartedAt={100}/>));
+    assert.match(host.querySelector('.execution-trace__alerts')!.textContent!,/Stopped/,'a folded trace retains interruption information');
+    await act(async()=>host.querySelector<HTMLButtonElement>('.execution-trace__summary')!.click());
+    const statusRow=host.querySelector('.trace-entry__disclosure')!;
+    assert.equal(statusRow.tagName,'DIV');assert.equal(statusRow.getAttribute('tabindex'),'0');
+    assert.match(statusRow.getAttribute('aria-label')!,/Stopped.*1\.2s/);
     await act(async () => root.render(<><AppearanceBindings/><AppearanceSettings/></>));
     await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Compact')!.click());
     assert.equal(getAppearance().density, "compact"); assert.equal(document.documentElement.dataset.density, "compact");

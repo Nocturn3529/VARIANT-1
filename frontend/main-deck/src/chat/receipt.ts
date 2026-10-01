@@ -5,6 +5,7 @@
 import {getContextForSession} from "../sessionContextStore";
 import {getChatState} from "./stateCore";
 import type {ChatTurnReceipt} from "./types";
+import {registerChatProjectionCleanup} from "../state/chatProjectionLifecycle";
 
 type Snapshot = {
   startedAt: number;
@@ -12,6 +13,7 @@ type Snapshot = {
 };
 
 const snapshots = new Map<string, Snapshot>();
+registerChatProjectionCleanup(id=>snapshots.delete(id));
 
 export function resetTurnReceipt(): void {
   snapshots.clear();

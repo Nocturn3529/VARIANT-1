@@ -1,11 +1,11 @@
-import {useChatState} from "../chatStore";
+import {useChatSelection,shallowChatSelection} from "../chatStore";
 import {useSessionState} from "../state/sessionStore";
 import {useSessionContextState,getContextForSession} from "../sessionContextStore";
 import {Icon} from "../ui/Icon";
 import {mutateInputQueue,queueAdmissionPending,refreshInputQueue} from "./inputQueue";
 
 export function InputQueuePanel() {
-  const state=useChatState(),queue=state.inputQueue,items=queue.snapshot?.items || [];
+  const state=useChatSelection(state=>({inputQueue:state.inputQueue,sessionId:state.sessionId,connected:state.connected,turnActive:state.turnActive,stopPending:state.stopPending}),shallowChatSelection),queue=state.inputQueue,items=queue.snapshot?.items || [];
   const navigating=!!useSessionState().pendingAction;useSessionContextState();
   if(!items.length && !queue.action && !queue.error && !queueAdmissionPending())return null;
   const blocked=!state.connected || !queue.synced || !!queue.action || navigating;

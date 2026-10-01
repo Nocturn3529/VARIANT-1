@@ -1,4 +1,4 @@
-import {useChatState} from "../chatStore";
+import {useChatSelection,shallowChatSelection} from "../chatStore";
 import {useSessionState} from "../state/sessionStore";
 import {Icon} from "../ui/Icon";
 import {goalIsTerminal} from "../protocol/goals";
@@ -8,7 +8,7 @@ const statusLabels:Record<string,string>={draft:"Draft",queued:"Queued",running:
   waiting_external:"Waiting for an external result",blocked:"Blocked",paused:"Scheduling paused",succeeded:"Execution finished",failed:"Execution failed",cancelled:"Cancelled",archived:"Archived"};
 
 export function ComposerGoalPanel() {
-  const state=useChatState(),goal=state.goal,snapshot=goal.snapshot;
+  const state=useChatSelection(state=>({goal:state.goal,sessionId:state.sessionId,connected:state.connected}),shallowChatSelection),goal=state.goal,snapshot=goal.snapshot;
   const navigating=!!useSessionState().pendingAction;
   if(!snapshot && !goal.pending && !goal.error)return null;
   const pending=goal.pending;

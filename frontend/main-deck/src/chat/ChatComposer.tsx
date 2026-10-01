@@ -17,7 +17,8 @@ import {
   removeChatAttachment,
   setChatDraft,
   setMutationWriteEnabled,
-  useChatState,
+  useChatSelection,
+  shallowChatSelection,
   getChatState,
   type ChatAttachment,
 } from "../chatStore";
@@ -110,7 +111,7 @@ function ComposerCapabilities({
     sessionId,
     runtime,
     mutationTogglePending,
-  } = useChatState();
+  } = useChatSelection(state=>({sessionId:state.sessionId,runtime:state.runtime,mutationTogglePending:state.mutationTogglePending}),shallowChatSelection);
   const mutationControl = mutationToggleControlState({
     runtime,
     pending: mutationTogglePending,
@@ -320,7 +321,7 @@ export function ChatComposer() {
   const navigating = !!useSessionState().pendingAction;
   const {
     draft, turnActive, connected, attachments, attachmentsPreparing, deliveryMode, stopPending, queuedFollowUps, sessionId, messages, pendingActiveInputs, runtime, inputQueue,
-  } = useChatState();
+  } = useChatSelection(state=>({draft:state.draft,turnActive:state.turnActive,connected:state.connected,attachments:state.attachments,attachmentsPreparing:state.attachmentsPreparing,deliveryMode:state.deliveryMode,stopPending:state.stopPending,queuedFollowUps:state.queuedFollowUps,sessionId:state.sessionId,messages:state.messages,pendingActiveInputs:state.pendingActiveInputs,runtime:state.runtime,inputQueue:state.inputQueue,pause:state.pause}),shallowChatSelection);
   const composerRevision = getComposerRevision(sessionId || "");
   const {phase: micPhase, sessionTitle: micChat, error: micError} = useMicState();
   const pendingIds = new Set(pendingActiveInputs.map(input => input.localId));

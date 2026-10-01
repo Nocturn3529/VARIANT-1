@@ -12,6 +12,26 @@
 @import url("./refinement.css");
 @import url("./composer.css");
 @import url("./composer-motion.css");
+/* Apply reduced motion to all component durations, including legacy literals.
+   A single iteration settles enter/exit states without an endless fast loop. */
+:root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-delay: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0ms !important;
+  transition-delay: 0ms !important;
+  scroll-behavior: auto !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+    transition-delay: 0ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 /* Restore a visible keyboard focus indicator after compact destination
    controls remove their native outlines. */
 

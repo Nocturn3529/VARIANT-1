@@ -24,7 +24,8 @@ assert.doesNotMatch(html, /dev\/fixture-loader\.js/,
   'the production shell must not load development files');
 assert.match(main, /get\("fixture"\) === "1"/,
   'the development fixture is explicitly enabled by ?fixture=1');
-assert.match(main, /fixtureLoader\.src = "\.\/dev\/fixture-loader\.js"/,
+assert.match(main, /__VARIANT1_FIXTURES__/);
+assert.match(main, /fixtureLoader\.src = new URL\("\.\.\/dev\/fixture-loader\.js"/,
   'the platform requests the development loader only in fixture mode');
 assert.match(loader, /get\("fixture"\) !== "1"/,
   'the development loader independently enforces ?fixture=1');
@@ -53,6 +54,7 @@ for (const excluded of [
   '!frontend/main-deck/dev/**/*',
   '!frontend/main-deck/dist/fixture.js',
   '!frontend/main-deck/dist/fixture.js.map',
+  '!frontend/main-deck/dist/fixture-platform*',
 ]) {
   assert.ok(pkg.build.files.includes(excluded),
     `${excluded} must be excluded from packaged builds`);
@@ -60,5 +62,14 @@ for (const excluded of [
 
 assert.doesNotMatch(html, /variant1-runtime-[a-z-]+-root/);
 assert.match(html, /id="variant1-react-root"/);
+const build = read('scripts/build-deck.js');
+assert.match(build, /__VARIANT1_FIXTURES__: "false"/);
+assert.match(build, /__VARIANT1_FIXTURES__: "true"/);
+const platform = read('frontend/main-deck/dist/platform.js');
+assert.doesNotMatch(platform, /variant1:fixture-(?:message|state)|fixture-loader\.js/,
+  'production output must strip the fixture event ingress and loader');
+const development = read('frontend/main-deck/dist/fixture-platform.js');
+assert.match(development, /variant1:fixture-message/,
+  'the dedicated development entry must retain fixture support');
 
 console.log('deck fixture hygiene: all tests passed');

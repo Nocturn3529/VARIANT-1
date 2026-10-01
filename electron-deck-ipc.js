@@ -12,6 +12,8 @@ const { BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron')
 const { isAllowedExternalUrl } = require('./electron-security');
 const {createWorkbenchWatchers, createReadCache, limitReadConcurrency, sharePendingRead} = require('./electron-workbench-watchers');
 const { isEditableText } = require('./electron-workbench-files');
+const {projectGitDiff, COMMAND_BYTES} = require('./electron-workbench-diff');
+const {createGitReviewReader} = require('./electron-workbench-review');
 
 function normalizeAbsoluteLocalPath(rawPath) {
   if (typeof rawPath !== 'string' || !rawPath.trim() || rawPath.includes('\0')) {
@@ -105,7 +107,7 @@ async function gitRoot(startPath) {
 
 async function workbenchGitStatus(startPath) {
   const root = await gitRoot(startPath);
-  const branchResult = await readGit(['status', '--porcelain=v1', '-z', '-b'], { cwd: root });
+  const branchResult = await readGit(['status', '--porcelain=v1', '--untracked-files=all', '-z', '-b'], { cwd: root });
   const records = branchResult.stdout.split('\0');
   const header = records.shift() || '';
   const branchMatch = /^##\s+([^\.\s]+)(?:\.\.\.([^\s]+))?(?:\s+\[ahead\s+(\d+)(?:,\s+behind\s+(\d+))?\])?/.exec(header);
@@ -137,8 +139,8 @@ async function workbenchGitStatus(startPath) {
     }
   };
   const [workingCounts, stagedCounts] = await Promise.all([
-    readGit(['diff', '--numstat', '--no-renames'], { cwd: root }).catch(() => ({ stdout: '' })),
-    readGit(['diff', '--cached', '--numstat', '--no-renames'], { cwd: root }).catch(() => ({ stdout: '' })),
+    readGit(['diff', '--no-ext-diff', '--no-textconv', '--numstat', '--no-renames'], { cwd: root }).catch(() => ({ stdout: '' })),
+    readGit(['diff', '--cached', '--no-ext-diff', '--no-textconv', '--numstat', '--no-renames'], { cwd: root }).catch(() => ({ stdout: '' })),
   ]);
   parseNumstat(workingCounts.stdout);
   parseNumstat(stagedCounts.stdout);
@@ -206,8 +208,10 @@ function registerDeckIpc(deps) {
     openAtLogin: !!openAtLogin,
     args: openAtLogin && startHidden ? ['--hidden'] : [],
   });
+  const reviewReader = createGitReviewReader({readGit,gitRoot,repositoryFile,workbenchGitStatus,projectGitDiff});
   const gitStatus = createReadCache(target => workbenchGitStatus(target).catch(error => ({ok:false,files:[],error:String(error?.stderr || error?.message || error)})));
-  const watchers = createWorkbenchWatchers({hiddenNames: WORKBENCH_HIDDEN_NAMES, changed: () => gitStatus.invalidate()});
+  const invalidateGit = () => {gitStatus.invalidate();reviewReader.invalidate();};
+  const watchers = createWorkbenchWatchers({hiddenNames: WORKBENCH_HIDDEN_NAMES, changed: invalidateGit});
 
   ipcMain.handle('settings:get', (event) => (
     deckWin() && isTrustedIpcSender(event, deckWin()) ? readSettings() : null
@@ -494,25 +498,24 @@ function registerDeckIpc(deps) {
     catch (error) { return { ok: false, error: String(error && error.stderr || error && error.message || error), files: [] }; }
   });
 
-  const readDiff = sharePendingRead(async key => {
-    const [target,filePath,staged] = JSON.parse(key);
-    try {
-      const root = await gitRoot(target);
-      const args = ['diff', '--no-ext-diff', '--no-color', '--unified=3'];
-      if (staged) args.push('--cached');
-      if (filePath) args.push('--', String(filePath));
-      const result = await readGit(args, { cwd: root, timeout: 60000, maxBuffer: 32 * 1024 * 1024 });
-      return { ok: true, root, diff: result.stdout };
-    } catch (error) {
-      return { ok: false, error: String(error && error.stderr || error && error.message || error) };
-    }
+  const reviewRead = sharePendingRead(async key => {
+    const [method,target,file,options] = JSON.parse(key);
+    return method === 'diff' ? reviewReader.diff(target,file,options) : reviewReader[method](target,options);
   });
-  ipcMain.handle('workbench:git:diff', async (event, rawPath, filePath, staged) => {
-    if (!isTrustedIpcSender(event, deckWin())) return { ok: false, error: 'untrusted_sender' };
-    const target = normalizeAbsoluteLocalPath(rawPath);
-    if (!target) return { ok: false, error: 'invalid_path' };
-    return readDiff(JSON.stringify([target,String(filePath || ''),!!staged]));
-  });
+  for (const [channel,method] of [['branches','branches'],['history','history'],['review-files','files'],['review-diff','diff']]) {
+    ipcMain.handle(`workbench:git:${channel}`, async (event,rawPath,fileOrOptions,rawOptions) => {
+      if (!isTrustedIpcSender(event,deckWin())) return {ok:false,error:'untrusted_sender'};
+      const target=normalizeAbsoluteLocalPath(rawPath);
+      if (!target) return {ok:false,error:'invalid_path'};
+      // Forward only declared read fields, never a renderer-supplied Git argument list.
+      const input=method==='diff'?rawOptions:fileOrOptions;
+      const options=input && typeof input==='object' && !Array.isArray(input) ? {
+        scope:input.scope,commits:input.commits,ref:input.ref,baseRef:input.baseRef,allBranches:input.allBranches,historyOids:input.historyOids,excludeOid:input.excludeOid,limit:input.limit,offset:input.offset,context:input.context,
+      } : {};
+      try {return await reviewRead(JSON.stringify([method,target,method==='diff'?fileOrOptions:null,options]));}
+      catch(error){return {ok:false,error:String(error?.message || error)};}
+    });
+  }
 
   ipcMain.handle('workbench:git:run', async (event, action, rawPath, options) => {
     if (!isTrustedIpcSender(event, deckWin())) return { ok: false, error: 'untrusted_sender' };
@@ -541,7 +544,7 @@ function registerDeckIpc(deps) {
           const parentRelative = path.relative(realRoot, realParent);
           if (parentRelative === '..' || parentRelative.startsWith('..' + path.sep) || path.isAbsolute(parentRelative)) throw new Error('invalid_repository_file');
           await shell.trashItem(absolute);
-          gitStatus.invalidate();
+          invalidateGit();
           return { ok: true, root };
         }
         args = ['restore', '--worktree', '--', selected];
@@ -557,7 +560,7 @@ function registerDeckIpc(deps) {
           cwd: root, timeout: 120000, env: gitCommandEnv(),
         });
         committed = true;
-        gitStatus.invalidate();
+        invalidateGit();
         args = ['push'];
       } else if (action === 'create_pr') {
         executable = 'gh';
@@ -568,7 +571,7 @@ function registerDeckIpc(deps) {
         cwd: root, timeout: 120000, maxBuffer: 32 * 1024 * 1024,
         env: executable === 'git' ? gitCommandEnv() : process.env,
       });
-      gitStatus.invalidate();
+      invalidateGit();
       return { ok: true, root, committed: committed || action === 'commit', stdout: result.stdout, stderr: result.stderr };
     } catch (error) {
       return { ok: false, committed, error: String(error && error.stderr || error && error.message || error) };

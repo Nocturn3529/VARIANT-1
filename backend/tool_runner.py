@@ -116,16 +116,21 @@ def _desktop_args_preview(name: str, raw_args: dict) -> str:
 
 
 def _safe_clip(ports: ToolRunnerPorts, value, limit: int) -> str:
+    from observability.display_projection import safe_display
+    safe = str(safe_display(str(value or "")))
     try:
-        return ports.clip(str(value or ""), limit)
+        return ports.clip(safe, limit)
     except Exception:
-        text = " ".join(str(value or "").split())
+        text = " ".join(safe.split())
         return text[:limit] + ("…" if len(text) > limit else "")
 
 
-def _error_summary(value, limit: int = 240) -> str:
+def _error_summary(value, limit: int = 240, *, sanitize: bool = False) -> str:
     """Return the useful diagnostic, not a long command echoed before it."""
     text = str(value or "").strip()
+    if sanitize:
+        from observability.display_projection import safe_display
+        text = str(safe_display(text))
     if not text:
         return "unknown error"
     lines = [line.strip() for line in text.splitlines()]
@@ -618,7 +623,7 @@ async def execute_tool_batch(
                        total_duration_ms=int(
                            max(0.0, time.perf_counter() - call_started) * 1000
                        ),
-                       text=_error_summary(out, 400),
+                       text=_error_summary(out, 400, sanitize=True),
                        receipt_id=(capability_receipt.receipt_id
                                    if capability_receipt is not None else ""))
         finish_outer_call(outer_reservation, terminal_outcome)

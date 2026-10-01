@@ -409,16 +409,20 @@ def register(on):
         Does not rebroadcast the full session (avoids wiping the live transcript).
         """
         sid = str(msg.get("id") or "") or _chat_runtime(srv).viewed_session_id(session)
+        annotation_meta = {
+            "id": sid, "run_id": str(msg.get("run_id") or "")[:512],
+            "request_id": str(msg.get("request_id") or "")[:96],
+        }
         if not sid or not _sessions(srv).has_session(sid):
             await websocket.send_json({
-                "type": "chat:session:error",
+                "type": "chat:session:annotated", "ok": False, **annotation_meta,
                 "error": "unknown session",
             })
             return
         steps = msg.get("steps") if "steps" in msg else None
         receipt = msg.get("receipt") if "receipt" in msg else None
         if steps is None and receipt is None:
-            await websocket.send_json({"type": "chat:session:annotated", "ok": True, "id": sid})
+            await websocket.send_json({"type": "chat:session:annotated", "ok": True, **annotation_meta})
             return
         sess = _sessions(srv).annotate_last_assistant(
             sid, steps=steps, receipt=receipt if isinstance(receipt, dict) else None,
@@ -426,14 +430,14 @@ def register(on):
         )
         if sess is None:
             await websocket.send_json({
-                "type": "chat:session:error",
+                "type": "chat:session:annotated", "ok": False, **annotation_meta,
                 "error": "could not annotate session",
             })
             return
         await websocket.send_json({
             "type": "chat:session:annotated",
             "ok": True,
-            "id": sid,
+            **annotation_meta,
         })
 
     @on("chat:runtime:get")

@@ -6,7 +6,7 @@ import type {
   ChatMessage,
   ChatTurnStep,
 } from "./types";
-import {MAX_TURN_STEPS} from "./stateCore";
+import {retainTurnSteps, boundedPreview} from "./preview";
 import {parseTurnReceipt} from "./receipt";
 import {parseEvidence} from "./evidence";
 import {parsePeerActivity} from "../protocol/peerActivity";
@@ -96,11 +96,12 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
       || kindRaw === "thinking"
     ) ? kindRaw as ChatTurnStep["kind"] : "note";
     let status = String(row.status || "done") as ChatTurnStep["status"];
-    if (status !== "running" && status !== "ok" && status !== "error" && status !== "done") {
-      status = "done";
+    if (!["running", "ok", "error", "done", "cancelled", "interrupted", "timed_out", "skipped", "degraded", "unknown"].includes(status || "")) {
+      status = "unknown";
     }
     // Reloaded steps should never stay "Live".
-    if (status === "running") status = "done";
+    if (status === "running") status = "interrupted";
+    if (kind === "thinking" && (row.source === "provider_summary" || row.summary_source === "provider_summary")) status = "done";
     out.push({
       id: String(row.id || newStepId()),
       kind,
@@ -108,14 +109,15 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
         ? (row.status === "running" ? "cancelled" : row.status) as ChatTurnStep["summaryState"] : undefined,
       summaryRevision: typeof row.summary_revision === "number" && Number.isSafeInteger(row.summary_revision) ? row.summary_revision : undefined,
       label: label.slice(0, 160),
-      detail: row.detail != null ? String(row.detail).slice(0, kind === "thinking" ? 16_000 : 400) : undefined,
+      detail: row.detail != null ? boundedPreview(String(row.detail), kind === "thinking" ? 16_000 : 400) : undefined,
+      omittedBefore: Math.max(0, Math.min(1_000_000, Number(row.omitted_before) || 0)),
       status,
       tool: row.tool != null ? String(row.tool) : undefined,
       key: row.key != null ? String(row.key) : undefined,
       callId: row.call_id != null ? String(row.call_id).slice(0, 128) : undefined,
       rawStatus: row.raw_status != null ? String(row.raw_status).slice(0, 64) : undefined,
-      argsPreview: row.args_preview != null ? String(row.args_preview).slice(0, 600) : undefined,
-      resultPreview: row.result_preview != null ? String(row.result_preview).slice(0, 800) : undefined,
+      argsPreview: row.args_preview != null ? boundedPreview(String(row.args_preview), 600) : undefined,
+      resultPreview: row.result_preview != null ? boundedPreview(String(row.result_preview), 800) : undefined,
       startedAt: row.started_at != null ? Number(row.started_at) || undefined : undefined,
       completedAt: row.completed_at != null ? Number(row.completed_at) || undefined : undefined,
       durationMs: row.duration_ms != null ? Math.max(0, Number(row.duration_ms) || 0) : undefined,
@@ -124,9 +126,8 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
       peerMessage:parsePeerActivity(row.peer_message),
       ts: row.ts != null ? Number(row.ts) || Date.now() : Date.now(),
     });
-    if (out.length >= MAX_TURN_STEPS) break;
   }
-  return out.length ? out : undefined;
+  return out.length ? retainTurnSteps(out) : undefined;
 }
 
 function messageEnrichKey(m: ChatMessage): string {
@@ -317,6 +318,7 @@ function mergeLocalEnrichment(
     return {
       ...remote,
       runId: remote.runId || local.runId,
+      tracePersistence: local.tracePersistence,
       text: remote.role === "user"
         && localAttachments.length
         && (

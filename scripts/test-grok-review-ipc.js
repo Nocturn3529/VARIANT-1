@@ -9,6 +9,14 @@ const {createRequire} = require('node:module');
 const root = path.resolve(__dirname, '..');
 const file = path.join(root, 'electron-deck-ipc.js');
 const localRequire = createRequire(file);
+const {projectGitDiff,COMMAND_BYTES}=require('../electron-workbench-diff');
+assert.equal(COMMAND_BYTES,2*1024*1024);
+assert.equal(projectGitDiff('Binary files a/image and b/image differ\n').binary,true);
+assert.equal(projectGitDiff('+Binary files a/image and b/image differ\n').binary,false);
+const bounded=projectGitDiff('diff header\n'+'+sample\n'.repeat(50000));
+assert.ok(bounded.truncated && bounded.diff.length<=256*1024);
+assert.equal(bounded.originalBytesExact,true);
+assert.equal(projectGitDiff('Partial output',true).originalBytesExact,false);
 const handlers = new Map();
 const opens = [], reveals = [];
 const deck = {}, monitor = {}, overlay = {};
@@ -33,6 +41,12 @@ moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
 (async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'variant1-ipc-review-'));
   try {
+    for (const channel of ['branches','history','review-files','review-diff']) {
+      const handler=handlers.get(`workbench:git:${channel}`);
+      assert.ok(handler,`${channel} read is registered`);
+      assert.equal((await handler({sender:overlay},scratch,{})).error,'untrusted_sender');
+      assert.equal((await handler({sender:deck},'relative/path',{})).error,'invalid_path');
+    }
     const executable = path.join(scratch, 'sample.cmd');
     fs.writeFileSync(executable, 'This fixture must never be executed.');
     for (const sender of [overlay, monitor]) {

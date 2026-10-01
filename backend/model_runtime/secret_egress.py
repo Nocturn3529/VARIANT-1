@@ -75,6 +75,13 @@ _PLACEHOLDER = re.compile(
     re.I,
 )
 
+# Shared high-confidence text detection for cloud envelopes and UI projections.
+SECRET_TEXT_PATTERNS = (
+    ("private_key", _PRIVATE_KEY), ("authorization_header", _AUTH_HEADER),
+    ("token_prefix", _TOKEN_PREFIX), ("jwt", _JWT),
+    ("secret_assignment", _SECRET_ASSIGNMENT), ("signed_url", _SIGNED_URL),
+)
+
 
 def _pointer(parts: tuple[str, ...]) -> str:
     return "/" + "/".join(part.replace("~", "~0").replace("/", "~1") for part in parts)
@@ -211,14 +218,7 @@ class SecretEgressFirewall:
     @staticmethod
     def _findings(payload: dict[str, Any]) -> list[dict[str, str]]:
         findings: list[dict[str, str]] = []
-        patterns = (
-            ("private_key", _PRIVATE_KEY),
-            ("authorization_header", _AUTH_HEADER),
-            ("token_prefix", _TOKEN_PREFIX),
-            ("jwt", _JWT),
-            ("secret_assignment", _SECRET_ASSIGNMENT),
-            ("signed_url", _SIGNED_URL),
-        )
+        patterns = SECRET_TEXT_PATTERNS
         for parts, text in _walk_strings(payload):
             if _is_provider_reasoning_ciphertext(payload, parts):
                 continue

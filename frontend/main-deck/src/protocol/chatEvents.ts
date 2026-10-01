@@ -211,6 +211,7 @@ export type StreamDoneMessage = Readonly<{
   type: "done";
   text: string;
   cancelled: boolean;
+  commitConfirmed: boolean;
   run_id?: string;
   status?: string;
   stop_reason?: string;
@@ -272,7 +273,12 @@ export type ChatUnknownMessage = Readonly<{
   originalType: string;
 } & StreamRouting>;
 
+export type ChatSessionAnnotatedMessage = Readonly<{
+  type: "chat:session:annotated"; id: string; run_id: string; request_id: string; ok: boolean;
+}>;
+
 export type ChatWsMessage =
+  | ChatSessionAnnotatedMessage
   | ChildrenChangedMessage
   | ChildrenMessage
   | GoalWorkEvent
@@ -471,6 +477,8 @@ export function parseChatWsMessage(
         error: str(row.error, "chat_rejected"),
         text: str(row.text, "Could not start this turn"),
       };
+    case "chat:session:annotated":
+      return {type:"chat:session:annotated",id:str(row.id),run_id:str(row.run_id),request_id:str(row.request_id),ok:row.ok===true};
     case "chat:appended":
       return {
         type: "chat:appended",
@@ -539,6 +547,7 @@ export function parseChatWsMessage(
         type: "done",
         text: str(row.text),
         cancelled: !!row.cancelled,
+        commitConfirmed: row.durable === true,
         run_id: optStr(row.run_id),
         status: optStr(row.status),
         stop_reason: optStr(row.stop_reason),

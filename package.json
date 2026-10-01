@@ -71,6 +71,7 @@
       "!frontend/main-deck/dist/**/*.map",
       "!frontend/main-deck/dist/fixture.js",
       "!frontend/main-deck/dist/fixture.js.map",
+      "!frontend/main-deck/dist/fixture-platform*",
       "assets/**/*",
       "LICENSE",
       "!node_modules/**/*.map",

@@ -1,5 +1,6 @@
 import type {WsCommand} from "./protocol";
 import {createModuleStore} from "./state/createModuleStore";
+import {registerChatProjectionCleanup,registerChatProjectionRetention} from "./state/chatProjectionLifecycle";
 import type {RuntimeContext} from "./types";
 
 export type SessionContextCategory = Readonly<{
@@ -75,6 +76,12 @@ const cache = new Map<string, SessionContextState>();
 const settingsTimers = new Map<string,ReturnType<typeof setTimeout>>();
 const settingsChecks = new Map<string,{requestId:string;settingRequestId:string}>();
 const modelTimers = new Map<string,ReturnType<typeof setTimeout>>();
+registerChatProjectionRetention(id=>!!getContextForSession(id).settingsPending || modelTimers.has(id) || settingsTimers.has(id));
+registerChatProjectionCleanup(id=>{
+  clearTimeout(modelTimers.get(id));modelTimers.delete(id);
+  clearTimeout(settingsTimers.get(id));settingsTimers.delete(id);settingsChecks.delete(id);cache.delete(id);
+  if(store.getState().sessionId===id)store.replaceState(emptyState(""));
+});
 
 function number(value: unknown): number {
   const parsed = Number(value);

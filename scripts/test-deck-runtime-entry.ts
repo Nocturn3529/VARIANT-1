@@ -360,6 +360,9 @@ async function testBackendStatusSubscriptionOwnership(): Promise<void> {
 }
 
 async function testDeckRuntimeHydration(): Promise<void> {
+  const isolated = new DeckRuntime({api:null});
+  assert.throws(()=>isolated.ingestDevelopmentMessage({type:"config"}), /Fixture ingress is disabled/);
+  assert.throws(()=>isolated.setDevelopmentConnectionState("connected"), /Fixture ingress is disabled/);
   const scheduler = new FakeScheduler();
   const sockets: FakeSocket[] = [];
   const handled: string[] = [];
@@ -385,6 +388,7 @@ async function testDeckRuntimeHydration(): Promise<void> {
     id: "test-filtered-module",
     messageTypes: ["accepted"],
     start() { lifecycle.push("start"); },
+    stop() { lifecycle.push("stop"); },
     enter(_context, view) { lifecycle.push(`enter:${view}`); },
     settingsCategory(_context, category) { lifecycle.push(`settings:${category}`); },
     connection(_context, state) { lifecycle.push(`connection:${state}`); },
@@ -452,6 +456,8 @@ async function testDeckRuntimeHydration(): Promise<void> {
     "a new connection generation receives one fresh hydration burst",
   );
   runtime.stop();
+  runtime.stop();
+  assert.equal(lifecycle.filter(item=>item==="stop").length,1,"module cleanup runs once per active runtime lifetime");
 }
 
 function testTurnStore(): void {
@@ -1670,7 +1676,7 @@ function testHermesActivityProjection(): void {
   }
   assert.equal(normalizeActivityStatus("invalid_arguments", "tool:result"), "error");
   assert.equal(normalizeActivityStatus("needs_reconciliation", "tool:result"), "error");
-  assert.equal(normalizeActivityStatus("cancelled", "tool:result"), "error");
+  assert.equal(normalizeActivityStatus("cancelled", "tool:result"), "cancelled");
   assert.equal(normalizeActivityStatus("ok", "tool:result"), "ok");
   assert.equal(formatActivityDuration(1_250), "1.3s");
 

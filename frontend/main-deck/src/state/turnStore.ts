@@ -1,3 +1,4 @@
+import {registerChatProjectionCleanup,registerChatProjectionRetention} from "./chatProjectionLifecycle";
 export type TurnEndStatus = "complete" | "cancelled" | "error" | string;
 export type TurnSnapshot = Readonly<{
   active: boolean; clientId: string; source: string; sessionId: string; startedAt: number;
@@ -11,6 +12,14 @@ const settledIdentities = new Map<string, string[]>();
 const listeners = new Set<TurnListener>();
 let focusedSession = "";
 let eventSession: string | undefined;
+registerChatProjectionRetention(id=>!!turns.get(id)?.active);
+registerChatProjectionCleanup((id,reason)=>{
+  const prior=turns.get(id);turns.delete(id);
+  // Small settled identity fences survive idle view eviction to reject late
+  // events when the user returns; confirmed deletion releases them too.
+  if(reason==="deleted")settledIdentities.delete(id);
+  if(prior?.active)publish({...prior,active:false,lastEndStatus:"cancelled"},prior);
+});
 const key = () => eventSession ?? focusedSession;
 function empty(sessionId: string): TurnSnapshot {
   return {active:false, clientId:"", source:"chat", sessionId, startedAt:0, lastEndStatus:"complete", admissionId:"", runId:""};

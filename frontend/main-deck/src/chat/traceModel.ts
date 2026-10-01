@@ -19,13 +19,16 @@ export function traceRows(steps: readonly ChatTurnStep[]) {
   });
 }
 export function traceSummary(steps: readonly ChatTurnStep[]) {
-  const actions = steps.filter(step => step.kind !== "thinking");
+  const actions = steps.filter(step => step.kind === "tool" || step.kind === "step");
   const cells = actions.filter(step => activityPresentation(step).python).length;
   const peers=actions.filter(step=>step.peerMessage).length;
   const tools = actions.length - cells - peers;
-  const errors = actions.filter(stepFailed).length;
+  const errors = actions.filter(stepFailed).length || (steps.some(stepFailed) ? 1 : 0);
+  const stopped = actions.filter(step => step.status === "cancelled" || step.status === "interrupted").length
+    || (steps.some(step => step.status === "cancelled" || step.status === "interrupted") ? 1 : 0);
+  const omitted = steps.reduce((count, step) => count + (step.omittedBefore || 0), 0);
   const thoughts = steps.filter(step => step.kind === "thinking" && step.detail?.trim()).length;
   const parts = [thoughts ? `${thoughts} ${thoughts === 1 ? "thought" : "thoughts"}` : "", cells ? `${cells} Python ${cells === 1 ? "cell" : "cells"}` : "",
-    tools ? `${tools} ${tools === 1 ? "action" : "actions"}` : "", peers ? `${peers} peer ${peers===1 ? "message" : "messages"}` : "", errors ? `${errors} ${errors === 1 ? "issue" : "issues"}` : ""].filter(Boolean);
+    tools ? `${tools} ${tools === 1 ? "action" : "actions"}` : "", peers ? `${peers} peer ${peers===1 ? "message" : "messages"}` : "", errors ? `${errors} ${errors === 1 ? "issue" : "issues"}` : "", stopped ? `${stopped} stopped` : "", omitted ? `${omitted} earlier events omitted` : ""].filter(Boolean);
   return {cells, errors, label: parts.join(" · ") || "Execution details"};
 }

@@ -28,13 +28,16 @@ const platformOptions = {
   },
   splitting: true,
   chunkNames: "chunks/[name]-[hash]",
+  define: {__VARIANT1_FIXTURES__: "false"},
 };
 const fixtureOptions = {
   ...sharedOptions,
   entryPoints: {
     fixture: path.join(root, "frontend", "main-deck", "src", "fixture.ts"),
+    "fixture-platform": path.join(root, "frontend", "main-deck", "src", "main.tsx"),
   },
   splitting: false,
+  define: {__VARIANT1_FIXTURES__: "true"},
 };
 
 function cleanOutput() {

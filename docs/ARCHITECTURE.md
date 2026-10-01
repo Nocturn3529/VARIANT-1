@@ -75,6 +75,62 @@ Approved memory is a separate store: explicit user memories and approved inferre
 facts can be recalled in later turns. Saving a conversation does not imply that
 all of its live Python objects can be restored.
 
+The activity trace is a bounded display projection, not a complete output log.
+Live and saved ordinary traces keep the newest 48 events and record earlier
+omissions; provider summaries retain their separate storage bound. Tool failure,
+interruption, timeout, skipped/degraded work, and unknown outcomes remain distinct.
+Managed credentials and recognized secret patterns are sanitized before display
+clipping, activity broadcast, and annotation persistence. Execution inputs and
+internal outcome records keep their existing contracts; cloud-envelope secret
+egress remains a separate firewall.
+
+Client trace enrichment is written after the run's durable assistant commit.
+An explicit commit confirmation starts delivery even if the later append event
+is lost; legacy completion frames wait for the durable append. Session/run/request
+acknowledgments confirm that separate write. Unconfirmed
+activity saves have bounded retries and reconnect reconciliation; the frontend
+does not claim that an unconfirmed trace is saved merely because its reply is.
+Disclosure state is chat/run/call scoped. Shared elapsed timing and selected
+store subscriptions avoid unrelated control updates during token streaming.
+Idle projection eviction and confirmed deletion coordinate context, receipt,
+disclosure, and turn data without retiring a Python generation. Active work,
+drafts, pending input/preparation, and unfinished settings or annotation requests
+are protected, including unconfirmed trace evidence; settled admission fences
+survive idle view eviction.
+
+Review presents bounded unified patches in collapsible file cards with old/new
+gutters, safe code tokenization, and virtualized rendering. Its Changed files
+sidebar is hidden by default and opens on the right. Uncommitted, staged, and
+unstaged scopes inspect the current worktree and index. All commits compares a
+selected branch tip to its merge base with a detected or explicitly chosen base
+ref; this net branch delta is independent of history pagination. Automatic base
+discovery uses repository remote-default metadata or a valid configured default,
+and reports unavailable or ambiguous bases rather than assuming the repository
+root or feature-branch upstream. Branch history includes every commit reachable
+from the tip beyond that base. All branches history includes local and remote
+branch tips, with resolved tips pinned across pages; it excludes tag-only and
+stash history.
+
+Individual selected commits have separate first-parent patches, including root
+and merge commits. Their file list is a path union and their totals sum the
+selected edits; it does not include unselected intervening commits or claim to
+be one net branch delta. Historical patches do not link their line numbers to
+current source. Current-file navigation is available only where a live comparison
+can identify the current line. Counts expose incomplete observations, and binary
+file changes remain distinct from text-line counts.
+
+Read-only Electron observations bound branches, history, file lists, patches,
+and unchanged-context expansion; binary and truncated output are explicit.
+Concurrent cards share verified selection/file observations for at most one
+second with at most eight cached selections. Selected patch sections share one
+display-size budget. Repository watcher events and Git
+mutations invalidate those observations. This view provides no per-turn edit
+attribution, split view, whitespace toggle, or wrapping option. File-level Git
+actions retain sender, path, and recoverable-discard protections. Commit, push,
+and pull-request operations can be requested through the agent rather than a
+Review footer.
+Native browser moves retain their live pages rather than reloading them.
+
 ## Mutation
 
 Mutation means changing executable tool methods, not training model weights.
@@ -122,6 +178,11 @@ The empty chat guide reads configuration for the chat's selected model route
 from backend projections. Examples fill drafts without sending them.
 Mutation authoring is available under
 Session tools; disabling authoring preserves already activated overlays.
+
+Production renderer builds strip fixture event ingress. The separate development
+entry and fixture payloads are excluded from packages. Runtime stop hooks dispose
+view polling; leaving or closing Overview does not leave its telemetry timers
+running against an inactive connection.
 
 ### Installer composition
 

@@ -27,7 +27,23 @@ from .projection import coverage, digest_rows, history_rows, verified_prefix
 DEFAULT_TITLE = "New chat"
 MAX_TITLE_CHARS = 80
 MAX_MESSAGES = 1000
-MAX_TURN_STEPS = 40
+MAX_TURN_STEPS = 48
+
+
+def _display_clip(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    marker = f"\n[Preview truncated: {len(value)} characters total]"
+    head = value[:max(0, limit - len(marker))]
+    boundary = head.rfind("\n")
+    return (head[:boundary] if boundary > len(head) // 2 else head) + marker
+
+
+def _omitted_count(value) -> int:
+    try:
+        return max(0, min(1_000_000, int(value or 0)))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 def _title_from(text: str) -> str:
@@ -108,10 +124,17 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
     if not isinstance(raw_steps, list):
         return []
     output: list[dict[str, Any]] = []
-    for raw in raw_steps[:limit]:
+    row_limit = max(0, min(limit, SUMMARY_STEP_LIMIT))
+    omitted = min(1_000_000, max(0, len(raw_steps) - row_limit) + sum(
+        _omitted_count(row.get("omitted_before", row.get("omittedBefore")))
+        for row in raw_steps if isinstance(row, Mapping)
+    ))
+    for raw in raw_steps[-row_limit:] if row_limit else ():
         if not isinstance(raw, Mapping):
             continue
-        label = str(raw.get("label") or "").strip()[:160]
+        from observability.display_projection import safe_display_fields
+        raw = safe_display_fields(raw)
+        label = _display_clip(str(raw.get("label") or "").strip(), 160)
         if not label:
             continue
         kind = str(raw.get("kind") or "note").strip().lower() or "note"
@@ -121,8 +144,11 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         public_summary = kind == "thinking" and raw.get("source") == "provider_summary"
         if public_summary and status == "running":
             status = "cancelled"  # A persisted unfinished snapshot is not a live provider stream.
-        if status not in ({"ok", "error", "done", "cancelled", "discarded"} if public_summary else {"ok", "error", "done"}):
-            status = "done"
+        if status not in ({"ok", "error", "done", "cancelled", "discarded"} if public_summary else {
+            "ok", "error", "done", "cancelled", "interrupted", "timed_out",
+            "skipped", "degraded", "unknown",
+        }):
+            status = "interrupted" if status == "running" else "unknown"
         row: dict[str, Any] = {
             "id": str(raw.get("id") or "")[:40],
             "kind": kind,
@@ -143,7 +169,8 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         ):
             value = str(next(
                 (raw.get(alias) for alias in aliases if raw.get(alias)), ""
-            ) or "").strip()[:limit]
+            ) or "").strip()
+            value = _display_clip(value, limit)
             if value:
                 row[key] = value
         for key, aliases in (
@@ -174,6 +201,8 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         if evidence:
             row["evidence"] = evidence
         output.append(row)
+    if omitted and output:
+        output[0]["omitted_before"] = omitted
     return output
 
 

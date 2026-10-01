@@ -95,7 +95,12 @@ export function stepTarget(step: ChatTurnStep): string {
 }
 
 export function stepFailed(step: ChatTurnStep): boolean {
-  return step.status === "error";
+  return step.status === "error" || step.status === "timed_out";
+}
+
+export function activityStatusLabel(status: ChatTurnStep["status"]): string {
+  return ({running:"Running",ok:"Complete",done:"Complete",error:"Error",cancelled:"Stopped",
+    interrupted:"Interrupted",timed_out:"Timed out",skipped:"Skipped",degraded:"Degraded",unknown:"Unknown outcome"})[status || "unknown"];
 }
 
 export function currentStepLabel(step: ChatTurnStep | undefined, live = false): string {
@@ -113,10 +118,14 @@ export function normalizeActivityStatus(raw: string, event: string): ChatTurnSte
   if (event === "tool:start" || status === "running" || status === "starting") return "running";
   if (["ok", "success", "succeeded", "complete", "completed", "done", "replayed"].includes(status)) return "ok";
   if ([
-    "error", "failed", "failure", "invalid_arguments", "unavailable", "cancelled", "canceled",
-    "timed_out", "timeout", "needs_reconciliation", "rejected", "blocked", "unknown_effect",
+    "error", "failed", "failure", "invalid_arguments", "unavailable",
+    "needs_reconciliation", "rejected", "blocked", "unknown_effect",
   ].includes(status)) return "error";
-  return event === "tool:result" ? "ok" : "done";
+  if (["cancelled", "canceled", "cancelled_before_start", "canceled_before_start"].includes(status)) return "cancelled";
+  if (["timed_out", "timeout"].includes(status)) return "timed_out";
+  if (status === "interrupted") return "interrupted";
+  if (status === "skipped" || status === "degraded") return status;
+  return status ? "unknown" : event === "tool:result" ? "ok" : "done";
 }
 
 export function formatActivityDuration(milliseconds: number | undefined): string {

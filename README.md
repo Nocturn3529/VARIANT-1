@@ -37,6 +37,16 @@ Use the release notes for the behavior and qualification of a downloaded build.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB
   tool-discovery layer exposes capabilities as needed through shared backend services.
+- **Inspect execution and changes.** Activity distinguishes failures, stopped
+  work, and uncertain outcomes. Bounded previews redact managed or recognized
+  credentials and mark omitted content. Review Git changes in collapsible file
+  cards with line numbers and bounded expansion of unchanged context. Browse
+  a branch's complete delta against its detected or chosen base, browse history
+  across branches without checkout, or inspect individually selected commits.
+  Branch totals describe net changes; selected-commit totals sum those commits'
+  edits. The Changed files sidebar opens on the right when needed; source-line
+  links are limited to live changes. Request commits, pushes, or pull requests
+  through the agent.
 - **Choose supported local or cloud inference.** Use local models, your own API
   keys or custom endpoints, or supported provider-account connections. Available
   features depend on the model, provider, and configuration.

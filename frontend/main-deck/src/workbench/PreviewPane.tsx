@@ -2,6 +2,7 @@ import {attachRetainedBrowser,retainedBrowser} from "./retainedBrowserView";
 import {retainChatDraft} from "../chat/stateCore";
 import {FilesPanel} from "../context/FilesPanel";
 import {Icon} from "../ui/Icon";
+import {VirtualList} from "../ui/VirtualList";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
 import {detachWorkbenchPane, isWorkbenchPaneVisible, useWorkbenchState} from "./workbenchStore";
 import {useAppState} from "../state/appStore";
@@ -438,7 +439,12 @@ function renderMarkdownBlocks(blocks: MdBlock[], key = "md"): ReactNode[] {
   });
 }
 
-function RichTextPreview({path, text}: {path: string; text: string}) {
+function RichTextPreview({path, text, line}: {path: string; text: string; line?:number}) {
+  const selected=useRef<HTMLSpanElement>(null);
+  useEffect(()=>{selected.current?.scrollIntoView?.({block:"center"});},[line,text]);
+  const lines=useMemo(()=>line?text.split(/\r?\n/):[],[text,line]);
+  const target=Math.min(line || 1,Math.max(1,lines.length));
+  if (line) return <div className="workbench-file-preview__source workbench-file-preview__located"><VirtualList items={lines} rowHeight={22} initialIndex={target-1} label={`Source lines, selected line ${target}`} itemKey={(_,index)=>String(index)} render={(value,index)=><span ref={index+1===target ? selected : undefined} className={index+1===target ? "workbench-file-preview__selected-line" : undefined} data-line={index+1}><small aria-hidden="true">{index+1}</small><code>{value}</code></span>}/></div>;
   if (/\.(md|markdown)$/i.test(path)) {
     return <article className="workbench-markdown-preview">{renderMarkdownBlocks(runtimeLib.parseMarkdown(text))}</article>;
   }
@@ -459,6 +465,12 @@ function FilePreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
     if (editing && !wasEditing.current) editorRef.current?.focus();
     wasEditing.current = editing;
   }, [editing]);
+  useEffect(()=>{
+    if(!editing || !loaded || !tab.target.line || !editorRef.current)return;
+    const lines=text.split(/\r?\n/),target=Math.min(tab.target.line,lines.length);
+    const start=lines.slice(0,target-1).reduce((offset,value)=>offset+value.length+1,0);
+    editorRef.current.focus();editorRef.current.setSelectionRange(start,start+(lines[target-1]?.length || 0));
+  },[tab.target,editing,loaded]);
   useEffect(() => { setPreviewDirty(tab.id, text !== original); }, [tab.id, text !== original]);
   useEffect(() => {
     const cut = Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/"));
@@ -503,7 +515,7 @@ function FilePreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
       editing
         ? <textarea ref={editorRef} aria-label={`Edit ${tab.target.label}`} disabled={saving} className="workbench-file-preview__editor" value={text} onChange={event => updateFileDraft(tab.id, event.target.value)} spellCheck={false}/>
         : state.kind === "binary" ? <div className="workbench-preview__state"><strong>Binary file</strong><span>A text preview is unavailable. Use Reveal to open it in another application.</span></div>
-        : <RichTextPreview path={path} text={text}/>
+        : <RichTextPreview path={path} text={text} line={tab.target.line}/>
     ) : null}
   </section>;
 }

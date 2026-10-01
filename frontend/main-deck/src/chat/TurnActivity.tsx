@@ -1,30 +1,17 @@
 import {useEffect, useMemo, useRef, useState} from "react";
 import {RichText, thoughtPreview} from "./RichText";
 import {canRevealPaneForStep, revealPaneForStep} from "../workbench/activityRouting";
-import {formatActivityDuration, stepFailed} from "./activityModel";
+import {formatActivityDuration, stepFailed, activityStatusLabel} from "./activityModel";
 import {traceRows, traceSummary} from "./traceModel";
 import {traceActionLabel} from "./traceLabels";
 import {Icon} from "../ui/Icon";
 import type {ChatTurnStep} from "./types";
-import {useChatState} from "../chatStore";
+import {useChatSelection, shallowChatSelection} from "../chatStore";
+import {useElapsed} from "./elapsedClock";
 import {PEER_DELIVERY} from "../peers/peerModels";
+import {disclosureKey, disclosureChoice, rememberDisclosure as remember} from "./disclosures";
 
 // Virtualized turns retain disclosures across scroll and overlay visits.
-const disclosures = new Map<string, boolean>();
-function remember(key: string, open: boolean) {
-  if (disclosures.size >= 600 && !disclosures.has(key)) disclosures.delete(disclosures.keys().next().value!);
-  disclosures.set(key, open);
-}
-function useElapsed(active: boolean, startedAt: number): number {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    if (!active) return;
-    setNow(Date.now());
-    const timer = window.setInterval(() => setNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [active]);
-  return Math.max(0, now - startedAt);
-}
 function timeMs(value?: number) {
   const number = Number(value) || 0;
   return number > 0 && number < 1e12 ? number * 1000 : number;
@@ -56,13 +43,13 @@ function ThoughtText({text, streaming, preview}: {text: string; streaming: boole
   </div>;
 }
 
-function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnType<typeof traceRows>[number]; live: boolean; suspended?: string; mutation?: boolean}) {
+function TraceEntry({row, live, scope, suspended = "", mutation = false}: {row: ReturnType<typeof traceRows>[number]; live: boolean; scope: readonly [string,string]; suspended?: string; mutation?: boolean}) {
   const {step, presentation, headline} = row;
   const thought = step.kind === "thinking";
   const running = live && !suspended && step.status === "running";
   const failed = stepFailed(step);
-  const key = step.callId || step.id;
-  const [choice, setChoice] = useState<boolean | null>(() => disclosures.get(key) ?? null);
+  const key = disclosureKey(scope[0], scope[1], step.callId || step.id);
+  const [choice, setChoice] = useState<boolean | null>(() => disclosureChoice(key) ?? null);
   const [sawLive, setSawLive] = useState(thought && running);
   useEffect(() => { if (thought && running) setSawLive(true); }, [thought, running]);
   const open = choice ?? (failed || (thought && (running || sawLive)));
@@ -78,16 +65,17 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
   const duration = formatActivityDuration(running ? elapsed : step.durationMs);
   const hasDetails = !!(step.argsPreview || step.resultPreview || step.detail);
   const label = thought ? (running ? "Thinking" : step.summaryState === "discarded" ? "Discarded thought" : step.summaryState === "cancelled" ? "Interrupted thought" : "Thought") : traceActionLabel(step, live);
+  const Heading = hasDetails ? "button" : "div";
   return <section className={`trace-entry${thought ? " trace-entry--thought" : ""}${open ? " is-open" : ""}${failed ? " is-error" : ""}${running ? " is-running" : ""}${suspended && step.status === "running" ? " is-suspended" : ""}`} data-conversation-scaffold="" data-trace-id={step.id}>
     <div className="trace-entry__heading">
-      <button type="button" className="trace-entry__disclosure" aria-label={`${label}${presentation.python ? `, Python cell${presentation.executionCount !== null ? ` ${presentation.executionCount}` : ""}` : ""}${suspended && step.status === "running" ? `, ${suspended}` : ""}`}
-        aria-expanded={hasDetails ? open : undefined} disabled={!hasDetails} onClick={() => { remember(key, !open); setChoice(!open); }}>
-        <span className="trace-entry__status" aria-hidden="true">{running ? <TraceProgress mutation={mutation}/> : <Icon name={failed ? "error" : step.status === "running" && suspended ? "pause" : thought ? "thought" : step.status === "running" ? "stop" : "check"}/>}</span>
-        <span className="trace-entry__name">{label}</span>
+      <Heading {...(hasDetails ? {type:"button" as const,onClick:()=>{remember(key, !open);setChoice(!open);}} : {tabIndex:0,role:"group"})} className="trace-entry__disclosure" aria-label={`${label}, ${running ? "Running" : step.status === "running" ? suspended || "Interrupted" : activityStatusLabel(step.status)}${duration ? `, ${duration}` : ""}${presentation.python ? `, Python cell${presentation.executionCount !== null ? ` ${presentation.executionCount}` : ""}` : ""}`}
+        aria-expanded={hasDetails ? open : undefined}>
+        <span className="trace-entry__status" aria-hidden="true">{running ? <TraceProgress mutation={mutation}/> : <Icon name={failed ? "error" : step.status === "cancelled" || step.status === "interrupted" ? "stop" : step.status === "skipped" || step.status === "degraded" || step.status === "unknown" ? "pause" : step.status === "running" && suspended ? "pause" : thought ? "thought" : step.status === "running" ? "stop" : "check"}/>}</span>
+        <span className="trace-entry__name" title={label}>{label}</span>
         {thought ? <span className="trace-entry__headline">{previewText}</span> : null}
-        <small>{[failed ? "Error" : running ? "Running" : step.status === "running" ? suspended || "Interrupted" : "", duration].filter(Boolean).join(" · ")}</small>
+        <small>{[running ? "Running" : step.status === "running" ? suspended || "Interrupted" : step.status && !["ok","done"].includes(step.status) ? activityStatusLabel(step.status) : "", duration].filter(Boolean).join(" · ")}</small>
         {hasDetails ? <Icon className={open ? "is-expanded" : ""} name="chevron"/> : null}
-      </button>
+      </Heading>
       {!thought && canRevealPaneForStep(step) ? <button type="button" className="trace-entry__related" aria-label={`Open related surface for ${headline}`} title="Open related surface" onClick={() => revealPaneForStep(step)}><Icon name="popout"/></button> : null}
     </div>
     {open && hasDetails ? <div className="trace-entry__body">
@@ -95,7 +83,7 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
         <dl className="trace-entry__metadata">
           {presentation.executionCount !== null ? <div><dt>Python cell</dt><dd>{presentation.executionCount}</dd></div> : null}
           {presentation.generation !== null ? <div><dt>Kernel</dt><dd>generation {presentation.generation}</dd></div> : null}
-          <div><dt>Status</dt><dd>{running ? "Running" : failed ? "Error" : step.status === "running" ? suspended || "Interrupted" : "Complete"}</dd></div>
+          <div><dt>Status</dt><dd>{running ? "Running" : step.status === "running" ? suspended || "Interrupted" : activityStatusLabel(step.status)}</dd></div>
         </dl>
         {presentation.input ? <section><strong>{presentation.python ? "Code" : "Input"}</strong><pre><code>{presentation.input}</code></pre></section> : null}
         {step.resultPreview ? <section><strong>{failed ? "Diagnostic" : "Result"}</strong><pre><code>{step.resultPreview}</code></pre></section> : null}
@@ -109,17 +97,22 @@ function TraceEntry({row, live, suspended = "", mutation = false}: {row: ReturnT
   </section>;
 }
 
-export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=""}: {
+export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel="",tracePersistence,scope=""}: {
   steps: readonly ChatTurnStep[]; live: boolean; streamText: string; turnStartedAt: number;ownerLabel?:string;
+  tracePersistence?: "pending" | "saved" | "failed";
+  scope?: string;
 }) {
   const rows = traceRows(steps);
   const summary = traceSummary(steps);
-  const chat = useChatState();
+  const chat = useChatSelection(state=>({sessionId:state.sessionId,runtime:state.runtime,connected:state.connected,pause:state.pause,stopPending:state.stopPending}),shallowChatSelection);
   const mutation = !!chat.runtime?.mutationEffectiveEnabled;
   const suspended = live ? !chat.connected ? "Reconnecting" : chat.pause?.state === "paused" ? "Paused" : "" : "";
   const liveLabel = suspended || (chat.stopPending ? "Stopping" : chat.pause?.state === "pausing" ? "Pausing" : "Working");
-  const key = `run:${steps[0]?.callId || steps[0]?.id || turnStartedAt}`;
-  const [choice, setChoice] = useState<boolean | null>(() => disclosures.get(key) ?? null);
+  const fallbackScope = useRef(String(turnStartedAt));
+  const rowScope = [chat.sessionId || "", scope || fallbackScope.current] as const;
+  const key = disclosureKey(chat.sessionId || "", scope || fallbackScope.current, "run");
+  const [choice, setChoice] = useState<boolean | null>(() => disclosureChoice(key) ?? null);
+  useEffect(() => {setChoice(disclosureChoice(key) ?? null);}, [key]);
   const previousErrors = useRef(summary.errors);
   useEffect(() => {
     if (summary.errors > previousErrors.current) { remember(key, true); setChoice(true); }
@@ -129,15 +122,18 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
   const elapsed = useElapsed(live && !suspended, turnStartedAt);
   if (!rows.length) return live && !streamText ? <div className="turn-status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{ownerLabel ? `${ownerLabel} · ${liveLabel}` : liveLabel}</span><em>{formatActivityDuration(elapsed)}</em></div> : null;
   return <div className={`turn-activity-stack execution-trace${live && !suspended ? " is-live" : ""}`}>
-    <button type="button" className="execution-trace__summary" aria-label="Execution trace" aria-expanded={open}
+    {tracePersistence === "pending" || tracePersistence === "failed" ? <small className="trace-persistence" role="status">{tracePersistence === "pending" ? "Activity details awaiting confirmation" : "Activity details not confirmed saved"}</small> : null}
+    <button type="button" className="execution-trace__summary" aria-label={`Execution trace, ${summary.label}${live ? `, ${liveLabel}` : ""}`} aria-expanded={open}
       onClick={() => { remember(key, !open); setChoice(!open); }}>
       {live && !suspended ? <TraceProgress mutation={mutation}/> : <Icon name={suspended ? "pause" : "kernel"}/>}
       {ownerLabel ? <strong className="execution-trace__owner">{ownerLabel}</strong> : null}<span className="execution-trace__counts">{summary.label}</span>{live ? <small>{liveLabel}{elapsed > 0 ? ` · ${formatActivityDuration(elapsed)}` : ""}</small> : null}
       <Icon name="chevron" className={open ? "is-expanded" : ""}/>
     </button>
-    {open ? <div className="execution-trace__rows">{rows.map(row => <div key={row.step.callId || row.step.id}>
+    {!open && live ? <div className="execution-trace__status" role="status">{liveLabel}</div> : null}
+    {!open ? <div className="execution-trace__alerts" role="status">{steps.filter(step => stepFailed(step) || ["cancelled","interrupted","degraded","unknown"].includes(step.status || "")).slice(-2).map(step => <p key={step.id} className={stepFailed(step) ? "is-error" : ""}>{traceActionLabel(step, false)}</p>)}</div> : null}
+    {open ? <div className="execution-trace__rows">{rows.map(row => <div key={disclosureKey(rowScope[0],rowScope[1],row.step.callId || row.step.id)}>
       {row.boundary ? <div className="execution-trace__generation">{row.boundary}</div> : null}
-      {row.step.peerMessage ? <details className="peer-send-trace"><summary><Icon name="send"/><span>Message to {row.step.peerMessage.target_display_name || "Peer agent"}</span><small>{PEER_DELIVERY[row.step.peerMessage.state]?.label || row.step.peerMessage.state}</small><Icon name="chevron"/></summary><p>{row.step.peerMessage.content}</p></details> : <TraceEntry row={row} live={live} suspended={suspended} mutation={mutation}/>}
+      {row.step.peerMessage ? <details className="peer-send-trace"><summary><Icon name="send"/><span>Message to {row.step.peerMessage.target_display_name || "Peer agent"}</span><small>{PEER_DELIVERY[row.step.peerMessage.state]?.label || row.step.peerMessage.state}</small><Icon name="chevron"/></summary><p>{row.step.peerMessage.content}</p></details> : <TraceEntry row={row} live={live} scope={rowScope} suspended={suspended} mutation={mutation}/>}
     </div>)}{live && !rows.some(row => row.step.status === "running") ? <div className="execution-trace__waiting" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{liveLabel}</span></div> : null}</div> : null}
   </div>;
 }
