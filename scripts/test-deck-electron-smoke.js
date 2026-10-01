@@ -123,7 +123,18 @@ async function waitFor(client, expression, label, timeoutMs = 15000) {
     if (await client.evaluate(`Boolean(${expression})`)) return;
     await delay(80);
   }
-  throw new Error(`Timed out waiting for ${label}\n${output.slice(-3000)}`);
+  let state;
+  try {state=await client.evaluate(`(() => ({
+    url:location.href,readyState:document.readyState,viewport:{width:innerWidth,height:innerHeight},
+    backend:document.body?.dataset.backendState || null,browserHost:document.body?.dataset.browserHost || null,
+    startup:document.body?.dataset.startup || null,startupText:document.querySelector('.startup-cover')?.innerText?.slice(0,4000) || null,
+    sockets:document.body?.dataset.deckLiveSockets || null,maxSockets:document.body?.dataset.deckMaxConcurrentSockets || null,
+    roots:document.querySelectorAll('#variant1-react-root').length,workbenches:document.querySelectorAll('.workbench').length,
+    chatWorkspaces:document.querySelectorAll('.workbench .chat-workspace').length,
+    displayedChat:!!document.querySelector('.history-item__select[aria-current="true"]'),
+    frames:[...document.querySelectorAll('iframe')].slice(0,10).map(frame=>({src:frame.getAttribute('src'),visible:!!frame.getClientRects().length})),
+  }))()`);}catch(error){state={diagnosticError:error.message};}
+  throw new Error(`Timed out waiting for ${label}\nReadiness state: ${JSON.stringify(state)}\n${output.slice(-3000)}`);
 }
 
 async function clickWhen(client, selector, label, timeoutMs = 15000) {
