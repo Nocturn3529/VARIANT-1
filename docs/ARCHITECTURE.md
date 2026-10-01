@@ -101,17 +101,29 @@ survive idle view eviction.
 Review presents bounded unified patches in collapsible file cards with old/new
 gutters, safe code tokenization, and virtualized rendering. Its Changed files
 sidebar is hidden by default and opens on the right. Uncommitted, staged, and
-unstaged scopes inspect the current worktree and index. Branch selection browses
-first-parent history without checking out a branch; selected commits must form
-a continuous first-parent range. Root and merge commits have explicit comparison
-boundaries, and historical patches do not link their line numbers to current
-source. Current-file navigation is available only where a live comparison can
-identify the current line.
+unstaged scopes inspect the current worktree and index. All commits compares a
+selected branch tip to its merge base with a detected or explicitly chosen base
+ref; this net branch delta is independent of history pagination. Automatic base
+discovery uses repository remote-default metadata or a valid configured default,
+and reports unavailable or ambiguous bases rather than assuming the repository
+root or feature-branch upstream. Branch history includes every commit reachable
+from the tip beyond that base. All branches history includes local and remote
+branch tips, with resolved tips pinned across pages; it excludes tag-only and
+stash history.
+
+Individual selected commits have separate first-parent patches, including root
+and merge commits. Their file list is a path union and their totals sum the
+selected edits; it does not include unselected intervening commits or claim to
+be one net branch delta. Historical patches do not link their line numbers to
+current source. Current-file navigation is available only where a live comparison
+can identify the current line. Counts expose incomplete observations, and binary
+file changes remain distinct from text-line counts.
 
 Read-only Electron observations bound branches, history, file lists, patches,
 and unchanged-context expansion; binary and truncated output are explicit.
 Concurrent cards share verified selection/file observations for at most one
-second with at most eight cached selections. Repository watcher events and Git
+second with at most eight cached selections. Selected patch sections share one
+display-size budget. Repository watcher events and Git
 mutations invalidate those observations. This view provides no per-turn edit
 attribution, split view, whitespace toggle, or wrapping option. File-level Git
 actions retain sender, path, and recoverable-discard protections. Commit, push,

@@ -41,8 +41,10 @@ Use the release notes for the behavior and qualification of a downloaded build.
   work, and uncertain outcomes. Bounded previews redact managed or recognized
   credentials and mark omitted content. Review Git changes in collapsible file
   cards with line numbers and bounded expansion of unchanged context. Browse
-  branch history without checking out branches, or select a continuous commit
-  range. The Changed files sidebar opens on the right when needed; source-line
+  a branch's complete delta against its detected or chosen base, browse history
+  across branches without checkout, or inspect individually selected commits.
+  Branch totals describe net changes; selected-commit totals sum those commits'
+  edits. The Changed files sidebar opens on the right when needed; source-line
   links are limited to live changes. Request commits, pushes, or pull requests
   through the agent.
 - **Choose supported local or cloud inference.** Use local models, your own API
