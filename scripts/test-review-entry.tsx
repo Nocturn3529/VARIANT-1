@@ -54,6 +54,11 @@ export async function run() {
     await act(async()=>button('Changed files').click());
     assert.ok(host.querySelector('.workbench-review__files'),'sidebar toggle reveals files');
     assert.equal(host.querySelector('.workbench-review__body')?.lastElementChild?.tagName,'ASIDE','files are on the right');
+    const separator=host.querySelector<HTMLElement>('[aria-label="Resize changed files"]')!;
+    await act(async()=>separator.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowLeft',bubbles:true})));
+    assert.equal(host.querySelector<HTMLElement>('.workbench-review__files')!.style.flexBasis,'286px','keyboard expands the file sidebar');
+    await act(async()=>separator.dispatchEvent(new KeyboardEvent('keydown',{key:'End',bubbles:true})));
+    assert.equal(separator.getAttribute('aria-valuenow'),separator.getAttribute('aria-valuemax'),'sidebar expansion is capped');
     const hunk=host.querySelector<HTMLButtonElement>('.workbench-diff__hunk')!;
     await act(async()=>hunk.click());assert.equal(host.querySelector('.workbench-diff__line.is-add'),null);
     await act(async()=>hunk.click());

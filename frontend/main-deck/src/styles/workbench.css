@@ -558,7 +558,9 @@
 .workbench-review__scope small { flex:none; white-space:nowrap; }
 .workbench-review__body { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
 .workbench-review__diff { flex:1; min-width:0; min-height:0; overflow:auto; background:#080909; scroll-padding-top:6px; }
-.workbench-review__files { flex:0 0 clamp(150px,32%,270px); min-width:0; display:flex; flex-direction:column; overflow:hidden; background:var(--deck-surface-panel); }
+.workbench-review__files { flex:0 0 auto; min-width:0; display:flex; flex-direction:column; overflow:hidden; background:var(--deck-surface-panel); }
+.workbench-review__resize { flex:0 0 5px; cursor:col-resize; touch-action:none; background:transparent; }
+.workbench-review__resize:hover, .workbench-review__resize:focus-visible { background:var(--deck-line-strong); outline:none; }
 .workbench-review__files > header { display:flex; align-items:center; gap:8px; flex:none; height:34px; padding:0 10px; color:var(--deck-text-muted); font-size:var(--deck-text-compact); }
 .workbench-review__files > header span { margin-left:auto; }
 .workbench-review__files > input { min-width:0; margin:2px 8px 8px; padding:5px 7px; border:1px solid var(--deck-line-soft); border-radius:4px; background:transparent; color:var(--deck-text-primary); font:inherit; font-size:var(--deck-text-compact); }
@@ -604,8 +606,6 @@
 .workbench-diff__line.is-add .workbench-diff__sign { color:var(--deck-diff-added); }
 .workbench-diff__line.is-remove .workbench-diff__sign { color:var(--deck-diff-deleted); }
 .workbench-diff__old, .workbench-diff__new { display:block; box-sizing:border-box; width:44px; padding:0 7px; border:0; text-align:right; font:inherit; color:var(--deck-text-faint); background:#080909; }
-.workbench-diff__old { position:sticky; left:0; }
-.workbench-diff__new { position:sticky; left:44px; }
 button.workbench-diff__new { cursor:pointer; }
 button.workbench-diff__new:hover { color:var(--deck-text-primary); background:var(--deck-surface-raised); }
 .workbench-diff__context { display:flex; align-items:center; height:24px; padding:0 8px; color:var(--deck-text-muted); }

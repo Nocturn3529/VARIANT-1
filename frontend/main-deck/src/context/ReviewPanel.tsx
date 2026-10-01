@@ -8,6 +8,7 @@ import {watchPath} from "../workbench/watchPath";
 import {openFilePreview} from "../workbench/previewStore";
 import {reviewPath,reviewDeleted} from "../workbench/diffModel";
 import {ReviewFile,ReviewCounts} from "./ReviewFile";
+import {ReviewSidebar} from "./ReviewSidebar";
 import {reviewTree} from "../workbench/reviewTree";
 import type {WorkbenchGitFile,WorkbenchGitBranch,WorkbenchGitCommit,WorkbenchReviewOptions,WorkbenchReviewAggregate} from "../types";
 
@@ -37,6 +38,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
   const [closed,setClosed]=useState<ReadonlySet<string>>(new Set()),[menu,setMenu]=useState<Menu|null>(null);
   const [scroller,setScroller]=useState<HTMLElement|null>(null),[selected,setSelected]=useState(""),[notice,setNotice]=useState("");
   const [closedFolders,setClosedFolders]=useState<ReadonlySet<string>>(new Set());
+  const [sidebarWidth,setSidebarWidth]=useState<number|null>(null);
   async function loadBranches(){
     const token=++catalogEpoch.current;if(!directory)return;
     try{const value=await api?.getWorkbenchGitBranches?.(directory,{limit:200});if(token!==catalogEpoch.current)return;
@@ -140,10 +142,10 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
         {!directory?<div className="workbench-tool-empty">Select a project for this chat to review changes.</div>:loading && !files.length?<div className="workbench-tool-empty" role="status">Loading changes…</div>:!files.length && !error?<div className="workbench-tool-empty">{options.scope==="commit" && !options.commits?.length?"Select commits to review their changes.":"No changes in this scope."}</div>:null}
         {files.map((file,index)=><ReviewFile key={`${root}:${options.scope}:${options.ref}:${options.baseRef}:${options.commits?.join(",")}:${file.path}`} file={file} root={root} options={options} api={api} revision={revision} scrollParent={scroller} chatId={chatId} eager={index===0} collapsed={closed.has(file.path)} onToggle={()=>setClosed(prior=>{const next=new Set(prior);next.has(file.path)?next.delete(file.path):next.add(file.path);return next;})} onMenu={event=>disclose(event,"file",file)}/>)}
       </main>
-      {sidebar?<aside className="workbench-review__files"><header><strong>Changed files</strong><span>{files.length}</span></header><input aria-label="Search changed files" placeholder="Search files…" value={query} onChange={event=>setQuery(event.target.value)}/>
+      {sidebar?<ReviewSidebar width={sidebarWidth} onResize={setSidebarWidth}><header><strong>Changed files</strong><span>{files.length}</span></header><input aria-label="Search changed files" placeholder="Search files…" value={query} onChange={event=>setQuery(event.target.value)}/>
         <VirtualList items={treeRows} rowHeight={34} label="Changed files" itemKey={row=>row.kind==="folder"?`folder:${row.path}`:row.file.path} render={row=>row.kind==="folder"?<button className="workbench-review__select workbench-review__folder" style={{paddingLeft:9+row.depth*12}} title={row.path} aria-expanded={!!query || !closedFolders.has(row.path)} onClick={()=>setClosedFolders(prior=>{const next=new Set(prior);next.has(row.path)?next.delete(row.path):next.add(row.path);return next;})}><Icon name={query || !closedFolders.has(row.path)?"down":"chevron"}/><Icon name="folder"/><span>{row.name}</span><small>{row.count}</small></button>:<button title={row.file.path} style={{paddingLeft:21+row.depth*12}} className={`workbench-review__select${selected===row.file.path?" is-selected":""}`} onClick={()=>navigate(row.file.path)}><Icon name="file"/><span>{row.name}</span><ReviewCounts file={row.file}/></button>}/>
         {!treeRows.length?<div className="workbench-tool-empty">{query?"No matching files.":"No changed files."}</div>:null}
-      </aside>:null}
+      </ReviewSidebar>:null}
     </div>
     {menu?<PopupMenu className="workbench-review__menu workbench-file-menu" x={menu.x} y={menu.y} onClose={()=>setMenu(null)}>
       {menu.kind==="scope"?<>
