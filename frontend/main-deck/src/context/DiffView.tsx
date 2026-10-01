@@ -1,9 +1,11 @@
 import {useEffect,useMemo,useState} from "react";
 import {VirtualList} from "../ui/VirtualList";
 import {parseDiff} from "../workbench/diffModel";
+import runtimeLib from "../chat/runtimeLib";
 
-export function DiffView({text,fullContents=false,truncated=false,binary=false,onOpenLine}: {
+export function DiffView({text,fullContents=false,truncated=false,binary=false,onOpenLine,language=""}: {
   text:string;fullContents?:boolean;truncated?:boolean;binary?:boolean;onOpenLine?:(line:number)=>void;
+  language?:string;
 }) {
   const model=useMemo(()=>parseDiff(text,fullContents),[text,fullContents]);
   const [closed,setClosed]=useState<ReadonlySet<number>>(new Set());
@@ -20,7 +22,7 @@ export function DiffView({text,fullContents=false,truncated=false,binary=false,o
         return <div className={`workbench-diff__line is-${row.type}`} role="group" aria-label={row.type==="add"?"Added line":row.type==="remove"?"Removed line":undefined}>
           <span className="workbench-diff__old" aria-label={row.oldLine ? `Old line ${row.oldLine}` : undefined}>{row.oldLine || ""}</span>
           {line && onOpenLine ? <button className="workbench-diff__new" aria-label={`Open current file at line ${line}`} onClick={()=>onOpenLine(line)}>{row.newLine || "↗"}</button> : <span className="workbench-diff__new">{row.newLine || ""}</span>}
-          <span className="workbench-diff__sign" aria-hidden="true">{row.type==="add"?"+":row.type==="remove"?"−":" "}</span><code>{row.text}</code>
+          <span className="workbench-diff__sign" aria-hidden="true">{row.type==="add"?"+":row.type==="remove"?"−":" "}</span><code>{["add","remove"].includes(row.type) && language && row.text.length<=4096 ? runtimeLib.highlightCode(row.text,language).map((token,index)=><span key={index} className={`token-${token.type}`}>{token.text}</span>) : row.text}</code>
         </div>;
       }}/>
     </>}

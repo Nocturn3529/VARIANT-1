@@ -85,7 +85,9 @@ internal outcome records keep their existing contracts; cloud-envelope secret
 egress remains a separate firewall.
 
 Client trace enrichment is written after the run's durable assistant commit.
-Session/run/request acknowledgments confirm that separate write. Unconfirmed
+An explicit commit confirmation starts delivery even if the later append event
+is lost; legacy completion frames wait for the durable append. Session/run/request
+acknowledgments confirm that separate write. Unconfirmed
 activity saves have bounded retries and reconnect reconciliation; the frontend
 does not claim that an unconfirmed trace is saved merely because its reply is.
 Disclosure state is chat/run/call scoped. Shared elapsed timing and selected
@@ -93,10 +95,12 @@ store subscriptions avoid unrelated control updates during token streaming.
 Idle projection eviction and confirmed deletion coordinate context, receipt,
 disclosure, and turn data without retiring a Python generation. Active work,
 drafts, pending input/preparation, and unfinished settings or annotation requests
-are protected; settled admission fences survive idle view eviction.
+are protected, including unconfirmed trace evidence; settled admission fences
+survive idle view eviction.
 
 Review uses a bounded unified Git patch projection with typed lines, old/new
-gutters, collapsible hunks, and virtualized rendering. It reports binary and
+gutters, collapsible hunks, bounded code tokenization, and virtualized rendering.
+It reports binary and
 truncated output explicitly, and current-file line navigation is distinct from
 per-turn edit attribution. Git/PR operations retain their existing sender, path,
 and recoverable-discard protections; successful PR creation surfaces its URL.

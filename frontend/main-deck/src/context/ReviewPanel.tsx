@@ -234,7 +234,7 @@ export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;ch
           <button type="button" aria-pressed={side === "unstaged"} disabled={!files.some(file=>file.path===selected && unstaged(file))} onClick={()=>void selectFile(selected,root,files,"unstaged")}>Unstaged</button>
           <button type="button" aria-pressed={side === "staged"} disabled={!files.some(file=>file.path===selected && file.staged)} onClick={()=>void selectFile(selected,root,files,"staged")}>Staged</button>
         </>}<button disabled={!diff || diffLoading} onClick={()=>void copyPreview()}>{copied?"Copied":"Copy preview"}</button></header> : null}
-        {diffLoading ? <div className="workbench-tool-empty" role="status">Loading patch…</div> : selected ? <DiffView key={`${selected}:${side}`} text={diff} fullContents={side==="untracked" && !diffInfo.binary} {...diffInfo}
+        {diffLoading ? <div className="workbench-tool-empty" role="status">Loading patch…</div> : selected ? <DiffView key={`${selected}:${side}`} text={diff} language={selected.split(".").pop() || ""} fullContents={side==="untracked" && !diffInfo.binary} {...diffInfo}
           onOpenLine={!files.some(file=>file.path===selected && missing(file)) ? line=>openFilePreview(absolute(status.root || root,selected),undefined,chatId,line) : undefined}/> : <div className="workbench-tool-empty">Select a changed file.</div>}
       </main>
     </div>

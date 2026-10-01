@@ -581,6 +581,8 @@
 .workbench-diff__legend span { margin-left: auto; }
 .workbench-diff__line { display: grid; grid-template-columns: 48px 48px 16px minmax(0,1fr); min-width: 100%; width: max-content; height: 22px; align-items: center; white-space: pre; color: var(--deck-text-secondary); }
 .workbench-diff__line code { font: inherit; tab-size: 2; }
+.workbench-diff__line .token-keyword { font-weight: 600; }
+.workbench-diff__line .token-comment { font-style: italic; }
 .workbench-diff__line.is-add { color: var(--deck-diff-added); background: var(--deck-diff-added-surface); }
 .workbench-diff__line.is-remove { color: var(--deck-diff-deleted); background: var(--deck-diff-deleted-surface); }
 .workbench-diff__line.is-context, .workbench-diff__line.is-meta { color: var(--deck-diff-unchanged); }

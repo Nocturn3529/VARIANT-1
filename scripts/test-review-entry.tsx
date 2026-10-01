@@ -56,13 +56,15 @@ export async function run() {
     await act(async()=>{resolvePr!({ok:true,stdout:'https://github.com/example/project/pull/7\n'});await pause();});
     const result=host.querySelector('.workbench-review__result')!;assert.match(result.textContent!,/Pull request created/);
     await act(async()=>result.querySelector<HTMLButtonElement>('button')!.click());assert.equal(external[0],'https://github.com/example/project/pull/7');
-    await act(async()=>root.render(<DiffView text="Binary files a/photo.png and b/photo.png differ\n" binary/>));
+    await act(async()=>root.render(<DiffView text={"Binary files a/photo.png and b/photo.png differ\n"} binary/>));
     assert.match(host.textContent!,/Binary file changed/);
     await act(async()=>root.render(<DiffView text={"line\n".repeat(8000)} fullContents/>));
     assert.match(host.textContent!,/preview truncated/);
     assert.ok(host.querySelectorAll('[role="listitem"]').length<40,'large text has bounded DOM');
-    await act(async()=>root.render(<DiffView text="@@ -0,0 +1 @@\n+<img src=x onerror=alert(1)>\n"/>));
+    await act(async()=>root.render(<DiffView text={"@@ -0,0 +1 @@\n+<img src=x onerror=alert(1)>\n"}/>));
     assert.equal(host.querySelector('img'),null,'patch contents remain inert text');
+    await act(async()=>root.render(<DiffView text={"@@ -0,0 +1 @@\n+const value = 1;\n"} language="ts"/>));
+    assert.ok(host.querySelector('.token-keyword'),'changed code reuses the safe tokenizer');
     let resolveOld:((value:Record<string,unknown>)=>void)|undefined;
     const api=window.variant1Deck!;
     api.getWorkbenchGitStatus=async(directory)=>directory==='C:\\old-project'
