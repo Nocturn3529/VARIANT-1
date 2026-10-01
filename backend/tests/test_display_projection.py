@@ -40,12 +40,13 @@ def test_activity_and_persistence_sanitize_before_clipping(monkeypatch):
         async def broadcast(self, message):
             captured.append(message)
     monkeypatch.setattr(activity, "HUB", Hub())
-    asyncio.run(activity.emit_activity("tool:result", tool="audit", call_id="audit", text=secret))
+    asyncio.run(activity.emit_activity("tool:result", tool=secret, call_id="audit", text=secret))
     assert secret not in captured[0]["text"]
+    assert secret not in captured[0]["tool"], "displayed tool names cannot bypass credential sanitation"
     preview = activity.args_preview({"password": "private", "code": secret})
     assert "private" not in preview and secret not in preview
     saved = _compact_steps([{"label": secret, "kind": "tool", "status": "cancelled",
-        "args_preview": preview, "result_preview": secret,
+        "args_preview": preview, "result_preview": secret, "tool": secret, "raw_status": secret,
         "evidence": [{"kind": "url", "value": 'https://example.test/?token=' + 'a' * 20}]}])
     assert secret not in str(saved)
     assert saved[0]["status"] == "cancelled"

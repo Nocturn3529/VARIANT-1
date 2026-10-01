@@ -571,8 +571,9 @@
 .workbench-review__files article > div button:hover { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
 
 .workbench-review__diff { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.workbench-review__diff > header { display: flex; gap: 8px; align-items: center; flex: 0 0 28px; min-width: 0; padding: 0 9px; border-bottom: 0; }
-.workbench-review__diff > header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--deck-text-compact)/1.2 var(--font-mono, monospace); }
+.workbench-review__diff > header { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; flex: 0 0 auto; min-width: 0; min-height: 28px; padding: 5px 9px; border-bottom: 0; }
+.workbench-review__diff > header strong { flex: 1 0 100%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--deck-text-compact)/1.2 var(--font-mono, monospace); }
+.workbench-review__diff > header button { flex: 0 0 auto; white-space: nowrap; }
 .workbench-review__diff > header span { margin-left: auto; color: var(--deck-text-muted); font-size: var(--deck-text-compact); }
 .workbench-diff { display: flex; flex: 1; flex-direction: column; min-height: 0; background: var(--deck-diff-surface); font: var(--deck-text-compact)/1.5 var(--font-mono); }
 .workbench-diff__notice { margin: 0; padding: 8px 12px; color: var(--deck-warning); white-space: pre-wrap; }

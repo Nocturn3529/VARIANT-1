@@ -13,7 +13,7 @@ _SECRET_FIELD = re.compile(
 )
 _DISPLAY_FIELDS = frozenset({
     "args_preview", "argsPreview", "result_preview", "resultPreview", "text",
-    "title", "label", "detail", "evidence",
+    "title", "label", "detail", "evidence", "tool", "raw_status", "rawStatus",
 })
 _DISPLAY_AUTH = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{12,}")
 _JSON_SECRET = re.compile(

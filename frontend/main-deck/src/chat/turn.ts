@@ -80,6 +80,8 @@ export function pushTurnStep(partial: {
       const exactIdentity = !!partial.callId || !!partial.id || key.startsWith("loop:");
       if (steps[i].key === key && (exactIdentity || steps[i].status === "running")) {
         if (exactIdentity && steps[i].status !== "running" && steps[i].completedAt && partial.status === "running") return;
+        if (exactIdentity && steps[i].kind==="tool" && steps[i].status!=="running" && steps[i].completedAt
+          && partial.status && partial.status!==steps[i].status) return;
         const revision = steps[i].summaryRevision;
         if (partial.summaryState && revision !== undefined
           && (partial.summaryRevision === undefined || partial.summaryRevision <= revision)) return;

@@ -17,6 +17,11 @@ class FixtureSocket extends EventTarget {
   emit(value: unknown) { setTimeout(() => this.dispatchEvent(new MessageEvent("message", {data: JSON.stringify(value)})), 0); }
   send(raw: string) {
     const message = JSON.parse(raw);
+    if (["chat:session:get","chat:session:switch"].includes(message.type)) this.emit({type:"chat:session",
+      session:{id:"fixture-welcome",title:sessionTitle,messages:[],project:{root,name:"Sample project"},runtime:{busy:false,kernel:{state:"absent",generation:0}}},
+      ...(message.type==="chat:session:switch"?{navigation:{request_id:message.request_id,requested_id:message.id,effective_id:"fixture-welcome",status:"switched"}}:{}),
+    });
+    if(message.type==="chat:context")this.emit({type:"chat:context",session_id:message.id,route:"local",model:"Fixture model",model_configured:false,used_tokens:0,context_limit_tokens:4096,measurement:"fixture"});
     if (message.type === "clarification:list") this.emit({type: "clarification:snapshot", chat_id: message.chat_id, request_id: message.request_id, pending: []});
     if (message.type === "chat:project:set") this.emit({type: "chat:project:result", chat_id: message.chat_id, request_id: message.request_id, ok: true, project: {root: message.root, name: "Sample project"}});
     if (message.type === "kernel:inventory:get") this.emit({type: "kernel:inventory:result", request_id: message.request_id,
@@ -42,7 +47,7 @@ class FixtureSocket extends EventTarget {
       sessionTitle = message.title;
       this.emit({type: "chat:sessions", items: sessions()});
     }
-    if (message.type === "chat:sessions") this.emit({type: "chat:sessions", items: sessions()});
+    if (message.type === "chat:sessions") this.emit({type: "chat:sessions", active_id:"fixture-welcome",items: sessions()});
     if (message.type === "memory:core:update") facts = facts.map(fact => fact.text === message.prior ? {text: message.text} : fact);
     if (message.type === "memory:core:get" || message.type === "memory:core:update") this.emit({type: "memory:core", items: facts, count: facts.length, cap: 40});
   }

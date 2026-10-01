@@ -165,6 +165,8 @@ export async function run() {
   audit("tool:start",{call_id:"a"});audit("tool:result",{call_id:"a",status:"error",text:"Synthetic diagnostic"});
   audit("tool:start",{call_id:"a"});
   assert.equal(getChatState().turnSteps[0].status,"error","duplicate start cannot revive failure");
+  audit("tool:result",{call_id:"a",status:"ok",text:"Contradictory duplicate"});
+  assert.equal(getChatState().turnSteps[0].status,"error");assert.equal(getChatState().turnSteps[0].resultPreview,"Synthetic diagnostic","a conflicting duplicate cannot erase settled failure evidence");
   audit("tool:start",{call_id:"b"});audit("tool:result",{call_id:"b",status:"running",text:"Pending output"});
   assert.equal(getChatState().turnSteps[1].resultPreview,"Pending output");assert.equal(getChatState().turnSteps[1].completedAt,undefined);
   audit("tool:result",{call_id:"b",status:"cancelled_before_start",text:"Stopped"});
