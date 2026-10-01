@@ -57,6 +57,7 @@ const tests = [
   "test-mic-reconnect.js",
   "test-workbench.js",
   "test-review.js",
+  "test-workbench-review-read.js",
   "test-workbench-files.js",
   "test-pane-resources.js",
   "test-bug-hunt-electron.js",

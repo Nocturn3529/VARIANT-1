@@ -1,0 +1,47 @@
+import {useEffect,useRef,useState,type MouseEvent} from "react";
+import {Icon} from "../ui/Icon";
+import {DiffView} from "./DiffView";
+import {reviewPath,reviewDeleted} from "../workbench/diffModel";
+import {openFilePreview} from "../workbench/previewStore";
+import type {WorkbenchGitFile,WorkbenchReviewOptions,WorkbenchReviewDiff,RuntimeApi} from "../types";
+
+export function ReviewCounts({file}:{file:WorkbenchGitFile}){
+  return <small>{file.binary?"Binary":file.added==null || file.removed==null ? file.untracked?"New":"Counts unavailable":<><span className="is-added">+{file.added}</span> <span className="is-removed">−{file.removed}</span></>}</small>;
+}
+
+/** Retain only nearby patches; offscreen cards keep their measured scroll geometry. */
+export function ReviewFile({file,root,options,api,scrollParent,revision,collapsed,onToggle,onMenu,chatId,eager}: {
+  file:WorkbenchGitFile;root:string;options:WorkbenchReviewOptions;api:RuntimeApi|undefined;scrollParent:HTMLElement|null;
+  revision:number;collapsed:boolean;onToggle:()=>void;onMenu:(event:MouseEvent<HTMLButtonElement>)=>void;chatId:string;eager:boolean;
+}) {
+  const card=useRef<HTMLElement>(null),body=useRef<HTMLDivElement>(null);
+  const [visible,setVisible]=useState(eager),[height,setHeight]=useState(120),[context,setContext]=useState(3);
+  const [result,setResult]=useState<WorkbenchReviewDiff|null>(null),[loading,setLoading]=useState(false),[retry,setRetry]=useState(0);
+  useEffect(()=>{
+    const Observer=card.current?.ownerDocument.defaultView?.IntersectionObserver;
+    if(!Observer){setVisible(true);return;}
+    const observer=new Observer(entries=>setVisible(entries[0].isIntersecting),{root:scrollParent,rootMargin:"500px"});
+    observer.observe(card.current!);return()=>observer.disconnect();
+  },[scrollParent]);
+  useEffect(()=>{
+    let current=true;
+    if(!visible || collapsed){setResult(null);return;}
+    setLoading(true);
+    const read=api?.getWorkbenchReviewDiff?.(root,file.path,{...options,context});
+    if(!read){setResult({ok:false,error:"Review reader unavailable. Restart the application."});setLoading(false);return;}
+    void read.then(value=>{if(current){setResult(value);setLoading(false);}},error=>{if(current){setResult({ok:false,error:String(error)});setLoading(false);}});
+    return()=>{current=false;};
+  },[visible,collapsed,root,file.path,options,api,revision,context,retry]);
+  useEffect(()=>{
+    if(!body.current || !result || collapsed)return;
+    const measure=()=>{const next=body.current?.getBoundingClientRect().height || 120;setHeight(prior=>prior===next?prior:next);};
+    const observer=new ResizeObserver(measure);observer.observe(body.current);measure();return()=>observer.disconnect();
+  },[result,collapsed]);
+  return <article ref={card} className="workbench-review__card" data-review-file={file.path}>
+    <header><button className="workbench-review__card-title" aria-expanded={!collapsed} onClick={onToggle} title={file.originalPath?`${file.originalPath} → ${file.path}`:file.path}><Icon name={collapsed?"chevron":"down"}/><Icon name="code"/><span>{file.path}</span><ReviewCounts file={file}/></button><button title={`Actions for ${file.path}`} aria-label={`Actions for ${file.path}`} aria-haspopup="menu" onClick={onMenu}>⋯</button></header>
+    {!collapsed?<div ref={body} className="workbench-review__card-body" style={!result?{minHeight:height}:undefined}>
+      {result?.ok===false?<div className="workbench-tool-empty" role="alert">{result.error}<button onClick={()=>setRetry(v=>v+1)}>Retry</button></div>:result?<DiffView text={result.diff || ""} language={file.path.split(".").pop() || ""} fullContents={result.fullContents} binary={result.binary} truncated={result.truncated} scrollParent={scrollParent} context={context} onExpandContext={setContext} onOpenLine={["uncommitted","unstaged"].includes(options.scope) && !reviewDeleted(file)?line=>openFilePreview(reviewPath(root,file.path),undefined,chatId,line):undefined}/>:<div className="workbench-tool-empty" role={visible?"status":undefined}>{visible?"Loading patch…":""}</div>}
+      {loading && result?<span className="workbench-review__loading" role="status">Loading context…</span>:null}
+    </div>:null}
+  </article>;
+}

@@ -178,6 +178,4 @@
 
 .workbench-browser__capture-error { margin: 0; padding: 8px 12px; border-bottom: 1px solid var(--deck-line); color: var(--deck-text-primary); font-size: var(--deck-label-text); }
 
-.workbench-review__files {display:flex;flex-direction:column;overflow:hidden;}
-.workbench-review__files > header {flex:none;}
 .deck-virtual-list {flex:1;min-height:0;overflow:auto;overflow-anchor:none;}

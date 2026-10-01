@@ -1,252 +1,140 @@
-import {VirtualList} from "../ui/VirtualList";
-import {createRefreshQueue} from "../workbench/refreshQueue";
+import {useEffect,useRef,useState,type MouseEvent} from "react";
 import {Icon} from "../ui/Icon";
-import {watchPath} from "../workbench/watchPath";
+import {PopupMenu} from "../ui/PopupMenu";
+import {VirtualList} from "../ui/VirtualList";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
-import {useEffect, useMemo, useRef, useState} from "react";
-import type {WorkbenchGitFile, WorkbenchGitStatus} from "../types";
+import {createRefreshQueue} from "../workbench/refreshQueue";
+import {watchPath} from "../workbench/watchPath";
 import {openFilePreview} from "../workbench/previewStore";
-import {DiffView} from "./DiffView";
-import {pullRequestUrl} from "../workbench/diffModel";
+import {reviewPath,reviewDeleted} from "../workbench/diffModel";
+import {ReviewFile,ReviewCounts} from "./ReviewFile";
+import type {WorkbenchGitFile,WorkbenchGitBranch,WorkbenchGitCommit,WorkbenchReviewOptions} from "../types";
 
-function statusName(value: string): string {
-  if (value === "??") return "Untracked";
-  if (value.includes("U")) return "Conflict";
-  if (value.includes("A")) return "Added";
-  if (value.includes("D")) return "Deleted";
-  if (value.includes("R")) return "Renamed";
-  return "Modified";
-}
+type Menu={kind:"scope"|"branch"|"options"|"file";x:number;y:number;file?:WorkbenchGitFile};
+const labels={uncommitted:"Uncommitted",staged:"Staged",unstaged:"Unstaged",commit:"Selected commits"};
+const reviewError=(value:unknown)=>({noncontiguous_commit_selection:"Select consecutive commits from the same branch.",invalid_commit_selection:"Select between 1 and 100 consecutive commits."}[String(value)] || String(value || "Unable to read changes."));
 
-function statusGlyph(value: string): string {
-  if (value === "??") return "U";
-  if (value.includes("U")) return "!";
-  if (value.includes("A")) return "A";
-  if (value.includes("D")) return "D";
-  if (value.includes("R")) return "R";
-  return "M";
-}
+export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:string}) {
+  const ownerDocument=useSurfaceDocument(),ownerWindow=ownerDocument.defaultView || window;
+  const api=window.variant1Deck,panel=useRef<HTMLElement>(null);
+  const epoch=useRef(0),historyEpoch=useRef(0);
+  const commitAnchor=useRef(""),mutating=useRef(false);
+  const [root,setRoot]=useState(directory),[currentBranch,setCurrentBranch]=useState("");
+  const [branches,setBranches]=useState<WorkbenchGitBranch[]>([]),[branch,setBranch]=useState("HEAD");
+  const [commits,setCommits]=useState<WorkbenchGitCommit[]>([]),[historyOid,setHistoryOid]=useState("");
+  const [nextOffset,setNextOffset]=useState<number|undefined>(),[historyError,setHistoryError]=useState("");
+  const [historyLoading,setHistoryLoading]=useState(false),[options,setOptions]=useState<WorkbenchReviewOptions>({scope:"uncommitted"});
+  const [files,setFiles]=useState<WorkbenchGitFile[]>([]),[filesTruncated,setFilesTruncated]=useState(false);
+  const [error,setError]=useState(""),[loading,setLoading]=useState(false),[revision,setRevision]=useState(0);
+  const [sidebar,setSidebar]=useState(false),[query,setQuery]=useState(""),[branchQuery,setBranchQuery]=useState("");
+  const [closed,setClosed]=useState<ReadonlySet<string>>(new Set()),[menu,setMenu]=useState<Menu|null>(null);
+  const [scroller,setScroller]=useState<HTMLElement|null>(null),[selected,setSelected]=useState(""),[notice,setNotice]=useState("");
 
-/** Join project-root + repo-relative file using the host path separator. */
-function hostSep(root: string): "\\" | "/" {
-  if (/^[A-Za-z]:/.test(root) || root.includes("\\")) return "\\";
-  return "/";
-}
-
-function absolute(root: string, file: string): string {
-  const sep = hostSep(root);
-  const base = root.replace(/[\\\/]$/, "");
-  const rel = String(file || "").replace(/[\\\/]+/g, sep);
-  return `${base}${sep}${rel}`;
-}
-const unstaged = (file: WorkbenchGitFile) => file.status === "??" || !!file.status[1]?.trim();
-const missing = (file: WorkbenchGitFile) => file.status[1] === "D" || file.status.trim() === "D";
-type DiffSide = "staged" | "unstaged" | "untracked";
-
-export function ReviewPanel({directory = "",chatId = ""}: {directory?: string;chatId?:string}) {
-  const ownerDocument = useSurfaceDocument();
-  const ownerWindow = ownerDocument.defaultView || window;
-  const api = window.variant1Deck;
-  const panel = useRef<HTMLElement>(null);
-  const selectionEpoch = useRef(0);
-  const projectEpoch = useRef(0);
-  const activeDirectory = useRef(directory);activeDirectory.current=directory;
-  const selectedRef = useRef("");
-  const sideRef = useRef<DiffSide>("unstaged");
-  const [side, setSide] = useState<DiffSide>("unstaged");
-  const shippingRef = useRef(false);
-  const [root, setRoot] = useState("");
-  const [status, setStatus] = useState<WorkbenchGitStatus>({files: []});
-  const [selected, setSelected] = useState("");
-  const [diff, setDiff] = useState("");
-  const [error, setError] = useState("");
-  const [diffInfo,setDiffInfo]=useState({truncated:false,binary:false});
-  const [diffLoading,setDiffLoading]=useState(false);
-  const [prUrl,setPrUrl]=useState("");
-  const [notice,setNotice]=useState("");
-  const [copied,setCopied]=useState(false);
-  const [treeMode, setTreeMode] = useState(false);
-  const [message, setMessage] = useState("");
-  const [shipping, setShipping] = useState(false);
-  const files = status.files || [];
-
-  async function refresh(path = root): Promise<void> {
-    if (!path) return;
-    const epoch=projectEpoch.current;
-    const next = await api?.getWorkbenchGitStatus?.(path);
-    if(epoch!==projectEpoch.current)return;
-    if (!next?.ok) {
-      setStatus(next || {files: []});
-      setError(next?.error || "This folder is not a Git repository.");
-      return;
+  async function refresh(){
+    if(!directory)return;const token=++epoch.current;setLoading(true);setError("");
+    try{
+      const value=await api?.getWorkbenchReviewFiles?.(directory,options);
+      if(token!==epoch.current)return;
+      if(!value?.ok){setError(reviewError(value?.error || "Review reader unavailable. Restart the application."));setFiles([]);return;}
+      setRoot(value.root || directory);if(value.branch!==undefined)setCurrentBranch(value.branch);setFiles(value.files || []);setFilesTruncated(!!value.truncated);setRevision(v=>v+1);
+    }catch(error){if(token===epoch.current){setError(String(error));setFiles([]);}}
+    finally{if(token===epoch.current)setLoading(false);}
+  }
+  async function loadHistory(more=false){
+    if(!directory)return;const token=++historyEpoch.current;setHistoryLoading(true);setHistoryError("");
+    try{
+      const value=await api?.getWorkbenchGitHistory?.(directory,{ref:more?historyOid:branch,limit:50,offset:more?nextOffset:0});
+      if(token!==historyEpoch.current)return;
+      if(!value?.ok){setHistoryError(value?.error || "Could not read commit history.");return;}
+      setHistoryOid(value.resolvedOid || "");setCommits(prior=>more?[...prior,...value.commits || []]:value.commits || []);
+      setNextOffset(value.truncated?value.nextOffset ?? undefined:undefined);
+    }catch(error){if(token===historyEpoch.current)setHistoryError(String(error));}
+    finally{if(token===historyEpoch.current)setHistoryLoading(false);}
+  }
+  useEffect(()=>{
+    setRoot(directory);setOptions({scope:"uncommitted"});setFiles([]);setFilesTruncated(false);setCurrentBranch("");setQuery("");setBranchQuery("");setBranch("HEAD");setBranches([]);setCommits([]);setClosed(new Set());setMenu(null);setNotice("");setSelected("");setHistoryError("");
+    let current=true;
+    if(directory){
+      void api?.getWorkbenchGitStatus?.(directory).then(value=>{if(current)setCurrentBranch(value.branch || "");}).catch(()=>{});
+      void api?.getWorkbenchGitBranches?.(directory,{limit:200}).then(value=>{if(current){setBranches(value.branches || []);if(!value.ok)setHistoryError(value.error || "Could not list branches.");}}).catch(error=>{if(current)setHistoryError(String(error));});
     }
-    setRoot(next.root || path);
-    setStatus(next);
-    setError("");
-    const nextFiles = next.files || [];
-    const candidate = nextFiles.some(file => file.path === selectedRef.current) ? selectedRef.current : nextFiles[0]?.path || "";
-    if (candidate) await selectFile(candidate, next.root || path, next.files || []);
-    else { setSelected(""); setDiff(""); }
+    return()=>{current=false;epoch.current++;historyEpoch.current++;};
+  },[directory,api]);
+  useEffect(()=>{setClosed(new Set());setFiles([]);setNotice("");void refresh();return()=>{epoch.current++;};},[directory,options,api]);
+  useEffect(()=>{setCommits([]);setNextOffset(undefined);void loadHistory();return()=>{historyEpoch.current++;};},[directory,branch,api]);
+  const refreshRef=useRef(refresh);refreshRef.current=refresh;
+  useEffect(()=>{
+    if(!root)return;
+    const queue=createRefreshQueue(async()=>{if(ownerDocument.visibilityState==="visible" && panel.current?.getClientRects().length)await refreshRef.current();},error=>setError(String(error)));
+    const focused=()=>queue.request();ownerWindow.addEventListener("focus",focused);
+    const stop=watchPath(api,root,focused,{scope:"workspace",delay:150,onError:setError}),interval=ownerWindow.setInterval(focused,30000);
+    return()=>{queue.dispose();stop();ownerWindow.removeEventListener("focus",focused);ownerWindow.clearInterval(interval);};
+  },[root,api,ownerDocument]);
+  function disclose(event:MouseEvent<HTMLButtonElement>,kind:Menu["kind"],file?:WorkbenchGitFile){const rect=event.currentTarget.getBoundingClientRect();setMenu({kind,file,x:rect.left,y:rect.bottom+4});}
+  function selectCommit(oid:string,range=false){
+    const anchor=commits.findIndex(row=>row.oid===commitAnchor.current),end=commits.findIndex(row=>row.oid===oid);
+    if(range && anchor>=0 && end>=0){const ids=commits.slice(Math.min(anchor,end),Math.max(anchor,end)+1).map(row=>row.oid);if(ids.length>100){setError("Select up to 100 consecutive commits.");return;}setOptions({scope:"commit",commits:ids});}
+    else setOptions(prior=>{const values=new Set(prior.scope==="commit"?prior.commits:[]);values.has(oid)?values.delete(oid):values.add(oid);return values.size?{scope:"commit",commits:[...values]}:{scope:"uncommitted"};});
+    commitAnchor.current=oid;
   }
-
-  async function selectFile(file: string, path = root, rows = files, requested?: DiffSide): Promise<void> {
-    const epoch = ++selectionEpoch.current;
-    const row = rows.find(item => item.path === file);
-    const preferred = requested || (selectedRef.current === file ? sideRef.current : undefined);
-    const selectedSide: DiffSide = row?.status === "??" ? "untracked" : preferred === "staged" && row?.staged ? "staged" : row && unstaged(row) ? "unstaged" : "staged";
-    const changed = sideRef.current !== selectedSide || selectedRef.current !== file;
-    sideRef.current = selectedSide; setSide(selectedSide);
-    selectedRef.current = file; setSelected(file);
-    if(changed){setDiff("");setDiffInfo({truncated:false,binary:false});setDiffLoading(true);setCopied(false);}
-    try {
-    if (row?.status === "??") {
-      const content = await api?.readWorkbenchFile?.(absolute(path, file));
-      if (epoch !== selectionEpoch.current) return;
-      setDiff(content?.ok ? content.binary ? "Binary file. Open the file preview to inspect it." : String(content.text || "") : "");
-      if(!content?.ok)setError(String(content?.error || "Unable to read untracked file"));
-      setDiffInfo({truncated:!!content?.truncated,binary:!!content?.binary});setDiffLoading(false);
-      return;
-    }
-    const result = await api?.getWorkbenchGitDiff?.(path, file, selectedSide === "staged");
-    if (epoch !== selectionEpoch.current) return;
-    setDiff(result?.ok ? String(result.diff || "") : "");
-    if(!result?.ok)setError(String(result?.error || "Unable to read diff"));
-    setDiffInfo({truncated:!!result?.truncated,binary:!!result?.binary});setDiffLoading(false);
-    } catch(error){if(epoch===selectionEpoch.current){setError(String(error));setDiff("");setDiffLoading(false);}}
+  function navigate(file:string){setSelected(file);setClosed(prior=>{const next=new Set(prior);next.delete(file);return next;});requestAnimationFrame(()=>{[...panel.current?.querySelectorAll<HTMLElement>("[data-review-file]") || []].find(row=>row.dataset.reviewFile===file)?.scrollIntoView?.({block:"start"});});}
+  async function mutate(action:string,file:WorkbenchGitFile){
+    setMenu(null);if(options.scope==="commit" || mutating.current)return;
+    if(action==="revert" && !ownerWindow.confirm(`Discard unstaged changes in ${file.path}? Staged changes will be kept.`))return;
+    const token=epoch.current;mutating.current=true;
+    try{const value=await api?.runWorkbenchGit?.(action,root,{file:file.path});if(token!==epoch.current)return;if(!value?.ok)setError(String(value?.error || "Git action failed"));else await refresh();}
+    catch(error){if(token===epoch.current)setError(String(error));}
+    finally{mutating.current=false;}
   }
-
-  useEffect(() => {
-    projectEpoch.current++;selectionEpoch.current++;
-    selectedRef.current="";sideRef.current="unstaged";setSide("unstaged");setPrUrl("");setNotice("");setDiffLoading(false);
-    setRoot(directory); setStatus({files:[]}); setDiff(""); setSelected("");
-    setError(directory ? "" : "Select a project for this chat to review changes.");
-    if(directory)void refresh(directory);
-  }, [directory, api]);
-
-  const refreshCurrent = useRef(refresh); refreshCurrent.current = refresh;
-  useEffect(()=>setCopied(false),[diff]);
-  useEffect(()=>()=>{projectEpoch.current++;selectionEpoch.current++;},[]);
-  useEffect(() => {
-    if (!root) return;
-    const visible = () => ownerDocument.visibilityState === "visible" && !!panel.current?.getClientRects().length;
-    const queue = createRefreshQueue(async () => { if (visible()) await refreshCurrent.current(); }, error => setError(String(error)));
-    const focused = () => queue.request();
-    ownerWindow.addEventListener("focus", focused);
-    const interval = window.setInterval(focused, 30000);
-    const stop = watchPath(api, root, focused, {scope: "workspace", delay: 50, onError: setError});
-    return () => {queue.dispose();stop();ownerWindow.removeEventListener("focus",focused);window.clearInterval(interval);};
-  }, [root, api, ownerDocument]);
-
-  async function mutate(action: string, file?: string): Promise<void> {
-    const createPr=action==="create_pr", requestDirectory=directory;
-    if(createPr && (shippingRef.current || !root))return;
-    if(createPr){shippingRef.current=true;setShipping(true);setNotice("");setPrUrl("");}
-    try {
-      const result = await api?.runWorkbenchGit?.(action, root, file ? {file} : {});
-      if(activeDirectory.current!==requestDirectory)return;
-      if (!result?.ok) setError(String(result?.error || `${action} failed`));
-      else {
-        if(createPr){setPrUrl(pullRequestUrl(result.stdout));setNotice("Pull request created.");}
-        await refresh();
-      }
-    } catch(error){if(activeDirectory.current===requestDirectory)setError(String(error));}
-    finally {if(createPr){shippingRef.current=false;setShipping(false);}}
+  async function copy(file:WorkbenchGitFile,patch=false){
+    setMenu(null);const token=epoch.current;
+    try{const value=patch?await api?.getWorkbenchReviewDiff?.(root,file.path,{...options,context:3}):null;
+      if(token!==epoch.current)return;if(patch && !value?.ok)throw new Error(value?.error || "Could not read patch.");
+      await ownerWindow.navigator.clipboard.writeText(patch?value?.diff || "":file.path);if(token===epoch.current)setNotice(patch?"Patch copied.":"Path copied.");
+    }catch(error){if(token===epoch.current)setError(String(error));}
   }
-
-  async function ship(action: "commit" | "commit_push"): Promise<void> {
-    if (!message.trim() || !files.some(file => file.staged) || shippingRef.current) return;
-    shippingRef.current = true;
-    setShipping(true);
-    try {
-      const result = await api?.runWorkbenchGit?.(action, root, {message: message.trim()});
-      if (result?.ok || result?.committed) setMessage("");
-      await refresh();
-      if (!result?.ok) setError(`${result?.committed ? "Commit saved, but push failed. " : ""}${String(result?.error || "Commit failed")}`);
-    } catch (error) {await refresh();setError(String(error));}
-    finally {shippingRef.current = false;setShipping(false);}
-  }
-
-  async function discardUnstaged() {
-    let failure = "";
-    for (const file of files.filter(unstaged)) {
-      const result = await api?.runWorkbenchGit?.("revert", root, {file:file.path});
-      if (!result?.ok) {failure = String(result?.error || "Could not discard unstaged changes");break;}
-    }
-    await refresh(); if (failure) setError(failure);
-  }
-
-  async function copyPreview() {
-    try {await ownerWindow.navigator.clipboard.writeText(diff);setCopied(true);}
-    catch {setError("Could not copy the patch preview. Clipboard access is unavailable.");}
-  }
-
-  const rows = useMemo(() => {
-    const items: Array<{kind:"file"; file:WorkbenchGitFile} | {kind:"folder"; folder:string}> = [];
-    if (!treeMode) return files.map(file => ({kind:"file" as const,file}));
-    const groups = new Map<string,WorkbenchGitFile[]>();
-    for (const file of files) {
-      const index = file.path.lastIndexOf("/");
-      const folder = index > 0 ? file.path.slice(0,index) : ".";
-      const group = groups.get(folder) || []; group.push(file); groups.set(folder,group);
-    }
-    for (const [folder,group] of groups) {items.push({kind:"folder",folder});items.push(...group.map(file=>({kind:"file" as const,file})));}
-    return items;
-  }, [files,treeMode]);
-
+  const scopeLabel=options.scope==="commit"?`${options.commits?.length || 0} commit${options.commits?.length===1?"":"s"}`:labels[options.scope];
+  const branchLabel=branch==="HEAD"?currentBranch || "Current branch":branches.find(item=>item.ref===branch)?.name || branch;
+  const visibleFiles=files.filter(file=>file.path.toLowerCase().includes(query.toLowerCase()));
   return <section ref={panel} className="workbench-review">
-    <header className="workbench-tool-header">
-      <strong>Review</strong>
-      <span>{status.branch || (root ? "Working tree" : "No repository")}{status.ahead ? ` · ↑${status.ahead}` : ""}{status.behind ? ` · ↓${status.behind}` : ""}</span>
-      <button title={treeMode ? "List view" : "Tree view"} onClick={() => setTreeMode(value => !value)}>{treeMode ? "☷" : "⑂"}</button>
-      <button title="Stage all" disabled={!files.length} onClick={() => void mutate("stage")}>+</button>
-      <button title="Discard all unstaged changes" disabled={!files.some(unstaged)} onClick={() => {
-        if (ownerWindow.confirm("Discard every unstaged file change? Staged changes will be kept.")) void discardUnstaged();
-      }}>↶</button>
-      <button title="Refresh" onClick={() => void refresh()}><Icon name="refresh"/></button>
+    <header className="workbench-review__toolbar">
+      <button className="workbench-review__scope" aria-haspopup="menu" title="Choose review scope" onClick={event=>disclose(event,"scope")}><Icon name="review"/><span>{scopeLabel}</span><Icon name="down"/></button>
+      <button className="workbench-review__branch" aria-haspopup="menu" title="Browse branch history (does not switch the working branch)" onClick={event=>disclose(event,"branch")}><span>{options.scope!=="commit" && branch!=="HEAD"?`History · ${branchLabel}`:branchLabel}</span><Icon name="down"/></button>
+      <div className="workbench-review__toolbar-actions"><button aria-label="Review options" title="Review options" aria-haspopup="menu" onClick={event=>disclose(event,"options")}>⋯</button><button aria-label="Changed files" title="Changed files" aria-expanded={sidebar} onClick={()=>setSidebar(v=>!v)}><Icon name="panels"/></button></div>
     </header>
-    {error ? <div role="alert" className="workbench-tool-error">{error}</div> : null}
-    {notice ? <div role="status" className="workbench-review__result">{notice} {prUrl ? <button onClick={()=>void api?.openExternal?.(prUrl)}>{prUrl} <Icon name="popout"/></button> : <span>Check GitHub for the new pull request.</span>}</div> : null}
+    {error?<div role="alert" className="workbench-tool-error">{error}</div>:null}
+    {notice?<div role="status" className="workbench-review__notice">{notice}</div>:null}
+    {filesTruncated?<div role="status" className="workbench-review__notice">File list limited. Use Git to inspect remaining changes.</div>:null}
     <div className="workbench-review__body">
-      <aside className="workbench-review__files">
-        <header><strong>Changes</strong><span>{files.length}</span></header>
-        <VirtualList items={rows} rowHeight={31} label="Changed files"
-          itemKey={row => row.kind === "folder" ? `folder:${row.folder}` : `${row.file.status}:${row.file.path}`}
-          render={row => {
-            if (row.kind === "folder") return <section><h4>{row.folder}</h4></section>;
-            const file = row.file;
-            return <article className={selected === file.path ? "is-selected" : ""}>
-            <button className="workbench-review__select" onClick={() => void selectFile(file.path)} onDoubleClick={() => {if (!missing(file)) openFilePreview(absolute(status.root || root, file.path),undefined,chatId);}}>
-              <i className={`status-${statusGlyph(file.status).toLowerCase()}`}>{statusGlyph(file.status)}</i>
-              <span>{treeMode ? file.path.split("/").pop() : file.path}</span>
-              <small>{statusName(file.status)}{file.added || file.removed ? ` · +${file.added || 0} −${file.removed || 0}${file.staged && unstaged(file) ? " total" : ""}` : ""}</small>
-            </button>
-            <div>
-              <button title={missing(file) ? "Deleted file — inspect its diff" : "Open file"} disabled={missing(file)} onClick={() => openFilePreview(absolute(status.root || root, file.path),undefined,chatId)}><Icon name="popout"/></button>
-              <button title={file.staged ? "Unstage" : "Stage"} onClick={() => void mutate(file.staged ? "unstage" : "stage", file.path)}>{file.staged ? "−" : "+"}</button>
-              <button title="Discard unstaged changes" disabled={!unstaged(file)} onClick={() => { if (ownerWindow.confirm(`Discard unstaged changes in ${file.path}? Staged changes will be kept.`)) void mutate("revert", file.path); }}>↶</button>
-            </div>
-          </article>;
-        }}/>
-        {!files.length && !error ? <div className="workbench-tool-empty">No changes.</div> : null}
-      </aside>
-      <main className="workbench-review__diff">
-        {selected ? <header><strong title={selected}>{selected}</strong>{side === "untracked" ? <span>Untracked file · contents preview</span> : <>
-          <button type="button" aria-pressed={side === "unstaged"} disabled={!files.some(file=>file.path===selected && unstaged(file))} onClick={()=>void selectFile(selected,root,files,"unstaged")}>Unstaged</button>
-          <button type="button" aria-pressed={side === "staged"} disabled={!files.some(file=>file.path===selected && file.staged)} onClick={()=>void selectFile(selected,root,files,"staged")}>Staged</button>
-        </>}<button disabled={!diff || diffLoading} onClick={()=>void copyPreview()}>{copied?"Copied":"Copy preview"}</button></header> : null}
-        {diffLoading ? <div className="workbench-tool-empty" role="status">Loading patch…</div> : selected ? <DiffView key={`${selected}:${side}`} text={diff} language={selected.split(".").pop() || ""} fullContents={side==="untracked" && !diffInfo.binary} {...diffInfo}
-          onOpenLine={!files.some(file=>file.path===selected && missing(file)) ? line=>openFilePreview(absolute(status.root || root,selected),undefined,chatId,line) : undefined}/> : <div className="workbench-tool-empty">Select a changed file.</div>}
+      <main ref={setScroller} className="workbench-review__diff" aria-label="File diffs">
+        {!directory?<div className="workbench-tool-empty">Select a project for this chat to review changes.</div>:loading && !files.length?<div className="workbench-tool-empty" role="status">Loading changes…</div>:!files.length && !error?<div className="workbench-tool-empty">No changes in this scope.</div>:null}
+        {files.map((file,index)=><ReviewFile key={`${root}:${options.scope}:${options.commits?.join(",")}:${file.path}`} file={file} root={root} options={options} api={api} revision={revision} scrollParent={scroller} chatId={chatId} eager={index===0} collapsed={closed.has(file.path)} onToggle={()=>setClosed(prior=>{const next=new Set(prior);next.has(file.path)?next.delete(file.path):next.add(file.path);return next;})} onMenu={event=>disclose(event,"file",file)}/>)}
       </main>
+      {sidebar?<aside className="workbench-review__files"><header><strong>Changed files</strong><span>{files.length}</span></header><input aria-label="Search changed files" placeholder="Search files…" value={query} onChange={event=>setQuery(event.target.value)}/>
+        <VirtualList items={visibleFiles} rowHeight={34} label="Changed files" itemKey={file=>file.path} render={file=><button title={file.path} className={`workbench-review__select${selected===file.path?" is-selected":""}`} onClick={()=>navigate(file.path)}><Icon name="file"/><span>{file.path}</span><ReviewCounts file={file}/></button>}/>
+        {!visibleFiles.length?<div className="workbench-tool-empty">{query?"No matching files.":"No changed files."}</div>:null}
+      </aside>:null}
     </div>
-    <footer className="workbench-review__ship">
-      <textarea rows={2} aria-label="Commit message" placeholder="Commit message" value={message} onChange={event => setMessage(event.target.value)}/>
-      <button disabled={!files.length || shipping || !!message.trim()} title={message.trim() ? "Clear your draft to use a suggested title" : "Suggest a title from changed filenames"} onClick={() => {
-        const names = files.slice(0, 2).map(file => file.path.split("/").pop()).join(", ");
-        setMessage(files.length === 1 ? `Update ${names}` : `Update ${files.length} files`);
-      }}>Suggest title</button>
-      <button disabled={!message.trim() || shipping || !files.some(file=>file.staged)} onClick={() => void ship("commit")}>Commit</button>
-      <button disabled={!message.trim() || shipping || !files.some(file=>file.staged)} onClick={() => void ship("commit_push")}>Commit & Push</button>
-      <button disabled={shipping || !root} onClick={() => void mutate("create_pr")}>{shipping ? "Working…" : "Create PR"}</button>
-    </footer>
+    {menu?<PopupMenu className="workbench-review__menu workbench-file-menu" x={menu.x} y={menu.y} onClose={()=>setMenu(null)}>
+      {menu.kind==="scope"?<>
+        {(["uncommitted","staged","unstaged"] as const).map(scope=><button key={scope} role="menuitemradio" aria-checked={options.scope===scope} onClick={()=>{setOptions({scope});setMenu(null);}}>{labels[scope]}{options.scope===scope?<Icon name="check"/>:null}</button>)}
+        <hr/><div className="workbench-review__menu-label">Commits · {branchLabel}</div><p className="workbench-review__menu-hint">Select consecutive commits. Shift-click selects a range.</p>
+        {historyError?<p role="alert">{historyError}</p>:null}{historyLoading?<p role="status">Loading history…</p>:null}
+        <div className="workbench-review__commits">
+          {commits.length?<button role="menuitem" onClick={()=>setOptions({scope:"commit",commits:commits.slice(0,100).map(row=>row.oid)})}>Recent commits ({Math.min(100,commits.length)})</button>:null}
+          {commits.map(commit=><button key={commit.oid} role="menuitemcheckbox" disabled={options.scope==="commit" && (options.commits?.length || 0)>=100 && !options.commits?.includes(commit.oid)} aria-checked={options.scope==="commit" && !!options.commits?.includes(commit.oid)} title={`${commit.subject} · ${commit.oid.slice(0,8)}`} onClick={event=>selectCommit(commit.oid,event.shiftKey)}><span>{commit.subject}</span><small>{commit.oid.slice(0,7)}</small>{options.scope==="commit" && options.commits?.includes(commit.oid)?<Icon name="check"/>:null}</button>)}
+        </div>
+        {nextOffset!==undefined?<button disabled={historyLoading} role="menuitem" onClick={()=>void loadHistory(true)}>Load more commits</button>:null}
+        {!commits.length && !historyLoading && !historyError?<p>No commits yet.</p>:null}
+      </>:null}
+      {menu.kind==="branch"?<><div className="workbench-review__menu-label">Browse branch history</div><input aria-label="Search branches" placeholder="Search branches…" value={branchQuery} onChange={event=>setBranchQuery(event.target.value)}/><button role="menuitemradio" aria-checked={branch==="HEAD"} onClick={()=>{setBranch("HEAD");setOptions({scope:"uncommitted"});setMenu(null);}}>Current branch · {currentBranch}</button>
+        <div className="workbench-review__commits">{branches.filter(row=>row.name.toLowerCase().includes(branchQuery.toLowerCase())).map(row=><button key={row.ref} role="menuitemradio" aria-checked={branch===row.ref} title={row.ref} onClick={()=>{setBranch(row.ref);setOptions({scope:"uncommitted"});setMenu(null);}}><span>{row.name}</span>{row.remote?<small>Remote</small>:null}</button>)}</div><p className="workbench-review__menu-hint">Browsing history leaves your working branch unchanged. Live scopes always show the current working tree.</p></>:null}
+      {menu.kind==="options"?<><button role="menuitem" onClick={()=>{setClosed(new Set());setMenu(null);}}>Expand all files</button><button role="menuitem" onClick={()=>{setClosed(new Set(files.map(file=>file.path)));setMenu(null);}}>Collapse all files</button><hr/><button role="menuitem" onClick={()=>{setMenu(null);void refresh();void loadHistory();}}>Refresh changes</button></>:null}
+      {menu.kind==="file" && menu.file?<>
+        {options.scope!=="commit"?<button role="menuitem" disabled={reviewDeleted(menu.file)} onClick={()=>{openFilePreview(reviewPath(root,menu.file!.path),undefined,chatId);setMenu(null);}}>Open preview</button>:null}
+        <button role="menuitem" onClick={()=>void copy(menu.file!)}>Copy path</button><button role="menuitem" onClick={()=>void copy(menu.file!,true)}>Copy patch</button>
+        {options.scope!=="commit"?<><hr/><button role="menuitem" onClick={()=>void mutate("stage",menu.file!)}>Stage file</button><button role="menuitem" disabled={!menu.file.staged} onClick={()=>void mutate("unstage",menu.file!)}>Unstage file</button><button role="menuitem" disabled={menu.file.status[1]===" "} onClick={()=>void mutate("revert",menu.file!)}>Discard unstaged changes…</button></>:null}
+      </>:null}
+    </PopupMenu>:null}
   </section>;
 }

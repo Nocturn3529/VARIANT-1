@@ -94,10 +94,10 @@ assert.match(deckIpc, /workbench:fs:readDir[\s\S]*workbench:fs:readFile[\s\S]*wo
   'Electron must own the narrow filesystem/read/watch bridge');
 assert.match(preload, /readWorkbenchDirectory[\s\S]*watchWorkbenchPath/);
 
-assert.match(reviewPanel, /getWorkbenchGitStatus[\s\S]*getWorkbenchGitDiff[\s\S]*runWorkbenchGit/,
+assert.match(reviewPanel, /getWorkbenchReviewFiles[\s\S]*getWorkbenchGitHistory[\s\S]*runWorkbenchGit/,
   'Review must observe and operate on live Git truth');
 for (const action of ['stage', 'unstage', 'revert', 'commit', 'commit_push', 'create_pr']) {
-  assert.ok(deckIpc.includes(`action === '${action}'`), `${action} must be a live Review action`);
+  assert.ok(deckIpc.includes(`action === '${action}'`), `${action} must remain a protected Git action`);
 }
 assert.doesNotMatch(reviewPanel, /review:discover|review:start|review:approve/,
   'manual durable Review ceremony must stay deleted from the UI');

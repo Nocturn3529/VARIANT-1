@@ -38,13 +38,5 @@ export function parseDiff(value: string, fullContents = false) {
   return {rows,added,removed,truncated:value.length>MAX_CHARS || lines.length>MAX_LINES};
 }
 
-export function pullRequestUrl(output: unknown): string {
-  for(const candidate of String(output || "").match(/https:\/\/[^\s<>"']+/g) || []) {
-    try {
-      const url=new URL(candidate);
-      if(url.username || url.password || !/^\/[^/]+\/[^/]+\/pull\/\d+\/?$/.test(url.pathname))continue;
-      url.search="";url.hash="";return url.href;
-    } catch { /* Ignore warnings and malformed URLs in command output. */ }
-  }
-  return "";
-}
+export const reviewPath=(root:string,file:string)=>`${root.replace(/[\\/]$/,"")}${root.includes("\\")?"\\":"/"}${file.replace(/[\\/]/g,root.includes("\\")?"\\":"/")}`;
+export const reviewDeleted=(file:{status:string})=>file.status.trim()==="D" || file.status[1]==="D";

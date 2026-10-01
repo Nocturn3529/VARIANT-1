@@ -41,6 +41,12 @@ moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
 (async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'variant1-ipc-review-'));
   try {
+    for (const channel of ['branches','history','review-files','review-diff']) {
+      const handler=handlers.get(`workbench:git:${channel}`);
+      assert.ok(handler,`${channel} read is registered`);
+      assert.equal((await handler({sender:overlay},scratch,{})).error,'untrusted_sender');
+      assert.equal((await handler({sender:deck},'relative/path',{})).error,'invalid_path');
+    }
     const executable = path.join(scratch, 'sample.cmd');
     fs.writeFileSync(executable, 'This fixture must never be executed.');
     for (const sender of [overlay, monitor]) {
