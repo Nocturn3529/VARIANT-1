@@ -560,9 +560,9 @@ export type RuntimeApi = {
   openChatWindow?: (id:string,title:string)=>Promise<{ok:boolean;error?:string}>;
   getWorkbenchRoot?: () => Promise<{ok?: boolean; path?: string; error?: string}>;
   getWorkbenchGitStatus?: (path: string) => Promise<WorkbenchGitStatus>;
-  getWorkbenchGitBranches?: (path:string, options?:{limit?:number}) => Promise<{ok?:boolean;error?:string;branches?:WorkbenchGitBranch[];truncated?:boolean}>;
-  getWorkbenchGitHistory?: (path:string, options:{ref:string;limit?:number;offset?:number}) => Promise<{ok?:boolean;error?:string;resolvedOid?:string;commits?:WorkbenchGitCommit[];nextOffset?:number|null;truncated?:boolean}>;
-  getWorkbenchReviewFiles?: (path:string, options:WorkbenchReviewOptions) => Promise<WorkbenchGitStatus & {truncated?:boolean;baseOid?:string;headOid?:string}>;
+  getWorkbenchGitBranches?: (path:string, options?:{limit?:number}) => Promise<{ok?:boolean;error?:string;branches?:WorkbenchGitBranch[];truncated?:boolean;defaultBaseRef?:string;defaultBaseSource?:string;baseError?:string}>;
+  getWorkbenchGitHistory?: (path:string, options:{ref?:string;baseRef?:string;allBranches?:boolean;historyOids?:string[];excludeOid?:string;limit?:number;offset?:number}) => Promise<{ok?:boolean;error?:string;resolvedOid?:string;historyOids?:string[];excludeOid?:string;commits?:WorkbenchGitCommit[];nextOffset?:number|null;truncated?:boolean}>;
+  getWorkbenchReviewFiles?: (path:string, options:WorkbenchReviewOptions) => Promise<WorkbenchGitStatus & {truncated?:boolean;baseOid?:string;headOid?:string;comparison?:{baseRef:string;baseSource:string;baseOid:string;headOid:string};countBasis?:string;aggregate?:WorkbenchReviewAggregate}>;
   getWorkbenchReviewDiff?: (path:string,file:string,options:WorkbenchReviewOptions & {context?:number}) => Promise<WorkbenchReviewDiff>;
   runWorkbenchGit?: (action: string, path: string, options?: Record<string, unknown>) => Promise<Record<string, unknown>>;
   captureWorkbenchPreview?: (webContentsId: number) => Promise<{ok?: boolean; image?: string; image_width?: number; image_height?: number; error?: string}>;
@@ -618,10 +618,11 @@ export type WorkbenchGitFile = {
   binary?:boolean;untracked?:boolean;
 };
 
-export type WorkbenchReviewOptions = {scope:"uncommitted"|"staged"|"unstaged"|"commit";commits?:string[]};
-export type WorkbenchReviewDiff = {ok?:boolean;error?:string;diff?:string;fullContents?:boolean;truncated?:boolean;binary?:boolean;context?:number};
+export type WorkbenchReviewOptions = {scope:"uncommitted"|"staged"|"unstaged"|"commit"|"branch";commits?:string[];ref?:string;baseRef?:string};
+export type WorkbenchReviewAggregate={added:number;removed:number;fileCount:number;binaryFiles:number;complete:boolean};
+export type WorkbenchReviewDiff = {ok?:boolean;error?:string;diff?:string;fullContents?:boolean;truncated?:boolean;binary?:boolean;context?:number;omittedSections?:number;sections?:Array<{oid:string;baseOid?:string;diff:string;fullContents?:boolean;truncated?:boolean;binary?:boolean}>};
 export type WorkbenchGitBranch = {ref:string;name:string;oid:string;current?:boolean;remote?:boolean};
-export type WorkbenchGitCommit = {oid:string;parents:string[];subject:string;authorName:string;committedAt:number};
+export type WorkbenchGitCommit = {oid:string;parents:string[];subject:string;authorName:string;committedAt:number;added?:number|null;removed?:number|null;fileCount?:number|null;binaryFiles?:number|null;statsComplete?:boolean};
 
 export type WorkbenchGitStatus = {
   ok?: boolean;

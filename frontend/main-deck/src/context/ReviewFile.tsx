@@ -37,10 +37,15 @@ export function ReviewFile({file,root,options,api,scrollParent,revision,collapse
     const measure=()=>{const next=body.current?.getBoundingClientRect().height || 120;setHeight(prior=>prior===next?prior:next);};
     const observer=new ResizeObserver(measure);observer.observe(body.current);measure();return()=>observer.disconnect();
   },[result,collapsed]);
+  const patches=result?.sections?.length?result.sections:result?[{...result,oid:""}]:[];
   return <article ref={card} className="workbench-review__card" data-review-file={file.path}>
     <header><button className="workbench-review__card-title" aria-expanded={!collapsed} onClick={onToggle} title={file.originalPath?`${file.originalPath} → ${file.path}`:file.path}><Icon name={collapsed?"chevron":"down"}/><Icon name="code"/><span>{file.path}</span><ReviewCounts file={file}/></button><button title={`Actions for ${file.path}`} aria-label={`Actions for ${file.path}`} aria-haspopup="menu" onClick={onMenu}>⋯</button></header>
     {!collapsed?<div ref={body} className="workbench-review__card-body" style={!result?{minHeight:height}:undefined}>
-      {result?.ok===false?<div className="workbench-tool-empty" role="alert">{result.error}<button onClick={()=>setRetry(v=>v+1)}>Retry</button></div>:result?<DiffView text={result.diff || ""} language={file.path.split(".").pop() || ""} fullContents={result.fullContents} binary={result.binary} truncated={result.truncated} scrollParent={scrollParent} context={context} onExpandContext={setContext} onOpenLine={["uncommitted","unstaged"].includes(options.scope) && !reviewDeleted(file)?line=>openFilePreview(reviewPath(root,file.path),undefined,chatId,line):undefined}/>:<div className="workbench-tool-empty" role={visible?"status":undefined}>{visible?"Loading patch…":""}</div>}
+      {result?.sections?.length && result.truncated?<p className="workbench-diff__notice" role="status">Selected commit previews are limited.{result.omittedSections?` ${result.omittedSections} commit patch sections omitted.`:""} Select fewer commits to inspect the remaining changes.</p>:null}
+      {result?.ok===false?<div className="workbench-tool-empty" role="alert">{result.error}<button onClick={()=>setRetry(v=>v+1)}>Retry</button></div>:result?patches.map(patch=><section key={patch.oid || "live"}>
+        {patches.length>1?<header className="workbench-review__commit-section" title={patch.oid}>Commit {patch.oid.slice(0,8)}</header>:null}
+        <DiffView text={patch.diff || ""} language={file.path.split(".").pop() || ""} fullContents={patch.fullContents} binary={patch.binary} truncated={patch.truncated} scrollParent={scrollParent} context={context} onExpandContext={setContext} onOpenLine={["uncommitted","unstaged"].includes(options.scope) && !reviewDeleted(file)?line=>openFilePreview(reviewPath(root,file.path),undefined,chatId,line):undefined}/>
+      </section>):<div className="workbench-tool-empty" role={visible?"status":undefined}>{visible?"Loading patch…":""}</div>}
       {loading && result?<span className="workbench-review__loading" role="status">Loading context…</span>:null}
     </div>:null}
   </article>;

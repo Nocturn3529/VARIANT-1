@@ -555,6 +555,7 @@
 .workbench-review__branch > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workbench-review__toolbar-actions { display:flex; flex:none; }
 .workbench-review__toolbar .deck-icon { width:14px; height:14px; }
+.workbench-review__scope small { flex:none; white-space:nowrap; }
 .workbench-review__body { display:flex; flex:1; min-width:0; min-height:0; overflow:hidden; }
 .workbench-review__diff { flex:1; min-width:0; min-height:0; overflow:auto; background:#080909; scroll-padding-top:6px; }
 .workbench-review__files { flex:0 0 clamp(150px,32%,270px); min-width:0; display:flex; flex-direction:column; overflow:hidden; background:var(--deck-surface-panel); }
@@ -568,12 +569,15 @@
 .workbench-review__select .deck-icon { width:13px; height:13px; }
 .workbench-review .is-added { color:var(--deck-diff-added); }
 .workbench-review .is-removed { color:var(--deck-diff-deleted); }
+.workbench-review__menu .is-added { color:var(--deck-diff-added); }
+.workbench-review__menu .is-removed { color:var(--deck-diff-deleted); }
 .workbench-review__card > header { display:flex; align-items:center; min-width:0; height:36px; padding:0 6px; }
 .workbench-review__card > header .workbench-review__card-title { flex:1; min-width:0; text-align:left; }
 .workbench-review__card-title > span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .workbench-review__card-title small { flex:none; font-size:var(--deck-text-xs); }
 .workbench-review__card-title .deck-icon { width:13px; height:13px; }
 .workbench-review__card-body { position:relative; }
+.workbench-review__commit-section { padding:5px 12px; color:var(--deck-text-muted); font-size:var(--deck-text-compact); }
 .workbench-review__notice, .workbench-review__loading { padding:6px 10px; color:var(--deck-text-muted); font-size:var(--deck-text-compact); }
 .workbench-review__loading { position:absolute; top:0; right:0; background:#080909; }
 .workbench-review__menu { width:min(360px,calc(100vw - 16px)); max-height:min(600px,calc(100vh - 24px)); overflow:auto; }
@@ -583,6 +587,7 @@
 .workbench-review__menu button > .deck-icon { margin-left:auto; width:13px; }
 .workbench-review__menu input { box-sizing:border-box; width:100%; padding:6px 8px; border:1px solid var(--deck-line-soft); border-radius:4px; color:var(--deck-text-primary); background:transparent; font:inherit; }
 .workbench-review__menu-label { padding:6px 7px; color:var(--deck-text-primary); font-size:var(--deck-text-compact); }
+.workbench-review__menu-label select { display:block; box-sizing:border-box; width:100%; margin-top:5px; padding:5px; background:var(--deck-surface-panel); color:var(--deck-text-secondary); border:1px solid var(--deck-line-soft); border-radius:4px; font:inherit; }
 .workbench-review__menu-hint { margin:0; padding:4px 7px 8px; color:var(--deck-text-muted); font-size:var(--deck-text-xs); line-height:1.5; }
 .workbench-review__commits { max-height:310px; overflow:auto; }
 .workbench-diff { display:flex; flex-direction:column; min-height:0; background:#080909; font:var(--deck-code-text)/1.55 var(--font-mono); }

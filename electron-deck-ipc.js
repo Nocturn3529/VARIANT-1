@@ -107,7 +107,7 @@ async function gitRoot(startPath) {
 
 async function workbenchGitStatus(startPath) {
   const root = await gitRoot(startPath);
-  const branchResult = await readGit(['status', '--porcelain=v1', '-z', '-b'], { cwd: root });
+  const branchResult = await readGit(['status', '--porcelain=v1', '--untracked-files=all', '-z', '-b'], { cwd: root });
   const records = branchResult.stdout.split('\0');
   const header = records.shift() || '';
   const branchMatch = /^##\s+([^\.\s]+)(?:\.\.\.([^\s]+))?(?:\s+\[ahead\s+(\d+)(?:,\s+behind\s+(\d+))?\])?/.exec(header);
@@ -510,7 +510,7 @@ function registerDeckIpc(deps) {
       // Forward only declared read fields, never a renderer-supplied Git argument list.
       const input=method==='diff'?rawOptions:fileOrOptions;
       const options=input && typeof input==='object' && !Array.isArray(input) ? {
-        scope:input.scope,commits:input.commits,ref:input.ref,limit:input.limit,offset:input.offset,context:input.context,
+        scope:input.scope,commits:input.commits,ref:input.ref,baseRef:input.baseRef,allBranches:input.allBranches,historyOids:input.historyOids,excludeOid:input.excludeOid,limit:input.limit,offset:input.offset,context:input.context,
       } : {};
       try {return await reviewRead(JSON.stringify([method,target,method==='diff'?fileOrOptions:null,options]));}
       catch(error){return {ok:false,error:String(error?.message || error)};}

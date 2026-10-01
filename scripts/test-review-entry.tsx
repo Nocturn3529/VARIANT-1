@@ -4,6 +4,7 @@ import {createRoot} from "react-dom/client";
 import {ReviewPanel} from "../frontend/main-deck/src/context/ReviewPanel";
 import {DiffView} from "../frontend/main-deck/src/context/DiffView";
 import {parseDiff} from "../frontend/main-deck/src/workbench/diffModel";
+import {reviewTree} from "../frontend/main-deck/src/workbench/reviewTree";
 import {getPreviewState,closePreview} from "../frontend/main-deck/src/workbench/previewStore";
 import type {RuntimeApi} from "../frontend/main-deck/src/types";
 import {PreviewPane} from "../frontend/main-deck/src/workbench/PreviewPane";
@@ -12,6 +13,10 @@ const patch = "diff --git a/sample.ts b/sample.ts\n--- a/sample.ts\n+++ b/sample
 const pause=()=>new Promise(resolve=>setTimeout(resolve,0));
 
 export async function run() {
+  const treeFiles=["backend/tests/same.ts","frontend/same.ts","README.md"].map(path=>({path,status:" M"}));
+  assert.deepEqual(reviewTree(treeFiles,new Set()).map(row=>row.kind==="folder"?row.path:row.file.path),["backend","backend/tests","backend/tests/same.ts","frontend","frontend/same.ts","README.md"]);
+  assert.equal(reviewTree(treeFiles,new Set(["backend"])).some(row=>row.kind==="file" && row.file.path==="backend/tests/same.ts"),false);
+  assert.equal(reviewTree(treeFiles,new Set(["backend"]),"backend/tests").at(-1)?.kind,"file","search reveals matches inside collapsed folders");
   const parsed=parseDiff(patch);
   assert.equal(parsed.added,2);assert.equal(parsed.removed,1);
   assert.deepEqual(parsed.rows.filter(row=>row.type==="add").map(row=>row.newLine),[3,4]);
@@ -25,6 +30,7 @@ export async function run() {
   const host=document.createElement("div");document.body.appendChild(host);const root=createRoot(host);
   let clipboard="";
   const diffRequests:Array<{file:string;scope:string;context?:number;commits?:string[]}>=[];
+  const historyRequests:Array<{ref?:string;allBranches?:boolean}>=[];
   const priorApi=window.variant1Deck;
   const clipboardDescriptor=Object.getOwnPropertyDescriptor(window.navigator,"clipboard");
   Object.defineProperty(window.navigator,"clipboard",{configurable:true,value:{writeText:async(value:string)=>{clipboard=value;}}});
@@ -33,9 +39,9 @@ export async function run() {
   window.variant1Deck={
     getWorkbenchGitStatus:async()=>({ok:true,root:"C:\\fixture",branch:"review",files:fixtureFiles}),
     getWorkbenchGitBranches:async()=>({ok:true,branches:[{ref:"refs/heads/other",name:"other",oid:"other-oid"}]}),
-    getWorkbenchGitHistory:async(_root,options)=>({ok:true,resolvedOid:options.ref,commits:["a","b","c"].map((value,index)=>({oid:value.repeat(40),parents:[String.fromCharCode(value.charCodeAt(0)+1).repeat(40)],subject:`Fix review ${index+1}`,authorName:"Tester",committedAt:1}))}),
-    getWorkbenchReviewFiles:async()=>({ok:true,root:"C:\\fixture",files:fixtureFiles}),
-    getWorkbenchReviewDiff:async(_root,file,options)=>{diffRequests.push({file,scope:options.scope,context:options.context,commits:options.commits});return {ok:true,diff:patch};},
+    getWorkbenchGitHistory:async(_root,options)=>{historyRequests.push(options);return {ok:true,resolvedOid:options.ref,commits:["a","b","c"].map((value,index)=>({oid:value.repeat(40),parents:[String.fromCharCode(value.charCodeAt(0)+1).repeat(40)],subject:`Fix review ${index+1}`,authorName:"Tester",committedAt:1,added:2,removed:1,statsComplete:true}))};},
+    getWorkbenchReviewFiles:async()=>({ok:true,root:"C:\\fixture",files:fixtureFiles,aggregate:{added:2,removed:1,fileCount:1,binaryFiles:0,complete:true}}),
+    getWorkbenchReviewDiff:async(_root,file,options)=>{diffRequests.push({file,scope:options.scope,context:options.context,commits:options.commits});return {ok:true,diff:patch,...(options.scope==='commit' && (options.commits?.length || 0)>1?{sections:options.commits!.map(oid=>({oid,diff:patch}))}:{})};},
     runWorkbenchGit:async()=>{throw new Error("Inspection must not mutate Git");},
   } as RuntimeApi;
   const button=(label:string)=>[...document.querySelectorAll<HTMLButtonElement>('button')].find(row=>row.textContent===label || row.getAttribute('aria-label')===label)!;
@@ -63,9 +69,12 @@ export async function run() {
     await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-diff__expand')!.click());
     assert.equal(diffRequests.at(-1)?.context,53,'context expansion reads real unchanged lines');
     await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-review__scope')!.click());
-    await act(async()=>document.querySelector<HTMLButtonElement>('[role="menuitemcheckbox"]')!.click());
+    await act(async()=>document.querySelector<HTMLButtonElement>('[data-commit-oid]')!.click());
     assert.equal(diffRequests.at(-1)?.scope,'commit');
-    await act(async()=>document.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')[2].dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true})));
+    await act(async()=>document.querySelectorAll<HTMLButtonElement>('[data-commit-oid]')[2].click());
+    assert.deepEqual(diffRequests.at(-1)?.commits,['a'.repeat(40),'c'.repeat(40)],'nonadjacent selections retain exact IDs');
+    assert.equal(host.querySelectorAll('.workbench-review__commit-section').length,2,'separate patches keep commit boundaries visible');
+    await act(async()=>document.querySelectorAll<HTMLButtonElement>('[data-commit-oid]')[0].dispatchEvent(new MouseEvent('click',{bubbles:true,shiftKey:true})));
     assert.deepEqual(diffRequests.at(-1)?.commits,['a'.repeat(40),'b'.repeat(40),'c'.repeat(40)],'shift selection chooses a complete range');
     assert.equal(host.querySelector('[aria-label="Open current file at line 4"]'),null,'historical line numbers cannot open wrong current source');
     await act(async()=>button('Review options').click());
@@ -74,6 +83,17 @@ export async function run() {
     await act(async()=>button('Review options').click());
     await act(async()=>button('Expand all files').click());
     assert.ok(host.querySelector('.workbench-diff'));
+    await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-review__branch')!.click());
+    await act(async()=>button('other').click());
+    assert.equal(diffRequests.at(-1)?.scope,'branch','branch selection loads committed delta rather than resetting to live .gitignore');
+    assert.equal(historyRequests.at(-1)?.ref,'refs/heads/other');
+    assert.match(host.querySelector('.workbench-review__scope')!.textContent!,/All commits.*\+2/,'scope header shows aggregate changes');
+    await act(async()=>host.querySelector<HTMLButtonElement>('.workbench-review__branch')!.click());
+    await act(async()=>button('All branches').click());
+    assert.equal(historyRequests.at(-1)?.allBranches,true);
+    assert.match(host.textContent!,/Select commits to review/,'global history does not pretend to be one branch diff');
+    await act(async()=>document.dispatchEvent(new MouseEvent('pointerdown',{bubbles:true,clientX:800,clientY:500})));
+    assert.equal(document.querySelector('[data-deck-menu]'),null,'outside empty space dismisses the menu');
     await act(async()=>root.render(<DiffView text={"Binary files a/photo.png and b/photo.png differ\n"} binary/>));
     assert.match(host.textContent!,/Binary file changed/);
     await act(async()=>root.render(<DiffView text={"line\n".repeat(8000)} fullContents/>));
