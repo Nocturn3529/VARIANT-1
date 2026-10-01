@@ -19,17 +19,17 @@ function repositoryFile(root,raw) {
 (async()=>{
   const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'variant1-review-read-'));
   const root=path.join(temporary,'repo');await fs.mkdir(root);
-  const calls=[];
+  const calls=[];let clock=0;
   const command=async(args,options={})=>execute('git',args,{cwd:root,windowsHide:true,encoding:'utf8',env:{...process.env,GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:process.platform==='win32'?'NUL':'/dev/null',GIT_OPTIONAL_LOCKS:'0',GIT_TERMINAL_PROMPT:'0',GIT_LITERAL_PATHSPECS:'1'},...options});
   const readGit=async(args,options)=>{calls.push(args);return command(args,options);};
-  const reader=createGitReviewReader({readGit,gitRoot:async()=>root,repositoryFile,projectGitDiff});
-  const git=async(...args)=>(await command(args)).stdout.trim();
-  const put=(file,text)=>fs.writeFile(path.join(root,file),text);
+  const reader=createGitReviewReader({readGit,gitRoot:async()=>root,repositoryFile,projectGitDiff,now:()=>clock});
+  const git=async(...args)=>{const value=(await command(args)).stdout.trim();clock+=1001;return value;};
+  const put=async(file,text)=>{await fs.writeFile(path.join(root,file),text);clock+=1001;};
   try {
     await git('init','-b','main');await git('config','user.name','Review fixture');await git('config','user.email','fixture@example.test');await git('config','commit.gpgSign','false');await git('config','core.autocrlf','false');
     assert.deepEqual((await reader.history(root)).commits,[],'unborn history is explicit');
     await put('new file.txt','Initial\n');await git('add','--','new file.txt');
-    assert.equal((await reader.files(root,{scope:'staged'})).files[0].status,'A');
+    assert.equal((await reader.files(root,{scope:'staged'})).files[0].status,'A ');
     assert.equal((await reader.diff(root,'new file.txt',{scope:'uncommitted'})).fullContents,true,'unborn worktree includes staged initial content');
     const baseLines=Array.from({length:300},(_,i)=>`line ${i}`).join('\n')+'\n';
     await put('new file.txt',baseLines);await put('binary.bin',Buffer.from([1,0,2,3]));
@@ -53,15 +53,38 @@ function repositoryFile(root,raw) {
     const range=await reader.files(root,{scope:'branch',ref:'main',baseRef:'side'});assert.equal(range.ok,true);assert.equal(range.baseOid,side);assert.equal(range.headOid,merge);
     assert.match((await reader.files(root,{scope:'branch',ref:'main'})).error,/explicit_base/);
     const renamed=continuous.files.find(row=>row.path==='renamed file.txt');assert.equal(renamed.originalPath,'new file.txt');assert.equal(renamed.added,1);assert.equal(renamed.removed,1);
+    reader.invalidate();const beforeShared=calls.length;
+    await Promise.all([reader.files(root,{scope:'commit',commits:[second,third]}),reader.diff(root,'renamed file.txt',{scope:'commit',commits:[third,second],context:3}),reader.diff(root,'other.txt',{scope:'commit',commits:[second,third],context:20})]);
+    const shared=calls.slice(beforeShared);
+    assert.equal(shared.filter(args=>args.includes('rev-list')).length,1,'one batch verifies ancestry for concurrent cards');
+    assert.equal(shared.filter(args=>args.includes('--name-status')).length,1,'cards share scoped file admission');
+    assert.equal(shared.filter(args=>args.includes('--numstat')).length,1);
+    const cachedCount=calls.length;await reader.files(root,{scope:'commit',commits:[third,second]});assert.equal(calls.length,cachedCount);
+    clock+=1001;await reader.files(root,{scope:'commit',commits:[second,third]});assert.ok(calls.length>cachedCount,'observations expire after one second');
+    reader.invalidate();const evictedStart=calls.length;
+    for(let context=0;context<9;context++)await reader.files(root,{scope:'branch',ref:`HEAD${'~0'.repeat(context)}`,baseRef:'main'});
+    await reader.files(root,{scope:'commit',commits:[second,third]});assert.ok(calls.slice(evictedStart).filter(args=>args.includes('--name-status')).length>=10,'cache retains at most eight observations');
     const small=await reader.diff(root,'renamed file.txt',{scope:'commit',commits:[second],context:3});const expanded=await reader.diff(root,'renamed file.txt',{scope:'commit',commits:[second],context:1000});assert.match(small.diff,/rename from new file.txt/);assert.ok(expanded.diff.length>small.diff.length);assert.equal((await reader.diff(root,'renamed file.txt',{scope:'commit',commits:[second],context:99999})).context,MAX_CONTEXT);
     await put('renamed file.txt',baseLines.replace('line 150\n','staged 150\n'));await git('add','--','renamed file.txt');await put('renamed file.txt',baseLines.replace('line 150\n','working 150\n'));await put('fresh.txt','Untracked\n');await put('new binary.bin',Buffer.from([2,0,4]));
     const indexBefore=await fs.readFile(path.join(root,'.git','index'));
     const staged=await reader.diff(root,'renamed file.txt',{scope:'staged'});const unstaged=await reader.diff(root,'renamed file.txt',{scope:'unstaged'});const total=await reader.diff(root,'renamed file.txt',{scope:'uncommitted'});
+    const mixed=(await reader.files(root,{scope:'uncommitted'})).files.find(row=>row.path==='renamed file.txt');assert.equal(mixed.status,'MM');assert.equal(mixed.staged,true);assert.equal(mixed.unstaged,true);
+    let statusCalls=0;
+    const injected=createGitReviewReader({readGit,gitRoot:async()=>root,repositoryFile,now:()=>clock,workbenchGitStatus:async()=>{statusCalls++;return {ok:true,files:[{path:'renamed file.txt',status:'MM'},{path:'fresh.txt',status:'??'},{path:'new binary.bin',status:'??'}]};}});
+    assert.equal((await injected.files(root,{scope:'staged'})).files[0].status,'MM');assert.equal(statusCalls,1);
+    await injected.files(root,{scope:'commit',commits:[second]});assert.equal(statusCalls,1,'historical review never merges live status');
     assert.match(staged.diff,/\+staged 150/);assert.match(unstaged.diff,/-staged 150/);assert.match(total.diff,/-changed 150/);assert.match(total.diff,/\+working 150/);
     assert.ok(!(await reader.files(root,{scope:'staged'})).files.some(row=>row.untracked));assert.ok((await reader.files(root,{scope:'unstaged'})).files.find(row=>row.path==='fresh.txt').untracked);
     assert.equal((await reader.diff(root,'fresh.txt',{scope:'uncommitted'})).fullContents,true);const binary=await reader.diff(root,'new binary.bin',{scope:'unstaged'});assert.equal(binary.binary,true);assert.equal(binary.originalBytes,3);
     assert.equal((await reader.diff(root,'../outside',{scope:'uncommitted'})).ok,false);assert.equal((await reader.diff(root,'C:\\outside',{scope:'uncommitted'})).ok,false);assert.equal((await reader.diff(root,'other.txt',{scope:'uncommitted'})).ok,false);
     assert.deepEqual(await fs.readFile(path.join(root,'.git','index')),indexBefore,'scope reads leave the staged index untouched');
+    await fs.unlink(path.join(root,'other.txt'));clock+=1001;
+    let deleted=(await reader.files(root,{scope:'unstaged'})).files.find(row=>row.path==='other.txt');
+    assert.equal(deleted.status,' D');assert.equal(deleted.staged,false);assert.equal(deleted.unstaged,true);
+    await git('add','--','other.txt');deleted=(await reader.files(root,{scope:'staged'})).files.find(row=>row.path==='other.txt');
+    assert.equal(deleted.status,'D ');assert.equal(deleted.staged,true);assert.equal(deleted.unstaged,false);
+    assert.ok(!(await reader.files(root,{scope:'unstaged'})).files.some(row=>row.path==='other.txt'));
+    await git('restore','--staged','--worktree','--','other.txt');
     await put('large.txt','large line\n'.repeat(300000));const large=await reader.diff(root,'large.txt',{scope:'uncommitted'});assert.equal(large.ok,true);assert.equal(large.truncated,true);assert.equal(large.originalBytesExact,false);assert.ok(large.diff.length<=256*1024);
     await put('other.txt','patch line\n'.repeat(300000));const largeTracked=await reader.diff(root,'other.txt',{scope:'unstaged'});assert.equal(largeTracked.ok,true);assert.equal(largeTracked.truncated,true);assert.equal(largeTracked.originalBytesExact,false);
     // An inherited/custom diff program must never execute for Review reads.
@@ -69,7 +92,7 @@ function repositoryFile(root,raw) {
     assert.equal(await git('rev-parse','HEAD'),headBefore,'read selection never checks out a branch');
     assert.ok(calls.every(args=>!args.includes('checkout') && !args.includes('switch') && !args.includes('fetch')),'helper has no repository mutation commands');
     assert.ok(calls.every(args=>args[0]==='--no-pager' && args[1]==='--literal-pathspecs'));
-    console.log('Review reads: bounded branch/first-parent history, truthful commit ranges, root/merge commits, scope semantics, rename/context, untracked/binary/large output and inert Git programs passed');
+    console.log('Review reads: bounded branch/history, verified ranges, shared/expiring admission, live XY/deletion flags, immutable index, rename/context, binary/large output and inert Git programs passed');
   } finally {
     assert.equal(path.dirname(path.resolve(temporary)),path.resolve(os.tmpdir()));assert.ok(path.basename(temporary).startsWith('variant1-review-read-'));
     await fs.rm(temporary,{recursive:true,force:true});

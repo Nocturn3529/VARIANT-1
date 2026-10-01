@@ -98,12 +98,25 @@ drafts, pending input/preparation, and unfinished settings or annotation request
 are protected, including unconfirmed trace evidence; settled admission fences
 survive idle view eviction.
 
-Review uses a bounded unified Git patch projection with typed lines, old/new
-gutters, collapsible hunks, bounded code tokenization, and virtualized rendering.
-It reports binary and
-truncated output explicitly, and current-file line navigation is distinct from
-per-turn edit attribution. Git/PR operations retain their existing sender, path,
-and recoverable-discard protections; successful PR creation surfaces its URL.
+Review presents bounded unified patches in collapsible file cards with old/new
+gutters, safe code tokenization, and virtualized rendering. Its Changed files
+sidebar is hidden by default and opens on the right. Uncommitted, staged, and
+unstaged scopes inspect the current worktree and index. Branch selection browses
+first-parent history without checking out a branch; selected commits must form
+a continuous first-parent range. Root and merge commits have explicit comparison
+boundaries, and historical patches do not link their line numbers to current
+source. Current-file navigation is available only where a live comparison can
+identify the current line.
+
+Read-only Electron observations bound branches, history, file lists, patches,
+and unchanged-context expansion; binary and truncated output are explicit.
+Concurrent cards share verified selection/file observations for at most one
+second with at most eight cached selections. Repository watcher events and Git
+mutations invalidate those observations. This view provides no per-turn edit
+attribution, split view, whitespace toggle, or wrapping option. File-level Git
+actions retain sender, path, and recoverable-discard protections. Commit, push,
+and pull-request operations can be requested through the agent rather than a
+Review footer.
 Native browser moves retain their live pages rather than reloading them.
 
 ## Mutation

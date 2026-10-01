@@ -39,7 +39,8 @@ function errorResult(error) {
   return {ok:false,error:String(error?.stderr || error?.message || error).slice(0, 2000)};
 }
 
-function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff = defaultProjection}) {
+function createGitReviewReader({readGit, gitRoot, repositoryFile, workbenchGitStatus, projectGitDiff = defaultProjection, now = Date.now}) {
+  const observations = new Map();
   const run = (root, args) => readGit(['--no-pager', '--literal-pathspecs', ...args], {cwd:root,timeout:30000,maxBuffer:COMMAND_BYTES});
   const safePath = (root, value) => repositoryFile(root, value).relative;
   async function resolve(root, ref) {
@@ -56,14 +57,9 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
       return '';
     }
   }
-  async function parents(root, oid) {
-    const raw = (await run(root,['rev-list','--parents','--max-count=1',oid])).stdout.trim().split(/\s+/);
-    if (raw[0] !== oid || raw.some(value=>!oidPattern.test(value))) throw new Error('invalid_commit_parents');
-    return raw.slice(1);
-  }
   async function plan(root, options = {}) {
     const scope = options.scope || 'uncommitted';
-    const current = await head(root);
+    const current = ['staged','unstaged','uncommitted'].includes(scope) ? await head(root) : '';
     if (scope === 'staged') return {scope,baseOid:current,headOid:current,command:'diff',selector:['--cached'],commits:[]};
     if (scope === 'unstaged') return {scope,baseOid:current,headOid:current,command:'diff',selector:[],commits:[]};
     if (scope === 'uncommitted') return {scope,baseOid:current,headOid:current,command:'diff',selector:current ? [current] : [],commits:[],unborn:!current};
@@ -78,10 +74,16 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
     const supplied = options.commits || (options.commit ? [options.commit] : []);
     if (!Array.isArray(supplied) || !supplied.length || supplied.length > 100) throw new Error('invalid_commit_selection');
     const selected = [];
-    for (const value of supplied) selected.push(await resolve(root,value));
+    for (const value of supplied) selected.push(oidPattern.test(value) ? value : await resolve(root,value));
     if (new Set(selected).size !== selected.length) throw new Error('duplicate_commit_selection');
     const ancestry = new Map();
-    for (const oid of selected) ancestry.set(oid,(await parents(root,oid))[0] || '');
+    const records=(await run(root,['rev-list','--parents','--no-walk=unsorted',...selected,'--'])).stdout.trim().split(/\r?\n/);
+    for (const record of records) {
+      const [oid,...parents]=record.split(' ');
+      if(!selected.includes(oid) || parents.some(value=>!oidPattern.test(value)))throw new Error('invalid_commit_parents');
+      ancestry.set(oid,parents[0] || '');
+    }
+    if(ancestry.size!==selected.length)throw new Error('invalid_commit_selection');
     const older = new Set([...ancestry.values()]);
     const tips = selected.filter(oid=>!older.has(oid));
     if (tips.length !== 1) throw new Error('noncontiguous_commit_selection');
@@ -91,7 +93,7 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
     return {scope,baseOid:cursor,headOid:ordered[0],commits:ordered,
       command:cursor ? 'diff' : 'diff-tree',selector:cursor ? [cursor,ordered[0]] : ['--root','--no-commit-id','-r',ordered[0]]};
   }
-  const identity = value => ({scope:value.scope,baseOid:value.baseOid,headOid:value.headOid,commits:value.commits,...(value.baseRefOid ? {baseRefOid:value.baseRefOid} : {})});
+  const identity = value => ({scope:value.scope,baseOid:value.baseOid,headOid:value.headOid,commits:[...value.commits],...(value.baseRefOid ? {baseRefOid:value.baseRefOid} : {})});
   const diffArgs = (value, flags, paths = []) => [value.command,'--no-ext-diff','--no-textconv','--no-color','--find-renames',...flags,...value.selector,'--',...paths];
   async function list(root, value) {
     const entries = new Map();
@@ -129,7 +131,57 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
         if (!entries.has(name)) entries.set(name,{path:name,originalPath:'',status:value.unborn?'A':'??',added:null,removed:0,binary:false,untracked:true});
       }
     }
+    if(['uncommitted','staged','unstaged'].includes(value.scope)) {
+      let status;
+      if(workbenchGitStatus)status=await workbenchGitStatus(root);
+      else {
+        const tokens=terminated((await run(root,['status','--porcelain=v1','-z'])).stdout),files=[];
+        for(let cursor=0;cursor<tokens.length;) {
+          const record=tokens[cursor++];
+          if(record.length<4 || record[2]!==' ')throw new Error('invalid_git_status');
+          const row={path:record.slice(3),status:record.slice(0,2)};
+          if(/[RC]/.test(row.status))row.originalPath=tokens[cursor++];
+          files.push(row);
+        }
+        status={ok:true,files};
+      }
+      if(!status?.ok || !Array.isArray(status.files))throw new Error('live_git_status_unavailable');
+      const live=new Map();
+      for(const row of status.files) {
+        const name=safePath(root,row.path),xy=row.status;
+        if(typeof xy!=='string' || !/^[ MARCUDT?!]{2}$/.test(xy))throw new Error('invalid_git_status');
+        const staged=xy[0]!==' ' && xy[0]!=='?',unstaged=xy==='??' || xy[1]!==' ';
+        const prior=live.get(name);
+        live.set(name,{path:name,originalPath:row.originalPath ? safePath(root,row.originalPath) : prior?.originalPath || '',status:prior && xy==='??' ? prior.status : xy,
+          staged:staged || !!prior?.staged,unstaged:unstaged || !!prior?.unstaged,untracked:xy==='??' || !!prior?.untracked});
+      }
+      const admitted=new Set();
+      for(const [name,row] of live) {
+        if(value.scope==='staged' && !row.staged || value.scope==='unstaged' && !row.unstaged)continue;
+        admitted.add(name);
+        const existing=entries.get(name);
+        if(existing)Object.assign(existing,{status:row.status,staged:row.staged,unstaged:row.unstaged,originalPath:existing.originalPath || row.originalPath});
+        else entries.set(name,{...row,added:null,removed:null,binary:false});
+      }
+      for(const name of entries.keys())if(!admitted.has(name))throw new Error('review_status_changed_retry');
+    }
     return {files:[...entries.values()].slice(0,MAX_FILES),truncated:entries.size>MAX_FILES};
+  }
+  function observation(root,options={}) {
+    const scope=options.scope || 'uncommitted';
+    const commits=options.commits || (options.commit ? [options.commit] : []);
+    if(!Array.isArray(commits) || commits.length>100)throw new Error('invalid_commit_selection');
+    const snapshot={scope,commits:commits.map(reference),ref:options.ref,baseRef:options.baseRef};
+    if(snapshot.ref!==undefined)reference(snapshot.ref);
+    if(snapshot.baseRef!==undefined)reference(snapshot.baseRef);
+    const key=JSON.stringify([root,scope,[...snapshot.commits].sort(),snapshot.ref,snapshot.baseRef]);
+    const cached=observations.get(key);
+    if(cached && cached.expires>now()) {observations.delete(key);observations.set(key,cached);return cached.promise;}
+    observations.delete(key);
+    while(observations.size>=8)observations.delete(observations.keys().next().value);
+    const entry={expires:Infinity,promise:null};
+    entry.promise=(async()=>{const value=await plan(root,snapshot),listed=await list(root,value);entry.expires=now()+1000;return {value,listed};})().catch(error=>{if(observations.get(key)===entry)observations.delete(key);throw error;});
+    observations.set(key,entry);return entry.promise;
   }
   async function untracked(root, file) {
     const target=repositoryFile(root,file).absolute;
@@ -176,13 +228,13 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
     } catch(error) {return errorResult(error);}
   }
   async function files(target,options={}) {
-    try {const root=await gitRoot(target),value=await plan(root,options);return {ok:true,root,...identity(value),...await list(root,value)};}
+    try {const root=await gitRoot(target),{value,listed}=await observation(root,options);return {ok:true,root,...identity(value),...listed,files:listed.files.map(row=>({...row}))};}
     catch(error) {return errorResult(error);}
   }
   async function diff(target,file,options={}) {
     try {
-      const root=await gitRoot(target),selected=safePath(root,file),value=await plan(root,options),context=bound(options.context,3,MAX_CONTEXT);
-      const listed=await list(root,value),row=listed.files.find(row=>row.path===selected);
+      const root=await gitRoot(target),selected=safePath(root,file),context=bound(options.context,3,MAX_CONTEXT),{value,listed}=await observation(root,options);
+      const row=listed.files.find(row=>row.path===selected);
       if(!row)throw new Error(listed.truncated?'review_file_list_truncated':'file_not_in_review_scope');
       if(row.untracked) {
         const data=await untracked(root,selected);
@@ -194,6 +246,6 @@ function createGitReviewReader({readGit, gitRoot, repositoryFile, projectGitDiff
       return {ok:true,root,...identity(value),context,fullContents:false,...projection,binary:row.binary || projection.binary};
     } catch(error) {return errorResult(error);}
   }
-  return {branches,history,files,diff};
+  return {branches,history,files,diff,invalidate:()=>observations.clear()};
 }
 module.exports={createGitReviewReader,MAX_CONTEXT,MAX_FILES};
