@@ -10,9 +10,10 @@ import {parseChatWsMessage} from "../frontend/main-deck/src/protocol";
 import {parseAgentDetail} from "../frontend/main-deck/src/protocol/children";
 import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
 import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
+import {__resetChildActivityForTests} from "../frontend/main-deck/src/chat/childActivity";
 
 export async function run() {
-  __resetChatStoreForTests();resetWireStatus("chat");
+  __resetChatStoreForTests();resetWireStatus("chat");__resetChildActivityForTests();
   const sent:Array<Record<string,unknown>>=[];
   setChatContext({send:(value:Record<string,unknown>)=>{sent.push(value);return true;},isOpen:()=>true,notify(){}});
   setChatState({...initialChatState(),sessionId:"A",connected:true});
@@ -27,7 +28,16 @@ export async function run() {
     await act(async()=>{root.render(<AgentTeamPanel/>);refreshAgentTeam();refreshAgentTeam();});
     assert.equal(sent.length,1,"roster reads coalesce");
     await ingest(snapshot(last("children:snapshot:get"),5));
-    assert.equal(host.querySelectorAll('.agent-team__card').length,3);assert.ok(host.textContent?.includes("3 working · 1 blocked"));assert.ok(host.textContent?.includes("Assignment for Alpha"));assert.ok(host.textContent?.includes("Spawned"));assert.ok(host.textContent?.includes("From Alpha"));
+    assert.equal(host.querySelectorAll('.agent-team__card').length,3);assert.ok(host.textContent?.includes("3 working · 1 blocked"));assert.ok(host.textContent?.includes("Assignment for Alpha"));assert.ok(host.querySelector('[aria-label="Inspect Alpha"]')?.getAttribute("title")?.startsWith("Spawned"),"spawn time stays available on the row");assert.ok(host.textContent?.includes("From Alpha"));
+    // Live subagent steps reach the roster without entering the parent transcript.
+    const step=()=>host.querySelector('[aria-label="Inspect Alpha"] .agent-team__current')?.textContent;
+    await ingest({type:"activity",event:"tool:start",tool:"read_file",status:"running",title:"Read notes",source:"subagent",session_id:"chat-Alpha",ts:1700000100});
+    assert.equal(step(),undefined,"the UI-only tool:start without call_id is ignored");
+    await ingest({type:"activity",event:"tool:start",tool:"read_file",call_id:"call-1",status:"running",title:"Read notes",source:"subagent",session_id:"chat-Alpha",ts:1700000101});
+    assert.equal(step(),"Reading file","the authoritative step shows on its own row");
+    await ingest({type:"activity",event:"task:thinking",status:"running",source:"subagent",session_id:"chat-Alpha",ts:1700000050});
+    assert.equal(step(),"Reading file","an older frame never replaces a newer step");
+    assert.equal(host.querySelector('[aria-label="Inspect Beta"] .agent-team__current'),null,"steps stay with their own child");
     await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Inspect Alpha"]')!.click());const alpha=last("children:detail:get");
     await act(async()=>selectTeamAgent("Beta"));const beta=last("children:detail:get");
     await ingest(detail(alpha,"Alpha"));assert.equal(getChatState().agentTeam.detail,null,"late selection response does not mix identities");

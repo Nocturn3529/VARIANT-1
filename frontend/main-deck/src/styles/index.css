@@ -12,6 +12,7 @@
 @import url("./refinement.css");
 @import url("./composer.css");
 @import url("./composer-motion.css");
+@import url("./activity.css");
 /* Apply reduced motion to all component durations, including legacy literals.
    A single iteration settles enter/exit states without an endless fast loop. */
 :root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after {

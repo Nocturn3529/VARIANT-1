@@ -35,9 +35,7 @@ import {getSessionState,useSessionState} from "../state/sessionStore";
 import {setChatDelivery, submitUserInput} from "./composer";
 import {getComposerRevision,turnApi} from "./stateCore";
 import {currentPause,requestChatPause} from "./pause";
-import {InputQueuePanel} from "./InputQueuePanel";
-import {ComposerGoalPanel} from "./ComposerGoalPanel";
-import {AgentTeamPanel} from "./AgentTeamPanel";
+import {ActivityDock} from "./ActivityDock";
 import {parseGoalCommand} from "./goalCommand";
 import {queueAdmissionPending} from "./inputQueue";
 import {invalidatePendingChatAttachments} from "./attachments";
@@ -122,7 +120,11 @@ function ComposerCapabilities({
 
   if (!mutationControl.visible) return null;
   return <details className="composer-session-tools">
-    <summary>Session tools{mutationControl.checked ? " · Authoring on" : runtime?.activeSlots ? " · Active tools" : ""}</summary>
+    <summary className={mutationControl.checked ? "is-authoring" : undefined}>
+      <Icon name="kernel"/><span>Session tools</span>
+      {mutationControl.checked ? <small>Authoring on</small> : runtime?.activeSlots ? <small>Active tools</small> : null}
+      <Icon name="down" className="composer-session-tools__chevron"/>
+    </summary>
     <div className="composer-session-tools__content" role="group" aria-label="Session capabilities">
     <MutationSwitch
       sessionId={sessionId}
@@ -486,14 +488,12 @@ export function ChatComposer() {
   >
     {dragOver ? <div className="composer-drop-hint" aria-hidden="true">Drop files or folders to attach</div> : null}
     <ClarificationCard />
-    <AgentTeamPanel/>
+    <ActivityDock/>
     <div className="composer" id="composer" data-state={!connected ? "offline" : stopPending ? "stopping" : turnActive ? "working" : "ready"}>
       <div className="composer__supplements">
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
         <ComposerChips attachments={attachments} disabled={turnActive} />
         {attachmentsPreparing>0 ? <div className="composer-preparation" role="status"><i className="composer-spinner" aria-hidden="true"/><span>Preparing {attachmentsPreparing} {attachmentsPreparing===1 ? "attachment" : "attachments"}…</span><button type="button" onClick={invalidatePendingChatAttachments}>Cancel</button></div> : null}
-        <InputQueuePanel/>
-        <ComposerGoalPanel/>
         {!inputQueue.snapshot && (queued.length || queuedFollowUps) && turnActive ? <details className="composer-input-queue">
           <summary><Icon name="queue"/>Inputs for this task <span>{Math.max(queued.length, queuedFollowUps)}</span><Icon name="down"/></summary>
           {queued.map(message => <div className="composer-input-queue__item" key={message.localId || message.ticketId}>

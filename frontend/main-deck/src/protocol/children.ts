@@ -1,9 +1,14 @@
 import {parseObjectiveOutcome} from "./goals";
 
+/** Latest broadcast step of a running child; a hint that newer live frames replace. */
+export type ChildActivityHint=Readonly<{event:string;tool:string;status:string;title:string;ts:number;runId:string}>;
 export type AgentSummary=Readonly<{
   id:string;chatId:string;parentChatId:string;parentId:string|null;name:string;task:string;status:string;
   createdAt:number;startedAt:number;completedAt:number;updatedAt:number;generation:number;
-  outcome:string;cleanupStatus:string;currentActivity:string;
+  outcome:string;cleanupStatus:string;
+  /** Current generation's run identity; live activity from other runs is ignored. */
+  runId?:string;
+  lastActivity?:ChildActivityHint|null;
 }>;
 export type AgentDetail=Readonly<{id:string;generation:number;activities:readonly {id:string;kind:string;status:string;createdAt:number;completedAt:number;runId:string}[];report:string;truncated:boolean}>;
 export type AgentTeamState={agents:readonly AgentSummary[];revision:number;total:number;active:number;blocked:number;truncated:boolean;synced:boolean;
@@ -34,7 +39,14 @@ export function parseAgent(value:unknown):AgentSummary|null {
   const cleanup=(row.cleanup && typeof row.cleanup==="object"?row.cleanup:{}) as Record<string,unknown>;
   return {id:string(row.child_id),chatId:string(row.child_chat_id),parentChatId:string(row.parent_chat_id),parentId:string(row.parent_child_id)||null,
     name:string(row.name)||string(row.child_id),task:string(row.task),status:string(row.status),createdAt:number(row.created_at),startedAt:number(row.started_at),completedAt:number(row.completed_at),updatedAt:number(row.updated_at),
-    generation:number(row.run_generation),outcome:parseObjectiveOutcome(row.outcome).status,cleanupStatus:cleanup.status==="complete" && cleanup.complete!==true?"unconfirmed":string(cleanup.status)||"unknown",currentActivity:""};
+    generation:number(row.run_generation),outcome:parseObjectiveOutcome(row.outcome).status,cleanupStatus:cleanup.status==="complete" && cleanup.complete!==true?"unconfirmed":string(cleanup.status)||"unknown",
+    runId:string(row.run_id),lastActivity:parseActivityHint(row.last_activity)};
+}
+function parseActivityHint(value:unknown):ChildActivityHint|null {
+  if(!value || typeof value!=="object")return null;
+  const row=value as Record<string,unknown>;
+  if(!string(row.event) || !number(row.ts))return null;
+  return {event:string(row.event),tool:string(row.tool),status:string(row.status),title:string(row.title),ts:number(row.ts),runId:string(row.run_id)};
 }
 export function parseAgentSnapshot(row:Readonly<Record<string,unknown>>):Pick<AgentTeamState,"agents"|"revision"|"total"|"active"|"blocked"|"truncated">|null {
   if(row.schema!=="variant1.children-snapshot.v1" || !Number.isSafeInteger(row.revision) || Number(row.revision)<0 || !Array.isArray(row.children) || row.children.length>500)return null;

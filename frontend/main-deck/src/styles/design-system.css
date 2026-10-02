@@ -43,6 +43,8 @@
   --deck-accent-line: #363636;
   /* Reserved for enabled mutation authority; ordinary controls stay neutral. */
   --deck-mutation: #39ff14;
+  /* The same deliberate green, reserved for work that is live right now. */
+  --deck-live: var(--deck-mutation);
   --deck-positive: #abd3b4;
   --deck-positive-soft: #222222;
   --deck-warning: #e4c78d;
@@ -55,6 +57,11 @@
   --deck-diff-surface: var(--deck-surface-panel);
   --deck-diff-added-surface: rgba(171, 211, 180, .08);
   --deck-diff-deleted-surface: rgba(239, 170, 162, .08);
+  /* Code syntax: one palette for file preview, Review diffs and agent-generated code. */
+  --deck-syntax-comment: #747b79;
+  --deck-syntax-string: #a6d189;
+  --deck-syntax-number: #efb080;
+  --deck-syntax-keyword: #b99be8;
   --deck-focus: rgba(255, 255, 255, .42);
 
   /* Mono telemetry. Labels distinguish resources and series. */

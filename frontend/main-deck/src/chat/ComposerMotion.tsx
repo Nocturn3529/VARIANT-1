@@ -1,23 +1,7 @@
 import {useEffect, useRef, useState, type CSSProperties} from "react";
-import {useReducedMotion} from "../state/appearanceStore";
 import {Switch, type SwitchProps} from "../ui/Switch";
 import type {MicPhase} from "../runtime/MicController";
-
-function useControlMotion() {
-  const reduced = useReducedMotion();
-  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden" && document.hasFocus());
-  useEffect(() => {
-    const update = () => setVisible(document.visibilityState !== "hidden" && document.hasFocus());
-    const focus = () => setVisible(document.visibilityState !== "hidden");
-    const blur = () => setVisible(false);
-    // The Deck keeps background throttling off for browser/backend work, so
-    // native focus events also gate these purely decorative animations.
-    document.addEventListener("visibilitychange", update);
-    window.addEventListener("focus",focus);window.addEventListener("blur",blur);
-    return () => {document.removeEventListener("visibilitychange", update);window.removeEventListener("focus",focus);window.removeEventListener("blur",blur);};
-  }, []);
-  return !reduced && visible;
-}
+import {useControlMotion} from "../motion/useControlMotion";
 
 /** Decorative recording state, not a fabricated audio-level measurement. */
 export function MicGlyph({phase}: {phase: MicPhase}) {

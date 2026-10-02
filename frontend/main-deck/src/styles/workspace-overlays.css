@@ -14,8 +14,6 @@
 .native-utility-content.utility-overlay { width: 100%; max-width: none; min-height: 0; display: flex; flex-direction: column; flex: 1; overflow: auto; }
 .deck-overlay__header .deck-overlay__popout { margin-left: auto; }
 .native-popout-host .runtime-details { flex: 1; }
-.message__prompt { background: #1a1a1a; border-color: #363636; border-radius: 3px; box-shadow: none; }
-.message--user .message__body { align-items: stretch; }
 .runtime-chat-empty > span { background: none; border: 0; color: var(--deck-text-faint); }
 .history-panel { background: var(--deck-surface-panel); }
 .history-panel__header { padding: 12px 10px 8px; }

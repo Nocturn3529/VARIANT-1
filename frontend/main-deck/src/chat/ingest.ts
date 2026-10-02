@@ -35,6 +35,7 @@ import {activeTurnSessionIds,isSettledTurnEvent} from "../state/turnStore";
 import {ingestComposerGoal,invalidateComposerGoal} from "./goals";
 import {recordRecoveryNotice,dismissRecoveryNotice} from "./recovery";
 import {ingestAgentTeam,ingestAgentWorkEvent,ingestAgentChanged} from "./agentTeam";
+import {noteChildActivity} from "./childActivity";
 import {requestSessionContext} from "../sessionContextStore";
 import {applyRuntimeSnapshot, applySession} from "./session";
 import {
@@ -85,6 +86,8 @@ function isConfigSurfaceError(err: string): boolean {
 export function ingestChat(message: ChatWsMessage) {
   if(message.type==="children:changed"){ingestAgentChanged(message);return;}
   if(message.type==="work:event")ingestAgentWorkEvent(message);
+  // Observe only: subagent steps feed the roster, and routing below is unchanged.
+  if((message.type==="activity" || message.type==="tool:activity") && message.source==="subagent")noteChildActivity(message);
   const routed = message as ChatWsMessage & {session_id?:string;id?:string};
   let id = routed.session_id || (["chat:runtime", "chat:runtime:mutation:set:done", "chat:runtime:mutation:set:rejected"].includes(message.type) ? routed.id : "");
   if (!id && routed.id && ["chat:queued", "chat:queue_rejected"].includes(message.type)) {

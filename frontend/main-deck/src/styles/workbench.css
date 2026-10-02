@@ -449,10 +449,10 @@
 .workbench-file-preview > header > div { display: flex; gap: 4px; }
 .workbench-file-preview button { padding: 4px 7px; border: 1px solid var(--deck-line); border-radius: 4px; background: transparent; color: var(--deck-text-secondary); font: inherit; font-size: var(--deck-text-compact); }
 .workbench-file-preview__source { flex: 1; min-height: 0; margin: 0; padding: 15px 18px; overflow: auto; color: #d3d5d4; tab-size: 2; white-space: pre; font: 12px/1.55 var(--font-mono, monospace); }
-.workbench-file-preview__source .token-comment { color: #747b79; }
-.workbench-file-preview__source .token-string { color: #a6d189; }
-.workbench-file-preview__source .token-number { color: #efb080; }
-.workbench-file-preview__source .token-keyword { color: #b99be8; }
+.workbench-file-preview__source .token-comment { color: var(--deck-syntax-comment); }
+.workbench-file-preview__source .token-string { color: var(--deck-syntax-string); }
+.workbench-file-preview__source .token-number { color: var(--deck-syntax-number); }
+.workbench-file-preview__source .token-keyword { color: var(--deck-syntax-keyword); }
 .workbench-markdown-preview { flex: 1; min-height: 0; padding: 18px 24px 60px; overflow: auto; color: var(--deck-text-secondary); font-size: 13px; line-height: 1.62; }
 .workbench-markdown-preview > :first-child { margin-top: 0; }
 .workbench-markdown-preview h1,
@@ -597,10 +597,10 @@
 .workbench-diff .deck-virtual-list.is-inline { flex:none; overflow:visible; height:auto; }
 .workbench-diff__line { display:grid; grid-template-columns:44px 44px 16px minmax(0,1fr); min-width:100%; width:max-content; height:24px; align-items:center; white-space:pre; color:#d3d5d4; }
 .workbench-diff__line code { font:inherit; tab-size:2; }
-.workbench-diff__line .token-comment { color:#747b79; }
-.workbench-diff__line .token-string { color:#a6d189; }
-.workbench-diff__line .token-number { color:#efb080; }
-.workbench-diff__line .token-keyword { color:#b99be8; }
+.workbench-diff__line .token-comment { color:var(--deck-syntax-comment); }
+.workbench-diff__line .token-string { color:var(--deck-syntax-string); }
+.workbench-diff__line .token-number { color:var(--deck-syntax-number); }
+.workbench-diff__line .token-keyword { color:var(--deck-syntax-keyword); }
 .workbench-diff__line.is-add { background:var(--deck-diff-added-surface); }
 .workbench-diff__line.is-remove { background:var(--deck-diff-deleted-surface); }
 .workbench-diff__line.is-add .workbench-diff__sign { color:var(--deck-diff-added); }

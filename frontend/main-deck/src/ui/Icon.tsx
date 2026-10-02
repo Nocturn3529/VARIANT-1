@@ -43,6 +43,8 @@ const paths = {
   maximize: "M5 5h14v14H5Z",
   kernel: "M7 7h10v10H7ZM8 3v4m8-4v4M8 17v4m8-4v4M3 8h4m-4 8h4m10-8h4m-4 8h4",
   clock: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM12 6v6l4 2",
+  goal: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-4 0a5 5 0 1 1-10 0 5 5 0 0 1 10 0Zm-4 0a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z",
+  process: "M3 12h4l2.5-6 5 12L17 12h4",
   refresh: "M20 10a8 8 0 1 0-2 8M20 3v7h-7",
   command: "M8 8h8v8H8Zm0 0H5a3 3 0 1 1 3-3Zm8 0V5a3 3 0 1 1 3 3Zm0 8h3a3 3 0 1 1-3 3Zm-8 0v3a3 3 0 1 1-3-3Z",
 } as const;
