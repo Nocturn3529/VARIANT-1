@@ -320,8 +320,8 @@ must be removed when the child connection stops.
 
 Fresh workbenches keep empty side panes hidden until requested or a first project
 is selected. Saved layouts and explicit visibility changes take precedence.
-The empty chat guide reads configuration for the chat's selected model route
-from backend projections. Examples fill drafts without sending them.
+An empty chat shows only the product mark. Model readiness is still read
+for the chat's selected model route from backend projections.
 Mutation authoring is available under
 Session tools; disabling authoring preserves already activated overlays.
 
