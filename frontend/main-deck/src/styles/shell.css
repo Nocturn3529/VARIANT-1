@@ -60,17 +60,6 @@ svg {
   -webkit-app-region: drag;
 }
 
-.titlebar__mark {
-  width: 20px;
-  height: 20px;
-  display: grid;
-  place-items: center;
-  border-radius: 0;
-  color: var(--deck-text-primary);
-  background: transparent;
-  box-shadow: none;
-}
-
 .titlebar__name { color: var(--deck-text-secondary); font-size: var(--deck-text-sm); font-weight: 600; }
 
 .window-actions {

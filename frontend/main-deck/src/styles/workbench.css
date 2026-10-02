@@ -702,7 +702,7 @@ body:has(.settings-overlay) .workbench-terminal-surface { visibility: hidden; po
 body[data-startup="loading"] .titlebar-workbench-tools{visibility:hidden;pointer-events:none;}
 
 body[data-startup="loading"] .titlebar {position:relative;z-index:901;background:#0e0e0e;border-bottom-color:transparent;box-shadow:none;}
-body[data-startup="loading"] :is(.titlebar__mark,.titlebar__name,.titlebar-workbench-tools){visibility:hidden;pointer-events:none;}
+body[data-startup="loading"] :is(.titlebar__name,.titlebar-workbench-tools){visibility:hidden;pointer-events:none;}
 .startup-cover > .kernel-glyph {margin-bottom:4px;}
 
 .startup-cells{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;opacity:.68;}

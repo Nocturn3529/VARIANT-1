@@ -24,7 +24,6 @@ import {
 } from "../chatStore";
 import runtimeLib from "./runtimeLib";
 import {RichText} from "./RichText";
-import {ChatSetupGuide} from "./ChatSetupGuide";
 import {TurnActivity} from "./TurnActivity";
 import {
   ConversationTimeline,
@@ -356,7 +355,7 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
 export function ChatMessageList() {
   const {
     messages, streaming, streamText, turnActive, speechKey, speechPhase, turnSteps,
-    lastError, activeTurnId, runtime, sessionId,
+    lastError, activeTurnId, runtime, sessionId, connected,
   } = useChatState();
   const transcriptTurns = useMemo(() => buildTranscriptTurns(messages), [messages]);
   const turns = useMemo(() => (
@@ -611,8 +610,12 @@ export function ChatMessageList() {
   <div className="messages-scroll" id="messages-scroll" ref={scrollRef}>
     <div className="message-column" id="message-column" ref={columnRef}>
       {empty ? <div className="runtime-chat-empty">
-          <KernelGlyph seed={`${sessionId}:${runtime?.kernelGeneration}`} mutation={runtime?.mutationEffectiveEnabled} size={112} ascii phase="idle"/>
-        <ChatSetupGuide/>
+        {/* A new chat starts quiet: only the brand mark, which still reflects kernel state. */}
+        <div className="chat-brand" role="img" aria-label="VARIANT-1">
+          <KernelGlyph seed={`${sessionId}:${runtime?.kernelGeneration}`} mutation={runtime?.mutationEffectiveEnabled} size={34}
+            phase={!connected ? "offline" : runtime?.kernelState === "busy" ? "running" : "idle"}/>
+          <strong aria-hidden="true">VARIANT-1</strong>
+        </div>
       </div> : <>
         <div
           className="virt-pad virt-pad--top"

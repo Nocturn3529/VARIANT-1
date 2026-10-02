@@ -603,6 +603,10 @@
 .runtime-chat-empty > strong { color: var(--deck-text-secondary); font-size: var(--deck-text-md); font-weight: 560; }
 .runtime-chat-empty > small { margin-top: 7px; font-size: var(--deck-text-xs); }
 .runtime-chat-empty > .kernel-glyph { animation: kernel-wake 1.4s ease-out 1; }
+/* Empty chat: the brand mark alone, settling in once. */
+.chat-brand { display: inline-flex; align-items: center; gap: 12px; color: var(--deck-text-primary); animation: chat-brand-in 520ms cubic-bezier(.2,.8,.2,1) both; }
+.chat-brand > strong { font: 600 var(--deck-text-xl)/1 var(--font-ui); letter-spacing: .08em; opacity: .88; }
+@keyframes chat-brand-in { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
 @keyframes kernel-wake {
   0% { opacity: .55; filter: brightness(.7); }
   42% { opacity: 1; filter: brightness(1.18); }
@@ -669,26 +673,6 @@
 .chat-recovery-banner p { margin:0; overflow-wrap:anywhere; color:var(--deck-text-muted); }
 
 .execution-trace__owner { font:600 var(--deck-label-text) var(--font-ui); color:var(--deck-text-primary); }
-/* Setup is a short checklist: marker, step, one action. Done steps recede. */
-.chat-setup-guide { width: min(100%, 520px); text-align: left; }
-.chat-setup-guide > header { display: grid; justify-items: center; gap: 6px; text-align: center; }
-.chat-setup-guide > header strong { color: var(--deck-text-primary); font-size: var(--deck-text-lg); font-weight: 600; }
-.chat-setup-guide > header p { margin: 0; color: var(--deck-text-muted); }
-.chat-setup-guide ol { display: grid; gap: 6px; margin: 22px 0 16px; padding: 0; list-style: none; }
-.chat-setup-guide li { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px 10px 10px 12px; border: 1px solid var(--deck-line); border-radius: var(--deck-radius-lg); background: var(--deck-surface-panel); transition: border-color var(--deck-motion-panel) ease, background-color var(--deck-motion-panel) ease; }
-.chat-setup-guide li > div { min-width: 0; display: grid; gap: 2px; }
-.chat-setup-guide li strong { color: var(--deck-text-primary); font-size: var(--deck-text-md); font-weight: 600; }
-.chat-setup-guide li small { color: var(--deck-text-muted); font-size: var(--deck-text-sm); overflow-wrap: anywhere; }
-.chat-setup-guide li strong > small { margin-left: 4px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); font-weight: 400; }
-.chat-setup-guide__marker { width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--deck-line-strong); border-radius: 50%; color: var(--deck-text-muted); font: 600 var(--deck-text-xs)/1 var(--font-mono); }
-.chat-setup-guide__marker .deck-icon { width: 13px; height: 13px; stroke-width: 2; }
-.chat-setup-guide li.is-done { background: transparent; border-color: var(--deck-line-soft); }
-.chat-setup-guide li.is-done .chat-setup-guide__marker { color: var(--deck-canvas); border-color: var(--deck-text-primary); background: var(--deck-text-primary); animation: setup-step-done var(--deck-motion-panel) ease-out; }
-.chat-setup-guide li.is-done strong { color: var(--deck-text-secondary); }
-.chat-setup-guide .deck-button { white-space: nowrap; }
-.chat-setup-guide__hint { display: block; color: var(--deck-text-faint); font-size: var(--deck-text-xs); text-align: center; }
-.chat-setup-guide__sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-@keyframes setup-step-done { from { transform: scale(.7); opacity: .4; } to { transform: none; opacity: 1; } }
 /* Advanced session tools: a quiet trigger; the mutation green marks authoring. */
 .composer-session-tools { position: relative; color: var(--deck-text-muted); font-size: var(--deck-label-text); }
 .composer-session-tools summary { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: var(--deck-radius-md); white-space: nowrap; list-style: none; cursor: pointer; }

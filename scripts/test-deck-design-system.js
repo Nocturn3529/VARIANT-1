@@ -235,7 +235,9 @@ assert.doesNotMatch(chat + chatMessages, /chat-jump-latest|>\s*Latest\s*</,
 assert.doesNotMatch(deckApp + shellCss + designSystem, /titlebar__center|window-title/,
   'the titlebar must not restore global route or conversation text');
 assert.match(deckApp, /<header className="titlebar">[\s\S]*titlebar__drag[\s\S]*<WindowControls/,
-  'the text-free titlebar must retain its drag surface, brand, and window controls');
+  'the text-free titlebar must retain its drag surface and window controls');
+assert.match(read(path.join('frontend', 'main-deck', 'src', 'chat', 'ChatMessageList.tsx')), /runtime-chat-empty[\s\S]*chat-brand[\s\S]*<KernelGlyph/,
+  'the brand mark lives at the center of an empty chat');
 assert.match(read(path.join('frontend', 'main-deck', 'src', 'styles', 'composer.css')), /--context-accent:/,
   'the context meter retains category geometry in the monochrome system');
 

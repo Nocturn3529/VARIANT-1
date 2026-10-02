@@ -149,7 +149,7 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
   </div>;
   const settingsOpen = app.view === "settings";
   return <div className={["app-shell chat-shell chat-active", settingsOpen ? "settings-open" : "", workbench.hidden[PANE.history] ? "history-collapsed" : "", workbench.overlayPaneId === PANE.history ? "history-open-mobile" : ""].filter(Boolean).join(" ")} id="app-shell">
-    <header className="titlebar"><div className="titlebar__drag"><span className="titlebar__mark" aria-hidden="true"><KernelGlyph seed={`${chat.sessionId}:${chat.runtime?.kernelGeneration}`} size={20} phase={!chat.connected ? "offline" : chat.runtime?.kernelState === "busy" ? "running" : "idle"} mutation={chat.runtime?.mutationEffectiveEnabled}/></span><span className="titlebar__name">VARIANT-1</span></div><WorkbenchTitlebarTools/><WindowControls api={api}/></header>
+    <header className="titlebar"><div className="titlebar__drag"/><WorkbenchTitlebarTools/><WindowControls api={api}/></header>
     <div className="workspace"><main className="workbench-view"><Workbench api={api}/></main></div>
     <SectionFooter api={api}/>
     <UtilitySurface kind="runtime" api={api}/>

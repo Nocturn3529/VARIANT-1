@@ -181,12 +181,6 @@ body,
   border-color: var(--deck-line);
 }
 
-.app-shell .titlebar__mark {
-  color: var(--deck-text-primary);
-  background: transparent;
-  box-shadow: none;
-}
-
 .app-shell .titlebar__name {
   color: var(--deck-text-primary);
   font-family: var(--font-sans);
