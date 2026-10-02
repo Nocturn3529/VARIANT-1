@@ -90,7 +90,8 @@
 .deck-overlay .deck-instrument__eyebrow { display: none; }
 .deck-overlay .deck-instrument__title { font-size: 14px; }
 .deck-overlay .deck-instrument__description { font-size: 12px; }
-.utility-overlay--overview { width: min(680px, calc(100vw - 40px)); }
+/* Docked Overview keeps one stable frame across tabs (Log monitor width). */
+.deck-overlay.utility-overlay--overview { width: min(920px, calc(100vw - 40px)); height: min(680px, calc(100dvh - 80px)); }
 .utility-overlay--runtime { width: min(480px, calc(100vw - 40px)); }
 .utility-overlay--automations { width: min(850px, calc(100vw - 40px)); }
 .utility-overlay > .deck-destination-scroll { flex: 1; }

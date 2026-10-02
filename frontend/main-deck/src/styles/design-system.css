@@ -76,6 +76,14 @@
   --deck-signal-neutral: #e3e3e3;
   --deck-signal-idle: #454545;
 
+  /* Graph hues. Color stays out of the chrome: these fill charts and their
+     legend swatches only, never text, borders or controls. */
+  --deck-chart-blue: #6ea8fe;
+  --deck-chart-violet: #b49cf2;
+  --deck-chart-amber: #f2b36f;
+  --deck-chart-teal: #4fd1bf;
+  --deck-chart-rose: #f28fae;
+
   --font-ui: "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-sans: var(--font-ui);
   --font-mono: "Cascadia Code", "Cascadia Mono", "Geist Mono", monospace;

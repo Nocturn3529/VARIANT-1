@@ -245,6 +245,14 @@ assert.match(overviewCss, /var\(--deck-signal-(?:cyan|indigo|lime|amber|orange|m
   'Overview telemetry must consume the shared intentional signal palette');
 assert.doesNotMatch(overviewCss, /#[0-9a-f]{6}/i,
   'Overview must not bypass canonical signal tokens with route-local color literals');
+// Color stays in the graphs: the chart hues are consumed only by Overview charts.
+for (const name of cssFiles.filter(name => !['design-system.css', 'overview.css'].includes(name))) {
+  assert.doesNotMatch(fs.readFileSync(path.join(stylesDir, name), 'utf8'), /--deck-chart-/,
+    `${name} must not use the graph palette outside charts`);
+}
+for (const file of sourceFiles(path.join(root, 'frontend/main-deck/src')).filter(file => !file.includes(`${path.sep}overview${path.sep}`))) {
+  assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /--deck-chart-/, `${path.relative(root, file)} must not use the graph palette outside charts`);
+}
 
 assert.ok(!fs.existsSync(path.join(stylesDir, 'overview-shell-theme.css')),
   'the retired Overview shell theme must stay deleted');

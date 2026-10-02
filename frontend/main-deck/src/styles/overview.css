@@ -528,6 +528,9 @@
 
 @container overview (max-width: 1180px) {
   .local-inference-controls > span { display: none; }
+  /* Three headline cells at docked width: stack each cell's note under its label. */
+  .local-inference-metric { grid-template-columns: minmax(0, 1fr); }
+  .local-inference-metric em { max-width: none; text-align: left; }
   .local-inference-body { grid-template-columns: 1fr; }
   .local-inference-throughput {
     border-right: 0;
@@ -647,12 +650,14 @@
   font: var(--deck-text-xs) var(--font-mono);
   white-space: nowrap;
 }
+/* Each resource has one hue: total usage is its muted tint, VARIANT-1's
+   share the full hue drawn over it. */
 .live-performance-legend i {
   width: 6px;
   height: 6px;
-  background: var(--performance-signal);
+  background: color-mix(in srgb, var(--performance-signal) 40%, transparent);
 }
-.live-performance-legend .is-variant1 i { background: var(--deck-signal-warm); }
+.live-performance-legend .is-variant1 i { background: var(--performance-signal); }
 
 .live-performance-hardware {
   grid-area: hardware;
@@ -699,12 +704,11 @@
 }
 .live-performance-chart > rect { stroke: none; }
 .live-performance-chart-bars .is-total {
-  fill: var(--performance-signal);
-  opacity: .9;
+  fill: color-mix(in srgb, var(--performance-signal) 40%, transparent);
   stroke: none;
 }
 .live-performance-chart-bars .is-variant1 {
-  fill: var(--deck-signal-warm);
+  fill: var(--performance-signal);
   stroke: none;
 }
 .live-performance-chart-scale {
@@ -768,11 +772,29 @@
   white-space: nowrap;
 }
 
+/* Docked Overview and narrow windows keep the 2x2 grid with compact panels:
+   shorter charts, no eyebrow, value-first metric cells (details move to the
+   cell's tooltip). */
 @container overview (max-width: 1180px) {
-  .live-performance-grid { grid-template-columns: 1fr; }
+  .live-performance-grid { gap: 6px; }
+  .live-performance-toolbar { min-height: 0; gap: 6px 12px; padding: 9px 14px; }
+  .live-performance-toolbar .deck-section-band__eyebrow { display: none; }
+  .live-performance-hardware { max-width: 190px; min-height: 22px; padding: 0 8px; }
+  .live-performance-chart-wrap { padding: 10px 14px 0; }
+  .live-performance-chart { height: 96px; }
+  .live-performance-chart-scale { top: 15px; right: 21px; bottom: 19px; }
+  .live-performance-chart-axis { padding-top: 4px; }
+  .live-performance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 10px 14px 12px; }
+  .live-performance-metrics article { min-height: 0; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 6px 10px; }
+  .live-performance-metrics article:nth-child(2n) { border-right: 0; }
+  .live-performance-metrics article:nth-child(-n+2) { border-bottom: 1px solid var(--deck-line-soft); }
+  .live-performance-metrics span { flex: none; letter-spacing: .02em; }
+  .overview-live-performance .live-performance-metrics .deck-metric__value { min-width: 0; font-size: 14px; text-align: right; }
+  .live-performance-metrics small { display: none; }
 }
 
 @container overview (max-width: 830px) {
+  .live-performance-grid { grid-template-columns: 1fr; }
   .live-performance-toolbar {
     grid-template-areas:
       "title"
