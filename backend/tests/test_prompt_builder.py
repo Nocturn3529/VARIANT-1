@@ -15,21 +15,21 @@ from prompt_builder import (
 def test_build_chat_system_ignores_removed_turn_contract_files(tmp_path):
     for name in ("chat.txt", "conversation.txt", "task.txt"):
         (tmp_path / name).write_text("SHOULD NOT LOAD", encoding="utf-8")
-    context = PromptContext(profile_block="Prefers concise answers.")
+    context = PromptContext(project_instructions="Run focused checks.")
     out = build_chat_system(context)
     current = build_chat_current_context(context)
 
     assert "SHOULD NOT LOAD" not in out
-    assert "Prefers concise answers." not in out
-    assert "Prefers concise answers." in current
+    assert "Run focused checks." not in out
+    assert "Run focused checks." in current
 
 
 def test_build_task_system_uses_factual_context_only(tmp_path):
     out = build_task_system(PromptContext(
-        memory_block="- prior fact",
     ))
 
-    assert "prior fact" in out
+    assert "Relevant memory" not in out
+    assert "About the user" not in out
 
 
 def test_user_image_context_is_labeled_as_attached_images(tmp_path):
@@ -59,14 +59,12 @@ def test_project_instructions_have_a_distinct_system_section(tmp_path):
 
 def test_chat_instructions_are_stable_while_current_context_stays_fresh():
     first = chat_prompt_projection(PromptContext(
-        profile_block="Prefers concise answers.",
         project_instructions="Run test A.",
         datetime="Monday at 10:00",
         cwd=r"C:\first",
         project_roots=(r"C:\first",),
     ))
     second = chat_prompt_projection(PromptContext(
-        profile_block="Now prefers detailed answers.",
         project_instructions="Run test B.",
         datetime="Tuesday at 11:00",
         cwd=r"D:\second",
@@ -78,7 +76,8 @@ def test_chat_instructions_are_stable_while_current_context_stays_fresh():
     assert "Monday at 10:00" in first.current
     assert r"D:\second" in second.current
     assert "Run test B." in second.current
-    assert "Now prefers detailed answers." in second.current
+    assert "Relevant memory" not in second.current
+    assert not hasattr(PromptContext(), "profile_block")
     assert "Monday at 10:00" not in first.stable
     assert r"C:\first" not in first.stable
 

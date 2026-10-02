@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 import json
 import math
+import random
 import time
 
 import httpx
@@ -41,6 +42,9 @@ from model_runtime.request_policy import (
     resolve_cloud_request_policy,
 )
 from llm_stream_diagnostics import StreamDiagnostics
+from model_runtime.provider_recovery import (
+    REQUEST_BUDGET, annotate_provider_error, classify_provider_error,
+)
 
 STREAM_TIMEOUT = httpx.Timeout(None, connect=15.0, read=180.0)
 CLOUD_ROUTE_MAX_ATTEMPTS = 4
@@ -201,20 +205,38 @@ def _provider_stream_error(label: str, obj) -> ProviderRequestError | None:
         or metadata.get("error_type")
         or ""
     )
+    annotate_provider_error(failure, obj)
     return failure
+
+
+def _http_provider_error(provider, response, body):
+    error = ProviderRequestError(provider, f"{provider} {response.status_code}: {body[:200]!r}",
+        status_code=response.status_code, retry_after_seconds=_response_retry_after_seconds(response.headers))
+    if len(body) <= 65536:
+        try:
+            annotate_provider_error(error, json.loads(body))
+        except (ValueError, UnicodeError):
+            pass
+    return error
 
 
 def _cloud_retry_delay(
     exc: LocalEngineError,
-    failed_attempt: int,
+    failed_attempt: int, *, jitter: bool = False,
 ) -> float | None:
     explicit = getattr(exc, "retry_after_seconds", None)
     if explicit is not None:
-        requested = max(0.0, float(explicit))
-        if requested > CLOUD_MAX_SERVER_RETRY_SECONDS:
+        try:
+            requested = max(0.0, float(explicit))
+        except (TypeError, ValueError):
+            return None
+        budget = REQUEST_BUDGET.get()
+        bound = budget.max_wait_seconds if budget is not None else CLOUD_MAX_SERVER_RETRY_SECONDS
+        if not math.isfinite(requested) or requested > bound:
             return None
         return requested
-    return CLOUD_RETRY_BASE_SECONDS * (2 ** max(0, int(failed_attempt)))
+    delay = CLOUD_RETRY_BASE_SECONDS * (2 ** max(0, int(failed_attempt)))
+    return delay * random.uniform(.75, 1.25) if jitter else delay
 
 
 def _credential_failure_detail(exc: LocalEngineError) -> str:
@@ -226,14 +248,7 @@ def _credential_failure_detail(exc: LocalEngineError) -> str:
 
 
 def _is_transient_provider_error(exc: LocalEngineError) -> bool:
-    detail = " ".join((
-        str(exc),
-        str(getattr(exc, "provider_error_type", "") or ""),
-    )).casefold()
-    if any(marker in detail for marker in NON_RETRYABLE_LIMIT_MARKERS):
-        return False
-    status = int(getattr(exc, "status_code", 0) or 0)
-    return status in {408, 409, 429} or status >= 500
+    return classify_provider_error(exc).retryable
 
 
 async def call_anthropic(router, messages, sampling, key, image_b64=None,
@@ -322,11 +337,7 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
                 router._observe_cloud_response(label, model, resp)
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    raise ProviderRequestError(
-                        label, f"{label} {resp.status_code}: {body[:200]!r}",
-                        status_code=resp.status_code,
-                        retry_after_seconds=_response_retry_after_seconds(resp.headers),
-                    )
+                    raise _http_provider_error(label, resp, body)
                 saw_terminal = False
                 async for line in resp.aiter_lines():
                     if not line or not line.startswith("data:"):
@@ -512,11 +523,7 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     # Surface the provider's reason in the log (not just the bubble)
                     # so failures like a bad model id / unsupported field are visible.
                     print(f"[cloud] {label} {resp.status_code}: {body[:300]!r}", flush=True)
-                    raise ProviderRequestError(
-                        label, f"{label} {resp.status_code}: {body[:200]!r}",
-                        status_code=resp.status_code,
-                        retry_after_seconds=_response_retry_after_seconds(resp.headers),
-                    )
+                    raise _http_provider_error(label, resp, body)
                 got_content = False
                 reasoning = []
                 out_chars = 0
@@ -746,11 +753,7 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
                 router._observe_cloud_response(label, model, resp)
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    raise ProviderRequestError(
-                        label, f"{label} {resp.status_code}: {body[:200]!r}",
-                        status_code=resp.status_code,
-                        retry_after_seconds=_response_retry_after_seconds(resp.headers),
-                    )
+                    raise _http_provider_error(label, resp, body)
                 async for line in resp.aiter_lines():
                     line = line.strip()
                     if not line or not line.startswith("data:"):
@@ -855,7 +858,10 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
     retries_remaining = CLOUD_ROUTE_MAX_ATTEMPTS - 1
     retry_index = 0
     last_error: LocalEngineError | None = None
-    for provider in providers:
+    for provider_index, provider in enumerate(providers):
+        request_budget = REQUEST_BUDGET.get()
+        if request_budget is not None and len(providers) > 1:
+            request_budget.begin_candidate(len(providers) - provider_index - 1)
         profile = router.provider_profile(provider)
         if not profile:
             failures.append(f"{provider}: unknown provider")
@@ -906,13 +912,21 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
         oauth_fresh = await router.ensure_oauth_fresh(provider)
         if router.oauth_required_for_route(provider) and not oauth_fresh:
             failures.append(f"{provider}: OAuth refresh did not produce a usable token")
+            last_error = ProviderRequestError(provider, failures[-1], status_code=401)
             continue
         leases = router._credential_leases(provider)
         if not leases:
             failures.append(f"{provider}: no usable credential")
+            last_error = ProviderRequestError(provider, failures[-1], status_code=401)
             continue
         for lease in leases:
+            active_budget = REQUEST_BUDGET.get()
+            if active_budget is not None and not active_budget.has_capacity:
+                break
             for route_attempt in range(CLOUD_ROUTE_MAX_ATTEMPTS):
+                request_budget = REQUEST_BUDGET.get()
+                if request_budget is not None:
+                    request_budget.consume(provider)
                 try:
                     from run_context import current_run_context
 
@@ -1012,28 +1026,38 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                     # Visible text is streamed to the owning client and cannot be
                     # rolled back. Private reasoning and tool fragments remain
                     # attempt-local until success, so they are safe to discard.
+                    failure = classify_provider_error(exc)
                     if yielded:
                         if isinstance(exc, ProviderRequestError):
                             exc.model_output_observed = True
-                        router.credential_pools.mark_failure(
-                            lease,
-                            status_code=getattr(exc, "status_code", 0),
-                            detail=_credential_failure_detail(exc),
-                        )
+                        if failure.kind in {"authentication", "quota", "rate_limit", "transient"}:
+                            router.credential_pools.mark_failure(
+                                lease, status_code=getattr(exc, "status_code", 0),
+                                detail=_credential_failure_detail(exc),
+                            )
                         if (
-                            getattr(lease, "source", "") in {"oauth", "codex_cli_oauth"}
+                            failure.kind == "authentication"
+                            and getattr(lease, "source", "") in {"oauth", "codex_cli_oauth"}
                             and getattr(exc, "status_code", 0) in {401, 403}
                         ):
                             router.invalidate_oauth_access_token(provider)
+                        raise
+                    if failure.kind in {"content_policy", "request", "context", "unsupported_modality", "upstream"}:
+                        # A deterministic request failure is not credential
+                        # exhaustion; don't rotate/invalidate healthy accounts.
                         raise
                     retry_delay = None
                     can_retry = (
                         route_attempt + 1 < CLOUD_ROUTE_MAX_ATTEMPTS
                         and retries_remaining > 0
+                        and (request_budget is None or request_budget.has_capacity)
                         and _is_transient_provider_error(exc)
                     )
                     if can_retry:
-                        retry_delay = _cloud_retry_delay(exc, retry_index)
+                        retry_delay = _cloud_retry_delay(exc, retry_index, jitter=request_budget is not None)
+                        if (retry_delay is not None and request_budget is not None
+                                and not request_budget.admit_wait(retry_delay)):
+                            retry_delay = None
                     if retry_delay is not None:
                         retries_remaining -= 1
                         retry_index += 1
@@ -1044,13 +1068,14 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                         )
                         await asyncio.sleep(retry_delay)
                         continue
-                    router.credential_pools.mark_failure(
-                        lease,
-                        status_code=getattr(exc, "status_code", 0),
-                        detail=_credential_failure_detail(exc),
-                    )
+                    if failure.kind != "upstream":
+                        router.credential_pools.mark_failure(
+                            lease, status_code=getattr(exc, "status_code", 0),
+                            detail=_credential_failure_detail(exc),
+                        )
                     if (
-                        getattr(lease, "source", "") in {"oauth", "codex_cli_oauth"}
+                        failure.kind == "authentication"
+                        and getattr(lease, "source", "") in {"oauth", "codex_cli_oauth"}
                         and getattr(exc, "status_code", 0) in {401, 403}
                     ):
                         router.invalidate_oauth_access_token(provider)
@@ -1060,12 +1085,9 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                     if summary_status != "done":
                         await attempt_reasoning.finish(summary_status)
     detail = "; ".join(failures[-6:]) or "no configured provider could run"
-    if (
-        isinstance(last_error, ProviderRequestError)
-        and _is_transient_provider_error(last_error)
-        and not bool(last_error.model_output_observed)
-    ):
-        last_error.clean_turn_replay_safe = True
+    if isinstance(last_error, ProviderRequestError):
+        last_error.clean_turn_replay_safe = (REQUEST_BUDGET.get() is None
+            and _is_transient_provider_error(last_error) and not bool(last_error.model_output_observed))
         raise last_error
     raise LocalEngineError(f"cloud fallback chain exhausted: {detail}")
 

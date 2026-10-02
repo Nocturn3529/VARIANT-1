@@ -33,6 +33,7 @@ from .continuity import KernelContinuityCoordinator
 from .lease import KernelLease, _restrict_path, _safe_chat_dir
 from .output import OUTPUT_EVENT_SCHEMA, CellOutput
 from .resources import resource_status
+from .ownership import KernelStorageOwnership, owner_state
 from .runtime_profile import CORE_RUNTIME_PROFILE, runtime_profile
 from .worker_path import packaged_kernel_executable
 from .capsules import (
@@ -90,18 +91,25 @@ class KernelRuntimeManager:
             if str(cell_ledger_path or "").strip()
             else os.path.join(os.path.dirname(self.root), "kernel-cells.sqlite3")
         )
-        self.cell_ledger = KernelCellLedgerStore(ledger_path)
-        self._recover_interrupted_cell_evidence()
-        self._leases: dict[str, KernelLease] = {}
-        self.continuity = KernelContinuityCoordinator(self)
-        self._boot_locks: dict[str, asyncio.Lock] = {}
-        self._boot_slots = asyncio.Semaphore(max(1, self.limits.max_boot_concurrency))
-        self._boot_tasks: set[asyncio.Task] = set()
-        self._guard = asyncio.Lock()
-        self._shutdown_lock = asyncio.Lock()
-        self._closed = False
-        self._shutting_down = False
-        self._sweep_stale_roots()
+        self._storage_owner = KernelStorageOwnership(
+            self.root, ledger_path, self.instance_id, restrict=_restrict_path,
+        )
+        try:
+            self.cell_ledger = KernelCellLedgerStore(ledger_path)
+            self._recover_interrupted_cell_evidence()
+            self._leases: dict[str, KernelLease] = {}
+            self.continuity = KernelContinuityCoordinator(self)
+            self._boot_locks: dict[str, asyncio.Lock] = {}
+            self._boot_slots = asyncio.Semaphore(max(1, self.limits.max_boot_concurrency))
+            self._boot_tasks: set[asyncio.Task] = set()
+            self._guard = asyncio.Lock()
+            self._shutdown_lock = asyncio.Lock()
+            self._closed = False
+            self._shutting_down = False
+            self._sweep_stale_roots()
+        except BaseException:
+            self._storage_owner.close()
+            raise
 
     def fanout_limit(self, chat_id: str) -> int:
         """Return the host-owned nested batch cap for this chat's pinned route."""
@@ -117,7 +125,14 @@ class KernelRuntimeManager:
 
     def _recover_interrupted_cell_evidence(self) -> None:
         for pending in self.cell_ledger.unsettled():
-            if pending.pop('instance_id') == self.instance_id:
+            prior_instance = pending.pop('instance_id')
+            evidence_owner = pending.pop('storage_owner', None)
+            if prior_instance == self.instance_id:
+                continue
+            if (prior_instance not in self._storage_owner.prior_instances
+                    and owner_state(evidence_owner) != 'dead'):
+                self.emit('kernel:admission_owner_unverified', status='preserved',
+                          execution_id=pending['execution_id'])
                 continue
             # This is evidence reconciliation only. Nothing from the source
             # is evaluated, and neither effects nor execution duration are known.
@@ -151,10 +166,34 @@ class KernelRuntimeManager:
         _restrict_path(self.root, directory=True)
         from file_paths import remove_tree
 
-        for name in os.listdir(self.root):
-            path = os.path.join(self.root, name)
+        for chat in os.scandir(self.root):
+            if not chat.is_dir(follow_symlinks=False):
+                self.emit('kernel:scratch_preserved', status='unknown_owner')
+                continue
+            try:
+                with os.scandir(chat.path) as entries:
+                    generations = list(entries)
+            except OSError as exc:
+                self.emit('kernel:scratch_preserved', status='cleanup_unverified', error=str(exc)[:300])
+                continue
+            for generation in generations:
+                if not generation.is_dir(follow_symlinks=False):
+                    continue
+                try:
+                    with open(os.path.join(generation.path, 'owner.json'), 'rb') as stream:
+                        raw = stream.read(8193)
+                    owner = json.loads(raw) if len(raw) <= 8192 else None
+                    dead = (isinstance(owner, dict)
+                            and owner.get('instance_id') in self._storage_owner.prior_instances)
+                    if not dead and owner_state(owner) != 'dead':
+                        self.emit('kernel:scratch_preserved', status='owner_unverified')
+                        continue
+                    remove_tree(generation.path)
+                    self.emit('kernel:scratch_reclaimed', status='reclaimed')
+                except (OSError, ValueError, UnicodeError) as exc:
+                    self.emit('kernel:scratch_preserved', status='cleanup_unverified', error=str(exc)[:300])
             with suppress(OSError):
-                remove_tree(path)
+                os.rmdir(chat.path)  # Only empty chat directories can disappear.
 
     def worker_command(self, _control_path: str = "") -> list[str]:
         if self.worker_executable:
@@ -549,7 +588,8 @@ class KernelRuntimeManager:
             kernel_generation=lease.generation, workspace_revision=workspace_revision,
             workspace_fingerprint=workspace_fingerprint, workspace_root_ids=effective_roots,
             work_scope=admitted_scope.to_dict(), source_ref=str(source_artifact.ref) if source_artifact else '',
-            source_sha256=str(source_artifact.sha256) if source_artifact else '', started_at=started_at)
+            source_sha256=str(source_artifact.sha256) if source_artifact else '', started_at=started_at,
+            storage_owner=dict(self._storage_owner.identity))
         try:
             self.cell_ledger.admit(self.instance_id, evidence)
         except Exception as exc:
@@ -898,6 +938,7 @@ class KernelRuntimeManager:
         runtime_chat_id: str,
         *,
         after_sequence: int = 0,
+        through_sequence: int | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
         """Return a bounded monotonic page from the durable cell ledger."""
@@ -908,6 +949,7 @@ class KernelRuntimeManager:
         rows = self.cell_ledger.list(
             chat_id,
             after_sequence=max(0, int(after_sequence or 0)),
+            through_sequence=through_sequence,
             limit=max(1, min(int(limit or 100), 500)),
         )
         items = [row.to_dict() for row in rows]
@@ -921,6 +963,7 @@ class KernelRuntimeManager:
                 if rows else max(0, int(after_sequence or 0))
             ),
             "limit": max(1, min(int(limit or 100), 500)),
+            "through_sequence": None if through_sequence is None else max(0, int(through_sequence)),
         }
 
     def _output_descriptor_value(
@@ -1414,4 +1457,6 @@ class KernelRuntimeManager:
             self._closed = not failures
             self._shutting_down = bool(failures)
             self._boot_tasks.clear()
+            if self._closed:
+                self._storage_owner.close()
         return {"ok": not failures, "failures": failures}

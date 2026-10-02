@@ -387,6 +387,9 @@ class SQLiteRunSnapshotStore(RunSnapshotStore):
         status = str(state.get("status") or task.get("status") or output.get("completion_status") or "")
         created_at = _finite_float(state.get("created_at"), now)
         updated_at = _finite_float(state.get("updated_at"), now)
+        recovery = state.get("model_recovery") or {}
+        effective = recovery.get("effective") if isinstance(recovery, dict) else None
+        effective = effective if isinstance(effective, dict) else {}
         if updated_at < created_at:
             updated_at = created_at
         return {
@@ -395,7 +398,7 @@ class SQLiteRunSnapshotStore(RunSnapshotStore):
             "chat_id": str(state.get("chat_id") or ""),
             "status": status,
             "title": str(state.get("title") or state.get("goal") or task.get("goal") or "")[:500],
-            "model": str(task.get("model_name") or "")[:500],
+            "model": str(effective.get("model") or task.get("model_name") or "")[:500],
             "resumable": 0 if status.lower() in _TERMINAL_STATUSES else 1,
             "state_schema_version": int(state.get("state_schema_version") or 0),
             "machine_revision": str(state.get("graph_revision") or ""),
@@ -777,6 +780,18 @@ class SQLiteRunSnapshotStore(RunSnapshotStore):
             params.append(max(0, int(filters.limit)))
         with self._lock, closing(self._connect()) as conn:
             return [self._stored_from_row(row) for row in conn.execute(sql, tuple(params)).fetchall()]
+
+    def context_cursors_sync(self, chat_id: str) -> list[dict]:
+        """Capture retained committed identities without decoding run state."""
+        with self._lock, closing(self._connect()) as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT t.thread_id,s.seq AS sequence,s.snapshot_id,s.parent_snapshot_id,"
+                "s.run_id,t.source,s.completed_node,s.next_node,s.created_at,s.updated_at,"
+                "s.snapshot_id=t.head_snapshot_id AS is_head FROM agent_threads t "
+                "JOIN agent_snapshots s ON s.thread_id=t.thread_id "
+                "WHERE t.chat_id=? AND t.tombstoned_at IS NULL "
+                "ORDER BY t.created_at,t.thread_id,s.seq", (str(chat_id),),
+            ).fetchall()]
 
     def delete_thread_sync(self, thread_id: str) -> None:
         thread_id = str(thread_id or "").strip()

@@ -550,7 +550,8 @@ class ProcessService:
         if tty:
             if shell:
                 if os.name == "nt":
-                    argv = ("powershell.exe", "-NoLogo", "-Command", argv[0])
+                    from .command_environment import windows_system_executable
+                    argv = (windows_system_executable("powershell.exe"), "-NoLogo", "-Command", argv[0])
                 else:
                     argv = ("/bin/sh", "-lc", argv[0])
             return self.terminals.open(

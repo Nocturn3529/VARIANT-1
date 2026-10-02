@@ -18,6 +18,12 @@ DEFAULT_LLM_CONFIG: dict = {
     "sampling": {},
 }
 
+
+def provider_recovery_config(cfg: dict) -> dict:
+    """Absent configuration enables no route switching or auxiliary routing."""
+    from model_runtime.provider_recovery import normalize_recovery_config
+    return normalize_recovery_config(cfg.get("provider_recovery"))
+
 def load_llm_config(path: str) -> dict:
     """Load configuration without silently overwriting malformed state.
 

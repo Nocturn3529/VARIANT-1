@@ -10,7 +10,7 @@ import pytest
 from agent_engine.sqlite_snapshot_store import SQLiteRunSnapshotStore
 from agent_engine.snapshot_store import SnapshotCursor
 from agent_engine.state import new_run_state
-from chat_context_stage import append_dynamic_memory_context
+from chat_context_stage import append_current_context
 from message_context_extents import (
     HOST_CONTEXT_EXTENTS_REVISION,
     HOST_CONTEXT_PREFIX_KEY,
@@ -112,7 +112,7 @@ def _fixture(tmp_path, *, promote=True, snapshot_status="completed", committed=T
     state["chat_id"] = sid
     state["status"] = snapshot_status
     state["output"] = {"transcript_committed": committed, "reply": "verified final result"}
-    augmented = append_dynamic_memory_context("current task", current_context="STALE_HOST_CONTEXT")
+    augmented = append_current_context("current task", current_context="STALE_HOST_CONTEXT")
     legacy_prefix = (
         "[Host kernel continuation]\n"
         "Live CPython generation 1; state ready."
@@ -924,7 +924,7 @@ async def test_real_runner_finalizer_handshake_and_restart(tmp_path, monkeypatch
         elif failure == "reference":
             monkeypatch.setattr(sessions, "set_native_context_projection", lambda *_args, **_kwargs: False)
         await finish_chat_turn(finish_ports, SimpleNamespace(send_json=AsyncMock()), session,
-            "current task", "neutral", "finished", extract_memory=False,
+            "current task", "neutral", "finished",
             transcript_id=turn.transcript_id, commit_transcript_terminal=callback)
 
     canonical = sessions.recent_convo(sid, None)

@@ -278,7 +278,7 @@ def _execution_owner(scope):
     )
 
 
-def _project_environment(args: dict) -> tuple[dict[str, str], str, str]:
+def _project_environment(args: dict, *, noninteractive: bool = False) -> tuple[dict[str, str], str, str]:
     variables: dict[str, str] = {}
     profile_id = ""
     terminal_profile = ""
@@ -299,6 +299,9 @@ def _project_environment(args: dict) -> tuple[dict[str, str], str, str]:
         str(key): str(value)
         for key, value in dict(args.get("environment") or {}).items()
     })
+    if noninteractive:
+        from execution_hosts.command_environment import noninteractive_environment
+        variables = noninteractive_environment(variables)
     return (
         variables,
         str(args.get("environment_profile_id") or profile_id),
@@ -332,6 +335,7 @@ def _shell_argv(command: str) -> tuple[tuple[str, ...], str]:
     if not cmd:
         raise tools.ToolError("run_command needs a non-empty 'command' string")
     if platform.system() == "Windows":
+        from execution_hosts.command_environment import windows_system_executable
         script = (
             "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new(); "
             "$OutputEncoding=[System.Text.UTF8Encoding]::new(); "
@@ -340,7 +344,7 @@ def _shell_argv(command: str) -> tuple[tuple[str, ...], str]:
         )
         return (
             (
-                "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive",
+                windows_system_executable("powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive",
                 "-Command", script,
             ),
             "PowerShell",
@@ -430,7 +434,7 @@ async def _run_execution_mode(mode: str, args: dict):
 
     if mode == "process":
         environment, environment_profile_id, _terminal_profile = (
-            _project_environment(args)
+            _project_environment(args, noninteractive=True)
         )
         record = await runtime.start_process(
             _exact_argv(args),
@@ -473,7 +477,7 @@ async def _run_once(args: dict):
     workdir = resolve_cwd(args.get("cwd"))
     timeout_s = _timeout_s(args.get("timeout"))
     environment, environment_profile_id, _terminal_profile = (
-        _project_environment(args)
+        _project_environment(args, noninteractive=True)
     )
     result = await runtime.run_bounded_process(
         argv,

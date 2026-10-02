@@ -362,6 +362,7 @@ class KernelCellLedgerStore:
         chat_id: str,
         *,
         after_sequence: int = 0,
+        through_sequence: int | None = None,
         limit: int = 100,
     ) -> tuple[KernelCellRecord, ...]:
         cap = max(1, min(int(limit or 100), _MAX_PAGE))
@@ -369,11 +370,13 @@ class KernelCellLedgerStore:
             rows = connection.execute(
                 """
                 SELECT * FROM kernel_cell_ledger
-                WHERE chat_id=? AND sequence>?
+                WHERE chat_id=? AND sequence>? AND (? IS NULL OR sequence<=?)
                 ORDER BY sequence ASC
                 LIMIT ?
                 """,
-                (str(chat_id or ""), max(0, int(after_sequence)), cap),
+                (str(chat_id or ""), max(0, int(after_sequence)),
+                 None if through_sequence is None else max(0, int(through_sequence)),
+                 None if through_sequence is None else max(0, int(through_sequence)), cap),
             ).fetchall()
         return tuple(self._record(row) for row in rows)
 

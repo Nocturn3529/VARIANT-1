@@ -150,7 +150,6 @@ async def _run_automation_with_mocks(task, *, prior_run, run_result=None, run_si
             "prior_incomplete_automation_run": prior_lookup,
         }),
         patch.object(server.APP, "router", _mock_router()),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(
             server.APP.automations, "get",
@@ -285,7 +284,6 @@ async def test_skips_interruption_check_when_automation_is_not_durable():
             "prior_incomplete_automation_run": lookup,
         }),
         patch.object(server.APP, "router", _mock_router()),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch("agent_engine.executor.execute_headless_worker", new=AsyncMock(side_effect=fake_run)),
     ):

@@ -33,6 +33,7 @@ from llm_router_config import (
     apply_local_model as _cfg_apply_local_model,
     apply_mode as _cfg_apply_mode,
     save_config as _cfg_save_config,
+    provider_recovery_config as _cfg_provider_recovery,
 )
 from llm_local_stream import (
     build_local_template_payload as _build_local_template_payload,
@@ -70,6 +71,9 @@ from model_runtime.secret_egress import SecretEgressFirewall
 from llm_cloud_stream import (
     call_cloud as _cloud_call_cloud,
 )
+from model_runtime.provider_recovery import (
+    ROUTE_SCOPE, RouteScope, RecoveryCooldowns, normalize_recovery_config,
+)
 
 
 _BOUND_MODEL_ROUTE: ContextVar[dict | None] = ContextVar(
@@ -95,6 +99,7 @@ def _enabled_local_reasoning_budget(cfg: dict) -> int:
 
 class LLMRouter:
     """Single model interface with a user-selected local or cloud route."""
+    supports_provider_recovery = True
 
     def __init__(self, cfg: dict, app_root: str, config_path: str = None,
                  data_dir: str = None):
@@ -102,6 +107,8 @@ class LLMRouter:
         self.app_root = app_root
         self.data_dir = data_dir or app_root
         self.config_path = config_path
+        self._recovery_cooldowns = RecoveryCooldowns()
+        self._recovery_credential_revisions: dict[str, int] = {}
         self.mode = cfg.get("mode", "local")
         self.sampling = cfg.get("sampling", {})
         self.engine = self.build_inference_runtime(
@@ -461,33 +468,134 @@ class LLMRouter:
         self._mode = str(value or "local")
 
     @contextmanager
-    def bind_model_route(self, route: dict | None):
+    def bind_model_route(self, route: dict | None, *, allow_recovery: bool = True):
         """Pin route/provider/model for the current async turn.
 
         ``ContextVar`` isolation means Settings may change process defaults
         without changing an already-running request or its helper calls.
         """
-        from model_runtime.context import normalize_model_route
-
-        token = _BOUND_MODEL_ROUTE.set(normalize_model_route(self, route))
+        token = self.push_model_route(route, allow_recovery=allow_recovery)
         try:
             yield _BOUND_MODEL_ROUTE.get()
         finally:
-            _BOUND_MODEL_ROUTE.reset(token)
+            self.reset_model_route(token)
 
     def bound_model_route(self) -> dict | None:
         route = _BOUND_MODEL_ROUTE.get()
         return dict(route) if isinstance(route, dict) else None
 
-    def push_model_route(self, route: dict | None):
+    def push_model_route(self, route: dict | None, *, allow_recovery: bool = True):
         """Low-level token API for turn runners with an existing ``finally``."""
         from model_runtime.context import normalize_model_route
 
-        return _BOUND_MODEL_ROUTE.set(normalize_model_route(self, route))
+        from llm_recovery import initial_effective_route
+        primary = normalize_model_route(self, route)
+        policy = _cfg_provider_recovery(self.cfg)
+        scope = RouteScope(primary, policy, allow_recovery)
+        scope_token = ROUTE_SCOPE.set(scope)
+        try:
+            effective = dict(initial_effective_route(self, primary, policy, allow_recovery))
+            scope.effective = effective
+            if getattr(self, "supports_provider_recovery", False) is True:
+                scope.router = self
+                scope.primary_identity = self.recovery_wire_identity(primary)
+                scope.effective_identity = self.recovery_wire_identity(effective)
+            route_token = _BOUND_MODEL_ROUTE.set(effective)
+        except BaseException:
+            ROUTE_SCOPE.reset(scope_token)
+            raise
+        return route_token, scope_token
 
     @staticmethod
     def reset_model_route(token) -> None:
-        _BOUND_MODEL_ROUTE.reset(token)
+        if isinstance(token, tuple):
+            _BOUND_MODEL_ROUTE.reset(token[0])
+            ROUTE_SCOPE.reset(token[1])
+        else:
+            _BOUND_MODEL_ROUTE.reset(token)
+
+    def recovery_scope(self):
+        return ROUTE_SCOPE.get()
+
+    def provider_recovery_policy(self):
+        return _cfg_provider_recovery(self.cfg)
+
+    def clear_provider_recovery_cooldown(self, provider):
+        name = self._kn(provider)
+        if not hasattr(self, "_recovery_credential_revisions"):
+            self._recovery_credential_revisions = {}
+        if not hasattr(self, "_recovery_cooldowns"):
+            self._recovery_cooldowns = RecoveryCooldowns()
+        self._recovery_credential_revisions[name] = self._recovery_credential_revisions.get(name, 0) + 1
+        self._recovery_cooldowns.clear_provider(name)
+
+    @contextmanager
+    def temporary_model_route(self, route):
+        from model_runtime.context import normalize_model_route
+        token = _BOUND_MODEL_ROUTE.set(normalize_model_route(self, route))
+        try:
+            yield
+        finally:
+            _BOUND_MODEL_ROUTE.reset(token)
+
+    def promote_effective_route(self, route):
+        from model_runtime.context import normalize_model_route
+        normalized = normalize_model_route(self, route)
+        scope = self.recovery_scope()
+        if scope is not None and scope.router is self and scope.effective is not None:
+            # Node tasks inherit the same run-owned mapping. Update it so the
+            # enclosing run observes promotion without changing other chats.
+            scope.effective.clear()
+            scope.effective.update(normalized)
+            scope.effective_identity = self.recovery_wire_identity(normalized)
+            _BOUND_MODEL_ROUTE.set(scope.effective)
+        else:
+            _BOUND_MODEL_ROUTE.set(normalized)
+
+    def recovery_wire_identity(self, route):
+        from session_projection import projection_model_route
+        return projection_model_route(self, None, "", selected=route)
+
+    def restore_recovery_checkpoint(self, saved):
+        """Restore an allowed route, or require portable wire input on mismatch."""
+        from llm_recovery import normalized_routes, _note
+        from model_runtime.context import normalize_model_route
+        scope = self.recovery_scope()
+        if scope is None or scope.router is not self or not isinstance(saved, dict):
+            return
+        scope.force_portable = bool(saved.get("force_portable"))
+        try:
+            effective = normalize_model_route(self, saved["effective"])
+            if (saved.get("schema") != "variant1.model-recovery-state.v1"
+                    or saved.get("primary_identity") != self.recovery_wire_identity(scope.primary)
+                    or saved.get("effective_identity") != self.recovery_wire_identity(effective)):
+                raise ValueError("checkpoint wire identity changed")
+            if effective != scope.primary:
+                allowed = normalized_routes(self, scope.policy["fallback_routes"])
+                if not scope.allow_recovery or not scope.policy["enabled"] or effective not in allowed:
+                    raise ValueError("checkpoint fallback is not currently configured")
+            self.promote_effective_route(effective)
+            _note("checkpoint_route_restored", provider=effective["provider"], model=effective["model"])
+        except (KeyError, TypeError, ValueError):
+            # Stored source remains intact. Only copied outbound messages lose
+            # provider-owned opaque state when route provenance cannot match.
+            scope.force_portable = True
+            _note("checkpoint_wire_portable", provider=scope.primary["provider"], model=scope.primary["model"])
+
+    def configure_provider_recovery(self, policy):
+        normalized = normalize_recovery_config(policy)
+        previous = self.cfg.get("provider_recovery")
+        self.cfg["provider_recovery"] = normalized
+        try:
+            if self.save_config(strict=True) is False:
+                raise OSError("Provider recovery configuration was not saved")
+        except BaseException:
+            if previous is None:
+                self.cfg.pop("provider_recovery", None)
+            else:
+                self.cfg["provider_recovery"] = previous
+            raise
+        return normalized
 
     def context_limit_tokens(self, route: dict | None = None) -> int:
         from model_runtime.context import context_limit_tokens
@@ -906,39 +1014,55 @@ class LLMRouter:
         return self.credential_pools.public_records(provider)
 
     def add_cloud_credential(self, provider: str, secret: str, **fields) -> dict:
-        return self.credential_pools.add(provider, secret, **fields)
+        result = self.credential_pools.add(provider, secret, **fields)
+        self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def replace_cloud_credential(self, provider: str, secret: str) -> dict:
         profile = self.provider_profile(provider)
         label = f"{profile.display_name} API key" if profile else "API key"
-        return self.credential_pools.replace(provider, secret, label=label)
+        result = self.credential_pools.replace(provider, secret, label=label)
+        self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def clear_cloud_credentials(self, provider: str) -> bool:
-        return self.credential_pools.clear(provider)
+        result = self.credential_pools.clear(provider)
+        self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def remove_cloud_credential(self, provider: str, credential_id: str) -> bool:
         if self.provider_profile(provider) is None:
             raise ValueError(f"unknown model provider: {provider}")
-        return self.credential_pools.remove(provider, credential_id)
+        result = self.credential_pools.remove(provider, credential_id)
+        if result:
+            self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def set_cloud_credential_enabled(
         self, provider: str, credential_id: str, enabled: bool,
     ) -> bool:
         if self.provider_profile(provider) is None:
             raise ValueError(f"unknown model provider: {provider}")
-        return self.credential_pools.set_enabled(provider, credential_id, enabled)
+        result = self.credential_pools.set_enabled(provider, credential_id, enabled)
+        if result:
+            self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def set_cloud_credential_priority(
         self, provider: str, credential_id: str, priority: int,
     ) -> bool:
         if self.provider_profile(provider) is None:
             raise ValueError(f"unknown model provider: {provider}")
-        return self.credential_pools.set_priority(provider, credential_id, priority)
+        result = self.credential_pools.set_priority(provider, credential_id, priority)
+        if result:
+            self.clear_provider_recovery_cooldown(provider)
+        return result
 
     def set_cloud_credential_strategy(self, provider: str, strategy: str) -> None:
         if self.provider_profile(provider) is None:
             raise ValueError(f"unknown model provider: {provider}")
         self.credential_pools.set_strategy(provider, strategy)
+        self.clear_provider_recovery_cooldown(provider)
 
     def get_fallback_chain(self) -> list[str]:
         chain = (self.cfg.get("cloud", {}) or {}).get("fallback_chain") or []
@@ -1087,6 +1211,8 @@ class LLMRouter:
             raise
         self.refresh_support_matrix()
         self.credential_pools.clear_runtime_status(name, "oauth")
+        if replace or any(rec.get(key) != (previous or {}).get(key) for key in ("account_id", "project_id", "auth_flow")):
+            self.clear_provider_recovery_cooldown(name)
 
     def oauth_account_id(self, provider: str) -> str:
         return str(self._oauth_rec(provider).get("account_id") or "").strip()
@@ -1141,6 +1267,7 @@ class LLMRouter:
                 raise
         self.refresh_support_matrix()
         self.credential_pools.clear_runtime_status(name, "oauth")
+        self.clear_provider_recovery_cooldown(name)
 
     def oauth_status(self, provider: str) -> dict:
         """Non-secret status for the UI/CLI: connected? which client? when it
@@ -1617,6 +1744,23 @@ class LLMRouter:
             return None
 
     async def stream(self, messages: list, sampling: dict = None, json_mode: bool = False,
+                     image_b64=None, reasoning_budget: int = None, reasoning_sink=None,
+                     route: str | None = None, tools: list = None, tool_call_sink=None,
+                     stream_diagnostics: StreamDiagnostics | None = None,
+                     internal_projection: bool = False, prompt_cache_key: str | None = None,
+                     recovery_profile: str | None = None, allow_recovery: bool = True):
+        from llm_recovery import stream_with_recovery
+        stream_diagnostics = stream_diagnostics or StreamDiagnostics()
+        options = dict(sampling=sampling, json_mode=json_mode, image_b64=image_b64,
+            reasoning_budget=reasoning_budget, reasoning_sink=reasoning_sink, route=route,
+            tools=tools, tool_call_sink=tool_call_sink, stream_diagnostics=stream_diagnostics,
+            internal_projection=internal_projection, prompt_cache_key=prompt_cache_key)
+        async with aclosing(stream_with_recovery(self, messages, options,
+                recovery_profile=recovery_profile, allow_recovery=allow_recovery)) as owned_stream:
+            async for token in owned_stream:
+                yield token
+
+    async def _stream_selected(self, messages: list, sampling: dict = None, json_mode: bool = False,
                      image_b64=None, reasoning_budget: int = None, reasoning_sink=None,
                      route: str | None = None, tools: list = None, tool_call_sink=None,
                      stream_diagnostics: StreamDiagnostics | None = None,

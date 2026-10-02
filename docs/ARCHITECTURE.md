@@ -69,11 +69,110 @@ Portable checkpoints preserve supported values and report exclusions. They do
 not capture arbitrary clients, connections, threads, or live handles. Portable
 checkpointing and restoration are optional and disabled by default.
 
-Chat history, model continuation records, artifacts, approved memory, reusable
+Chat history, model continuation records, artifacts, reusable
 tool source, and live Python objects have different persistence contracts.
-Approved memory is a separate store: explicit user memories and approved inferred
-facts can be recalled in later turns. Saving a conversation does not imply that
-all of its live Python objects can be restored.
+The former fact/profile memory store, automatic recall, extraction, proposals,
+approvals, and consolidation have been retired. Startup removes only those
+memory tables from the shared ASTB database. Goal records and their controls
+remain available under Goals; `/remember` reports that fact saving is retired.
+Saving a conversation does not imply that its live Python objects can be restored.
+
+Agents retrieve earlier evidence explicitly through the always-mounted
+`session.context()` method, including when mutation is off. It returns a retained
+view handle with `status()`, `read()`, `search(query=...)`,
+`expand(source_id=...)`, and `refresh()`. This adds no provider tool or ASTB slot.
+Hidden child/automation runtimes can read their own retained runtime evidence
+without a canonical conversation. A parent explicitly requests an owned child
+with `session.context(child_id=...)`; ownership is checked on capture and reuse,
+and deletion invalidates its views. Missing canonical history is reported.
+Views capture committed canonical ancestry, a cell-ledger upper sequence, and
+retained native snapshot cursors. Canonical ordering follows graph edges; cells
+follow ledger sequence. These owners do not form one atomic global chronology.
+Search covers canonical text and retained cell source/result text; native
+snapshot search covers metadata. Expansion loads the scoped source and verifies
+its integrity. Native expansion projects visible messages and calls, excluding
+opaque provider reasoning. Snapshots can repeat history and are not additional
+actions. Pages and text expansion expose continuation cursors and coverage.
+Cell expansion accepts `part='source'`, `'result'`, or `'output'`; output-event
+evidence retains its own omissions and artifact references.
+
+The added base/children methods change the catalog contract. Previously pinned
+chats retain the existing explicit structural-rebase requirement; rebase requires
+an idle runtime and fences its Python generation. Existing mutation tools are
+handled by that rebase contract rather than being silently overwritten at startup.
+
+The session-context SQLite index is derived data, not a new transcript owner.
+Views survive host restart, remain frozen until explicit refresh, and cannot be
+read from another or deleted chat. Historical content is evidence rather than
+new instructions or permission to replay effects. Active user instructions,
+runtime contracts, and the existing working-context compactor remain. A future
+cross-session source pool is a separate design; no fact extraction or automatic
+history lookup is required by this reader.
+`session.context(view_id=...)` reopens a saved view identity after a kernel or
+host restart with the same ownership checks.
+
+Kernel storage ownership is acquired before scratch cleanup or interrupted-cell
+reconciliation. Lifetime OS locks cover the canonical scratch and ledger paths;
+PID creation identity supplies additional owner evidence. A competing live owner
+blocks startup. Unknown legacy ownership is preserved with diagnostics. Recovery
+records uncertain effects and never re-executes a cell to reconstruct evidence.
+Portable capture keeps bounded byte/hash checks and validates new encodings in
+a second traversal; reused values need one traversal. Capture does not skip a
+checkpoint merely because a cell succeeded.
+
+`children.wait(targets=..., timeout_s=0, after_cursor=...)` observes a bounded
+set on the existing children object. Zero timeout takes a snapshot; a positive
+timeout, at most 30 seconds, waits for the first committed terminal or attention
+state under one shared budget. Cursors suppress repeated outcome delivery,
+partial rosters are explicit, and full reports remain on child handles. A timeout
+does not cancel children. Parent Stop retains descendant ownership; no paid idle
+parent wake or model polling is needed for status updates.
+
+Agent command/process modes use noninteractive editor, pager, Git prompt, and
+color defaults; explicit environment settings override them. Interactive
+terminal profiles keep their existing behavior. Windows PowerShell and
+taskkill helpers resolve from absolute system paths, avoiding project-directory
+lookup. This adds no dirty-worktree guard or destructive Git command policy.
+
+Stream framing uses consumed/search cursors and amortized buffer compaction.
+Valid UTF-8 is clipped at complete characters with byte accounting. Bounded
+diagnostics and degraded broker results expose omissions. MCP inventories have
+page, item, and elapsed limits; a failed refresh preserves the last good catalog
+rather than publishing a partial replacement.
+
+Compaction labels matched tool outcomes with names and failure state. Its
+file-state section has a character budget, retains modified paths before reads,
+and reports omissions. Oversized complete metadata is retained in a scoped
+artifact for later recovery. An edit-call path alone does not prove a successful
+change. The existing protected tail supplies recent assistant context, so no
+extra assistant anchor is injected.
+
+Provider recovery stays inside the canonical router. The optional
+`provider_recovery` configuration defaults to disabled and names explicit
+`fallback_routes` plus `auxiliary_routes` for `internal_json`, `internal_prose`,
+and `vision`. Routes name mode/provider/model; each chain contains at most four
+entries. `max_attempts` bounds physical attempts across credential alternatives,
+retries and candidates (default 4, configurable 1–12). `max_wait_seconds` bounds
+retry backoff waits (default 60, configurable 0–600); existing wire timeouts still
+apply. No alternate route is discovered or activated without configuration.
+
+Structured errors distinguish quota, rate, authentication, transient, context,
+modality, request, and content-policy failures. Refusals are terminal. Cooldowns
+honor reported reset times and credential identity; ordinary same-account token
+refresh does not reset a quota cooldown. Cooldowns live in process memory and
+create no timer-driven model calls. Main fallback promotion belongs to the run;
+auxiliary routes belong to their individual calls. Process-wide selection stays
+with the user. Cross-route requests use portable copied messages, preserve exact
+tool-call/result relationships, and omit provider-owned opaque replay. Published
+output/tool calls and completed effects fence retry and fallback.
+
+Native checkpoints retain the selected/effective route and hashed wire identity.
+Resume restores an effective fallback only when current configuration and wire
+identity still permit it; otherwise outbound copies use portable history. The
+stored checkpoint remains intact and pending tool ownership remains unchanged.
+Qualification requests explicitly disable both the new policy and the existing
+unbound provider fallback chain, so a backup cannot qualify as the requested
+primary.
 
 The activity trace is a bounded display projection, not a complete output log.
 Live and saved ordinary traces keep the newest 48 events and record earlier

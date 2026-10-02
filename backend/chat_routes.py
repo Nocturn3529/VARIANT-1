@@ -42,11 +42,10 @@ class ChatRoute(Protocol):
         resume_state: Any,
         reserved: bool,
     ) -> RouteDecision:
-        """Run after session bind, before memory and tool discovery."""
+        """Run after session bind, before tool discovery."""
         ...
 
 def default_routes() -> list[ChatRoute]:
     """Installed product routes (order = priority)."""
     from chat_commands import CommandChatRoute
-    from chat_memory import MemoryChatRoute
-    return [CommandChatRoute(), MemoryChatRoute()]
+    return [CommandChatRoute()]

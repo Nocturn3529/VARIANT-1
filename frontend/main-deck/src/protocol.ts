@@ -79,11 +79,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
     "execution:snapshot", "terminal:accepted", "terminal:rejected",
     "process:accepted", "process:rejected",
   ],
-  "react-runtime-memory": [
-    "memory:core", "memory:list", "memory:proposals",
-    "memory:loops", "memory:loop", "memory:loop:promote",
-    "memory:consolidate", "memory:export", "memory:error",
-  ],
+  "react-runtime-goals": ["goals:loops", "goals:loop"],
   "react-runtime-automations": [
     "automations", "automations:history", "automation:accepted", "automation:error",
   ],

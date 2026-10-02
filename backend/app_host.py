@@ -153,29 +153,11 @@ class AppHost:
         import host_run_context
         return host_run_context.require_bound_run_context(source, operation=operation)
 
-    async def mem_query(self, text, n=5):
-        import host_memory_ops
-        return await host_memory_ops.mem_query(self, text, n)
 
-    async def mem_prefetch(self, text, n=2):
-        import host_memory_ops
-        return await host_memory_ops.mem_prefetch(self, text, n)
 
-    async def mem_add(self, *args, **kwargs):
-        import host_memory_ops
-        return await host_memory_ops.mem_add(self, *args, **kwargs)
 
-    async def mem_add_record(self, *args, **kwargs):
-        import host_memory_ops
-        return await host_memory_ops.mem_add_record(self, *args, **kwargs)
 
-    async def mem_delete(self, *args, **kwargs):
-        import host_memory_ops
-        return await host_memory_ops.mem_delete(self, *args, **kwargs)
 
-    async def mem_list(self, *, limit=200, offset=0):
-        import host_memory_ops
-        return await host_memory_ops.mem_list(self, limit=limit, offset=offset)
 
     # ------------------------------------------------------------------
     # Ports factories — public composition API.
@@ -185,9 +167,6 @@ class AppHost:
         import host_ports
         return host_ports.child_worker_ports(self)
 
-    def memory_ports(self):
-        import host_ports
-        return host_ports.memory_ports(self)
 
     def tool_runner_ports(self, websocket, session=None):
         import host_ports

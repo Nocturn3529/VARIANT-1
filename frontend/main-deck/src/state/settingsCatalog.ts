@@ -79,9 +79,9 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     path: "M8 3h8v5h5v8h-5v5H8v-5H3V8h5Z",
   },
   {
-    id: "memory",
-    label: "Memory",
-    description: "Core facts, recall, approvals, and long-running goals.",
+    id: "goals",
+    label: "Goals",
+    description: "Create and manage long-running goals.",
     path: "M5 5c0 2 14 2 14 0v12c0 2-14 2-14 0zM5 11c0 2 14 2 14 0",
   },
   {

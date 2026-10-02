@@ -22,7 +22,7 @@ const stylesIndex = read('frontend/main-deck/src/styles/index.css');
 const windows = read('electron-app-windows.js');
 const boot = read('electron-app-boot.js');
 const deckRoutes = JSON.parse(read('deck-routes.json'));
-const memoryStore = read('frontend/main-deck/src/memoryStore.ts');
+const memoryStore = read('frontend/main-deck/src/goalsStore.ts');
 const terminalStore = read('frontend/main-deck/src/context/terminalStore.ts');
 const terminalPanel = read('frontend/main-deck/src/context/TerminalPanel.tsx');
 const terminalSurface = read('frontend/main-deck/src/workbench/TerminalSurface.tsx');
@@ -197,7 +197,7 @@ for (const command of ['automation:list', 'automations:history', 'automation:add
 for (const trigger of ['daily', 'weekdays', 'weekly', 'interval', 'cron']) assert.match(automationView, new RegExp(`value="${trigger}"`));
 assert.doesNotMatch(automationView + automationStore, /value="(?:file|window|clipboard)"|Queue latest|queue_latest|backpressure/);
 assert.match(stylesIndex, /\.\/workbench\.css/);
-assert.match(memoryStore, /fact was not saved[\s\S]*goal run was not created/);
+assert.match(memoryStore, /goal run was not created/);
 assert.match(deckIpc, /available:\s*!!\(r && r\.isUpdateAvailable\)/);
 assert.match(aboutStore, /result\.available && result\.version/);
 assert.doesNotMatch(deckIpc, /dialog:pickFiles/);

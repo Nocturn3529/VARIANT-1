@@ -16,8 +16,8 @@ const store = createModuleStore<AboutState>({
       backendDetail: "Local backend",
       model: "Waiting",
       modelDetail: "No model selected",
-      memory: "Waiting",
-      memoryDetail: "0 archival records",
+      sessionContext: "Waiting",
+      sessionContextDetail: "On-demand session history",
       scheduler: "Waiting",
       schedulerDetail: "0 scheduled tasks",
     },
@@ -60,7 +60,7 @@ function applyHealthFromConfig(message: Record<string, unknown>) {
       ? message.cloud_model || message.model || "Cloud model"
       : message.model || state.health.modelDetail,
   );
-  const memoryKnown = "memory" in message;
+  const contextKnown = "session_context" in message;
   const workKnown = message.work != null && typeof message.work === "object";
   store.setState({
     connected: true,
@@ -69,10 +69,10 @@ function applyHealthFromConfig(message: Record<string, unknown>) {
       backendDetail: "Authenticated local WebSocket",
       model: modelReady ? "Ready" : "Not ready",
       modelDetail: model,
-      memory: memoryKnown ? (message.memory ? "Healthy" : "Unavailable") : state.health.memory,
-      memoryDetail: memoryKnown
-        ? `${Number(message.memory_count || 0)} archival records`
-        : state.health.memoryDetail,
+      sessionContext: contextKnown ? (message.session_context ? "Healthy" : "Unavailable") : state.health.sessionContext,
+      sessionContextDetail: contextKnown
+        ? "On-demand session history"
+        : state.health.sessionContextDetail,
       scheduler: workKnown
         ? (work.scheduler_running ? "Running" : "Stopped")
         : state.health.scheduler,

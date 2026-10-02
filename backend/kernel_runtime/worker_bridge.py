@@ -1602,6 +1602,21 @@ def _parse_remote_handle(value: Any, bridge: Any) -> Variant1RemoteHandle | None
     )
 
 
+class Variant1SessionContextResult(dict):
+    """Bounded display; exact pages and source text remain mapping values."""
+
+    def __repr__(self) -> str:
+        items = self.get("items")
+        count = len(items) if isinstance(items, list) else None
+        return (f"<SessionContextResult view={self.get('view_id')!r} "
+                f"items={count!r} has_more={self.get('has_more', False)!r} "
+                f"next_cursor={self.get('next_cursor')!r} "
+                f"next_offset={self.get('next_offset')!r}; "
+                "inspect ['items'], ['counts'] or ['text'] explicitly>")
+
+    __str__ = __repr__
+
+
 def _decode_host_result(value: Any, bridge: Any, *, _unpacked: bool = False) -> Any:
     """Recursively decode typed host values while preserving ordinary JSON."""
 
@@ -1626,6 +1641,8 @@ def _decode_host_result(value: Any, bridge: Any, *, _unpacked: bool = False) -> 
         decoded = {
             key: _decode_host_result(item, bridge, _unpacked=True) for key, item in value.items()
         }
+        if decoded.get("schema") == "variant1.session-context-result.v1":
+            return Variant1SessionContextResult(decoded)
         if decoded.get("schema") == "variant1.artifact-save-result.v1":
             return Variant1ArtifactSaveResult(decoded)
         if decoded.get("schema") == "variant1.browser-observation-result.v1":

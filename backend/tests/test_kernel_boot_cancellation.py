@@ -1,6 +1,7 @@
 """Caller cancellation during admission must never become a boot retry."""
 
 import asyncio
+import os
 from contextlib import suppress
 
 import psutil
@@ -126,6 +127,8 @@ async def test_real_boot_failure_still_retries(kernel_stack, monkeypatch):
     attempts = []
 
     def fail_first(path, value):
+        if os.path.basename(path) != "capabilities.json":
+            return write(path, value)
         attempts.append(path)
         if len(attempts) == 1:
             raise OSError("transient descriptor write failure")

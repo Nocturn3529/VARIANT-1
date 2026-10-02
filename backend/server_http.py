@@ -27,7 +27,7 @@ class _NullWebSocket:
 
 def health_payload(srv: Any) -> dict:
     installed = getattr(srv, "runtime", None)
-    memory = getattr(getattr(installed, "memory", None), "store", None)
+    session_context = getattr(installed, "session_context", None)
     router = srv.router
     ready = bool(getattr(srv, "startup_ready", False))
     startup_error = str(getattr(srv, "startup_error", "") or "")
@@ -42,8 +42,7 @@ def health_payload(srv: Any) -> dict:
         "engine": srv.engine_label(),
         "engine_ready": router.engine_ready,
         "model": router.model_name,
-        "memory": memory is not None,
-        "memory_count": memory.count_items() if memory is not None else 0,
+        "session_context": session_context is not None,
         "work": {
             "ready": bool(work and getattr(work, "started", False)),
             "scheduler_running": bool(
@@ -130,7 +129,7 @@ async def handle_webhook(srv: Any, token: str, request: Request) -> JSONResponse
 
 def hello_payload(srv: Any, orphan: dict | None) -> dict:
     router = srv.router
-    memory = srv.require_runtime().memory.store
+    session_context = srv.require_runtime().session_context
     return {
         "type": "hello",
         "ready": bool(getattr(srv, "startup_ready", False)),
@@ -145,7 +144,7 @@ def hello_payload(srv: Any, orphan: dict | None) -> dict:
         ),
         "model": router.model_name,
         "cloud_model": router.get_cloud_model(),
-        "memory": memory is not None,
+        "session_context": session_context is not None,
         "mode": router.mode,
         "provider": router.cloud_provider,
         "hardware": srv.hardware,

@@ -31,16 +31,6 @@ def write_port_file(path: str, payload: dict) -> None:
         raise
 
 
-def dev_reset_on_launch(memory_store) -> None:
-    """When VARIANT1_DEV_RESET=1, clear the approved-memory tables."""
-    flag = os.environ.get("VARIANT1_DEV_RESET", "").strip().lower()
-    if flag not in ("1", "true", "yes", "on"):
-        return
-    try:
-        memory_store.dev_reset()
-        print("[dev] cleared memory", flush=True)
-    except Exception as e:
-        print(f"[dev] memory reset failed: {e}", flush=True)
 
 
 def make_lifespan(

@@ -267,6 +267,8 @@ def _with_run_bindings(node):
     Fabric repositories remain the actual browser/desktop state authorities.
     """
     async def _wrapped(state: RunState) -> dict:
+        from llm_recovery import enter_recovery_checkpoint, recovery_checkpoint_state
+        enter_recovery_checkpoint(state)
         run_ctx = current_run_context()
         desktop_ctx = None
         try:
@@ -315,6 +317,9 @@ def _with_run_bindings(node):
                 run_ctx.browser_binding = bound_browser
             result = await node(state)
             if isinstance(result, dict):
+                recovery = recovery_checkpoint_state()
+                if recovery is not None:
+                    result["model_recovery"] = recovery
                 merged = dict(state.get("desktop") or {})
                 merged.update(result.get("desktop") or {})
                 result["desktop"] = _desktop_snapshot(merged)

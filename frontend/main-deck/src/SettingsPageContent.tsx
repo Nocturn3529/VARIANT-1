@@ -1,4 +1,4 @@
-import {MemoryDestination} from "./MemoryDestination";
+import {GoalsDestination} from "./GoalsDestination";
 import type {SettingsCategory} from "./state/appStore";
 import {AboutSettings} from "./AboutSettings";
 import {AgentToolsSettings} from "./AgentToolsSettings";
@@ -24,7 +24,7 @@ export function SettingsPageContent({category}: {category: SettingsCategory}) {
     messaging: <PlatformSettings page="messaging"/>,
     plugins: <PluginsSettings/>,
     about: <AboutSettings/>,
-    memory: <MemoryDestination/>,
+    goals: <GoalsDestination/>,
   };
   return <SettingsPage>{content[category]}</SettingsPage>;
 }

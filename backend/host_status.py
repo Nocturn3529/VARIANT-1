@@ -125,7 +125,7 @@ def doctor_snapshot(h) -> dict:
 
 def engine_status_msg(h) -> dict:
     runtime = getattr(h, "runtime", None)
-    memory_store = getattr(getattr(runtime, "memory", None), "store", None)
+    session_context = getattr(runtime, "session_context", None)
     work = getattr(runtime, "work", None)
     sessions = getattr(runtime, "sessions", None)
     execution = getattr(runtime, "execution", None)
@@ -143,10 +143,7 @@ def engine_status_msg(h) -> dict:
     return {"type": "engine", "engine": engine_label(h), "ready": h.router.engine_ready,
             "model_ready": bool(model_ready),
             "model": h.router.model_name,
-            "memory": memory_store is not None,
-            "memory_count": (
-                memory_store.count_items() if memory_store is not None else 0
-            ),
+            "session_context": session_context is not None,
             "mode": h.router.mode,
             "local_prewarm": h.router.local_prewarm,
             "local_engine_wanted": h.router.wants_local_engine(),

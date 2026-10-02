@@ -3,18 +3,8 @@
 from __future__ import annotations
 
 import server
-from memory_store import MemoryStore
 
 
-def test_dev_reset_on_launch_clears_memory(tmp_path, monkeypatch):
-    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
-    store.remember_explicit("chat-a", "old memory")
-    monkeypatch.setenv("VARIANT1_DEV_RESET", "1")
-    monkeypatch.setattr(server.APP.require_runtime().memory, "store", store)
-
-    server.APP.require_runtime().lifecycle.dev_reset_on_launch()
-
-    assert store.count_items(include_tombstoned=True) == 0
 
 
 def test_router_thinking_is_model_runtime_policy_without_a_settings_toggle():

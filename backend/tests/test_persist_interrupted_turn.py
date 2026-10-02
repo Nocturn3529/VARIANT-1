@@ -229,7 +229,7 @@ def test_normal_finalizer_does_not_complete_ticket_when_transcript_write_fails(
             "start the task",
             "neutral",
             "finished",
-            extract_memory=False,
+
         )
 
         durable = repository.get_ticket(ticket.ticket_id)

@@ -387,8 +387,8 @@ export type AboutState = {
     backendDetail: string;
     model: string;
     modelDetail: string;
-    memory: string;
-    memoryDetail: string;
+    sessionContext: string;
+    sessionContextDetail: string;
     scheduler: string;
     schedulerDetail: string;
   };
@@ -426,31 +426,7 @@ export type GeneralState = {
   speechReceipt: {requestId: string; accepted: boolean; error: string} | null;
 };
 
-/** Memory destination — core facts, approved archive, and durable goals. */
-
-export type MemoryCoreFact = {
-  text: string;
-  ts?: number | string | null;
-};
-
-export type MemoryArchiveItem = {
-  id: string;
-  text: string;
-  type?: string;
-  created?: number | string | null;
-};
-
-export type MemoryProposal = {
-  proposalId: string;
-  chatId: string;
-  kind: string;
-  content: string;
-  createdAt?: number | string | null;
-  metadata?: Record<string, unknown>;
-};
-
-/** Project-run / loop memory tier (Architecture §12). */
-export type MemoryLoopSummary = {
+export type GoalLoopSummary = {
   id: string;
   title: string;
   status: string;
@@ -463,7 +439,7 @@ export type MemoryLoopSummary = {
   session_id?: string;
 };
 
-export type MemoryLoopDetail = {
+export type GoalLoopDetail = {
   id: string;
   meta?: {
     id?: string;
@@ -490,24 +466,14 @@ export type MemoryLoopDetail = {
   };
 };
 
-export type MemoryState = {
+export type GoalsState = {
   connected: boolean;
-  core: MemoryCoreFact[];
-  coreCount: number;
-  coreCap: number;
-  shownFacts: number;
-  archival: MemoryArchiveItem[];
-  proposals: MemoryProposal[];
-  archiveQuery: string;
-  shownArchive: number;
-  loops: MemoryLoopSummary[];
+  loops: GoalLoopSummary[];
   loopActiveCount: number;
   selectedLoopId: string;
-  selectedLoop: MemoryLoopDetail | null;
+  selectedLoop: GoalLoopDetail | null;
   draftLoopTitle: string;
   draftLoopGoal: string;
-  exportState: string;
-  draftFact: string;
 };
 
 export type RuntimeApi = {

@@ -29,9 +29,12 @@ visit(path.join(source,'main.tsx'));
 const orphaned=files.filter(file=>!reached.has(file)&&!file.endsWith('.d.ts')&&path.basename(file)!=='fixture.ts');
 assert.deepEqual(orphaned.map(file=>path.relative(source,file)),[], 'Production source must be reachable; keep test fixtures outside the production graph');
 const corpus=files.map(file=>fs.readFileSync(file,'utf8')).join('\n');
-assert.doesNotMatch(corpus,/BrowserPopoutApp|setPreviewPopped|bindBrowserHostSurface|ensureTerminalStarted|appendTerminalOutput|react-runtime-goals/,
+assert.doesNotMatch(corpus,/BrowserPopoutApp|setPreviewPopped|bindBrowserHostSurface|ensureTerminalStarted|appendTerminalOutput|react-runtime-memory/,
   'retired views, subscriptions, and implicit terminal startup must not return');
-for(const file of ['goalsStore.ts','ui/fabricPresentation.ts','workbench/BrowserPopoutApp.tsx','styles/knowledge-surfaces.css'])assert.equal(fs.existsSync(path.join(source,file)),false,file+' is retired');
+for(const file of ['memoryStore.ts','MemoryDestination.tsx','ui/fabricPresentation.ts','workbench/BrowserPopoutApp.tsx','styles/knowledge-surfaces.css'])assert.equal(fs.existsSync(path.join(source,file)),false,file+' is retired');
+const goals=fs.readFileSync(path.join(source,'goalsStore.ts'),'utf8');
+assert.match(goals,/goals:loops:create/,'durable goal controls remain reachable');
+assert.doesNotMatch(goals,/memory:|core:set|proposal:|consolidate/,'Goals cannot write or approve fact memory');
 const electron=['deck-preload.js','electron-deck-ipc.js','electron-app-boot.js'].map(file=>fs.readFileSync(path.join(root,file),'utf8')).join('\n');
 assert.doesNotMatch(electron,/workbench:browser:(?:popout|location|closed)|__variant1BrowserPopout/,'Native panels are the sole browser detachment path');
 // These remain live entry points, not legacy workspace copies.

@@ -407,7 +407,7 @@ def test_public_jobs_root_is_absent_while_returned_handle_dispatch_remains(
     assert _api_method_aliases(document, "jobs") == set()
     assert _api_method_aliases(document, "goals") == set()
     assert _api_method_aliases(document, "session") == {
-        "status", "continuity", "configure_continuity", "checkpoint",
+        "context", "status", "continuity", "configure_continuity", "checkpoint",
         "restart", "report_outcome",
     }
     prompt = service.runtime_prompt("chat-work", "check the current jobs")
@@ -485,7 +485,7 @@ async def test_kernel_continuity_is_absorbed_by_immutable_session_control(
         "principal_actor_id": "model",
         "run_id": "run-kernel-continuity",
     }
-    assert registry.get("session").schema_revision == "variant1.session.v3"
+    assert registry.get("session").schema_revision == "variant1.session.v4"
     assert registry.get("kernel") is None
     assert not any(
         registry.get(name) is not None
@@ -823,7 +823,7 @@ def test_operate_mount_combines_interaction_and_children(catalog_stack):
     assert {row["alias"] for row in document["capabilities"]} == {"ask_user"}
     assert set(document["mounted_objects"]) == {"children", "peers"}
     assert _api_method_aliases(document, "children") == {
-        "spawn", "list", "tree",
+        "spawn", "list", "tree", "wait",
     }
     assert all(
         row["projection"] == "seeds" and row["call"].startswith("tools.")
@@ -1466,7 +1466,7 @@ def test_mount_persists_alias_projection_and_cas_allows_one_winner(
         "search", "mount", "mutation_status", "rollback", "reset", "reset_all",
     }
     assert _api_method_aliases(document, "session") == {
-        "status", "continuity", "configure_continuity", "checkpoint",
+        "context", "status", "continuity", "configure_continuity", "checkpoint",
         "restart", "report_outcome",
     }
     restarted = SessionRuntimeRegistry(runtimes.repository)
@@ -1682,6 +1682,65 @@ async def test_ordinary_python_composes_repeated_seed_calls(catalog_stack):
 
 
 @pytest.mark.asyncio
+async def test_external_context_runs_on_base_session_without_mutation_or_extra_slot(catalog_stack, tmp_path):
+    from external_context import SessionContextService, register_context_router
+    from tests.support.conversation_sessions import open_sessions
+
+    registry, enabled, runtimes, artifacts, broker, service, manager = catalog_stack
+    sessions = open_sessions(tmp_path / "context-chat")
+    chat_id = sessions.create_session()
+    sessions.append_messages(chat_id, [{"role": "user", "text": "retained historical evidence"}])
+    reader = SessionContextService(database_path=str(tmp_path / "context-reader.sqlite3"),
+        sessions=sessions, kernel=manager, artifacts=artifacts, runtimes=runtimes)
+    runtime = SimpleNamespace(session_context=reader, registry=registry, broker=broker,
+        work=WorkService.open(str(tmp_path / "context-work.sqlite3")))
+    host = SimpleNamespace(registry=registry, require_runtime=lambda: runtime)
+    service.host = host
+    register_context_router(host)
+    register_work_fabric_tools(host)
+    enabled.update(tool.name for tool in registry.all())
+    service.reconcile_registry()
+    runtimes.ensure_runtime(chat_id, is_new=True)
+    runtimes.set_mutation_write_enabled(chat_id, False, actor="test")
+    before = service.namespace_document(chat_id)[0]
+    try:
+        result = await manager.execute(chat_id=chat_id, code=(
+            "history = session.context()\n"
+            "assert history.status()['watermarks']['ledger_through_sequence'] == 0\n"
+            "page = history.read(limit=1)\n"
+            "print(history.expand(source_id=page['items'][0]['source_id'])['text'])\n"
+            "print(history.status()['counts'])\n"
+        ), run_id="context-run", outer_tool_call_id="context-call")
+        assert result.ok, result.to_dict()
+        assert "retained historical evidence" in result.output.text()
+        continued = await manager.execute(chat_id=chat_id, code=(
+            "refreshed = history.refresh()\n"
+            "assert history.read(kind='cell')['items'] == []\n"
+            "assert len(refreshed.read(kind='cell')['items']) == 1\n"
+            "saved_view_id = history.id\n"
+            "print('FROZEN_AND_REFRESHED')\n"
+            "print('VIEW_ID=' + saved_view_id)\n"
+        ), run_id="context-run-2", outer_tool_call_id="context-call-2")
+        assert continued.ok, continued.to_dict()
+        saved_view_id = next(line.removeprefix("VIEW_ID=") for line in continued.output.text().splitlines()
+                             if line.startswith("VIEW_ID="))
+        await manager.restart(chat_id, reason="context_reopen_test")
+        # Reopening requires only the durable identity, not an old Python handle.
+        reopened = await manager.execute(chat_id=chat_id, code=(
+            f"reopened = session.context(view_id={saved_view_id!r})\n"
+            f"assert reopened.id == {saved_view_id!r}\n"
+            "assert reopened.read(kind='cell')['items'] == []\n"
+        ), run_id="context-run-3", outer_tool_call_id="context-call-3")
+        assert reopened.ok, reopened.to_dict()
+        after = service.namespace_document(chat_id)[0]
+        assert after["capabilities"] == before["capabilities"]
+        assert not any(row.get("alias") == "context" for row in after["capabilities"])
+        assert "context" in service.runtime_prompt(chat_id)
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_session_and_artifacts_objects_are_chat_scoped(catalog_stack):
     _registry, _enabled, runtimes, artifacts, _broker, service, manager = catalog_stack
     for chat_id in ("scope-a", "scope-b"):
@@ -1788,7 +1847,7 @@ def test_delete_removes_mount_history_and_chat_authority_disables_mutation(catal
         "search", "mount", "mutation_status", "rollback", "reset", "reset_all",
     }
     assert _api_method_aliases(document, "session") == {
-        "status", "continuity", "configure_continuity", "checkpoint",
+        "context", "status", "continuity", "configure_continuity", "checkpoint",
         "restart", "report_outcome",
     }
     assert service.repository.history("chat-delete")

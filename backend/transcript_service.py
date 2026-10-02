@@ -122,6 +122,22 @@ class TranscriptService:
                 self._compaction_retries[key] = transcript_economy.CompactionRetryState()
             retry_state = self._compaction_retries[key]
 
+        def retain_state(state):
+            store = getattr(self.host.require_runtime(), "session_artifacts", None)
+            if store is None or not chat_id:
+                return ""
+            return store.put_json({"schema": "variant1.context-file-state.v1", **state},
+                                  kind="context_file_state", scope=chat_id).ref
+
+        def resolve_state(ref):
+            store = getattr(self.host.require_runtime(), "session_artifacts", None)
+            if store is None or not chat_id:
+                return None
+            value = json.loads(store.read_bytes_scoped(ref, chat_id))
+            if value.get("schema") != "variant1.context-file-state.v1":
+                return None
+            return value
+
         compacted = await transcript_economy.compress_messages(
             messages,
             complete=_complete,
@@ -130,6 +146,8 @@ class TranscriptService:
             should_stop=should_stop,
             goal_context=goal_context,
             retry_state=retry_state,
+            retain_file_state=retain_state,
+            resolve_file_state=resolve_state,
         )
         # A category can change many turns after the original system prompt was
         # built. After compaction, refresh only its Working environment from

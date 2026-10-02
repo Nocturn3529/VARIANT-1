@@ -35,11 +35,11 @@ import {
   setGeneralContext,
 } from "./generalStore";
 import {
-  ingestMemory,
-  refreshMemoryQuiet,
-  setMemoryConnection,
-  setMemoryContext,
-} from "./memoryStore";
+  ingestGoals,
+  refreshGoalsQuiet,
+  setGoalsConnection,
+  setGoalsContext,
+} from "./goalsStore";
 import {
   enterOverview,
   stopOverview,
@@ -340,12 +340,12 @@ reg("react-runtime-execution", storeModuleHooks({
   ingest: ingestTerminal,
 }));
 
-reg("react-runtime-memory", storeModuleHooks({
-  setContext: setMemoryContext,
-  setConnection: setMemoryConnection,
-  ingest: ingestMemory,
-  settingsCategory: "memory",
-  onSettings: refreshMemoryQuiet,
+reg("react-runtime-goals", storeModuleHooks({
+  setContext: setGoalsContext,
+  setConnection: setGoalsConnection,
+  ingest: ingestGoals,
+  settingsCategory: "goals",
+  onSettings: refreshGoalsQuiet,
 }));
 
 reg("react-runtime-automations", storeModuleHooks({

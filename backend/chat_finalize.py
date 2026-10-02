@@ -413,32 +413,9 @@ async def _run_post_turn_effects(
     interrupted: bool,
     completion_status: str,
     run: Any,
-    extract_memory: bool,
     turn_seq: int,
 ) -> None:
     """Run optional continuity/speech work outside chat admission ownership."""
-
-    if extract_memory:
-        memory_user_text = "\n\n".join(
-            str(row.get("text") or "")
-            for row in transcript
-            if row.get("role") == "user" and str(row.get("text") or "").strip()
-        )
-        try:
-            memory_job = ports.memory.extract_and_store(
-                memory_user_text,
-                reply,
-                evidence={
-                    "session_id": sid or "",
-                    "interrupted": bool(interrupted),
-                    "completion_status": str(completion_status or ""),
-                    "tools_used": list((run or {}).get("tools_used") or []),
-                },
-            )
-            with observe_usage_category("memory"):
-                await memory_job
-        except Exception:
-            _LOG.exception("post-turn memory extraction failed")
 
     if (
         reply
@@ -491,7 +468,6 @@ async def finish_chat_turn(
     terminal_reason: str = "",
     length_recoveries: int = 0,
     transcript_id: str = "",
-    extract_memory: bool = True,
     commit_transcript_terminal: Any = None,
 ) -> None:
     """Commit one terminal exchange, then release optional post-turn effects."""
@@ -685,7 +661,6 @@ async def finish_chat_turn(
                 interrupted=interrupted,
                 completion_status=completion_status,
                 run=run,
-                extract_memory=extract_memory,
                 turn_seq=int(getattr(session, "latest_turn_seq", 0) or 0),
             ),
             name=f"chat-post-turn:{str(sid or 'unknown')[:48]}",

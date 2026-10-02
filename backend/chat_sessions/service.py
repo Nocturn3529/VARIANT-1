@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import heapq
 import json
 import os
 import threading
@@ -1334,6 +1335,61 @@ class ChatSessionService:
             and row.get("role") in {"user", "assistant"}
             and row.get("text")
         ]
+
+    def context_sources(self, sid: str) -> dict:
+        """Exact committed ancestry for an on-demand reader, not UI history."""
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None:
+                return {"cursor": None, "items": []}
+            rows = conn.execute(
+                "WITH RECURSIVE ancestry(node_id) AS (SELECT ? UNION "
+                "SELECT e.from_node_id FROM conversation_edge e JOIN ancestry a "
+                "ON e.to_node_id=a.node_id WHERE e.conversation_id=? AND e.from_node_id IS NOT NULL) "
+                "SELECT n.* FROM conversation_node n JOIN ancestry a "
+                "ON n.node_id=a.node_id WHERE n.conversation_id=?",
+                (owner["head_node_id"], owner["conversation_id"], owner["conversation_id"]),
+            ).fetchall() if owner["head_node_id"] else []
+            # Unique-node traversal avoids exponential paths through merged DAGs.
+            # Topological ordering respects causality even when clocks coincide
+            # or timestamps were imported from another host.
+            by_id = {row["node_id"]: row for row in rows}
+            parents = {node: set() for node in by_id}
+            children = {node: set() for node in by_id}
+            for edge in conn.execute(
+                "SELECT from_node_id,to_node_id FROM conversation_edge WHERE conversation_id=?",
+                (owner["conversation_id"],),
+            ):
+                parent, child = edge["from_node_id"], edge["to_node_id"]
+                if parent in by_id and child in by_id:
+                    parents[child].add(parent)
+                    children[parent].add(child)
+            ready = [(by_id[node]["created_at"], node) for node in by_id if not parents[node]]
+            heapq.heapify(ready)
+            ordered = []
+            while ready:
+                _, node = heapq.heappop(ready)
+                ordered.append(by_id[node])
+                for child in children[node]:
+                    parents[child].remove(node)
+                    if not parents[child]:
+                        heapq.heappush(ready, (by_id[child]["created_at"], child))
+            if len(ordered) != len(rows):
+                raise ValueError("Session context ancestry contains a cycle")
+            return {"cursor": coverage(owner, ordered), "items": [dict(row) for row in ordered]}
+
+    def context_source(self, sid: str, head_node_id: str, node_id: str) -> dict:
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None or not self.repository._is_reachable_tx(
+                conn, owner["conversation_id"], owner["head_node_id"], head_node_id,
+            ) or not self.repository._is_reachable_tx(conn, owner["conversation_id"], head_node_id, node_id):
+                raise ValueError("context source is outside this session's captured ancestry")
+            row = conn.execute("SELECT * FROM conversation_node WHERE node_id=? AND conversation_id=?",
+                               (node_id, owner["conversation_id"])).fetchone()
+            if row is None:
+                raise ValueError("context source is unavailable")
+            return dict(row)
 
     def search(
         self, query: str, *, limit: int = 8, max_sessions: int = 200,

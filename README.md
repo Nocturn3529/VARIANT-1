@@ -98,8 +98,12 @@ Cloud model requests send selected messages and tool results to the chosen
 provider. Using a desktop app does not make cloud inference local.
 
 Live Python state can be lost on restart, reset, eviction, or failure. Optional
-portable checkpoints, durable chat records, and approved memory are separate
-mechanisms, and not every live object is restorable. Portable checkpointing and
+portable checkpoints, durable chat records, and on-demand session context have
+separate contracts, and not every live object is restorable. Agents retrieve
+earlier session evidence through `session.context()`; the harness does not inject
+stored profiles or inferred fact memories, or extract memories after turns.
+Cross-session memory is deferred.
+Portable checkpointing and
 restoration are disabled by default. See [state lifetimes](docs/ARCHITECTURE.md#state-lifetimes).
 
 ## Development

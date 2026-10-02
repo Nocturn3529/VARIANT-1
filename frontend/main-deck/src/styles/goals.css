@@ -1,0 +1,334 @@
+/* Durable Goals page. Shared Deck primitives retain their existing paint. */
+
+.memory-page {
+  padding-bottom: 42px;
+}
+
+.memory-page__utilities {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.memory-page__utilities .deck-button {
+  min-width: 0;
+}
+
+.memory-loops-section {
+  border: 1px solid var(--deck-line);
+  background: var(--deck-canvas);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+}
+
+.loop-detail__danger:focus-visible {
+  outline: 2px solid var(--deck-focus);
+  outline-offset: 2px;
+}
+
+.loop-status {
+  font-family: var(--font-mono);
+}
+
+.memory-loops-section {
+  border-radius: var(--deck-radius-md);
+}
+
+.memory-loops-section {
+  margin-top: 12px;
+  padding: 0;
+}
+
+.memory-section-heading {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 0;
+  gap: 24px;
+}
+
+.memory-section-heading > div {
+  min-width: 0;
+}
+
+.memory-section-heading h2 {
+  margin: 0;
+  color: var(--deck-text-primary);
+  font-size: var(--deck-text-lg);
+  font-weight: 620;
+  line-height: 1.15;
+}
+
+.memory-section-heading p {
+  margin: 4px 0 0;
+  color: var(--deck-text-muted);
+  font-size: var(--deck-text-xs);
+  line-height: 1.45;
+}
+
+.loop-create-row {
+  display: grid;
+  grid-template-columns: minmax(120px, .5fr) minmax(220px, 1.4fr) auto;
+  margin-bottom: 0;
+  padding: 12px 14px;
+  gap: 7px;
+  border-bottom: 1px solid var(--deck-line);
+  background: var(--deck-canvas);
+}
+
+.loop-create-row input {
+  border: 1px solid var(--deck-line);
+  border-radius: 6px;
+  background: var(--deck-canvas);
+}
+
+.loop-create-row input {
+  min-width: 0;
+  height: var(--deck-control-height);
+  padding: 0 9px;
+  outline: 0;
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-sm);
+}
+
+.loop-create-row input::placeholder {
+  color: var(--deck-text-faint);
+}
+
+.loop-create-row input:focus {
+  border-color: var(--deck-focus);
+}
+
+.loop-create-row button:not(.deck-button) {
+  height: var(--deck-control-height);
+  padding: 0 12px;
+  border: 1px solid var(--deck-text-primary);
+  border-radius: 6px;
+  color: var(--deck-canvas);
+  background: var(--deck-text-primary);
+  font-size: var(--deck-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.loop-create-row button:not(.deck-button):hover {
+  opacity: .88;
+}
+
+.loop-create-row button:not(.deck-button):focus-visible,
+.loop-row:focus-visible {
+  outline: 2px solid var(--deck-focus);
+  outline-offset: 2px;
+}
+
+.loop-layout {
+  min-height: 220px;
+  display: grid;
+  grid-template-columns: minmax(220px, .85fr) minmax(280px, 1.25fr);
+  gap: 0;
+  background: var(--deck-canvas);
+}
+
+.loop-list {
+  max-height: 360px;
+  display: grid;
+  align-content: start;
+  overflow: auto;
+  gap: 0;
+  border-right: 1px solid var(--deck-line);
+  scrollbar-color: var(--deck-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+.loop-row,
+.loop-detail {
+  border: 0;
+  background: var(--deck-canvas);
+}
+
+.loop-row {
+  display: block;
+  grid-template-columns: none;
+  padding: 11px 14px;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.loop-row:hover,
+.loop-row.is-selected {
+  background: var(--deck-surface-subtle);
+}
+
+.loop-row.is-selected {
+  box-shadow: inset 2px 0 0 var(--deck-text-primary);
+}
+
+.loop-row__main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.loop-row__main strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--deck-text-primary);
+  font-size: var(--deck-text-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loop-row p {
+  display: -webkit-box;
+  margin: 5px 0 0;
+  overflow: hidden;
+  color: var(--deck-text-muted);
+  font-size: var(--deck-text-xs);
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.loop-row small {
+  display: block;
+  margin-top: 6px;
+  color: var(--deck-text-faint);
+  font-size: var(--deck-text-xs);
+}
+
+.loop-status {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid var(--deck-line-soft);
+  border-radius: 999px;
+  color: var(--deck-text-muted);
+  background: var(--deck-surface-raised);
+  font-size: var(--deck-text-xs);
+  font-weight: 650;
+  letter-spacing: .04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.loop-status--active,
+.loop-status--paused,
+.loop-status--done,
+.loop-status--archived {
+  color: var(--deck-text-muted);
+  background: var(--deck-surface-raised);
+}
+
+.loop-detail {
+  min-height: 200px;
+  padding: 14px;
+  border-radius: 0;
+}
+
+.loop-detail__head {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  margin-bottom: 9px;
+  gap: 8px;
+}
+
+.loop-detail__head h3 {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--deck-text-primary);
+  font-size: var(--deck-text-md);
+  font-weight: 620;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loop-detail__actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  gap: 5px;
+}
+
+.loop-detail__actions button:not(.deck-button) {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  color: var(--deck-text-secondary);
+  background: var(--deck-surface-raised);
+  font-size: var(--deck-text-sm);
+  cursor: pointer;
+}
+
+.loop-detail__actions button:not(.deck-button):hover {
+  color: var(--deck-text-primary);
+  border-color: var(--deck-line-strong);
+}
+
+.loop-detail__danger {
+  color: var(--deck-text-muted) !important;
+}
+
+.loop-detail__block {
+  margin-top: 12px;
+}
+
+.loop-detail__block .eyebrow {
+  display: block;
+  margin-bottom: 5px;
+}
+
+.loop-detail__block p,
+.loop-detail__block ul,
+.loop-notes {
+  color: var(--deck-text-muted);
+  font-size: var(--deck-text-xs);
+  line-height: 1.5;
+}
+
+.loop-detail__block p {
+  margin: 0 0 5px;
+}
+
+.loop-detail__block ul {
+  margin: 0;
+  padding-left: 17px;
+}
+
+.loop-detail__block li + li {
+  margin-top: 3px;
+}
+
+.loop-progress-list li[data-kind="done"],
+.loop-progress-list li[data-kind="blocked"],
+.loop-progress-list li[data-kind="next"] {
+  color: var(--deck-text-muted);
+}
+
+.loop-notes {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.loop-notes code {
+  color: var(--deck-text-secondary);
+  font-family: var(--font-mono);
+}
+
+@media (max-width: 830px) {
+.loop-layout,
+.loop-create-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+.loop-list {
+    border-right: 0;
+    border-bottom: 1px solid var(--deck-line);
+  }
+
+}

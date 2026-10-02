@@ -12,5 +12,5 @@ def test_astb_construction_value_has_no_host_alias_fields():
     assert set(AstbServices.__dataclass_fields__) == {
         "registry", "broker", "catalog", "catalog_releases",
         "session_control", "session_runtimes", "kernel", "actions",
-        "session_artifacts", "memory_store",
+        "session_artifacts",
     }

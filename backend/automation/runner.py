@@ -58,7 +58,6 @@ class AutomationPorts:
     history: Any
     emit: Callable[..., Awaitable[None]]
     new_run: Callable[[str, str], Optional[dict]]
-    mem_query: Callable[..., Awaitable[list]]
     build_system_prompt: Callable[..., str]
     require_bound_run_context: Callable[..., Any]
     prior_incomplete_run: Callable[[str], Any]
@@ -243,9 +242,8 @@ async def _execute_automation(
         "worker_source": worker_source,
     })
 
-    memories = await ports.mem_query(text, 5)
     system_prompt = ports.build_system_prompt(
-        memories, "Scheduled run; no user is present."
+        attachment_context="Scheduled run; no user is present."
     )
     system_prompt += "\n\n[Automated run: complete the task and give a short proactive result.]"
     tool_surface = ports.agent.tools
@@ -267,7 +265,7 @@ async def _execute_automation(
 
     # When resuming, headless_worker_prepare_node uses resume_snap["messages"]
     # in place of the fresh messages above -- but with today's system prompt
-    # (current tools/memories/mode) spliced in and the interrupted_note added,
+    # (current tools/mode) spliced in and the interrupted_note added,
     # not the stale one from the interrupted run, mirroring how main chat
     # resume refreshes its system prefix (snapshot_utils.restore_messages_from_run_state).
     resume_snap = None

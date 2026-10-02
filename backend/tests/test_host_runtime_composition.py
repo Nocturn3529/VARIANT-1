@@ -26,7 +26,7 @@ from host_runtime import (
     HostRuntime,
     KernelRuntime,
     LifecycleRuntime,
-    MemoryRuntime,
+    SessionContextRuntime,
     ModelRuntime,
     PeerRuntime,
     ToolRuntime,
@@ -59,7 +59,7 @@ def test_host_modules_never_import_the_server_composition_root():
 def test_runtime_manifest_contains_only_named_service_protocols():
     assert get_type_hints(HostRuntime) == {
         "chat": ChatRuntime,
-        "memory": MemoryRuntime,
+        "session_context": SessionContextRuntime,
         "models": ModelRuntime,
         "voice": VoiceRuntime,
         "workflows": WorkflowRuntime,
@@ -107,7 +107,10 @@ def test_production_runtime_is_concrete_and_signature_complete():
     runtime = server.APP.require_runtime()
 
     assert isinstance(runtime.chat, ChatRuntime)
-    assert isinstance(runtime.memory, MemoryRuntime)
+    assert isinstance(runtime.session_context, SessionContextRuntime)
+    assert not hasattr(runtime, "memory")
+    assert not hasattr(server.APP, "mem_query")
+    assert not hasattr(server.APP.chat_ports(), "memory")
     assert isinstance(runtime.models, ModelRuntime)
     assert isinstance(runtime.voice, VoiceRuntime)
     assert isinstance(runtime.workflows, WorkflowRuntime)

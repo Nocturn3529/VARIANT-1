@@ -1,7 +1,7 @@
 """Metadata-only context evidence for one interactive chat model request.
 
 This is an observability stage, not prompt construction. It records what was
-selected or projected without copying prompt, memory, attachment, or image
+selected or projected without copying prompt, attachment, or image
 content into the receipt.
 """
 
@@ -25,7 +25,6 @@ class ChatContextEvidence:
     attachment_suffix: str
     display_attachments: list
     attachment_text: str
-    memories: list
     catalog_specs: list
     disclosed_tool_specs: list
     previous_run_block: str = ""
@@ -68,36 +67,6 @@ def build_chat_context_receipt(evidence: ChatContextEvidence) -> dict:
         bytes_before=len(evidence.base_system.encode("utf-8", errors="replace")),
         bytes_after=len(evidence.base_system.encode("utf-8", errors="replace")),
     )
-    for kind, source, producer, chars, trust in (
-        (
-            "profile", "profile_store", "prompt_profile",
-            int(getattr(evidence.prompt_context, "profile_chars", 0) or 0),
-            "retrieved_personal",
-        ),
-        (
-            "retrieved_memory", "builtin_memory", "prompt_memory",
-            int(getattr(
-                evidence.prompt_context, "retrieved_memory_chars", 0) or 0),
-            "retrieved_personal",
-        ),
-    ):
-        if chars <= 0:
-            continue
-        context_lineage.add_item(
-            receipt,
-            kind=kind,
-            source=source,
-            trust=trust,
-            decision="kept",
-            reason="top_k" if producer == "prompt_memory" else "required",
-            relevance="selected",
-            producer=producer,
-            chars_before=chars,
-            chars_after=chars,
-            bytes_before=chars,
-            bytes_after=chars,
-            estimator="chars_div_3",
-        )
     context_lineage.add_item(
         receipt,
         kind="current_user",
@@ -135,31 +104,6 @@ def build_chat_context_receipt(evidence: ChatContextEvidence) -> dict:
             chars_before=len(evidence.attachment_text or ""),
             chars_after=len(evidence.attachment_suffix),
             truncated=truncated,
-        )
-    context_lineage.add_selection(
-        receipt,
-        kind="retrieved_memory",
-        source="builtin_memory",
-        trust="retrieved_personal",
-        reason="top_k",
-        considered=len(evidence.memories or []),
-        kept=len(evidence.memories or []),
-        dropped=0,
-        relevance="selected",
-    )
-    for rank, memory in enumerate(evidence.memories or [], start=1):
-        memory_chars = len(str(memory or ""))
-        context_lineage.add_item(
-            receipt,
-            kind="retrieved_memory",
-            source="builtin_memory",
-            trust="retrieved_personal",
-            decision="kept",
-            reason="top_k",
-            relevance="selected",
-            rank=rank,
-            chars_before=memory_chars,
-            chars_after=memory_chars,
         )
     context_lineage.add_selection(
         receipt,

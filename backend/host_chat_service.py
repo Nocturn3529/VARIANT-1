@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Callable
 
 import background_tasks
 import chat_pipeline
-import host_memory_ops
 import host_orphan
 import host_prompt
 from transcript_service import TranscriptService
@@ -136,24 +135,7 @@ class ChatService:
     def build_task_turn_ports(self, websocket, session):
         return self.host.task_turn_ports(websocket, session)
 
-    async def extract_and_store(
-        self,
-        user_text: str,
-        reply: str,
-        *,
-        evidence: dict | None = None,
-    ) -> list[str]:
-        return await host_memory_ops.extract_and_store(
-            self.host, user_text, reply, evidence=evidence)
 
-    async def remember_explicit(
-        self,
-        text: str,
-        *,
-        session_id: str = "",
-    ) -> bool:
-        return await host_memory_ops.remember_explicit(
-            self.host, text, session_id=session_id)
 
     async def compress_messages(
         self,
@@ -188,28 +170,26 @@ class ChatService:
             image_b64=image_b64,
         )
 
-    def prompt_context(self, memories: list, attachment_context: str = ""):
+    def prompt_context(self, attachment_context: str = ""):
         return host_prompt.prompt_context(
-            self.host, memories, attachment_context=attachment_context)
+            self.host, attachment_context=attachment_context)
 
     def vision_state(self) -> tuple[bool, str]:
         return self.models.vision_state()
 
     def build_system_prompt(
         self,
-        memories: list,
         attachment_context: str = "",
     ) -> str:
         return host_prompt.build_system_prompt(
-            self.host, memories, attachment_context=attachment_context)
+            self.host, attachment_context=attachment_context)
 
     def build_internal_system_prompt(
         self,
-        memories: list,
         attachment_context: str = "",
     ) -> str:
         return host_prompt.build_internal_system_prompt(
-            self.host, memories, attachment_context=attachment_context)
+            self.host, attachment_context=attachment_context)
 
     def snapshot_resume_state(self, chat_id: str = ""):
         return host_orphan.snapshot_resume_state(self.host, chat_id)

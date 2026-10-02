@@ -115,10 +115,8 @@ async def test_handle_chat_task_path_completes_without_crash(fake_ws, session):
     with (
         _patch_runtime(chat={
             "vision_state": lambda: (False, "text"),
-            "extract_and_store": AsyncMock(),
         }),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_OFF),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value={"id": "run-test", "step": 0}),
@@ -151,8 +149,9 @@ async def test_handle_chat_task_path_completes_without_crash(fake_ws, session):
     assert receipt["purpose"] == "main_chat_step"
     selection_kinds = {row["kind"] for row in receipt["selections"]}
     assert {
-        "conversation_history", "retrieved_memory", "tool_schema",
+        "conversation_history", "tool_schema",
     } <= selection_kinds
+    assert "retrieved_memory" not in selection_kinds
     assert any(
         row["kind"] == "current_user" for row in receipt["items"]
     )
@@ -173,12 +172,10 @@ async def test_handle_chat_greeting_stays_casual_and_does_not_capture_vision(fak
         _patch_runtime(
             chat={
                 "vision_state": lambda: (True, "single"),
-                "extract_and_store": AsyncMock(),
             },
         ),
         patch.object(server.APP.require_runtime().desktop, "capture", new=capture),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_SINGLE),
         patch.object(server.APP, "emit_activity", new=emit),
     ):
@@ -203,12 +200,10 @@ async def test_desktop_task_does_not_capture_foreground_screen_automatically(fak
         _patch_runtime(
             chat={
                 "vision_state": lambda: (True, "single"),
-                "extract_and_store": AsyncMock(),
             },
         ),
         patch.object(server.APP.require_runtime().desktop, "capture", new=capture),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_SINGLE),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value={"id": "run-test", "step": 0}),
@@ -233,12 +228,10 @@ async def test_handle_chat_screen_words_never_capture_automatically(fake_ws, ses
         _patch_runtime(
             chat={
                 "vision_state": lambda: (True, "single"),
-                "extract_and_store": AsyncMock(),
             },
         ),
         patch.object(server.APP.require_runtime().desktop, "capture", new=capture),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_SINGLE),
         patch.object(server.APP, "emit_activity", new=emit),
     ):
@@ -268,10 +261,8 @@ async def test_user_image_attachment_is_labeled_and_sent_to_model(fake_ws, sessi
     with (
         _patch_runtime(chat={
             "vision_state": lambda: (True, "single"),
-            "extract_and_store": AsyncMock(),
         }),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_SINGLE),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
     ):
@@ -323,11 +314,9 @@ async def test_unified_first_prompt_does_not_render_task_contract(fake_ws, sessi
     with (
         _patch_runtime(chat={
             "vision_state": lambda: (False, "text"),
-            "extract_and_store": AsyncMock(),
         }),
         patch.object(server.APP, "Task", TaskSpy),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_OFF),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value=None),
@@ -375,7 +364,7 @@ async def test_finish_chat_turn_persists_and_broadcasts(fake_ws, session):
     server.APP.hub.add(other)
     try:
         with (
-            _patch_runtime(chat={"extract_and_store": AsyncMock()}),
+            _patch_runtime(chat={}),
             patch.object(server.APP, "tts_enabled", return_value=False),
         ):
             await chat_pipeline.finish_chat_turn(
@@ -397,37 +386,6 @@ async def test_finish_chat_turn_persists_and_broadcasts(fake_ws, session):
     assert appended[-1]["assistant"]["text"] == "Noted."
 
 
-@pytest.mark.asyncio
-async def test_finish_chat_turn_memory_failure_is_logged_after_durability(
-    fake_ws,
-    session,
-    caplog,
-):
-    sid = server.APP.require_runtime().sessions.get_active()
-    session.active.turn_session_id = sid
-    failing_memory = MagicMock(side_effect=RuntimeError("memory backend offline"))
-
-    with (
-        _patch_runtime(chat={"extract_and_store": failing_memory}),
-        patch.object(server.APP, "tts_enabled", return_value=False),
-        caplog.at_level("ERROR", logger="chat_finalize"),
-    ):
-        await chat_pipeline.finish_chat_turn(
-            server.APP.chat_ports(),
-            fake_ws,
-            session,
-            "remember the durable result",
-            "neutral",
-            "Saved in chat.",
-        )
-        await session.active.post_turn_task
-
-    messages = server.APP.require_runtime().sessions.get_session(
-        sid
-    )["messages"]
-    assert messages[-1]["text"] == "Saved in chat."
-    assert session.active.turn_persisted is True
-    assert "post-turn memory extraction failed" in caplog.text
 
 
 @pytest.mark.asyncio

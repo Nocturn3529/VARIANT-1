@@ -26,7 +26,7 @@ export type SettingsCategory =
   | "voice"
   | "messaging"
   | "plugins"
-  | "memory"
+  | "goals"
   | "about";
 
 export type AppState = Readonly<{
@@ -47,14 +47,14 @@ const requestedInitialView = validViews.has(initialView as PrimaryView)
 const store = createExternalStore<AppState>({
   view: requestedInitialView === "memory" ? "settings" : requestedInitialView,
   settingsReturnView: "chat",
-  settingsCategory: requestedInitialView === "memory" ? "memory" : "general",
+  settingsCategory: requestedInitialView === "memory" ? "goals" : "general",
 });
 
 export function navigateTo(view: PrimaryView): void {
   if (["runtime", "overview", "automations"].includes(view) && focusNativeWindow(nativeUtilityKey(view))) return;
   // Route the public Memory deep link to its current Settings page.
   if (view === "memory") {
-    selectSettingsCategory("memory");
+    selectSettingsCategory("goals");
     navigateTo("settings");
     return;
   }

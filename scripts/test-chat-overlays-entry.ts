@@ -9,7 +9,7 @@ import {canRevealPaneForStep} from "../frontend/main-deck/src/workbench/activity
 
 navigateTo("memory");
 assert.equal(getAppState().view, "settings", "legacy Memory links must open Settings");
-assert.equal(getAppState().settingsCategory, "memory");
+assert.equal(getAppState().settingsCategory, "goals");
 closeSettings();
 assert.equal(getAppState().view, "chat");
 for (const view of ["automations", "overview", "runtime"] as const) {

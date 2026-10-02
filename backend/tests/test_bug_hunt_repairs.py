@@ -253,27 +253,8 @@ async def test_multi_archive_progress_is_monotonic_through_download_and_extract(
     assert values[4] < values[-1] and values[-1] == 96
 
 
-@pytest.mark.asyncio
-async def test_missing_memory_owner_is_rejected_before_paid_extraction(monkeypatch):
-    import host_memory_ops
-    extract = AsyncMock()
-    monkeypatch.setattr(host_memory_ops.memory_tools, "extract_and_store", extract)
-    monkeypatch.setattr(host_memory_ops, "_chat_id", lambda: "")
-    with pytest.raises(ValueError, match="session_id"):
-        await host_memory_ops.extract_and_store(SimpleNamespace(), "remember", "reply")
-    extract.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_partial_memory_results_disclose_history_search_failure():
-    import memory_tools
-    def failure(*args, **kwargs):
-        raise OSError("fixture search unavailable")
-    ports = SimpleNamespace(store=SimpleNamespace(retrieve=lambda *a, **kw: []),
-        sessions=SimpleNamespace(search=failure))
-    result = await memory_tools.retrieve_memory(ports, {"query": "prior work"})
-    assert "Conversation history could not be searched" in result
-    assert "No stored memory" not in result
 
 
 def test_peer_leader_default_comes_from_proven_native_process(monkeypatch, tmp_path):

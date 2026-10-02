@@ -72,6 +72,18 @@ CHILD_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
             "limit": {"type": "integer", "required": False, "minimum": 1, "maximum": 100},
         },
     },
+    {
+        "name": "wait",
+        "description": "Observe a set of children. Zero timeout returns snapshots; otherwise wait for the first new terminal/interrupted outcome under one shared timeout. after_cursor suppresses previously delivered results; inspect a handle for full detail.",
+        "effect_class": "read",
+        "params": {
+            "targets": {"type": "array", "required": False,
+                        "description": "Child IDs or bound child handles; omitted selects a bounded newest-child roster."},
+            "limit": {"type": "integer", "required": False, "minimum": 1, "maximum": 100},
+            "timeout_s": {"type": "number", "required": False, "minimum": 0, "maximum": 30, "default": 0},
+            "after_cursor": {"type": "string", "required": False},
+        },
+    },
 )
 
 CHILD_HANDLE_METHODS: tuple[dict[str, Any], ...] = (
@@ -164,9 +176,10 @@ def _child_method_arguments(
 
 from .outcomes import ChildOutcomes
 from .inspection import ChildInspection
+from .child_observation import ChildObservations
 
 
-class ChildSessionManager(ChildOutcomes,ChildInspection):
+class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
     def __init__(
         self,
         database_path: str,
@@ -183,6 +196,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         self._active_executions = 0
         self._change_lock = threading.RLock()
         self._change_publisher = None
+        self._wait_subscribers: dict[str, set[tuple[Any, asyncio.Event]]] = {}
         self._change_loop: asyncio.AbstractEventLoop | None = None
         self._pending_change_events: dict[tuple[str, str], dict[str, Any]] = {}
         self._spawn_pumps: dict[str, asyncio.Task] = {}
@@ -512,6 +526,13 @@ class ChildSessionManager(ChildOutcomes,ChildInspection):
         child = str(child_id or "").strip()
         if not parent:
             return
+        with self._change_lock:
+            subscribers = tuple(self._wait_subscribers.get(parent, ()))
+        for loop, event in subscribers:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                pass
         event: dict[str, Any] = {
             "type": "children:changed",
             "schema": "variant1.children-changed.v1",
@@ -1748,6 +1769,13 @@ def register_children_tool(
             return manager.tree(
                 invocation.chat_id, limit=int(payload.get("limit") or 100)
             )
+        if operation == "wait":
+            result = await manager.wait(invocation.chat_id, targets=payload.get("targets"),
+                timeout_s=payload.get("timeout_s", 0), after_cursor=payload.get("after_cursor", ""),
+                limit=payload.get("limit", 20))
+            for item in result["items"]:
+                item["handle"] = _child_handle(manager, invocation, item)
+            return result
         raise ToolError(f"unsupported children root operation: {operation}")
 
     registry.register(Tool(
@@ -1762,8 +1790,8 @@ def register_children_tool(
         effect_class="external_side_effect",
         parallel_safe=False,
         may_return_secrets=True,
-        schema_revision="variant1.children-seed.v4",
-        handler_revision="variant1.children-seed-handler.v3",
+        schema_revision="variant1.children-seed.v5",
+        handler_revision="variant1.children-seed-handler.v4",
         object_methods=CHILD_OBJECT_METHODS,
     ))
 

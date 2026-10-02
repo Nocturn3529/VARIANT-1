@@ -592,20 +592,27 @@ class McpV2Service:
         output: list[Any] = []
         cursor: str | None = None
         seen: set[str] = set()
-        while True:
+        deadline = asyncio.get_running_loop().time() + self.deadline_s
+        for _page in range(100):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                raise McpV2Error("MCP catalog listing exceeded its total deadline")
             result = await asyncio.wait_for(
-                fn(cursor=cursor) if cursor is not None else fn(), self.deadline_s
+                fn(cursor=cursor) if cursor is not None else fn(), remaining
             )
-            output.extend(self._items(result, field))
+            items = self._items(result, field)
+            if len(output) + len(items) > 20_000:
+                raise McpV2Error("MCP catalog listing exceeded 20000 items")
+            output.extend(items)
             raw = _dict(result)
             next_cursor = raw.get("nextCursor", raw.get("next_cursor"))
             if not next_cursor:
-                break
+                return output
             cursor = str(next_cursor)
             if cursor in seen:
                 raise McpV2Error("MCP pagination returned a repeated cursor")
             seen.add(cursor)
-        return output
+        raise McpV2Error("MCP catalog listing exceeded 100 pages")
 
     async def _refresh_server(self, server: _Server) -> None:
         catalog: dict[tuple[str, str], dict[str, Any]] = {}
@@ -615,8 +622,16 @@ class McpV2Service:
         for kind, method, field in operations:
             fn = getattr(server.session, method, None)
             if not callable(fn): continue
-            try: values = await self._list_pages(fn, field)
-            except Exception: continue
+            try:
+                values = await self._list_pages(fn, field)
+            except Exception as exc:
+                # Unsupported optional MCP inventories are empty by contract;
+                # incomplete/failed refreshes must not erase the last catalog.
+                code = getattr(getattr(exc, "error", None), "code", None)
+                code = getattr(exc, "code", code)
+                if code == -32601:
+                    continue
+                raise McpV2Error(f"MCP {method} refresh failed: {str(exc)[:300]}") from exc
             for value in values:
                 item = _dict(value)
                 name = str(

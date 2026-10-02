@@ -26,39 +26,31 @@ def format_local_datetime(value: datetime | None = None) -> str:
     return current.strftime("%A, %B %d, %Y, %I:%M %p ") + f"{zone} (UTC{offset})"
 
 
-def prompt_context(h, memories: list, attachment_context: str = "") -> PromptContext:
-    """Gather factual memory, attachment, time, and project prompt inputs.
+def prompt_context(h, attachment_context: str = "") -> PromptContext:
+    """Gather attachment, time, and project prompt inputs.
 
     Product personality is deliberately not injected.
     """
-    memory_store = h.require_runtime().memory.store
-    profile_block = memory_store.render_profile()
-    builtin_memory_block = "\n".join("- " + m for m in memories) if memories else ""
-    memory_block = builtin_memory_block[:2000]
     fallback = host_project_context(h)
     project = current_project_context(default_cwd=fallback.cwd)
     return PromptContext(
-        profile_block=profile_block,
-        memory_block=memory_block,
         attachment_context=attachment_context,
         datetime=format_local_datetime(),
         cwd=project.cwd,
         project_roots=project.roots,
-        profile_chars=len(profile_block),
-        retrieved_memory_chars=len(memory_block),
     )
 
 
-def build_system_prompt(h, memories: list, attachment_context: str = "") -> str:
+def build_system_prompt(h, attachment_context: str = "") -> str:
     """Full task prompt for user-visible scheduled/headless automation output."""
-    ctx = prompt_context(h, memories, attachment_context=attachment_context)
+    ctx = prompt_context(h, attachment_context=attachment_context)
     return prompt_builder.build_task_system(ctx)
 
 
-def build_internal_system_prompt(h, memories: list,
+def build_internal_system_prompt(h,
                                  attachment_context: str = "") -> str:
     """Mechanical worker prompt: contracts and factual context."""
-    ctx = prompt_context(h, memories, attachment_context=attachment_context)
+    ctx = prompt_context(h, attachment_context=attachment_context)
     return prompt_builder.build_task_system(ctx)
 
 

@@ -38,17 +38,11 @@ SUBAGENT_CONTRACT = (
 # ---- context passed in by the caller ---------------------------------------
 @dataclass
 class PromptContext:
-    profile_block: str = ""        # approved profile projection or ""
-    memory_block: str = ""         # retrieved long-term memory lines or ""
     project_instructions: str = "" # explicitly selected local project instructions
     attachment_context: str = ""   # user-selected image attachment note
     datetime: str = ""             # human-readable now
     cwd: str = ""                  # active working directory selected by the user
     project_roots: tuple[str, ...] = field(default_factory=tuple)
-    # Metadata-only sizes for the session context meter. They never render into
-    # provider input and therefore cannot change model behavior.
-    profile_chars: int = 0
-    retrieved_memory_chars: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,18 +79,10 @@ def _load(name: str, template_dirs: tuple[str, ...]) -> str:
     return ""
 
 
-def _core_section(profile_block: str) -> str:
-    pb = (profile_block or "").strip()
-    if not pb or pb.startswith("(nothing known"):
-        return ""
-    return "## About the user (core memory)\n" + pb
 
 
 def _context_section(ctx: PromptContext) -> str:
     parts = []
-    mb = (ctx.memory_block or "").strip()
-    if mb and "Nothing stored" not in mb:
-        parts.append("## Relevant memory\n" + mb)
     project = (ctx.project_instructions or "").strip()
     if project:
         parts.append("## Project instructions\n" + project)
@@ -154,7 +140,6 @@ def chat_prompt_projection(ctx: PromptContext) -> PromptProjection:
     return PromptProjection(
         stable=_CHAT_INSTRUCTIONS,
         current=assemble(
-            _core_section(ctx.profile_block),
             _context_section(ctx),
         ),
     )
@@ -167,7 +152,7 @@ def build_chat_system(ctx: PromptContext) -> str:
 
 
 def build_chat_current_context(ctx: PromptContext) -> str:
-    """Return fresh profile, project, attachment, time, and environment context."""
+    """Return fresh project, attachment, time, and environment context."""
 
     return chat_prompt_projection(ctx).current
 
@@ -188,8 +173,7 @@ def build_subagent_system(
     *,
     template_dirs: tuple[str, ...],
 ) -> str:
-    """Subagent mode: a LEAN, self-contained worker prompt — no core profile or
-    main-task state. Just the subagent contract + the caller's curated
+    """Subagent mode: a LEAN, self-contained worker prompt — no main-task state. Just the subagent contract + the caller's curated
     context + tools block. `context_block` carries the sub-goal's background."""
     contract = _subagent_contract(template_dirs)
     if "{context}" in contract:

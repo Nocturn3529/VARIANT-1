@@ -27,7 +27,7 @@ export function AboutSettings() {
   const healthCards = [
     {key: "backend", label: "BACKEND", title: health.backend, detail: health.backendDetail},
     {key: "model", label: "MODEL RUNTIME", title: health.model, detail: health.modelDetail},
-    {key: "memory", label: "MEMORY", title: health.memory, detail: health.memoryDetail},
+    {key: "context", label: "SESSION CONTEXT", title: health.sessionContext, detail: health.sessionContextDetail},
     {key: "scheduler", label: "WORK", title: health.scheduler, detail: health.schedulerDetail},
   ];
 

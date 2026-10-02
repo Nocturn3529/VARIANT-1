@@ -31,7 +31,7 @@ def test_attachment_lineage_uses_the_shared_limit_without_prompt_content():
         attachment_suffix=suffix,
         display_attachments=[{"name": "notes.txt"}],
         attachment_text=secret + suffix,
-        memories=[],
+
         catalog_specs=[],
         disclosed_tool_specs=[],
     ))
@@ -50,7 +50,7 @@ def test_history_lineage_reports_the_actual_prepared_projection(count):
         conversation=[{"role": "user", "content": "private history"}] * count,
         base_system="system", prompt_context=SimpleNamespace(),
         composer_text="follow up", model_text="follow up", attachment_suffix="",
-        display_attachments=[], attachment_text="", memories=[],
+        display_attachments=[], attachment_text="",
         catalog_specs=[], disclosed_tool_specs=[],
     ))
     history = next(item for item in receipt["selections"] if item["kind"] == "conversation_history")
@@ -64,7 +64,6 @@ def test_chat_prompt_keeps_instructions_stable_and_fresh_context_beside_raw_user
     raw_user_text = "Open the report in the requested viewer."
     first_system, first_model_text = project_chat_prompt(
         PromptContext(
-            profile_block="Prefers short summaries.",
             project_instructions="Run focused checks.",
             datetime="Monday 10:00",
             cwd=r"C:\workspace-one",
@@ -75,11 +74,9 @@ def test_chat_prompt_keeps_instructions_stable_and_fresh_context_beside_raw_user
             current="Current capability mount: Build",
         ),
         raw_user_text,
-        memory_block="Remember the report is local.",
     )
     second_system, second_model_text = project_chat_prompt(
         PromptContext(
-            profile_block="Now prefers detailed summaries.",
             project_instructions="Run the complete focused checks.",
             datetime="Tuesday 11:00",
             cwd=r"D:\workspace-two",
@@ -90,7 +87,6 @@ def test_chat_prompt_keeps_instructions_stable_and_fresh_context_beside_raw_user
             current="Current capability mount: Explore",
         ),
         raw_user_text,
-        memory_block="Remember the report moved.",
     )
 
     assert first_system == second_system
