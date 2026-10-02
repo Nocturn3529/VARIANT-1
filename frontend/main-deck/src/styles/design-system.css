@@ -769,3 +769,13 @@ body,
   :root { --deck-page-gutter: 12px; }
   .deck-destination-page { padding-top: 14px; padding-bottom: 28px; }
 }
+
+/* Text for assistive technology only: icon buttons keep a real label. */
+.deck-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

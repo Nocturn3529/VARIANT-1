@@ -21,6 +21,8 @@ const paths = {
   terminal: "m4 6 6 6-6 6m9 0h7",
   review: "M14 3H6v18h12V7Zm0 0v4h4M12 9.5v5M9.5 12h5M9.5 17.5h5",
   more: "M4.5 12a1 1 0 1 0 2 0 1 1 0 1 0-2 0Zm6.5 0a1 1 0 1 0 2 0 1 1 0 1 0-2 0Zm6.5 0a1 1 0 1 0 2 0 1 1 0 1 0-2 0Z",
+  clear: "M4 6h16M4 11h11M4 16h6m5-1 5 5m0-5-5 5",
+  toChat: "M4 5h16v11H10l-6 4Zm8 3v5m-2.5-2.5h5",
   unfold: "M12 3v6m-3-3 3-3 3 3M12 21v-6m-3 3 3 3 3-3M5 12h14",
   browser: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z",
   file: "M14 3H5v18h14V8Zm0 0v5h5M8 12h8m-8 4h6",
