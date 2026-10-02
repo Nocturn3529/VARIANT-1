@@ -1,28 +1,28 @@
-import {useEffect, useId, useState, type KeyboardEvent} from "react";
+import {useEffect, useId, useState} from "react";
 import {useChatSelection, shallowChatSelection} from "../chatStore";
 import {useTerminalState, processFinished} from "../context/terminalStore";
 import {Icon} from "../ui/Icon";
-import {StatusGlyph, type GlyphState} from "../motion/StatusGlyph";
+import {Overlay} from "../ui/Overlay";
+import {ActivityMark, type MarkState} from "../motion/ActivityMark";
 import {AgentTeamPanel} from "./AgentTeamPanel";
 import {InputQueuePanel} from "./InputQueuePanel";
 import {ComposerGoalPanel} from "./ComposerGoalPanel";
-import {BackgroundProcesses, processGlyph, useProcessRefresh} from "./BackgroundProcesses";
+import {BackgroundProcesses, processMark, useProcessRefresh} from "./BackgroundProcesses";
 import {queueAdmissionPending} from "./inputQueue";
+import {closeTeamAgent} from "./agentTeam";
 
 type Section = "agents" | "queue" | "goal" | "processes";
-type Chip = {section: Section; glyph: GlyphState; text: string; detail: string; label: string; live: boolean; attention: string};
+type Chip = {section: Section; title: string; mark: MarkState; text: string; label: string};
 
-/* Open section per chat survives chat switches; attention keys open a section once. */
+/* The open section per chat survives chat switches within this window. */
 const openByChat = new Map<string, Section | null>();
-const seenAttention = new Set<string>();
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
 const DONE_STEP = /succeed|complete|done|finish/;
 
-function goalGlyph(status: string, pending: boolean): GlyphState {
+function goalMark(status: string, pending: boolean): MarkState {
   if (pending) return "queued";
-  if (["running", "queued"].includes(status)) return "running";
-  if (status === "waiting_user") return "attention";
-  if (status === "blocked") return "blocked";
+  if (["running", "queued"].includes(status)) return "live";
+  if (["waiting_user", "blocked"].includes(status)) return "attention";
   if (status === "failed") return "failed";
   if (status === "cancelled") return "stopped";
   if (["succeeded", "archived"].includes(status)) return "done";
@@ -30,10 +30,9 @@ function goalGlyph(status: string, pending: boolean): GlyphState {
 }
 
 /**
- * One compact activity surface above the composer. Collapsed, it is a row of
- * live chips; expanded, exactly one section opens with a single scroll area,
- * so subagents, queued input, goals and processes never push the transcript
- * off screen. Collapsed sections stay mounted (hidden) to keep their state.
+ * Minimal live activity above the composer: one faded chip per kind of work.
+ * A chip opens a centered overlay for that work; the overlay's sections stay
+ * mounted (hidden) while closed so their state and controls persist.
  */
 export function ActivityDock() {
   const {sessionId, connected, agentTeam: team, inputQueue: queue, goal} = useChatSelection(state => ({
@@ -44,75 +43,70 @@ export function ActivityDock() {
   useProcessRefresh(chatId, processes, connected);
   const [open, setOpenState] = useState<Section | null>(() => openByChat.get(chatId) ?? null);
   useEffect(() => { setOpenState(openByChat.get(chatId) ?? null); }, [chatId]);
-  const setOpen = (next: Section | null) => { openByChat.set(chatId, next); setOpenState(next); };
-  const panelId = useId();
+  const setOpen = (next: Section | null) => {
+    openByChat.set(chatId, next); setOpenState(next);
+    // Leaving the agents view returns it to the roster for next time.
+    if (next !== "agents" && team.selectedId) closeTeamAgent();
+  };
+  const titleId = useId();
 
   const chips: Chip[] = [];
   if (team.agents.length || team.error) {
-    const blocked = team.blocked, working = team.active;
-    chips.push({section: "agents", live: working > 0,
-      glyph: team.error ? "failed" : blocked ? "blocked" : working ? "running" : "done",
-      text: working ? plural(working, "agent") : plural(team.agents.length, "agent"),
-      detail: blocked ? `${blocked} blocked` : working ? "working" : "finished",
-      label: `Subagents: ${working} working${blocked ? `, ${blocked} blocked` : ""}, ${team.agents.length} total`,
-      attention: blocked || team.error ? `agents:${chatId}:${blocked}:${team.error || ""}` : ""});
+    const working = team.active, blocked = team.blocked;
+    chips.push({section: "agents", title: "Agents", mark: team.error ? "failed" : blocked ? "attention" : working ? "live" : "done",
+      text: plural(working || team.agents.length, "agent"),
+      label: `Subagents: ${working} working${blocked ? `, ${blocked} blocked` : ""}, ${team.agents.length} total`});
   }
   const items = queue.snapshot?.items || [];
   if (items.length || queue.action || queue.error || queueAdmissionPending()) {
-    const parked = items.filter(item => item.state === "parked");
-    chips.push({section: "queue", live: false, glyph: parked.length || queue.error ? "attention" : "queued",
-      text: plural(items.length, "message"), detail: parked.length ? `${parked.length} parked` : "queued",
-      label: `Queued messages: ${items.length}${parked.length ? `, ${parked.length} waiting for you` : ""}`,
-      attention: parked.length || queue.error ? `queue:${chatId}:${parked.map(item => item.ticket_id).join(",")}:${queue.error || ""}` : ""});
+    const parked = items.filter(item => item.state === "parked").length;
+    chips.push({section: "queue", title: "Queued", mark: parked || queue.error ? "attention" : "queued",
+      text: `${items.length} queued`, label: `Queued messages: ${items.length}${parked ? `, ${parked} waiting for you` : ""}`});
   }
   if (goal.snapshot || goal.pending || goal.error) {
     const record = goal.snapshot?.goal, steps = goal.snapshot?.steps || [];
-    const done = steps.filter(step => DONE_STEP.test(step.status)).length;
-    const status = record?.status || "";
-    const needsYou = status === "waiting_user" || status === "blocked" || status === "failed" || goal.snapshot?.cleanup.status === "failed" || !!goal.error;
-    chips.push({section: "goal", live: ["running", "queued"].includes(status), glyph: goal.error ? "failed" : goalGlyph(status, !!goal.pending && !record),
-      text: steps.length ? `Goal ${done}/${steps.length}` : "Goal", detail: record ? status.replaceAll("_", " ") : "pending",
-      label: `Goal${record ? `: ${record.title || record.objective}` : ""}, ${record ? status.replaceAll("_", " ") : "awaiting confirmation"}${steps.length ? `, ${done} of ${steps.length} steps` : ""}`,
-      attention: needsYou ? `goal:${chatId}:${record?.goal_id || ""}:${status}:${goal.error || ""}` : ""});
+    const done = steps.filter(step => DONE_STEP.test(step.status)).length, status = record?.status || "";
+    const cleanupFailed = goal.snapshot?.cleanup.status === "failed";
+    chips.push({section: "goal", title: "Goal", mark: goal.error || cleanupFailed ? "failed" : goalMark(status, !!goal.pending && !record),
+      text: steps.length ? `Goal ${done}/${steps.length}` : "Goal",
+      label: `Goal${record ? `: ${record.title || record.objective}` : ""}, ${record ? status.replaceAll("_", " ") : "awaiting confirmation"}${steps.length ? `, ${done} of ${steps.length} steps` : ""}`});
   }
   if (processes.length) {
     const running = processes.filter(process => !processFinished(process.state)).length;
-    const failed = processes.filter(process => processGlyph(process) === "failed").length;
-    chips.push({section: "processes", live: running > 0, glyph: running ? "running" : failed ? "failed" : "done",
-      text: plural(running || processes.length, "process", "processes"), detail: running ? "running" : failed ? `${failed} failed` : "finished",
-      label: `Background processes: ${running} running of ${processes.length}`,
-      attention: failed ? `processes:${chatId}:${processes.filter(process => processGlyph(process) === "failed").map(process => process.id).join(",")}` : ""});
+    const failed = processes.some(process => processMark(process) === "failed");
+    chips.push({section: "processes", title: "Processes", mark: running ? "live" : failed ? "failed" : "done",
+      text: plural(running || processes.length, "process", "processes"),
+      label: `Background processes: ${running} running of ${processes.length}`});
   }
 
-  const present = new Set(chips.map(chip => chip.section));
-  const attention = chips.find(chip => chip.attention && !seenAttention.has(chip.attention));
-  useEffect(() => {
-    if (!attention) return;
-    seenAttention.add(attention.attention);
-    setOpen(attention.section);
-  });
   if (!chips.length) return null;
+  const present = new Set(chips.map(chip => chip.section));
   const shown = open && present.has(open) ? open : null;
-  const close = (event: KeyboardEvent) => {
-    if (event.key !== "Escape" || !shown) return;
-    event.preventDefault(); event.stopPropagation(); setOpen(null);
-  };
-  return <section className={`activity-dock${shown ? " is-open" : ""}`} aria-label="Activity" onKeyDown={close}>
-    <div className="activity-dock__panel" id={panelId} hidden={!shown}>
-      <div hidden={shown !== "agents"}><AgentTeamPanel/></div>
-      <div hidden={shown !== "queue"}><InputQueuePanel/></div>
-      <div hidden={shown !== "goal"}><ComposerGoalPanel/></div>
-      <div hidden={shown !== "processes"}><BackgroundProcesses chatId={chatId} processes={processes}/></div>
-    </div>
-    <div className="activity-dock__bar" role="toolbar" aria-label="Activity summary">
-      {chips.map(chip => <button key={chip.section} type="button" className={`activity-chip${chip.live ? " is-live" : ""}${chip.attention ? " needs-attention" : ""}`}
-        data-section={chip.section} aria-expanded={shown === chip.section} aria-controls={panelId} aria-label={chip.label}
+  return <div className="activity-dock">
+    <div className="activity-dock__bar" role="toolbar" aria-label="Activity">
+      {chips.map(chip => <button key={chip.section} type="button" className="activity-chip" data-section={chip.section} data-mark={chip.mark}
+        aria-haspopup="dialog" aria-expanded={shown === chip.section} aria-label={chip.label}
         onClick={() => setOpen(shown === chip.section ? null : chip.section)}>
-        <StatusGlyph state={chip.glyph}/>
-        <span className="activity-chip__text">{chip.text}</span>
-        <span className="activity-chip__detail">{chip.detail}</span>
+        <ActivityMark state={chip.mark}/>
+        <span>{chip.text}</span>
       </button>)}
-      {shown ? <button type="button" className="activity-dock__collapse" aria-label="Collapse activity" onClick={() => setOpen(null)}><Icon name="down"/></button> : null}
     </div>
-  </section>;
+    <Overlay open={!!shown} onClose={() => setOpen(null)} labelledBy={titleId} className="activity-overlay">
+      <header className="activity-overlay__header">
+        <h1 id={titleId} className="activity-overlay__title">{chips.find(chip => chip.section === shown)?.title || "Activity"}</h1>
+        {chips.length > 1 ? <nav className="activity-overlay__tabs" aria-label="Activity sections">
+          {chips.map(chip => <button key={chip.section} type="button" aria-current={shown === chip.section ? "true" : undefined} onClick={() => setOpen(chip.section)}>
+            <ActivityMark state={chip.mark}/>{chip.title}
+          </button>)}
+        </nav> : null}
+        <button type="button" className="activity-overlay__close" aria-label="Close activity" onClick={() => setOpen(null)}><Icon name="close"/></button>
+      </header>
+      <div className="activity-overlay__body">
+        <div hidden={shown !== "agents"}><AgentTeamPanel/></div>
+        <div hidden={shown !== "queue"}><InputQueuePanel/></div>
+        <div hidden={shown !== "goal"}><ComposerGoalPanel/></div>
+        <div hidden={shown !== "processes"}>{shown === "processes" ? <BackgroundProcesses chatId={chatId} processes={processes}/> : null}</div>
+      </div>
+    </Overlay>
+  </div>;
 }

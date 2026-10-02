@@ -1,14 +1,13 @@
-import {useEffect} from "react";
+import {useEffect,useState} from "react";
 import {Icon} from "../ui/Icon";
-import {StatusGlyph,type GlyphState} from "../motion/StatusGlyph";
-import {dismissProcess,processFinished,refreshExecution,selectProcess,type ProcessSummary} from "../context/terminalStore";
-import {chatPaneId,PANE,revealPane} from "../workbench/workbenchStore";
+import {ActivityMark,type MarkState} from "../motion/ActivityMark";
+import {clearProcessSelection,dismissExitedProcesses,dismissProcess,observeTerminal,processFinished,refreshExecution,selectProcess,useTerminalState,type ProcessSummary} from "../context/terminalStore";
 
 const REFRESH_WHILE_RUNNING_MS=10_000;
 
-export function processGlyph(process:ProcessSummary):GlyphState {
+export function processMark(process:ProcessSummary):MarkState {
   if(["starting","restarting"].includes(process.state))return "queued";
-  if(!processFinished(process.state))return process.state==="running"?"running":"idle";
+  if(!processFinished(process.state))return process.state==="running"?"live":"idle";
   if(process.state==="failed" || (process.exitCode!==null && process.exitCode!==0))return "failed";
   if(["terminated","stopped","cancelled"].includes(process.state))return "stopped";
   return "done";
@@ -29,20 +28,40 @@ export function useProcessRefresh(chatId:string,processes:readonly ProcessSummar
   },[chatId,connected,live]);
 }
 
+/** Streams one process's output only while its view is open. */
+function ProcessOutput({chatId,process,onBack}:{chatId:string;process:ProcessSummary;onBack:()=>void}) {
+  const output=useTerminalState(chatId).processOutput;
+  useEffect(()=>{
+    selectProcess(process.id,chatId);
+    const release=observeTerminal(chatId);
+    return ()=>{release();clearProcessSelection(chatId);};
+  },[chatId,process.id]);
+  return <div className="background-processes__detail">
+    <button type="button" className="agent-team__back" onClick={onBack}><Icon name="back"/>All processes</button>
+    <header><ActivityMark state={processMark(process)}/><code title={process.cwd}>{process.command || process.id}</code><small>{processStateLabel(process)}</small>
+      {processFinished(process.state)?<button type="button" onClick={()=>{dismissProcess(process.id,chatId);onBack();}}>Dismiss</button>:null}</header>
+    <pre aria-label={`Output of ${process.command || process.id}`}>{output || "No output yet."}</pre>
+  </div>;
+}
+
 export function BackgroundProcesses({chatId,processes}:{chatId:string;processes:readonly ProcessSummary[]}) {
+  const [openId,setOpenId]=useState<string|null>(null);
   if(!processes.length)return null;
+  const open=processes.find(process=>process.id===openId);
+  if(open)return <section className="background-processes" aria-label="Background processes"><ProcessOutput chatId={chatId} process={open} onBack={()=>setOpenId(null)}/></section>;
   const running=processes.filter(process=>!processFinished(process.state)).length;
-  const show=(id:string)=>{revealPane(chatPaneId(PANE.terminal,chatId),"bottom");selectProcess(id,chatId);};
+  const finished=processes.length-running;
   return <section className="background-processes" aria-label="Background processes">
-    <header><strong><Icon name="process"/>Background processes <span>{processes.length}</span></strong><span>{running ? `${running} running` : "None running"}</span>
+    <header><span>{running ? `${running} running` : "None running"}{finished?` · ${finished} finished`:""}</span>
+      {finished?<button type="button" className="background-processes__clear" onClick={()=>dismissExitedProcesses(chatId)}>Clear finished</button>:null}
       <button type="button" aria-label="Refresh background processes" onClick={()=>refreshExecution(chatId)}><Icon name="refresh"/></button></header>
-    <ul>{processes.map(process=><li key={process.id} data-process-state={processGlyph(process)}>
-      <StatusGlyph state={processGlyph(process)}/>
-      <div className="background-processes__main"><code title={process.cwd ? `${process.command}\n${process.cwd}` : process.command}>{process.command || process.id}</code><small>{processStateLabel(process)}</small></div>
-      <div className="background-processes__actions">
-        <button type="button" onClick={()=>show(process.id)} aria-label={`Show output of ${process.command || process.id}`}><Icon name="terminal"/>Output</button>
-        {processFinished(process.state)?<button type="button" className="is-icon" aria-label={`Dismiss ${process.command || process.id}`} title="Remove from this list" onClick={()=>dismissProcess(process.id,chatId)}><Icon name="close"/></button>:null}
-      </div>
+    <ul>{processes.map(process=><li key={process.id}>
+      <button type="button" className="background-processes__row" data-process-id={process.id} data-process-state={processMark(process)} onClick={()=>setOpenId(process.id)}
+        aria-label={`Show output of ${process.command || process.id}`} title={process.cwd ? `${process.command}\n${process.cwd}` : process.command}>
+        <ActivityMark state={processMark(process)}/>
+        <span className="background-processes__main"><code>{process.command || process.id}</code><small>{processStateLabel(process)}</small></span>
+        <Icon name="chevron" className="background-processes__go"/>
+      </button>
     </li>)}</ul>
   </section>;
 }

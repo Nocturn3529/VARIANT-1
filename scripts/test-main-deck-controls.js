@@ -117,8 +117,11 @@ assert.match(terminalSurface, /allowProposedApi:\s*true[\s\S]*loadAddon\(unicode
   'Unicode11 must not crash a restored xterm instance');
 assert.match(terminalSurface, /snapshots\.size>12/, "retained emulator snapshots must remain bounded");
 assert.match(terminalSurface, /end:appliedEnd\.current,cols:terminal\.cols,rows:terminal\.rows/, "snapshots retain their consumed stream offset and terminal dimensions");
-assert.match(terminalPanel, /selectedProcessId[\s\S]*Close process mirror/,
-  'background processes must render as closeable read-only mirrors');
+const backgroundProcesses = read('frontend/main-deck/src/chat/BackgroundProcesses.tsx');
+assert.match(backgroundProcesses, /selectProcess\(process\.id,chatId\)[\s\S]*clearProcessSelection\(chatId\)[\s\S]*<pre/,
+  'background processes must render as closeable read-only mirrors in the activity overlay');
+assert.doesNotMatch(terminalPanel, /selectedProcessId|state\.processes/,
+  'agent processes are listed in one place: the composer activity overlay, not the Terminal pane');
 assert.doesNotMatch(terminalStore + main, /terminalStart|electron-deck-terminal|installTerminalBridge/,
   'a second Electron PTY authority must not exist');
 assert.doesNotMatch(activityRouting, /appendTerminalOutput/,
