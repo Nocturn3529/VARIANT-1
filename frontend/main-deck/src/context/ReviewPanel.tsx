@@ -7,7 +7,7 @@ import {createRefreshQueue} from "../workbench/refreshQueue";
 import {watchPath} from "../workbench/watchPath";
 import {openFilePreview} from "../workbench/previewStore";
 import {reviewPath,reviewDeleted} from "../workbench/diffModel";
-import {ReviewFile,ReviewCounts} from "./ReviewFile";
+import {ReviewFile,ReviewCounts,reviewFileIcon} from "./ReviewFile";
 import {ReviewSidebar} from "./ReviewSidebar";
 import {reviewTree} from "../workbench/reviewTree";
 import type {WorkbenchGitFile,WorkbenchGitBranch,WorkbenchGitCommit,WorkbenchReviewOptions,WorkbenchReviewAggregate} from "../types";
@@ -132,7 +132,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
     <header className="workbench-review__toolbar">
       <button className="workbench-review__scope" aria-haspopup="menu" title={options.scope==="commit"?"Counts sum the selected commits' edits":"Choose review scope"} onClick={event=>disclose(event,"scope")}><Icon name="review"/><span>{scopeLabel}</span>{aggregate?<Counts {...aggregate}/>:null}<Icon name="down"/></button>
       <button className="workbench-review__branch" aria-haspopup="menu" title={comparisonBase?`Compared against ${comparisonBase}; browsing does not switch the working branch`:"Choose branch history"} onClick={event=>disclose(event,"branch")}><span>{allBranches && options.scope==="commit"?"All branches":options.scope!=="commit" && options.scope!=="branch" && branch!=="HEAD"?`History · ${branchLabel}`:branchLabel}</span><Icon name="down"/></button>
-      <div className="workbench-review__toolbar-actions"><button aria-label="Review options" title="Review options" aria-haspopup="menu" onClick={event=>disclose(event,"options")}>⋯</button><button aria-label="Changed files" title="Changed files" aria-expanded={sidebar} onClick={()=>setSidebar(v=>!v)}><Icon name="panels"/></button></div>
+      <div className="workbench-review__toolbar-actions"><button aria-label="Review options" title="Review options" aria-haspopup="menu" onClick={event=>disclose(event,"options")}><Icon name="more"/></button><button aria-label="Changed files" title="Changed files" aria-expanded={sidebar} onClick={()=>setSidebar(v=>!v)}><Icon name="panels"/></button></div>
     </header>
     {error?<div role="alert" className="workbench-tool-error">{error}</div>:null}
     {notice?<div role="status" className="workbench-review__notice">{notice}</div>:null}
@@ -143,7 +143,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
         {files.map((file,index)=><ReviewFile key={`${root}:${options.scope}:${options.ref}:${options.baseRef}:${options.commits?.join(",")}:${file.path}`} file={file} root={root} options={options} api={api} revision={revision} scrollParent={scroller} chatId={chatId} eager={index===0} collapsed={closed.has(file.path)} onToggle={()=>setClosed(prior=>{const next=new Set(prior);next.has(file.path)?next.delete(file.path):next.add(file.path);return next;})} onMenu={event=>disclose(event,"file",file)}/>)}
       </main>
       {sidebar?<ReviewSidebar width={sidebarWidth} onResize={setSidebarWidth}><header><strong>Changed files</strong><span>{files.length}</span></header><input aria-label="Search changed files" placeholder="Search files…" value={query} onChange={event=>setQuery(event.target.value)}/>
-        <VirtualList items={treeRows} rowHeight={34} label="Changed files" itemKey={row=>row.kind==="folder"?`folder:${row.path}`:row.file.path} render={row=>row.kind==="folder"?<button className="workbench-review__select workbench-review__folder" style={{paddingLeft:9+row.depth*12}} title={row.path} aria-expanded={!!query || !closedFolders.has(row.path)} onClick={()=>setClosedFolders(prior=>{const next=new Set(prior);next.has(row.path)?next.delete(row.path):next.add(row.path);return next;})}><Icon name={query || !closedFolders.has(row.path)?"down":"chevron"}/><Icon name="folder"/><span>{row.name}</span><small>{row.count}</small></button>:<button title={row.file.path} style={{paddingLeft:21+row.depth*12}} className={`workbench-review__select${selected===row.file.path?" is-selected":""}`} onClick={()=>navigate(row.file.path)}><Icon name="file"/><span>{row.name}</span><ReviewCounts file={row.file}/></button>}/>
+        <VirtualList items={treeRows} rowHeight={28} label="Changed files" itemKey={row=>row.kind==="folder"?`folder:${row.path}`:row.file.path} render={row=>row.kind==="folder"?<button className="workbench-review__select workbench-review__folder" style={{paddingLeft:9+row.depth*12}} title={row.path} aria-expanded={!!query || !closedFolders.has(row.path)} onClick={()=>setClosedFolders(prior=>{const next=new Set(prior);next.has(row.path)?next.delete(row.path):next.add(row.path);return next;})}><Icon name={query || !closedFolders.has(row.path)?"down":"chevron"}/><Icon name="folder"/><span>{row.name}</span><small>{row.count}</small></button>:<button title={row.file.path} style={{paddingLeft:21+row.depth*12}} className={`workbench-review__select${selected===row.file.path?" is-selected":""}`} onClick={()=>navigate(row.file.path)}><Icon name={reviewFileIcon(row.file.path)}/><span>{row.name}</span><ReviewCounts file={row.file}/></button>}/>
         {!treeRows.length?<div className="workbench-tool-empty">{query?"No matching files.":"No changed files."}</div>:null}
       </ReviewSidebar>:null}
     </div>

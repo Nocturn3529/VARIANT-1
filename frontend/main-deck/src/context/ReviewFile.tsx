@@ -1,9 +1,18 @@
 import {useEffect,useRef,useState,type MouseEvent} from "react";
-import {Icon} from "../ui/Icon";
+import {Icon,type IconName} from "../ui/Icon";
 import {DiffView} from "./DiffView";
 import {reviewPath,reviewDeleted} from "../workbench/diffModel";
 import {openFilePreview} from "../workbench/previewStore";
 import type {WorkbenchGitFile,WorkbenchReviewOptions,WorkbenchReviewDiff,RuntimeApi} from "../types";
+
+const IMAGE=/.(png|jpe?g|gif|webp|svg|ico|bmp)$/i,DOCUMENT=/.(md|mdx|txt|rst|pdf|docx?)$/i;
+/** File-type glyph for a changed path: images, prose, or code. */
+export function reviewFileIcon(path:string):IconName{return IMAGE.test(path)?"image":DOCUMENT.test(path)?"file":"code";}
+/** Emphasize the file name; its folder stays quieter and truncates first. */
+export function ReviewPath({path}:{path:string}){
+  const cut=path.lastIndexOf("/");
+  return <span className="workbench-review__path">{cut>=0?<span className="workbench-review__dir">{path.slice(0,cut+1)}</span>:null}<span className="workbench-review__name">{path.slice(cut+1)}</span></span>;
+}
 
 export function ReviewCounts({file}:{file:WorkbenchGitFile}){
   return <small>{file.binary?"Binary":file.added==null || file.removed==null ? file.untracked?"New":"Counts unavailable":<><span className="is-added">+{file.added}</span> <span className="is-removed">−{file.removed}</span></>}</small>;
@@ -39,7 +48,7 @@ export function ReviewFile({file,root,options,api,scrollParent,revision,collapse
   },[result,collapsed]);
   const patches=result?.sections?.length?result.sections:result?[{...result,oid:""}]:[];
   return <article ref={card} className="workbench-review__card" data-review-file={file.path}>
-    <header><button className="workbench-review__card-title" aria-expanded={!collapsed} onClick={onToggle} title={file.originalPath?`${file.originalPath} → ${file.path}`:file.path}><Icon name={collapsed?"chevron":"down"}/><Icon name="code"/><span>{file.path}</span><ReviewCounts file={file}/></button><button title={`Actions for ${file.path}`} aria-label={`Actions for ${file.path}`} aria-haspopup="menu" onClick={onMenu}>⋯</button></header>
+    <header><button className="workbench-review__card-title" aria-expanded={!collapsed} onClick={onToggle} title={file.originalPath?`${file.originalPath} → ${file.path}`:file.path}><Icon name="chevron" className={collapsed?"":"is-expanded"}/><Icon name={reviewFileIcon(file.path)}/><ReviewPath path={file.path}/><ReviewCounts file={file}/></button><button title={`Actions for ${file.path}`} aria-label={`Actions for ${file.path}`} aria-haspopup="menu" onClick={onMenu}><Icon name="more"/></button></header>
     {!collapsed?<div ref={body} className="workbench-review__card-body" style={!result?{minHeight:height}:undefined}>
       {result?.sections?.length && result.truncated?<p className="workbench-diff__notice" role="status">Selected commit previews are limited.{result.omittedSections?` ${result.omittedSections} commit patch sections omitted.`:""} Select fewer commits to inspect the remaining changes.</p>:null}
       {result?.ok===false?<div className="workbench-tool-empty" role="alert">{result.error}<button onClick={()=>setRetry(v=>v+1)}>Retry</button></div>:result?patches.map(patch=><section key={patch.oid || "live"}>
