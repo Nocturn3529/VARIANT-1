@@ -149,7 +149,7 @@
 .utility-overlay--automations .automation-builder__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .utility-overlay .deck-metric__value { font-size: 18px; }
 .section-footer__button { min-height: 24px; font-size: 11px; }
-.section-footer__nav, .section-footer__tools { min-width: 0; gap: 2px; }
+.section-footer__nav { min-width: 0; gap: 2px; }
 .section-footer .footer-runtime { width: auto; flex: none; padding: 0 8px; gap: 7px; }
 .section-footer .footer-runtime > span { display: inline; }
 .footer-runtime small { font-size: 11px; color: var(--deck-text-faint); }

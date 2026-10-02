@@ -13,7 +13,7 @@ const appStore = read('frontend/main-deck/src/state/appStore.ts');
 const main = read('frontend/main-deck/src/main.tsx');
 const protocol = read('frontend/main-deck/src/protocol.ts');
 const composer = read('frontend/main-deck/src/chat/ChatComposer.tsx');
-const chatDest = read('frontend/main-deck/src/ChatDestination.tsx');
+const headerTools = read('frontend/main-deck/src/shell/HeaderTools.tsx');
 const modelPicker = read('frontend/main-deck/src/chat/ModelPicker.tsx');
 const sessionContextStore = read('frontend/main-deck/src/sessionContextStore.ts');
 const automationStore = read('frontend/main-deck/src/automationStore.ts');
@@ -156,7 +156,8 @@ assert.match(workbench, /keepAlive:\s*true/,
 assert.match(workbench, /workbench-pane-layer[\s\S]*pane\.render\(\)/,
   'inactive browser and file previews must stay mounted inside their tab group');
 
-assert.match(chatDest, /WORKBAR_TABS[\s\S]*terminal[\s\S]*review[\s\S]*browser/);
+assert.match(headerTools, /PANEL_TOOLS[\s\S]*files[\s\S]*terminal[\s\S]*review[\s\S]*browser[\s\S]*data-view="settings"/,
+  'the window header carries the thread panels (Files included) and Settings');
 assert.match(activityRouting, /apply_patch[\s\S]*browser_[\s\S]*run_command/);
 assert.match(activityRouting, /A one-shot run_command does not own a PTY/);
 assert.match(chatCss, /\.history-item__select\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1/s);

@@ -41,7 +41,7 @@ function PaletteDialog({mode}: {mode: "all" | "windows"}) {
     if (mode === "windows") return items;
     items.push(
       {id: "new", label: "New chat", group: "Chat", icon: "plus", run: () => { if (requestNewSession()) focusMainComposer(); }},
-      {id: "chats", label: "Show chats", group: "Panels", icon: "history", run: revealHistory},
+      {id: "chats", label: "Show agent sessions", group: "Panels", icon: "history", run: revealHistory},
       {id: "files", label: "Focus Files", group: "Panels", icon: "folder", run: () => revealPane(PANE.files, "right")},
       {id: "review", label: "Focus Review", group: "Panels", icon: "review", run: () => revealPane(PANE.review, "right")},
       {id: "terminal", label: "Focus Terminal", group: "Panels", icon: "terminal", run: () => revealPane(PANE.terminal, "bottom")},

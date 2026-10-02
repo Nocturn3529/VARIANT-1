@@ -22,6 +22,7 @@ import {kernelStatusLabel, RuntimeDetails} from "./RuntimeOverlay";
 import {NativeSurface} from "./workbench/NativeSurface";
 import {installNativeWindowBridge, nativeUtilityKey, openNativeWindow, useNativeWindows} from "./workbench/nativeWindowStore";
 import {setOverviewDetached} from "./overviewStore";
+import {HeaderTools, SessionsRailCap} from "./shell/HeaderTools";
 
 const AutomationsDestination = lazy(() => import("./deferred/destinations").then(module => ({default: module.AutomationsDestination})));
 const OverviewDestination = lazy(() => import("./deferred/destinations").then(module => ({default: module.OverviewDestination})));
@@ -77,10 +78,10 @@ function WorkbenchTitlebarTools() {
   const panelVisible=rightPanelsVisible();
   const filesLabel = panelVisible ? "Hide right panel" : "Show right panel";
   return <div className="titlebar-workbench-tools" aria-label="Workbench layout">
-    <button type="button" aria-label={historyVisible ? "Hide chats" : "Show chats"} aria-pressed={historyVisible} onClick={() => historyVisible ? collapseHistory() : revealHistory()}><Icon name="history"/></button>
+    <button type="button" aria-label={historyVisible ? "Hide agent sessions" : "Show agent sessions"} aria-pressed={historyVisible} onClick={() => historyVisible ? collapseHistory() : revealHistory()}><Icon name="history"/></button>
     <button type="button" className={workbench.editMode ? "is-active" : ""} aria-label="Edit layout" aria-pressed={workbench.editMode} title="Edit layout; Shift-click resets" onClick={event => event.shiftKey ? resetWorkbenchLayout() : setWorkbenchEditMode(!workbench.editMode)}><Icon name="layout"/></button>
     <button type="button" aria-label={filesLabel} aria-pressed={panelVisible} onClick={toggleRightPanels}><Icon name="panels"/></button>
-    <button type="button" aria-label="Panels and windows" title="Panels and windows" onClick={() => openPalette("windows")}><Icon name="windows"/>{(Object.keys(nativeWindows).length+chatWindows.length) ? <small className="window-count">{Object.keys(nativeWindows).length+chatWindows.length}</small> : null}</button>
+    <button type="button" className="titlebar-workbench-tools__windows" aria-label="Panels and windows" title="Panels and windows" onClick={() => openPalette("windows")}><Icon name="windows"/>{(Object.keys(nativeWindows).length+chatWindows.length) ? <small className="window-count">{Object.keys(nativeWindows).length+chatWindows.length}</small> : null}</button>
     <button type="button" aria-label="Find an action or chat" title="Find an action or chat (Ctrl K)" onClick={() => openPalette()}><Icon name="search"/></button>
   </div>;
 }
@@ -103,9 +104,6 @@ function SectionFooter({api}: {api: RuntimeApi | null}) {
         } catch { notifyChat("Could not open Log monitor."); }
       }}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 7 4 5-4 5m7 0h9"/></svg><span>Log monitor</span></button>
       <button type="button" className="section-footer__button" aria-label="Overview" aria-haspopup="dialog" aria-expanded={app.view === "overview"} onClick={() => navigateTo("overview")}><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V9m5 10V5m5 14v-7m5 7V3"/></svg><span>Overview</span></button>
-    </div>
-    <div className="section-footer__tools">
-      <button type="button" className="section-footer__button" data-view="settings" aria-label="Settings" aria-haspopup="dialog" aria-expanded={app.view === "settings"} onClick={() => navigateTo("settings")}><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2"/></svg><span>Settings</span></button>
     </div>
   </footer>;
 }
@@ -149,7 +147,7 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
   </div>;
   const settingsOpen = app.view === "settings";
   return <div className={["app-shell chat-shell chat-active", settingsOpen ? "settings-open" : "", workbench.hidden[PANE.history] ? "history-collapsed" : "", workbench.overlayPaneId === PANE.history ? "history-open-mobile" : ""].filter(Boolean).join(" ")} id="app-shell">
-    <header className="titlebar"><div className="titlebar__drag"/><WorkbenchTitlebarTools/><WindowControls api={api}/></header>
+    <header className="titlebar"><SessionsRailCap/><div className="titlebar__drag"/><WorkbenchTitlebarTools/><HeaderTools/><WindowControls api={api}/></header>
     <div className="workspace"><main className="workbench-view"><Workbench api={api}/></main></div>
     <SectionFooter api={api}/>
     <UtilitySurface kind="runtime" api={api}/>

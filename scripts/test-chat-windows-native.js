@@ -48,7 +48,7 @@ app.whenReady().then(async()=>{
  fs.writeFileSync(${JSON.stringify(path.join(out,'startup-colony-full.png'))},(await main.webContents.capturePage()).toPNG());
  await wait(main,'!document.querySelector(".startup-cover")');
  console.log("CHAT_TEST_STARTUP_DONE");
- assert.equal(await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].filter(b=>['Flip panes','Detach Chats panel'].includes(b.getAttribute('aria-label'))||b.id==='collapse-history'||b.classList.contains('section-footer__button--panel')).length")}),0);
+ assert.equal(await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].filter(b=>['Flip panes','Detach Agent sessions panel'].includes(b.getAttribute('aria-label'))||b.id==='collapse-history'||b.classList.contains('section-footer__button--panel')).length")}),0);
  main.showInactive();await pause(150);
  const shapes=[];
  await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Edit layout').click()")});

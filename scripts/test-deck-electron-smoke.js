@@ -281,7 +281,7 @@ async function removeIsolatedProfile() {
 
       await client.evaluate(`(() => {
         if (!document.querySelector('.workbench-browser__guest')) {
-          document.querySelector('.chat-workbar__button[aria-label="Browser"]').click();
+          document.querySelector('.titlebar-thread-tools [aria-label="Browser"]').click();
         }
         return true;
       })()`);
@@ -353,7 +353,7 @@ async function removeIsolatedProfile() {
 
     await client.evaluate(`(() => {
       if (!document.querySelector('.workbench-terminal-pane')?.getClientRects().length) {
-        document.querySelector('.chat-workbar__button[aria-label="Terminal"]').click();
+        document.querySelector('.titlebar-thread-tools [aria-label="Terminal"]').click();
       }
       return true;
     })()`);
@@ -363,7 +363,7 @@ async function removeIsolatedProfile() {
       const diagnostic = await client.evaluate(`JSON.stringify({
         layout: localStorage.getItem('variant1.workbench.layout.v1'),
         hidden: localStorage.getItem('variant1.workbench.hidden.v1'),
-        control: document.querySelector('.chat-workbar__button[aria-label="Terminal"]')?.outerHTML || '',
+        control: document.querySelector('.titlebar-thread-tools [aria-label="Terminal"]')?.outerHTML || '',
         groups: [...document.querySelectorAll('.workbench-group')].map(row => ({id: row.dataset.groupId, text: row.textContent?.slice(0, 80)})),
       })`);
       throw new Error(`${error.message}\nTerminal state: ${diagnostic}\nRenderer errors:\n${rendererErrors.join('\n')}`);

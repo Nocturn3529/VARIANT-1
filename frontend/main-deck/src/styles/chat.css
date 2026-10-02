@@ -161,10 +161,10 @@
 .history-item {
   position: relative;
   width: 100%;
-  min-height: 34px;
+  min-height: 30px;
   display: flex;
   align-items: center;
-  padding: 7px 8px 7px 10px;
+  padding: 0 4px 0 10px;
   gap: 8px;
   border: 0;
   border-radius: 6px;
@@ -242,50 +242,6 @@
 .chat-browser-status strong { font-weight: 550; }
 .chat-browser-status p { margin: 0; color: var(--deck-text-muted); line-height: 1.5; overflow-wrap: anywhere; }
 .chat-history-reveal { position: absolute; z-index: 6; top: 10px; left: 10px; }
-
-.chat-workbar {
-  position: absolute;
-  z-index: 7;
-  top: 1px; /* centered on the pane tab strips beside it */
-  right: 12px;
-  display: flex;
-  gap: 0;
-  padding: 0;
-  overflow: hidden;
-  border: 0;
-  border-radius: var(--deck-radius-sm);
-  background: var(--deck-canvas);
-  box-shadow: none;
-}
-.chat-workbar__button {
-  position: relative;
-  width: 32px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 0;
-  border-radius: 6px;
-  color: var(--deck-text-muted);
-  background: transparent;
-  font: 600 var(--deck-text-xs)/1 var(--font-ui);
-  cursor: pointer;
-}
-.chat-workbar__button:hover { color: var(--deck-text-primary); background: var(--deck-surface-subtle); }
-.chat-workbar__button:last-child { border-right: 0; }
-.chat-workbar__button.is-active { color: var(--deck-canvas); background: var(--deck-text-primary); }
-.chat-workbar__button em {
-  position: absolute;
-  top: 1px;
-  right: 1px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 999px;
-  color: var(--deck-canvas);
-  background: var(--deck-text-primary);
-  font: 700 var(--deck-text-xs)/14px var(--font-ui);
-  font-style: normal;
-}
 
 .messages-frame {
   position: relative;

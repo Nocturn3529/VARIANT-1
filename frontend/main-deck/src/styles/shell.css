@@ -41,9 +41,9 @@ svg {
 }
 
 .titlebar {
+  position: relative;
   height: var(--titlebar-height);
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
   border-bottom: 0;
   background: var(--deck-canvas);
@@ -52,6 +52,7 @@ svg {
 
 .titlebar__drag {
   height: 100%;
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   min-width: 0;
@@ -61,6 +62,60 @@ svg {
 }
 
 .titlebar__name { color: var(--deck-text-secondary); font-size: var(--deck-text-sm); font-weight: 600; }
+
+/* The Agent sessions panel continues up into the header when it is docked in
+   the top-left corner: same surface, its title in the header row. */
+.titlebar__rail {
+  width: var(--rail-width);
+  height: 100%;
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: 0 18px;
+  background: var(--deck-surface-panel);
+  -webkit-app-region: drag;
+}
+.titlebar__rail strong {
+  overflow: hidden;
+  color: var(--deck-text-primary);
+  font-size: var(--deck-text-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.app-shell:has(.titlebar__rail:not([hidden])) .workbench .workbench-group:not(.is-floating) .history-panel__header { display: none; }
+.app-shell:has(.titlebar__rail:not([hidden])) .workbench .workbench-group:not(.is-floating) .history-panel { padding-top: 4px; }
+/* Window-centered layout tools step right rather than cover a wide rail. */
+.app-shell .titlebar:has(> .titlebar__rail:not([hidden])) .titlebar-workbench-tools { left: max(50%, calc(var(--rail-width) + 96px)); }
+
+/* Thread panels and Settings sit beside the window controls. */
+.titlebar-thread-tools {
+  height: 100%;
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding: 0 8px 0 4px;
+  gap: 2px;
+  -webkit-app-region: no-drag;
+}
+.titlebar-thread-tools button {
+  width: 30px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--deck-radius-sm);
+  color: var(--deck-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+.titlebar-thread-tools button:hover { color: var(--deck-text-primary); background: var(--deck-surface-subtle); }
+.titlebar-thread-tools button.is-active { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.titlebar-thread-tools button[aria-expanded="true"] { color: var(--deck-text-primary); }
+.titlebar-thread-tools__divider { width: 1px; height: 14px; margin: 0 5px; background: var(--deck-line); }
+.titlebar-thread-tools .titlebar-thread-tools__question { width: auto; padding: 0 7px; gap: 4px; color: var(--deck-text-primary); font: 600 var(--deck-text-xs)/1 var(--font-ui); }
 
 .window-actions {
   justify-self: end;
@@ -111,8 +166,7 @@ svg {
   -webkit-app-region: no-drag;
 }
 
-.section-footer__nav,
-.section-footer__tools {
+.section-footer__nav {
   min-width: 0;
   display: flex;
   align-items: stretch;
@@ -177,7 +231,7 @@ kbd {
 .toast { position: fixed; z-index: 30; left: 50%; bottom: 22px; padding: 8px 12px; border: 1px solid var(--deck-line-strong); border-radius: 7px; color: var(--deck-text-secondary); background: #222427; box-shadow: var(--deck-shadow); font-size: var(--deck-text-xs); opacity: 0; pointer-events: none; transform: translate(-50%, 8px); transition: opacity .18s ease, transform .18s ease; }
 .toast.visible { opacity: 1; transform: translate(-50%, 0); }
 @media (max-width: 1180px) {
-  .section-footer__nav, .section-footer__tools { gap: 0; }
+  .section-footer__nav { gap: 0; }
   .section-footer__button { width: 32px; justify-content: center; padding: 0; }
   .section-footer__button span { display: none; }
 }
@@ -186,10 +240,23 @@ kbd {
   .app-shell { min-width: 360px; }
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .app-shell .history-reveal { display: grid; }
-  .section-footer__nav, .section-footer__tools { gap: 0; }
+  .section-footer__nav { gap: 0; }
   .section-footer__button { width: 32px; justify-content: center; padding: 0; }
   .section-footer__button span { display: none; }
   .window-actions button { width: 38px; }
+  /* No sessions rail here (it is a drawer), so the layout tools move into
+     the header's flow on the left instead of floating over its center. */
+  .app-shell .titlebar-workbench-tools { position: static; order: -1; margin-left: 6px; transform: none; }
+  .titlebar-thread-tools { padding-right: 4px; }
+  .titlebar-thread-tools button { width: 28px; }
+}
+
+.app-shell > .titlebar { container: titlebar / inline-size; }
+@container titlebar (max-width: 460px) {
+  .titlebar-workbench-tools__windows, .titlebar-thread-tools__divider { display: none !important; }
+  .app-shell .titlebar-workbench-tools button, .titlebar-thread-tools button { width: 26px; }
+  .titlebar-thread-tools { padding: 0; }
+  .window-actions button { width: 34px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

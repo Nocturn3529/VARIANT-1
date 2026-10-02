@@ -12,8 +12,8 @@
 @keyframes deck-pop-in { from { opacity: 0; transform: translateY(-3px) scale(.98); } to { opacity: 1; transform: none; } }
 
 /* Press feedback on compact controls. */
-.app-shell :is(.activity-chip, .composer-icon-button, .chat-workbar__button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button):not(:disabled):active { transform: scale(.96); }
-.app-shell :is(.activity-chip, .composer-icon-button, .chat-workbar__button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button) { transition: transform 90ms var(--deck-ease-out), background-color var(--deck-motion-fast) ease, color var(--deck-motion-fast) ease; }
+.app-shell :is(.activity-chip, .composer-icon-button, .titlebar-thread-tools button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button):not(:disabled):active { transform: scale(.96); }
+.app-shell :is(.activity-chip, .composer-icon-button, .titlebar-thread-tools button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button) { transition: transform 90ms var(--deck-ease-out), background-color var(--deck-motion-fast) ease, color var(--deck-motion-fast) ease; }
 
 /* Copy morphs to a check in place. */
 .copy-button { display: inline-flex; align-items: center; gap: 5px; }

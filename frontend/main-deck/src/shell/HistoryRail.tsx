@@ -260,7 +260,7 @@ export function HistoryRail() {
     <div className="history-panel__header">
       <div>
         <span className="eyebrow">History</span>
-        <h1>Chats</h1>
+        <h1>Agent sessions</h1>
       </div>
 
     </div>

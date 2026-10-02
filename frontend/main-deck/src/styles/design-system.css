@@ -104,6 +104,8 @@
   --deck-ease-spring: cubic-bezier(.3, 1.45, .5, 1);
   --deck-page-gutter: clamp(14px, 1.4vw, 28px);
   --history-width: 237px;
+  /* Measured width of the docked Agent sessions panel (set on the header). */
+  --rail-width: var(--history-width);
   --context-width: 360px;
   --titlebar-height: 32px;
   --footer-height: 28px;

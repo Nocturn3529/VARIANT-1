@@ -6,7 +6,7 @@
 .app-shell button:not(:disabled) { transition: background-color var(--deck-motion-fast) ease, color var(--deck-motion-fast) ease, border-color var(--deck-motion-fast) ease; }
 .app-shell button:not(:disabled):active { filter: none; background-color: var(--deck-surface-strong); }
 .app-shell :is(.deck-button, .composer-icon-button, .voice-button, .send-button, .deck-overlay__header button) { min-height: var(--deck-control-height); min-width: var(--deck-control-height); }
-.app-shell :is(.titlebar-workbench-tools button, .chat-workbar__button, .workbench-tabs__detach, .workbench-tabs__new, .workbench-tabs__collapse) { width: 32px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; }
+.app-shell :is(.titlebar-workbench-tools button, .workbench-tabs__detach, .workbench-tabs__new, .workbench-tabs__collapse) { width: 32px; min-height: 28px; display: inline-flex; align-items: center; justify-content: center; }
 .app-shell .titlebar-workbench-tools { height: 28px; top: 2px; }
 .app-shell .window-actions button { display: inline-flex; align-items: center; justify-content: center; }
 .app-shell .window-actions button .deck-icon { width: 13px; height: 13px; }
@@ -19,7 +19,8 @@
 .message__content .runtime-code-block pre,
 .trace-entry__body :is(pre, code) { font-family: var(--font-chat-code); font-weight: 400; font-variant-ligatures: none; }
 .message__content :not(pre) > code { padding: 2px 5px; background: var(--deck-surface-subtle); border: 1px solid var(--deck-line-soft); border-radius: var(--deck-radius-sm); overflow-wrap: anywhere; }
-.app-shell :is(.history-item__select, .new-chat-button, .history-utility-button, .utility-tabs button) { min-height: var(--deck-control-height); }
+.app-shell :is(.new-chat-button, .history-utility-button, .utility-tabs button) { min-height: var(--deck-control-height); }
+.app-shell .history-item__select { min-height: 30px; }
 .app-shell :is(.trace-entry, .trace-entry__disclosure, .trace-entry__disclosure small, .runtime-details__rows dt) { font-size: var(--deck-label-text); }
 .app-shell :is(.workbench-tool-error, .trace-entry.is-error) { color: var(--deck-text-primary); background: var(--deck-surface-panel); border-color: var(--deck-line-strong); }
 .app-shell .voice-button.recording { color: var(--deck-text-primary); }

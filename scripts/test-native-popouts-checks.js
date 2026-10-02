@@ -105,7 +105,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await click(client, 'Close automations');
     console.log('native Automations: visible validation with main minimized, preserved form, and docking restore passed');
 
-    assert.equal(await client.evaluate(`[...document.querySelectorAll('button')].filter(button=>button.getAttribute('aria-label')==='Detach Chats panel').length`),0,'history remains docked');
+    assert.equal(await client.evaluate(`[...document.querySelectorAll('button')].filter(button=>button.getAttribute('aria-label')==='Detach Agent sessions panel').length`),0,'history remains docked');
 
     // This isolated profile starts without a project. Select the repository
     // through the real correlated backend contract before testing file rows.
@@ -263,11 +263,11 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await client.evaluate(`window.resizeTo(800, 680); true`);
     await client.call('Emulation.setDeviceMetricsOverride', {width:800,height:680,deviceScaleFactor:1,mobile:false});
     await waitFor(client, `innerWidth <= 830`, 'compact main window');
-    await click(client, 'Show chats');
+    await click(client, 'Show agent sessions');
     await waitFor(client, `document.querySelector('.workbench-side-overlay .history-panel')`, 'compact Chats drawer');
     assert.ok(await client.evaluate(`!!document.querySelector('.workbench-side-overlay #history-search-input')`));
-    assert.equal(await client.evaluate(`document.querySelector('.workbench-side-overlay [aria-label="Detach Chats panel"]') !== null`), false, 'Chats remains docked in compact mode too');
-    await click(client, 'Close Chats panel');
+    assert.equal(await client.evaluate(`document.querySelector('.workbench-side-overlay [aria-label="Detach Agent sessions panel"]') !== null`), false, 'Chats remains docked in compact mode too');
+    await click(client, 'Close Agent sessions panel');
     await client.evaluate(`window.resizeTo(${mainSize.width}, ${mainSize.height}); true`);
     await client.call('Emulation.setDeviceMetricsOverride', {width:1440,height:900,deviceScaleFactor:1,mobile:false});
     await waitFor(client, `innerWidth > 830 && document.querySelector('.history-panel')`, 'restored main window');
