@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 import uuid
+from collections import OrderedDict
 
 from run_context import current_run_context
 
@@ -32,6 +34,13 @@ from run_context import current_run_context
 _PRESENCE_TYPES = frozenset({"activity", "engine", "proactive"})
 _MAX_TOOL_RESULT_OBSERVATIONS = 256
 _MAX_TOOL_RESULT_VALUE_CHARS = 80
+# Latest display-safe step per chat session, so a roster opened mid-run can show
+# what a child is doing before its next live frame. Process-local and bounded;
+# it is a display hint, never durable evidence.
+_LAST_SESSION_ACTIVITY_LIMIT = 512
+_LAST_SESSION_ACTIVITY_CHARS = 200
+_LAST_SESSION_ACTIVITY: "OrderedDict[str, dict]" = OrderedDict()
+_LAST_SESSION_ACTIVITY_LOCK = threading.Lock()
 
 
 def _bounded_tool_result_value(value, *, default: str = "") -> str:
@@ -39,6 +48,43 @@ def _bounded_tool_result_value(value, *, default: str = "") -> str:
 
     text = " ".join(str(value or "").split()).strip().lower()
     return text[:_MAX_TOOL_RESULT_VALUE_CHARS] or default
+
+
+def _remember_session_activity(message: dict) -> None:
+    """Retain the latest broadcast step for its session (display fields only)."""
+
+    session_id = str(message.get("session_id") or "").strip()
+    event = str(message.get("event") or "")
+    if not session_id or not event or event.startswith("agent_runtime:"):
+        return
+
+    def text(key: str) -> str | None:
+        value = message.get(key)
+        if value is None:
+            return None
+        return " ".join(str(value).split())[:_LAST_SESSION_ACTIVITY_CHARS] or None
+
+    entry = {
+        "event": event[:_LAST_SESSION_ACTIVITY_CHARS],
+        "tool": text("tool"),
+        "status": text("status"),
+        "title": text("title"),
+        "ts": float(message.get("ts") or time.time()),
+        "run_id": text("run_id"),
+    }
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        _LAST_SESSION_ACTIVITY[session_id] = entry
+        _LAST_SESSION_ACTIVITY.move_to_end(session_id)
+        while len(_LAST_SESSION_ACTIVITY) > _LAST_SESSION_ACTIVITY_LIMIT:
+            _LAST_SESSION_ACTIVITY.popitem(last=False)
+
+
+def last_session_activity(session_id: str) -> dict | None:
+    """Return a copy of the latest retained step for one session, if any."""
+
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        entry = _LAST_SESSION_ACTIVITY.get(str(session_id or ""))
+        return dict(entry) if entry is not None else None
 
 
 def presence_projection(message: dict) -> dict | None:
@@ -222,6 +268,10 @@ async def emit_activity(event: str, **fields) -> None:
         if binding_id:
             msg.setdefault("desktop_binding_id", binding_id)
     msg.update({k: v for k, v in fields.items() if v is not None})
+    try:
+        _remember_session_activity(msg)
+    except Exception:
+        pass
     # Graph events are recorded by agent_engine.state.queue_event so their
     # checkpoint-tail projection and external trace share one source.  Record
     # all other activity here, including tool call/result lifecycle events.

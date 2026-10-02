@@ -71,6 +71,28 @@ async def test_roster_is_scoped_monotonic_and_reveals_real_lineage(manager):
     assert manager.inspection_snapshot('unrelated',child_id=a['child_id'])['children']==[]
 
 @pytest.mark.asyncio
+async def test_roster_last_activity_is_fenced_to_running_generation(manager,monkeypatch):
+    from observability import activity
+    monkeypatch.setattr(activity,'_LAST_SESSION_ACTIVITY',activity.OrderedDict())
+    child=await manager.spawn('parent',task='goal')
+    def roster_entry():
+        return next(c for c in manager.inspection_snapshot('parent')['children'] if c['child_id']==child['child_id'])
+    assert roster_entry()['last_activity'] is None
+    activity._remember_session_activity({'session_id':child['child_chat_id'],'event':'tool:start',
+        'tool':'read_file','status':'running','ts':1000.0,'run_id':'graph-run','args_preview':'private'})
+    assert roster_entry()['last_activity'] is None  # queued children never show a step
+    running(manager,child)
+    with manager._lock,manager._connect() as conn:
+        conn.execute('UPDATE astb_child_handle SET started_at=? WHERE child_id=?',(999.0,child['child_id']))
+    assert roster_entry()['last_activity']=={'event':'tool:start','tool':'read_file','status':'running',
+        'title':None,'ts':1000.0,'run_id':'graph-run'}
+    detail=manager.inspection_snapshot('parent',child_id=child['child_id'])['children'][0]
+    assert detail['last_activity']['tool']=='read_file'
+    with manager._lock,manager._connect() as conn:  # a restarted generation started later
+        conn.execute('UPDATE astb_child_handle SET started_at=? WHERE child_id=?',(2000.0,child['child_id']))
+    assert roster_entry()['last_activity'] is None
+
+@pytest.mark.asyncio
 async def test_normal_wait_timeout_returns_nonterminal_handle(manager,monkeypatch):
     from capability_broker import CapabilityBroker,InvocationContext
     from tools import ToolRegistry
