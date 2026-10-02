@@ -27,6 +27,7 @@ import {
   requestSessionContext,
   getContextForSession,
   changeSessionSettings,
+  dismissSettingsError,
   useSessionContextState,
   type SessionContextState,
 } from "../sessionContextStore";
@@ -314,6 +315,23 @@ function ContextMeter({
   </div>;
 }
 
+/**
+ * A rejected model or reasoning change. It floats above the composer (the
+ * input stays clear) and stays until read: dismissed, or replaced by opening
+ * the picker or making another change.
+ */
+function SettingNotice({label, error, onChoose, onDismiss}: {label: string; error: string; onChoose: () => void; onDismiss: () => void}) {
+  return <div className="composer-setting-notice deck-pop" role="alert">
+    <Icon name="error"/>
+    <div className="composer-setting-notice__body">
+      <strong>{label ? `Couldn't switch to ${label}` : "Couldn't apply that change"}</strong>
+      <p>{error}</p>
+      <button type="button" onClick={onChoose}>Choose another model</button>
+    </div>
+    <button type="button" className="composer-setting-notice__close" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><Icon name="close"/></button>
+  </div>;
+}
+
 export function ChatComposer() {
   const navigating = !!useSessionState().pendingAction;
   const {
@@ -490,6 +508,12 @@ export function ChatComposer() {
     <ClarificationCard />
     <ActivityDock/>
     <div className="composer" id="composer" data-state={!connected ? "offline" : stopPending ? "stopping" : turnActive ? "working" : "ready"}>
+      {composerContext.settingsError && !modelMenuOpen ? <SettingNotice
+        label={composerContext.settingsErrorLabel}
+        error={composerContext.settingsError}
+        onChoose={() => { dismissSettingsError(sessionId || ""); setContextMenuOpen(false); setModelMenuOpen(true); }}
+        onDismiss={() => dismissSettingsError(sessionId || "")}
+      /> : null}
       <div className="composer__supplements">
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
         <ComposerChips attachments={attachments} disabled={turnActive} />
@@ -502,7 +526,6 @@ export function ChatComposer() {
         </details> : null}
         {!["idle", "error"].includes(micPhase) ? <div className="composer-mic-status" role="status"><Icon name="mic"/><strong>{micPhase === "recording" ? "Recording" : micPhase === "requesting" ? "Opening microphone" : micPhase === "transcribing" ? "Transcribing" : "Preparing audio"}</strong><span>{micChat || "Current chat"}</span><div className="composer-mic-status__actions">{micPhase==="recording" ? <button type="button" onClick={toggleMic}>Finish recording</button> : null}<button type="button" onClick={cancelMic} disabled={micPhase==="encoding"}>{micPhase==="recording" ? "Discard" : "Cancel"}</button></div></div> : null}
         {micPhase === "error" && micError ? <p className="composer-mic-error" role="alert">{micError}</p> : null}
-        {composerContext.settingsError ? <p className="composer-setting-error" role="alert">{composerContext.settingsError}</p> : null}
       </div>
       {turnActive ? <div className="composer-delivery-choice" role="group" aria-label="Active task delivery">
         <button type="button" aria-pressed={deliveryMode === "steer"} title="Wait for the current model or tool step to finish; does not interrupt Python" onClick={() => setChatDelivery("steer",sessionId)}><Icon name="send"/>Steer current task</button>
@@ -630,6 +653,7 @@ export function ChatComposer() {
               buttonRef={modelButtonRef}
               onToggle={() => {
                 setContextMenuOpen(false);
+                dismissSettingsError(sessionId || "");
                 setModelMenuOpen(open => !open);
               }}
               onClose={() => setModelMenuOpen(false)}
