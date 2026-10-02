@@ -1,4 +1,5 @@
 import {PeerTranscriptMessage} from "../peers/PeerTranscriptMessage";
+import {CopyButton} from "../ui/CopyButton";
 import {KernelGlyph} from "../motion/KernelGlyph";
 /**
  * Virtualized transcript and safe Markdown rendering for the Chat destination.
@@ -270,13 +271,7 @@ function MessageArticle({
           >
             {playLabel(phase, speechActive)}
           </button>
-          <button
-            type="button"
-            title="Copy"
-            onClick={() => copyText(message.text || "", "Response copied")}
-          >
-            Copy
-          </button>
+          <CopyButton text={message.text || ""} title="Copy response"/>
         </div> : null}
       </>}
     </div>

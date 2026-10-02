@@ -66,5 +66,5 @@ export function AnchoredPopover({anchor, children, className, id, label, onClose
     return () => {document.removeEventListener("pointerdown",outside);document.removeEventListener("focusin",focus);document.removeEventListener("keydown",escape,true);};
   },[anchor,document,onClose]);
 
-  return createPortal(<section ref={panel} id={id} className={`composer-popover ${className}`} role="dialog" aria-label={label} tabIndex={-1} style={position}>{children}</section>,document.body);
+  return createPortal(<section ref={panel} id={id} className={`composer-popover deck-pop ${className}`} role="dialog" aria-label={label} tabIndex={-1} style={position}>{children}</section>,document.body);
 }

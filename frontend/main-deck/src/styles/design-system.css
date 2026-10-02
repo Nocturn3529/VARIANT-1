@@ -98,6 +98,10 @@
   --deck-label-text: 12px;
   --deck-motion-fast: 110ms;
   --deck-motion-panel: 180ms;
+  --deck-motion-slow: 320ms;
+  /* Decelerating ease for entrances; a slight overshoot for confirmations. */
+  --deck-ease-out: cubic-bezier(.2, .8, .2, 1);
+  --deck-ease-spring: cubic-bezier(.3, 1.45, .5, 1);
   --deck-page-gutter: clamp(14px, 1.4vw, 28px);
   --history-width: 237px;
   --context-width: 360px;
@@ -125,6 +129,7 @@
 :root[data-motion="reduced"] {
   --deck-motion-fast: 0ms;
   --deck-motion-panel: 0ms;
+  --deck-motion-slow: 0ms;
 }
 
 .deck-input-dialog {

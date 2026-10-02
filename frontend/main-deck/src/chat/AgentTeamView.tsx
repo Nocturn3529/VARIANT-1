@@ -53,7 +53,7 @@ function AgentRow({agent,parent,onSelect}:{agent:AgentSummary;parent:string;onSe
       <span className="agent-team__sub">
         {parent?<span>From {parent}</span>:null}
         {agent.outcome==="blocked"?<span>Objective blocked</span>:null}
-        {activity?<span className="agent-team__current">{childStepLabel(activity)}</span>:<span>{label(agent.status)}</span>}
+        {activity?<span key={childStepLabel(activity)} className="agent-team__current">{childStepLabel(activity)}</span>:<span>{label(agent.status)}</span>}
       </span>
     </span>
     {when?<span className="agent-team__time">{when}</span>:null}

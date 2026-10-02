@@ -88,7 +88,8 @@ export function ActivityDock() {
         aria-haspopup="dialog" aria-expanded={shown === chip.section} aria-label={chip.label}
         onClick={() => setOpen(shown === chip.section ? null : chip.section)}>
         <ActivityMark state={chip.mark}/>
-        <span>{chip.text}</span>
+        {/* Keyed by text so a changed count ticks in rather than swapping silently. */}
+        <span key={chip.text} className="activity-chip__text">{chip.text}</span>
       </button>)}
     </div>
     <Overlay open={!!shown} onClose={() => setOpen(null)} labelledBy={titleId} className="activity-overlay">
