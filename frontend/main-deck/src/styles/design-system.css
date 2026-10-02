@@ -237,26 +237,32 @@ body,
   padding: 20px 0 32px;
 }
 
+/* One status badge app-wide: a quiet dot plus plain text. The dot alone
+   carries tone (positive, live, warning, danger); text stays neutral. */
 .deck-status {
   display: inline-flex;
   align-items: center;
-  padding: 3px 7px;
-  gap: 5px;
-  border-radius: 999px;
+  gap: 6px;
   color: var(--deck-text-secondary);
-  background: var(--deck-surface-raised);
-  font: var(--deck-text-xs) var(--font-mono);
+  font: 500 var(--deck-text-xs)/1 var(--font-ui);
+  font-style: normal;
   white-space: nowrap;
 }
 
-.deck-status::before,
-.deck-status > i {
-  width: 5px;
-  height: 5px;
+.deck-status::before {
+  width: 6px;
+  height: 6px;
   display: block;
+  flex: none;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--deck-text-faint);
+  content: "";
 }
+
+.deck-status[data-tone="positive"]::before { background: var(--deck-positive); }
+.deck-status[data-tone="live"]::before { background: var(--deck-live); }
+.deck-status[data-tone="warning"]::before { background: var(--deck-warning); }
+.deck-status[data-tone="danger"]::before { background: var(--deck-danger); }
 
 .deck-button {
   height: var(--deck-control-height);

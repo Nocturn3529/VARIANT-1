@@ -137,32 +137,7 @@
   gap: 7px;
 }
 
-.automations-console__connection {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--deck-positive);
-  font: 600 var(--deck-text-xs)/1 var(--font-mono);
-  white-space: nowrap;
-}
-
-.automations-console__connection::before {
-  width: 6px;
-  height: 6px;
-  display: block;
-  border-radius: 50%;
-  background: currentColor;
-  box-shadow: 0 0 8px currentColor;
-  content: "";
-}
-
-.automations-console__connection[data-state="offline"] {
-  color: var(--deck-text-faint);
-}
-
-.automations-console__connection[data-state="offline"]::before {
-  box-shadow: none;
-}
+.automations-console__connection[data-state="offline"] { color: var(--deck-text-faint); }
 
 .automations-create.deck-button {
   width: auto;

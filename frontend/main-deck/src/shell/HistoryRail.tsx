@@ -282,7 +282,7 @@ export function HistoryRail() {
     </button>
 
     <button type="button" className="history-utility-button" aria-haspopup="dialog" onClick={() => navigateTo("automations")}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span>Scheduled jobs</span>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span>Automations</span>
     </button>
 
     <button className="history-utility-button" disabled={!sessionState.displayedSessionId || !!projectState.pending[sessionState.displayedSessionId]} onClick={()=>void chooseChatProject(sessionState.displayedSessionId || "")}><Icon name="folder"/><span>Choose project folder</span></button>
