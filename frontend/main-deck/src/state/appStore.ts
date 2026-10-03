@@ -54,8 +54,8 @@ const store = createExternalStore<AppState>({
 });
 
 export function navigateTo(view: PrimaryView): void {
-  // The Python runtime lives in Overview › Summary.
-  if (view === "runtime") { selectOverviewTab("summary"); view = "overview"; }
+  // The Python runtime lives in Overview › Python.
+  if (view === "runtime") { selectOverviewTab("python"); view = "overview"; }
   if (["runtime", "overview", "automations"].includes(view) && focusNativeWindow(nativeUtilityKey(view))) return;
   // Route the public Memory deep link to its current Settings page.
   if (view === "memory") {

@@ -4,7 +4,7 @@ import {__resetWorkbenchForTests, detachWorkbenchPane, dockWorkbenchGroup, getWo
 import {allPaneIds, findGroupOfPane} from "../frontend/main-deck/src/workbench/layoutModel";
 import {allocateTracks, childTracks, trackFor} from "../frontend/main-deck/src/workbench/trackModel";
 import {activityPresentation} from "../frontend/main-deck/src/chat/activityPresentation";
-import {kernelStatusLabel} from "../frontend/main-deck/src/RuntimeOverlay";
+import {kernelStatusLabel} from "../frontend/main-deck/src/overview/PythonKernelsTab";
 import {canRevealPaneForStep} from "../frontend/main-deck/src/workbench/activityRouting";
 
 navigateTo("memory");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
-import {KernelInventory} from "../frontend/main-deck/src/KernelInventory";
+import {PythonKernelsTab} from "../frontend/main-deck/src/overview/PythonKernelsTab";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
 import {initialChatState, setChatState, setChatContext} from "../frontend/main-deck/src/chat/stateCore";
 import {ingest as ingestPlatform} from "../frontend/main-deck/src/store";
@@ -49,7 +49,7 @@ export async function run() {
   assert.ok(tools.querySelector("[role=switch]"), "advanced authoring remains accessible");
 
   setKernelInventoryContext(context);
-  await act(async () => {setKernelInventoryConnection("connected"); root.render(<KernelInventory/>);});
+  await act(async () => {setKernelInventoryConnection("connected"); root.render(<PythonKernelsTab/>);});
   const requestId = getKernelInventory().requestId;
   const row = {chat_id: "A", title: "Sample chat", generation: 1, state: "ready", busy: false,
     age_s: 120, idle_s: 30, resources: {process: {}, tree: {}, measurement_source: "unavailable"}};

@@ -107,7 +107,7 @@ function createAppWindows(deps) {
       minWidth: 480,
       minHeight: 280,
       title: 'VARIANT-1 — Logs',
-      backgroundColor: '#03070a',
+      backgroundColor: '#090a0a',
       frame: false,
       transparent: false,
       alwaysOnTop: true,

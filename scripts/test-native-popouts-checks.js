@@ -50,13 +50,13 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     }
   }
   try {
-    // The Python runtime lives in Overview › Summary; the Overview pops out,
+    // The Python kernels live in Overview › Python; the Overview pops out,
     // pins, leaves the Deck bounds and docks back with its selected tab.
     await click(client, 'Overview');
-    await waitFor(client, `document.querySelector('.overview-summary .runtime-summary .kernel-glyph.is-ready canvas')`, 'procedural kernel canvas in Overview summary');
+    await waitFor(client, `document.querySelector('.python-kernels__header .kernel-glyph')`, 'kernel glyph in Overview › Python');
     await click(client, 'Pop out overview');
     const overview = await childFor('utility:overview');
-    await waitFor(overview, `document.querySelector('.runtime-summary .kernel-glyph.is-ready canvas')`, 'native procedural kernel canvas');
+    await waitFor(overview, `document.querySelector('.python-kernels__header .kernel-glyph')`, 'kernel glyph in the detached Overview');
     assert.ok(await overview.evaluate(`document.body.innerText.includes('Python kernel')`));
     assert.equal(await client.evaluate(`document.querySelectorAll('.overview-scroll').length`), 0, 'Overview is moved, not duplicated');
     assert.equal(await overview.evaluate(`typeof window.variant1Deck`), 'undefined', 'child does not receive the privileged Deck bridge');

@@ -13,7 +13,6 @@
 .native-popout-host .history-panel { padding-top: 10px; }
 .native-utility-content.utility-overlay { width: 100%; max-width: none; min-height: 0; display: flex; flex-direction: column; flex: 1; overflow: auto; }
 .deck-overlay__header .deck-overlay__popout { margin-left: auto; }
-.native-popout-host .runtime-details { flex: 1; }
 .runtime-chat-empty > span { background: none; border: 0; color: var(--deck-text-faint); }
 .history-panel { background: var(--deck-surface-panel); }
 .history-panel__header { padding: 12px 10px 8px; }
@@ -95,19 +94,17 @@
 .deck-overlay.utility-overlay--overview { width: min(960px, calc(100vw - 40px)); height: min(540px, calc(100dvh - 64px)); background: var(--deck-surface-void); }
 .deck-overlay.utility-overlay--overview .deck-overlay__header { border-bottom-color: var(--deck-line-soft); }
 .deck-overlay.utility-overlay--overview .overview-page { padding: 10px 14px; }
-.deck-overlay.utility-overlay--overview .overview-scroll > .utility-tabs { padding: 8px 14px; }
+.deck-overlay.utility-overlay--overview .overview-scroll > .utility-tabs { padding: 5px 12px; }
+.deck-overlay.utility-overlay--overview .deck-overlay__header { min-height: 36px; padding: 3px 8px 3px 14px; }
+.deck-overlay.utility-overlay--overview .deck-overlay__header button { width: 26px; height: 26px; }
 /* Docked tabs fill the frame, so one-screen layouts can stretch to it. */
 .deck-overlay.utility-overlay--overview .overview-scroll { display: flex; flex-direction: column; }
 .deck-overlay.utility-overlay--overview .overview-page { flex: 1 0 auto; display: flex; flex-direction: column; margin: 0; }
-.deck-overlay.utility-overlay--overview .overview-page > :is(.overview-summary, .overview-widget-stack) { flex: 1 0 auto; }
-/* System, Inference and Cloud are one-screen tabs: they fill the frame exactly,
+.deck-overlay.utility-overlay--overview .overview-page > .overview-widget-stack { flex: 1 0 auto; }
+/* Python, System, Inference and Cloud are one-screen tabs: they fill the frame exactly,
    so charts take the spare height and long lists scroll inside. */
-.deck-overlay.utility-overlay--overview .overview-page:is([data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack { flex: 1 1 0; min-height: 0; grid-template-rows: minmax(0, 1fr); }
-.deck-overlay.utility-overlay--overview .overview-page[data-tab="summary"] > .overview-summary { flex: 1 1 0; }
-@container overview (max-width: 830px) {
-  .deck-overlay.utility-overlay--overview .overview-page[data-tab="summary"] > .overview-summary { flex: 1 0 auto; }
-}
-.deck-overlay.utility-overlay--overview .overview-page:is([data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack > .deck-instrument { min-height: 0; display: flex; flex-direction: column; }
+.deck-overlay.utility-overlay--overview .overview-page:is([data-tab="python"], [data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack { flex: 1 1 0; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.deck-overlay.utility-overlay--overview .overview-page:is([data-tab="python"], [data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack > .deck-instrument { min-height: 0; display: flex; flex-direction: column; }
 .native-utility-content.utility-overlay--overview { background: var(--deck-surface-void); }
 .utility-overlay--automations { width: min(850px, calc(100vw - 40px)); }
 .utility-overlay > .deck-destination-scroll { flex: 1; }
@@ -115,15 +112,9 @@
 .utility-tabs button { display: flex; align-items: center; gap: 6px; padding: 5px 9px; border: 0; border-radius: 3px; background: transparent; color: var(--deck-text-muted); font-size: 12px; }
 .utility-tabs button:is(:hover, [aria-pressed="true"]) { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
 .utility-tabs small { font: 11px var(--font-mono); color: var(--deck-text-muted); }
-.utility-overlay .overview-scroll > .utility-tabs { padding: 10px 14px; }
+.utility-overlay .overview-scroll > .utility-tabs { padding: 5px 12px; }
+.app-shell .overview-shell .utility-tabs button { min-height: 26px; padding: 3px 9px; }
 .utility-overlay .overview-page { width: auto; padding: 18px; }
-.runtime-details { padding: 10px 18px 18px; overflow: auto; }
-.runtime-details__rows { margin: 0; }
-.runtime-details__rows > div { display: grid; grid-template-columns: minmax(115px, 1fr) minmax(0, 1.6fr); gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--deck-line-soft); }
-.runtime-details__rows dt { color: var(--deck-text-muted); font-size: 12px; }
-.runtime-details__rows dd { margin: 0; overflow-wrap: anywhere; }
-.runtime-details__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
-.runtime-details__warning { color: var(--deck-text-muted); font-size: 12px; }
 .settings-overlay .memory-page { width: 100%; padding: 0; }
 .settings-overlay .memory-page__utilities { margin-bottom: 0; }
 .settings-overlay .memory-workspace-grid, .settings-overlay .memory-management-grid { display: block; margin-top: 16px; }
@@ -202,13 +193,4 @@
 @media (prefers-reduced-motion: reduce) {
   .app-shell button { transition: none; }
 }
-.kernel-inventory { margin-top: 22px; border-top: 1px solid var(--deck-line); padding-top: 14px; }
-.kernel-inventory header { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
-.kernel-inventory p, .kernel-inventory small { font-size: 12px; color: var(--deck-text-muted); line-height: 1.5; }
-.kernel-inventory ul { list-style: none; padding: 0; max-height: 420px; overflow: auto; }
-.kernel-inventory li { padding: 14px 0; border-top: 1px solid var(--deck-line); }
-.kernel-inventory li > small { display: block; margin: 6px 0; }
-.kernel-inventory dl > div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
-.kernel-inventory dd { margin: 0; }
-.kernel-inventory .deck-button { margin-top: 6px; }
 .kernel-release-confirm { padding: 10px; margin-top: 8px; border: 1px solid var(--deck-line); border-radius: 6px; }

@@ -189,8 +189,8 @@ assert.match(overviewDestination, /<LocalInferenceWidget[\s\S]*onRefresh=\{\(\) 
   'Overview refresh must be delegated to the first telemetry instrument');
 assert.match(localInference, /local-inference-header[\s\S]*id="overview-refresh"[\s\S]*local-inference-runtime/,
   'Overview refresh must remain between the first instrument title and runtime readout');
-assert.match(read(path.join('frontend', 'main-deck', 'src', 'overview', 'OverviewSummary.tsx')), /overview-summary__runtime[\s\S]*<RuntimeDetails\/>/,
-  'the Python runtime lives in Overview › Summary');
+assert.match(overviewDestination, /TABS[^\n]*"python"[\s\S]*<PythonKernelsTab\/>/,
+  'Python kernels are the Overview\'s first tab');
 assert.doesNotMatch(overviewDestination, /"requests"/, 'the Overview has no Requests tab');
 
 const settingsApp = read(path.join('frontend', 'main-deck', 'src', 'DeckApp.tsx'));
