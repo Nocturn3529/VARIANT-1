@@ -32,6 +32,8 @@ def test_resume_configuration_preserves_routes_and_user_changes(tmp_path):
     plan=initialize(tmp_path/'lab')
     backend=EnduranceBackend(tmp_path/'lab',plan)
     backend._prepare_config()
+    price_policy=json.loads((backend.config_path.parent/'plugins'/'model-providers'/'endurance-openrouter'/'provider.json').read_text(encoding='utf-8'))
+    assert price_policy['request_defaults']['provider']['max_price']=={'prompt':0,'completion':0}
     custom={'operator_setting':True}
     backend.config_path.write_text(json.dumps(custom),encoding='utf-8')
     backend._prepare_config()

@@ -59,14 +59,14 @@ class ModelUsageLedger:
             for name in ('finished_at', 'duration_s'):
                 if name not in columns:
                     conn.execute('ALTER TABLE model_usage_request ADD COLUMN ' + name + ' REAL')
-            fields = ','.join(f'{key} REAL NOT NULL DEFAULT 0,{key}_known_requests INTEGER NOT NULL DEFAULT 0,{key}_reported_requests INTEGER NOT NULL DEFAULT 0' for key in _COUNT_FIELDS)
-            conn.execute('CREATE TABLE IF NOT EXISTS model_usage_rollup(kind TEXT NOT NULL,identity TEXT NOT NULL,requests INTEGER NOT NULL DEFAULT 0,usage_observed_requests INTEGER NOT NULL DEFAULT 0,' + fields + ',PRIMARY KEY(kind,identity))')
+            fields = ','.join(f'{key} {"REAL" if key == "cost_usd" else "INTEGER"} NOT NULL DEFAULT 0,{key}_known_requests INTEGER NOT NULL DEFAULT 0,{key}_reported_requests INTEGER NOT NULL DEFAULT 0' for key in _COUNT_FIELDS)
+            conn.execute('CREATE TABLE IF NOT EXISTS model_usage_rollup_v2(kind TEXT NOT NULL,identity TEXT NOT NULL,requests INTEGER NOT NULL DEFAULT 0,usage_observed_requests INTEGER NOT NULL DEFAULT 0,' + fields + ',PRIMARY KEY(kind,identity))')
             conn.execute('CREATE TABLE IF NOT EXISTS model_usage_meta(key TEXT PRIMARY KEY,value INTEGER NOT NULL)')
             conn.execute('BEGIN IMMEDIATE')
-            if conn.execute("SELECT value FROM model_usage_meta WHERE key='rollups-v1'").fetchone() is None:
+            if conn.execute("SELECT value FROM model_usage_meta WHERE key='rollups-v2'").fetchone() is None:
                 for row in conn.execute('SELECT * FROM model_usage_request'):
                     self._rollup(conn, row, request_delta=1, after=json.loads(row['usage_json']) if row['usage_json'] else None)
-                conn.execute("INSERT INTO model_usage_meta VALUES('rollups-v1',1)")
+                conn.execute("INSERT INTO model_usage_meta VALUES('rollups-v2',1)")
 
     @contextmanager
     def _connect(self):
@@ -178,7 +178,7 @@ class ModelUsageLedger:
         columns = ','.join(deltas)
         updates = ','.join(f'{key}={key}+excluded.{key}' for key in deltas)
         for kind, identity in identities:
-            conn.execute('INSERT INTO model_usage_rollup(kind,identity,' + columns + ') VALUES(' + ','.join('?' for _ in range(len(deltas)+2)) + ') ON CONFLICT(kind,identity) DO UPDATE SET ' + updates,
+            conn.execute('INSERT INTO model_usage_rollup_v2(kind,identity,' + columns + ') VALUES(' + ','.join('?' for _ in range(len(deltas)+2)) + ') ON CONFLICT(kind,identity) DO UPDATE SET ' + updates,
                          (kind,identity,*deltas.values()))
 
     @staticmethod
@@ -197,14 +197,14 @@ class ModelUsageLedger:
         if kind not in {'session','goal','model','day'}:
             raise ValueError('Unknown usage grouping')
         with self._connect() as conn:
-            rows = conn.execute('SELECT * FROM model_usage_rollup WHERE kind=? ORDER BY identity', (kind,)).fetchall()
+            rows = conn.execute('SELECT * FROM model_usage_rollup_v2 WHERE kind=? ORDER BY identity', (kind,)).fetchall()
         return [{'identity':row['identity'], **self._totals_row(row)} for row in rows]
 
     def totals(self, *, session_id="", goal_id=""):
         if not (session_id and goal_id):
             kind, identity = ('session',session_id) if session_id else ('goal',goal_id) if goal_id else ('all','')
             with self._connect() as conn:
-                row = conn.execute('SELECT * FROM model_usage_rollup WHERE kind=? AND identity=?', (kind,identity)).fetchone()
+                row = conn.execute('SELECT * FROM model_usage_rollup_v2 WHERE kind=? AND identity=?', (kind,identity)).fetchone()
             return self._totals_row(row)
         where, params = "1=1", []
         for key, value in (("session_id", session_id), ("goal_id", goal_id)):

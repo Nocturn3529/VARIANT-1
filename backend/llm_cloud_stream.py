@@ -1032,7 +1032,7 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                     if yielded:
                         if isinstance(exc, ProviderRequestError):
                             exc.model_output_observed = True
-                        if failure.kind in {"authentication", "quota", "rate_limit", "transient"}:
+                        if failure.kind in {"authentication", "quota", "rate_limit", "transient"} and not failure.model_specific:
                             router.credential_pools.mark_failure(
                                 lease, status_code=getattr(exc, "status_code", 0),
                                 detail=_credential_failure_detail(exc),
@@ -1070,6 +1070,10 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                         )
                         await asyncio.sleep(retry_delay)
                         continue
+                    if failure.model_specific:
+                        # Another API key cannot fix shared upstream capacity.
+                        # Preserve same-route backoff and explicit route recovery.
+                        raise
                     if failure.kind != "upstream":
                         router.credential_pools.mark_failure(
                             lease, status_code=getattr(exc, "status_code", 0),

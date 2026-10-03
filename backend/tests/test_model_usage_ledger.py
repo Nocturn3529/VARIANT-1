@@ -40,6 +40,16 @@ def test_duplicate_receipts_and_usage_corrections_do_not_double_count(tmp_path):
     assert totals["reasoning_tokens"] == 20  # Subset, not added to total.
 
 
+def test_token_rollups_use_exact_integer_arithmetic_beyond_float_precision(tmp_path):
+    ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
+    ledger.record(request())
+    exact=2**53+1
+    with ledger._connect() as conn:
+        conn.execute("UPDATE model_usage_rollup_v2 SET total_tokens=?,total_tokens_known_requests=1 WHERE kind='all'",(exact,))
+    assert ledger.totals()['total_tokens']==exact
+    assert type(ledger.totals()['total_tokens']) is int
+
+
 def test_unknown_usage_and_field_coverage_are_not_false_zeroes(tmp_path):
     ledger = ModelUsageLedger(tmp_path / "usage.sqlite3")
     ledger.record(request())

@@ -105,10 +105,12 @@ class EnduranceBackend(BackendProcess):
         if self.config_path.exists():
             return  # Resume must not reset routes, catalogs, or user-applied lab settings.
         routes = self.plan['routes']
+        write_json(self.config_path.parent/'plugins'/'model-providers'/'endurance-openrouter'/'provider.json',
+            {'name':'openrouter','request_defaults':{'provider':{'max_price':{'prompt':0,'completion':0},'require_parameters':True}}})
         write_json(self.config_path,{'mode':'cloud','reasoning':True,'subagent_enabled':True,
             'sampling':{'max_tokens':16384},'cloud':{'provider':'openrouter','openrouter_model':routes[0]['model'],'fallback_chain':[]},
             'local':{'autostart':False,'prewarm':False},
-            'provider_recovery':{'enabled':True,'max_attempts':1,'fallback_routes':[],
+            'provider_recovery':{'enabled':True,'max_attempts':4,'max_wait_seconds':60,'fallback_routes':[],
                                  'auxiliary_routes':{'vision':[routes[0]]}},
             'action_surface':{'support_matrix':[{'profile':'trusted-local.v1','provider':'openrouter','model':route['model'],
                 'adapter':'openai.*','status':'canary','evidence':'Disposable endurance qualification; not a general support claim.'} for route in routes]}})
