@@ -310,6 +310,20 @@ for (const name of cssFiles) {
       `${name} has unsanctioned media query: ${query}`,
     );
   }
+  // esbuild only warns on a stray brace, and a browser then drops whichever
+  // rule the parser folds it into.
+  const blank = text => text.replace(/[^\n]/g, ' ');
+  const structure = fs.readFileSync(path.join(stylesDir, name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, blank);
+  let depth = 0;
+  for (const [index, line] of structure.split('\n').entries()) {
+    for (const character of line) {
+      depth += character === '{' ? 1 : character === '}' ? -1 : 0;
+      assert.ok(depth >= 0, `${name} closes a block it never opened on line ${index + 1}`);
+    }
+  }
+  assert.strictEqual(depth, 0, `${name} leaves ${depth} block(s) unclosed`);
 }
 
 // References must resolve to a stylesheet definition or a deliberately supplied

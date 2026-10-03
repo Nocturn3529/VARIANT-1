@@ -1890,4 +1890,3 @@
   .python-kernel__row > .python-kernel__metric:nth-of-type(1), .python-kernel__row > .python-kernel__metric:nth-of-type(3) { display: none; }
   .python-kernel__detail { grid-template-columns: minmax(0, 1fr); padding-left: 14px; }
 }
-}

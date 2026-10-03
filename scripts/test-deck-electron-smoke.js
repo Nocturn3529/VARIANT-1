@@ -400,6 +400,22 @@ async function removeIsolatedProfile() {
       await require('./test-native-popouts-checks')({client, CdpClient, getJson, waitFor, websocketFrames, rendererErrors, root, getOutput: () => output});
     }
 
+    // Agent sessions continues up into the header when it is docked in the
+    // top-left corner. Its pane joins the document through a NativeSurface
+    // portal only after the header's layout effects, and with a saved layout
+    // nothing changes afterward to retrigger the measurement. A relaunch of
+    // the renderer is the path that left the rail detached. It runs last so
+    // no other check races the reloaded page.
+    await client.call('Page.enable');
+    const reloaded = new Promise(resolve => client.on('Page.loadEventFired', resolve));
+    await client.call('Page.reload');
+    await reloaded;
+    await waitFor(client,
+      `document.body.dataset.startup === 'ready' && document.body.dataset.backendState === 'connected' && document.body.dataset.browserHost === 'registered' && document.querySelector('.workbench .history-panel')`,
+      'reloaded workbench', 45000);
+    await waitFor(client, `document.querySelector('.titlebar__rail')?.hidden === false`,
+      'Agent sessions rail joined to the header after a reload', 5000);
+
     assert.deepStrictEqual(rendererErrors, [], `uncaught renderer errors:\n${rendererErrors.join('\n')}`);
     try { await client.evaluate(`setTimeout(() => window.variant1Deck.close(), 0); true`); }
     catch (error) { if (!/CDP target closed/.test(error.message)) throw error; }

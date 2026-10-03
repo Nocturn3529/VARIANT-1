@@ -68,21 +68,31 @@ export function SessionsRailCap() {
   const cap = useRef<HTMLDivElement>(null);
   const [docked, setDocked] = useState(false);
   useLayoutEffect(() => {
-    const panel = workbench.compact ? null : document.querySelector<HTMLElement>(".workbench .workbench-group:not(.is-floating) .history-panel");
-    const workspace = document.querySelector<HTMLElement>(".app-shell > .workspace");
-    if (!panel || !workspace) { setDocked(false); return; }
-    const measure = () => {
-      const p = panel.getBoundingClientRect(), w = workspace.getBoundingClientRect();
-      const corner = p.width > 0 && p.height > 0 && Math.abs(p.top - w.top) < 1 && Math.abs(p.left - w.left) < 1;
-      // On the header itself, so the centered layout tools can keep clear of it.
-      if (corner) cap.current?.parentElement?.style.setProperty("--rail-width", `${p.width}px`);
-      setDocked(corner);
+    let observer: ResizeObserver | null = null;
+    const attach = () => {
+      observer?.disconnect();
+      observer = null;
+      const panel = workbench.compact ? null : document.querySelector<HTMLElement>(".workbench .workbench-group:not(.is-floating) .history-panel");
+      const workspace = document.querySelector<HTMLElement>(".app-shell > .workspace");
+      if (!panel || !workspace) { setDocked(false); return; }
+      const measure = () => {
+        const p = panel.getBoundingClientRect(), w = workspace.getBoundingClientRect();
+        const corner = p.width > 0 && p.height > 0 && Math.abs(p.top - w.top) < 1 && Math.abs(p.left - w.left) < 1;
+        // On the header itself, so the centered layout tools can keep clear of it.
+        if (corner) cap.current?.parentElement?.style.setProperty("--rail-width", `${p.width}px`);
+        setDocked(corner);
+      };
+      measure();
+      observer = new ResizeObserver(measure);
+      observer.observe(panel);
+      observer.observe(workspace);
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(panel);
-    observer.observe(workspace);
-    return () => observer.disconnect();
+    attach();
+    // Panes reach the document through NativeSurface portals, which are
+    // adopted in their own layout effects after this header's. On launch the
+    // panel is not in the document yet, so attach again once a surface lands.
+    window.addEventListener("variant1:surface-document", attach);
+    return () => { window.removeEventListener("variant1:surface-document", attach); observer?.disconnect(); };
   }, [workbench.layout, workbench.hidden, workbench.compact, workbench.floating, workbench.editMode]);
   return <div ref={cap} className="titlebar__rail" hidden={!docked}><strong>Agent sessions</strong></div>;
 }
