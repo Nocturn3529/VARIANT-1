@@ -194,6 +194,30 @@ async def test_auxiliary_routes_check_real_input_reserve_and_leave_main_bound(tm
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", [None, "max"])
+async def test_explicit_auxiliary_effort_is_honored_without_changing_profile_defaults(tmp_path, monkeypatch, effort):
+    auxiliary = {**BACKUP, "model": "summary"}
+    if effort is not None:
+        auxiliary["reasoning_effort"] = effort
+    result = router(tmp_path, monkeypatch, auxiliary_routes={"internal_prose": [auxiliary]})
+    observed = []
+    async def attempt(r, profile, lease, model, *args, **kwargs):
+        from model_runtime.request_policy import project_reasoning_policy
+        payload = {}
+        projected = project_reasoning_policy(r, profile, model, payload, args[4])
+        observed.append((args[4], projected))
+        kwargs["stream_diagnostics"].note_finish_reason("stop")
+        yield "summary"
+    monkeypatch.setattr(cloud, "call_cloud_once", attempt)
+    with result.bind_model_route(PRIMARY):
+        primary = result.bound_model_route()
+        assert await complete(result, [{"role": "user", "content": "summarize"}], profile="internal_prose", require_complete=True) == "summary"
+        assert result.bound_model_route() == primary
+    expected = (None, effort) if effort else (0, "low")
+    assert observed[0] == expected
+
+
+@pytest.mark.asyncio
 async def test_qualification_optout_suppresses_both_recovery_chains(tmp_path,monkeypatch):
     result=router(tmp_path,monkeypatch,enabled=False)
     result.set_fallback_chain(["openrouter"])

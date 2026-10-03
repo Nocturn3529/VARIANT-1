@@ -93,6 +93,9 @@ snapshot search covers metadata. Expansion loads the scoped source and verifies
 its integrity. Native expansion projects visible messages and calls, excluding
 opaque provider reasoning. Snapshots can repeat history and are not additional
 actions. Pages and text expansion expose continuation cursors and coverage.
+Search match offsets address the indexed text projection; structured JSON and
+native snapshot expansion can have different offsets. Expansion continuation
+offsets always address the returned source text.
 Cell expansion accepts `part='source'`, `'result'`, or `'output'`; output-event
 evidence retains its own omissions and artifact references.
 
@@ -102,6 +105,24 @@ an idle runtime and fences its Python generation. Existing mutation tools are
 handled by that rebase contract rather than being silently overwritten at startup.
 
 The session-context SQLite index is derived data, not a new transcript owner.
+Immutable source descriptors and text are shared across frozen views. Views
+retain stream-prefix bounds; ordinary capture indexes committed additions rather
+than rereading the archive. Canonical divergence uses a paged ancestry rebuild
+with shared records. Native snapshots have a stable source-owned commit ordinal
+and deletion epoch, independent of SQLite rowid reuse or VACUUM. A view does not
+copy every native thread boundary. These are storage-order cursors, not proof of
+one causal timeline across source owners.
+
+Literal search uses a case-folded FTS5 trigram candidate index followed by exact
+verification. A bounded selectivity probe chooses candidate lookups for rare
+matches and ordered membership pages for common matches. Short queries and
+SQLite builds without the tokenizer use an explicit scan fallback. Text identity
+is stable across VACUUM; equal text does not collapse distinct recorded actions.
+Read pages and exports use keysets, without a full archive in Python memory.
+Disk storage still grows with retained evidence and view metadata; no age policy
+silently deletes historical sources. Individual native checkpoints retain their
+existing bounded whole-payload codec.
+
 Views survive host restart, remain frozen until explicit refresh, and cannot be
 read from another or deleted chat. Historical content is evidence rather than
 new instructions or permission to replay effects. Active user instructions,
@@ -110,6 +131,21 @@ cross-session source pool is a separate design; no fact extraction or automatic
 history lookup is required by this reader.
 `session.context(view_id=...)` reopens a saved view identity after a kernel or
 host restart with the same ownership checks.
+
+The Session context Settings page is a user control-plane browser over an
+explicitly selected conversation and saved view. Its correlated requests use
+the same scoped reader; agent retrieval remains limited to its session and
+explicitly owned children. Capture and refresh are explicit. Native export
+selects a destination, streams JSONL or Markdown to a staging file, verifies
+source integrity and scope, then publishes atomically. Receipts include byte
+count, SHA-256, source count and omissions. Binary artifact references remain
+references rather than embedded payloads. A failed or cancelled export cleans
+staging and preserves an existing destination. Existing files require explicit
+overwrite authorization; export creates no model call.
+
+Canonical ancestry queries drive the recursive frontier before looking up each
+parent edge. This retains the same private ancestry and ordering while avoiding
+a planner choice that scans all conversation edges at every recursion step.
 
 Kernel storage ownership is acquired before scratch cleanup or interrupted-cell
 reconciliation. Lifetime OS locks cover the canonical scratch and ledger paths;
@@ -173,6 +209,17 @@ stored checkpoint remains intact and pending tool ownership remains unchanged.
 Qualification requests explicitly disable both the new policy and the existing
 unbound provider fallback chain, so a backup cannot qualify as the requested
 primary.
+
+Provider routing Settings expose the ordered main chain, named auxiliary chains,
+optional route effort and attempt/backoff limits. Saves validate declared effort
+values and known providers, fence stale drafts with a policy revision, and report
+success only after durable configuration saving. Failed saves restore the prior
+policy. Route availability and request capability/context admission remain
+runtime checks; a saved configuration is not a model qualification result.
+An explicitly chosen auxiliary effort overrides that profile's lightweight
+reasoning default for the selected call. Without that choice, existing internal
+profile defaults remain. Auxiliary calls never promote the main run's route.
+
 
 The activity trace is a bounded display projection, not a complete output log.
 Live and saved ordinary traces keep the newest 48 events and record earlier

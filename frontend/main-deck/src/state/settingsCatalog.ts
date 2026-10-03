@@ -43,6 +43,13 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     nested: true,
   },
   {
+    id: "provider-routing",
+    label: "Model routing",
+    description: "Configure provider recovery and auxiliary model chains.",
+    path: "M4 5h6v6H4Zm10 8h6v6h-6M7 11v5h7M10 8h7v5",
+    nested: true,
+  },
+  {
     id: "tools-keys",
     label: "Tools & Keys",
     description: "Manage credentials for search, speech, browsers, and model downloads.",
@@ -77,6 +84,12 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     label: "Plugins",
     description: "Install and enable capability packages.",
     path: "M8 3h8v5h5v8h-5v5H8v-5H3V8h5Z",
+  },
+  {
+    id: "session-context",
+    label: "Session context",
+    description: "Browse, search, and export frozen views of retained session evidence.",
+    path: "M5 3h10l4 4v14H5Zm10 0v5h4M8 12h8m-8 4h8",
   },
   {
     id: "goals",

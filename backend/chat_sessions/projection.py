@@ -11,9 +11,9 @@ def history_rows(conn, conversation_id: str, head_node_id: str) -> list:
         return []
     return conn.execute(
         "WITH RECURSIVE ancestry(node_id) AS ("
-        " SELECT ? UNION SELECT e.from_node_id FROM conversation_edge e "
-        " JOIN ancestry a ON e.to_node_id=a.node_id "
-        " WHERE e.conversation_id=? AND e.from_node_id IS NOT NULL"
+        " SELECT ? UNION SELECT e.from_node_id FROM ancestry a "
+        " CROSS JOIN conversation_edge e "
+        " WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL"
         ") SELECT DISTINCT n.node_id,n.role,n.content_json,n.metadata_json,n.created_at "
         "FROM conversation_node n JOIN ancestry a ON a.node_id=n.node_id "
         "WHERE n.conversation_id=? ORDER BY n.created_at,n.node_id",

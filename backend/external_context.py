@@ -12,6 +12,11 @@ import os
 import threading
 import time
 import uuid
+import base64
+import codecs
+
+import context_index as index
+import context_capture as ingestion
 from contextlib import contextmanager
 from typing import Any
 
@@ -84,6 +89,8 @@ class SessionContextService:
                 CREATE INDEX IF NOT EXISTS context_source_text ON context_source(text_key);
             """)
 
+            self._search_indexed = index.initialize(conn)
+
     @contextmanager
     def _connect(self):
         conn = sqlite_session_connection(self.path, autocommit=False)
@@ -95,14 +102,18 @@ class SessionContextService:
 
     def delete_chat(self, chat_id: str):
         with self._lock, self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
             conn.execute("DELETE FROM context_view WHERE chat_id=? OR source_chat_id=?", (str(chat_id), str(chat_id)))
-            conn.execute("DELETE FROM context_text WHERE NOT EXISTS(SELECT 1 FROM context_source s WHERE s.text_key=context_text.text_key)")
+            conn.execute('DELETE FROM context_canonical_head WHERE source_chat_id=?', (str(chat_id),))
+            conn.execute('DELETE FROM context_stream WHERE source_chat_id=?', (str(chat_id),))
+            conn.execute('DELETE FROM context_record WHERE source_chat_id=?', (str(chat_id),))
+            conn.execute("DELETE FROM context_text WHERE NOT EXISTS(SELECT 1 FROM context_record s WHERE s.text_key=context_text.text_key)")
 
     @staticmethod
     def _index_text(conn, text: str) -> str:
         key = hashlib.sha256(text.encode("utf-8")).hexdigest()
         if conn.execute("SELECT 1 FROM context_text WHERE text_key=?", (key,)).fetchone() is None:
-            conn.execute("INSERT INTO context_text VALUES(?,?,?)", (key, text, text.casefold()))
+            conn.execute("INSERT INTO context_text(text_key,search_text,search_folded) VALUES(?,?,?)", (key, text, text.casefold()))
         return key
 
     def _has_owner(self, chat_id: str) -> bool:
@@ -126,95 +137,90 @@ class SessionContextService:
             raise ToolError("Context child is unavailable or outside this parent's scope") from exc
 
     def _artifact_text(self, ref: str, chat_id: str, expected_sha256: str = "") -> str:
-        metadata = self.artifacts.stat(ref, scope=chat_id)
-        raw = self.artifacts.read_bytes_scoped(ref, chat_id)
+        try:
+            metadata = self.artifacts.stat(ref, scope=chat_id)
+            raw = self.artifacts.read_bytes_scoped(ref, chat_id)
+        except (FileNotFoundError, PermissionError) as exc:
+            raise ToolError('Retained context artifact or scoped grant is unavailable', code='context_source_unavailable') from exc
         digest = hashlib.sha256(raw).hexdigest()
         if digest != metadata.sha256 or (expected_sha256 and digest != expected_sha256):
             raise ToolError("Session context artifact failed its source integrity check")
         return raw.decode("utf-8", errors="strict")
 
     def capture(self, chat_id: str, *, child_id: str = "") -> str:
-        chat_id = str(chat_id)
-        reader_chat_id = chat_id
-        if not self._has_owner(reader_chat_id):
-            raise ToolError("Session context requires an existing, live session")
-        if child_id:
-            chat_id = self._child_source(reader_chat_id, child_id)
-        if not self._has_owner(chat_id):
-            raise ToolError("Session context source owner is unavailable")
-        canonical = self.sessions.context_sources(chat_id)
-        cursor = canonical.get("cursor")
-        cells = []
-        last = self.kernel.cell_ledger.tail(chat_id, limit=1)
-        upper = int(last[-1].sequence) if last else 0
-        after = 0
-        while upper and after < upper:
-            rows = self.kernel.execution_history(chat_id, after_sequence=after, through_sequence=upper, limit=500)
-            cells.extend(rows["items"])
-            next_sequence = int(rows["next_sequence"])
-            if next_sequence <= after:
-                break
-            after = next_sequence
-        store = getattr(self.runtimes, "snapshot_store", None)
-        snapshots = store.context_cursors_sync(chat_id) if store is not None else []
-        snapshot_heads = {}
-        for snapshot in snapshots:
-            snapshot_heads[snapshot["thread_id"]] = {
-                key: snapshot[key] for key in ("sequence", "snapshot_id")
-            }
-        watermarks = {"canonical": cursor, "ledger_through_sequence": upper, "snapshot_heads": snapshot_heads,
-                      "atomic_across_owners": False, "source_chat_id": chat_id,
-                      "canonical_available": cursor is not None,
-                      "source_gaps": [] if cursor is not None else ["No canonical conversation owner; only retained runtime evidence is available"]}
-        sources = []
-        for node in canonical["items"]:
-            content = json.loads(node["content_json"])
-            metadata = json.loads(node["metadata_json"])
-            descriptor = {"source_id": "message:" + node["node_id"], "kind": "message", "role": node["role"],
-                          "node_id": node["node_id"], "head_node_id": cursor["head_node_id"],
-                          "run_id": metadata.get("run_id"), "turn_id": node.get("turn_id"),
-                          "timestamp": node["created_at"], "coverage": "captured canonical content; readable-text search only",
-                          "sha256": hashlib.sha256(node["content_json"].encode("utf-8")).hexdigest()}
-            sources.append((descriptor, _text(content)))
-        for cell in cells:
-            descriptor = {**cell, "source_id": "cell:" + cell["execution_id"], "kind": "cell",
-                          "coverage": "retained cell evidence; omissions reported on expansion"}
-            texts = []
-            for key in ("source_ref", "result_ref"):
-                try:
-                    raw = self._artifact_text(cell[key], chat_id, str(cell.get(key.replace("_ref", "_sha256")) or ""))
-                    if key == "source_ref":
-                        texts.append(raw)
-                    else:
-                        value = json.loads(raw)
-                        if not isinstance(value, dict):
-                            raise ValueError("Cell result evidence must be an object")
-                        texts.append(str(value.get("text") or value.get("error") or ""))
-                except (KeyError, ValueError, OSError, ToolError):
-                    descriptor["search_incomplete"] = True
-            sources.append((descriptor, "\n".join(texts)))
-        for snapshot in snapshots:
-            descriptor = {**snapshot, "source_id": "snapshot:" + snapshot["snapshot_id"], "kind": "snapshot",
-                          "coverage": "retained committed native projection; may repeat earlier records; metadata search only"}
-            sources.append((descriptor, json.dumps(snapshot, ensure_ascii=False)))
-        incomplete_cells = sum(bool(descriptor.get("search_incomplete")) for descriptor, _ in sources)
-        if incomplete_cells:
-            watermarks["source_gaps"].append(f"{incomplete_cells} cells have unavailable or invalid search artifacts; exact expansion may fail")
-        view_id = "context_" + uuid.uuid4().hex
+        reader = str(chat_id)
+        if not self._has_owner(reader):
+            raise ToolError('Session context requires an existing, live session')
+        owner = self._child_source(reader, child_id) if child_id else reader
+        if not self._has_owner(owner):
+            raise ToolError('Session context source owner is unavailable')
+        view_id = 'context_' + uuid.uuid4().hex
         with self._lock, self._connect() as conn:
-            if not self._has_owner(chat_id) or not self._has_owner(reader_chat_id):
-                raise ToolError("Session context owner was deleted during capture")
-            if child_id and self._child_source(reader_chat_id, child_id) != chat_id:
-                raise ToolError("Session context child changed during capture")
-            conn.execute("INSERT INTO context_view(view_id,chat_id,watermarks_json,created_at,source_chat_id,child_id) VALUES(?,?,?,?,?,?)",
-                         (view_id, reader_chat_id, json.dumps(watermarks), time.time(), chat_id, child_id))
-            for ordinal, (descriptor, text) in enumerate(sources):
-                descriptor["source_chat_id"] = chat_id
-                key = self._index_text(conn, text)
-                conn.execute("INSERT INTO context_source VALUES(?,?,?,?,?,?)",
-                             (view_id, ordinal, descriptor["source_id"], descriptor["kind"],
-                              json.dumps(descriptor, ensure_ascii=False), key))
+            # Serialize captures across service instances before examining shared
+            # stream bounds. A failed capture publishes neither rows nor a view.
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('PRAGMA temp_store=FILE')
+            head = self.sessions.context_head(owner)
+            canonical, cursor = ingestion.canonical(self, conn, owner, head, _text)
+            last = self.kernel.cell_ledger.tail(owner, limit=1)
+            upper = int(last[-1].sequence) if last else 0
+            cells = ingestion.cells(self, conn, owner, upper)
+            watermarks = {'canonical': cursor, 'ledger_through_sequence': upper, 'snapshot_heads': {},
+                          'atomic_across_owners': False, 'source_chat_id': owner,
+                          'canonical_available': cursor is not None,
+                          'source_gaps': [] if cursor is not None else ['No canonical conversation owner; only retained runtime evidence is available']}
+            conn.execute('INSERT INTO context_view(view_id,chat_id,watermarks_json,created_at,source_chat_id,child_id) VALUES(?,?,?,?,?,?)',
+                         (view_id, reader, '{}', time.time(), owner, child_id))
+            position, offset = 0, 0
+            for target in (canonical, cells):
+                if target and target['count']:
+                    offset = index.span(conn, view_id, target, position, offset)
+                    position += 1
+            native, metadata, boundary = ingestion.snapshots(self, conn, owner)
+            if native and native['count']:
+                index.span(conn, view_id, native, position, offset)
+            watermarks.update(metadata)
+            watermarks['native_commits'] = boundary
+            watermarks['cell_search_coverage'] = 'Per-source search_incomplete marks unavailable or invalid artifacts; exact expansion retains omissions'
+            conn.execute('UPDATE context_view SET watermarks_json=? WHERE view_id=?', (json.dumps(watermarks), view_id))
+            if not self._has_owner(owner) or not self._has_owner(reader):
+                raise ToolError('Session context owner was deleted during capture')
+            if child_id and self._child_source(reader, child_id) != owner:
+                raise ToolError('Session context child changed during capture')
+            current = self.sessions.context_head(owner)
+            if head and (not current or current['conversation_id'] != head['conversation_id']):
+                raise ToolError('Session context conversation owner changed during capture')
         return view_id
+
+    def list_views(self, chat_id: str, *, child_id: str = '', after: str = '', limit: int = 20):
+        if not self._has_owner(chat_id):
+            raise ToolError('Session context owner has been deleted or is unavailable')
+        owner = self._child_source(chat_id, child_id) if child_id else chat_id
+        if not self._has_owner(owner):
+            raise ToolError('Session context source owner has been deleted or is unavailable')
+        cursor = None
+        if after:
+            try:
+                cursor = json.loads(base64.urlsafe_b64decode(str(after).encode('ascii')))
+                if len(cursor) != 4 or cursor[:2] != [chat_id, child_id] or not isinstance(cursor[2], (int, float)) or not isinstance(cursor[3], str):
+                    raise ValueError('Invalid scope')
+            except (ValueError, TypeError, UnicodeError) as exc:
+                raise ToolError('Context view cursor is invalid or outside this scope') from exc
+        cap = max(1, min(int(limit), 100))
+        params = [chat_id, child_id, owner]
+        where = "WHERE chat_id=? AND child_id=? AND (source_chat_id=? OR (source_chat_id='' AND child_id='')) "
+        if cursor:
+            where += 'AND (created_at,view_id)<(?,?) '
+            params.extend(cursor[2:])
+        params.append(cap + 1)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute('SELECT view_id,created_at,source_chat_id,child_id FROM context_view ' + where + 'ORDER BY created_at DESC,view_id DESC LIMIT ?', params).fetchall()
+        items = [{**dict(row), 'source_chat_id': row['source_chat_id'] or owner} for row in rows[:cap]]
+        next_cursor = None
+        if len(rows) > cap:
+            last = rows[cap-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps([chat_id, child_id, last['created_at'], last['view_id']]).encode('utf-8')).decode('ascii')
+        return {'schema': RESULT_SCHEMA, 'items': items, 'has_more': len(rows) > cap, 'next_cursor': next_cursor}
 
     def _view(self, chat_id: str, view_id: str):
         if not self._has_owner(chat_id):
@@ -234,7 +240,7 @@ class SessionContextService:
         view = self._view(chat_id, view_id)
         with self._lock, self._connect() as conn:
             counts = {row["kind"]: row["n"] for row in conn.execute(
-                "SELECT kind,COUNT(*) AS n FROM context_source WHERE view_id=? GROUP BY kind", (view_id,))}
+                "SELECT s.kind,SUM(v.count) AS n FROM context_view_span v JOIN context_stream s ON s.stream_id=v.stream_id WHERE v.view_id=? GROUP BY s.kind", (view_id,))}
         return {"schema": RESULT_SCHEMA, "view_id": view_id, "counts": counts,
                 "watermarks": json.loads(view["watermarks_json"]),
                 "coverage": {
@@ -243,50 +249,47 @@ class SessionContextService:
                     "snapshots": "metadata search; visible messages/calls on expansion, excluding opaque reasoning and media",
                     "limits": "unsaved or discarded payloads cannot be reconstructed; projections may repeat source evidence",
                 },
-                "ordering": "canonical ancestry, ledger sequence, then snapshot containers; links carry causality",
+                "ordering": "stable canonical causal prefix, ledger sequence, then native commit storage order; links carry causality",
                 "guidance": "Read/search historical evidence on demand. Refresh explicitly for newer commits. Snapshots are projections, not additional actions."}
 
     def read(self, chat_id: str, view_id: str, *, after: int = 0, limit: int = 50,
-             kind: str = "", around: str = "", before: int = 2):
+             kind: str = '', around: str = '', before: int = 2):
         self._view(chat_id, view_id)
         cap = max(1, min(int(limit), 200))
         with self._lock, self._connect() as conn:
             if around:
-                anchor = conn.execute("SELECT ordinal FROM context_source WHERE view_id=? AND source_id=?",
-                                      (view_id, around)).fetchone()
-                if anchor is None:
-                    raise ToolError("Context anchor is outside the captured view")
-                after = max(0, int(anchor["ordinal"]) - max(0, min(int(before), 100)))
-            rows = conn.execute(
-                "SELECT s.ordinal,s.descriptor_json,p.search_text FROM context_source s JOIN context_text p ON p.text_key=s.text_key "
-                "WHERE s.view_id=? AND s.ordinal>=? "
-                + ("AND s.kind=? " if kind else "") + "ORDER BY s.ordinal LIMIT ?",
-                (view_id, max(0, int(after)), *([kind] if kind else []), cap + 1),
-            ).fetchall()
-        items = [{**json.loads(row["descriptor_json"]), "preview": row["search_text"][:600], "ordinal": row["ordinal"]}
-                 for row in rows[:cap]]
-        return {"schema": RESULT_SCHEMA, "view_id": view_id, "items": items, "has_more": len(rows) > cap,
-                "next_cursor": int(rows[cap - 1]["ordinal"]) + 1 if len(rows) > cap else None}
+                anchor = index.rows(conn, view_id, source_id=around, limit=1)
+                if not anchor:
+                    raise ToolError('Context anchor is outside the captured view')
+                after = max(0, anchor[0]['ordinal'] - max(0, min(int(before), 100)))
+            rows = index.rows(conn, view_id, after=max(0, int(after)), limit=cap+1, kind=kind)
+        items = [{**json.loads(row['descriptor_json']), 'preview': row['search_text'][:600], 'ordinal': row['ordinal']} for row in rows[:cap]]
+        return {'schema': RESULT_SCHEMA, 'view_id': view_id, 'items': items, 'has_more': len(rows)>cap,
+                'next_cursor': int(rows[cap-1]['ordinal'])+1 if len(rows)>cap else None}
+
+    def iter_records(self, chat_id: str, view_id: str, *, page_size: int = 100):
+        after = 0
+        while True:
+            page = self.read(chat_id, view_id, after=after, limit=page_size)
+            yield from page['items']
+            if not page['has_more']:
+                break
+            after = page['next_cursor']
 
     def search(self, chat_id: str, view_id: str, *, query: str, limit: int = 20, after: int = 0, kind: str = ""):
         self._view(chat_id, view_id)
         query = str(query).strip()
         if not query or len(query) > 1000:
             raise ToolError("Context search needs a nonempty query of at most 1000 characters; use read for chronology")
-        pattern = "%" + query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         cap = max(1, min(int(limit), 100))
         with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                "SELECT s.ordinal,s.descriptor_json,p.search_text FROM context_source s JOIN context_text p ON p.text_key=s.text_key "
-                "WHERE s.view_id=? AND s.ordinal>=? AND p.search_folded LIKE ? ESCAPE '\\' "
-                + ("AND s.kind=? " if kind else "") + "ORDER BY s.ordinal LIMIT ?",
-                (view_id, max(0, int(after)), pattern, *([kind] if kind else []), cap + 1),
-            ).fetchall()
+            rows = index.rows(conn, view_id, after=max(0, int(after)), limit=cap+1, kind=kind,
+                              folded=query.casefold(), indexed=self._search_indexed)
         items = []
         for row in rows[:cap]:
             text = row["search_text"]
             folded_position = text.casefold().find(query.casefold())
-            # Case folding can expand characters (e.g. ß -> ss). Map back to
+            # Case folding can expand characters (e.g. Ăź -> ss). Map back to
             # the original source so offsets agree with expand().
             folded_length, position = 0, 0
             for position, char in enumerate(text):
@@ -297,50 +300,106 @@ class SessionContextService:
             start = max(0, position - 150)
             items.append({**json.loads(row["descriptor_json"]), "ordinal": row["ordinal"],
                           "snippet": text[start:start + 600], "match_offset": position,
-                          "offset_unit": "Unicode characters"})
+                          "offset_unit": "Unicode characters", "match_offset_scope": "indexed search projection"})
         return {"schema": RESULT_SCHEMA, "view_id": view_id, "items": items, "has_more": len(rows) > cap,
                 "next_cursor": int(rows[cap - 1]["ordinal"]) + 1 if len(rows) > cap else None,
-                "coverage": "canonical text and retained cell source/result text; snapshot metadata only, not all modalities"}
+                "coverage": "canonical text and retained cell source/result text; snapshot metadata only, not all modalities",
+                "search_backend": "fts5-trigram+literal-verification" if self._search_indexed and len(query.casefold()) >= 3 and '\0' not in query else "literal-scan"}
+
+    def _descriptor(self, chat_id, view_id, source_id):
+        view = self._view(chat_id, view_id)
+        with self._lock, self._connect() as conn:
+            rows = index.rows(conn, view_id, source_id=str(source_id), limit=1)
+        if not rows:
+            raise ToolError('Context source is outside the captured view')
+        return view, json.loads(rows[0]['descriptor_json'])
+
+    def _expansion_text(self, view, descriptor, part):
+        owner = view['source_chat_id'] or view['chat_id']
+        if descriptor['kind'] == 'message':
+            cursor = json.loads(view['watermarks_json'])['canonical']
+            source = self.sessions.context_source_record(owner, cursor['conversation_id'], descriptor['node_id'])
+            if hashlib.sha256(source['content_json'].encode('utf-8')).hexdigest() != descriptor['sha256']:
+                raise ToolError('Captured context source changed; inspect source integrity')
+            value = json.loads(source['content_json'])
+            return value if isinstance(value, str) else source['content_json']
+        if descriptor['kind'] == 'cell':
+            ref, expected = self._cell_artifact(descriptor, owner, part)
+            return self._artifact_text(ref, owner, expected)
+        from agent_engine.snapshot_store import SnapshotCursor
+        snapshot = self.runtimes.snapshot_store.load_cursor_sync(SnapshotCursor(
+            descriptor['thread_id'], int(descriptor['sequence']), descriptor['snapshot_id']))
+        if snapshot is None or str(snapshot.state.get('chat_id') or '') != owner:
+            raise ToolError('Captured snapshot is unavailable or belongs to another session', code='context_source_unavailable')
+        return json.dumps(_visible_messages(snapshot.state.get('messages') or []), ensure_ascii=False)
+
+    def _cell_artifact(self, descriptor, owner, part):
+        if part not in {'source', 'result', 'output'}:
+            raise ToolError('Cell expansion part must be source, result or output')
+        artifact_part = 'result' if part == 'output' else part
+        ref = descriptor.get(artifact_part + '_ref')
+        if not ref:
+            raise ToolError('This cell has no retained ' + artifact_part + ' evidence', code='context_source_unavailable')
+        expected = str(descriptor.get(artifact_part + '_sha256') or '')
+        if part == 'output':
+            evidence = descriptor.get('output_evidence') if 'output_evidence' in descriptor else json.loads(self._artifact_text(ref, owner, expected)).get('output_evidence')
+            evidence = evidence or {}
+            if not evidence.get('ref'):
+                raise ToolError('This cell has no retained output-event evidence; expand its result for recorded omissions', code='context_source_unavailable')
+            ref, expected = evidence['ref'], str(evidence.get('sha256') or '')
+        return ref, expected
+
+    def iter_expansion(self, chat_id, view_id, source_id, *, part='result', chunk_chars=16384):
+        view, descriptor = self._descriptor(chat_id, view_id, source_id)
+        cap, offset = max(1, min(int(chunk_chars), 100000)), 0
+        owner = view['source_chat_id'] or chat_id
+        if descriptor['kind'] == 'cell':
+            ref, expected = self._cell_artifact(descriptor, owner, part)
+            try:
+                metadata = self.artifacts.stat(ref, scope=owner)
+            except (FileNotFoundError, PermissionError) as exc:
+                raise ToolError('Retained context artifact or scoped grant is unavailable', code='context_source_unavailable') from exc
+            if expected and metadata.sha256 != expected:
+                raise ToolError('Session context artifact failed its source integrity check')
+            decoder = codecs.getincrementaldecoder('utf-8')(errors='strict')
+            buffer = ''
+            for raw in self._artifact_chunks(ref, owner):
+                self._view(chat_id, view_id)
+                buffer += decoder.decode(raw)
+                while len(buffer) >= cap:
+                    yield {'text': buffer[:cap], 'offset': offset, 'offset_unit': 'Unicode characters',
+                           'eof': False, 'integrity': 'pending'}
+                    offset += cap
+                    buffer = buffer[cap:]
+            buffer += decoder.decode(b'', final=True)
+        else:
+            # Native codecs and structured canonical records currently decode
+            # one retained payload. Never materialize the complete archive.
+            text = self._expansion_text(view, descriptor, part)
+            for start in range(0, max(0, len(text)-cap), cap):
+                self._view(chat_id, view_id)
+                yield {'text': text[start:start+cap], 'offset': start, 'offset_unit': 'Unicode characters',
+                       'eof': False, 'integrity': 'verified'}
+                offset = start + cap
+            buffer = text[offset:]
+        self._view(chat_id, view_id)
+        yield {'text': buffer, 'offset': offset, 'offset_unit': 'Unicode characters',
+               'eof': True, 'integrity': 'verified', 'total_chars': offset+len(buffer)}
+
+    def _artifact_chunks(self, ref, owner):
+        try:
+            yield from self.artifacts.iter_bytes(ref, scope=owner, chunk_size=65536, verify=True)
+        except (FileNotFoundError, PermissionError) as exc:
+            raise ToolError('Retained context artifact or scoped grant is unavailable', code='context_source_unavailable') from exc
 
     def expand(self, chat_id: str, view_id: str, *, source_id: str, offset: int = 0,
-               max_chars: int = 12_000, part: str = "result"):
-        view = self._view(chat_id, view_id)
-        source_chat_id = view["source_chat_id"] or chat_id
-        with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT descriptor_json FROM context_source WHERE view_id=? AND source_id=?",
-                               (view_id, str(source_id))).fetchone()
-        if row is None:
-            raise ToolError("Context source is outside the captured view")
-        descriptor = json.loads(row["descriptor_json"])
-        if descriptor["kind"] == "message":
-            source = self.sessions.context_source(source_chat_id, descriptor["head_node_id"], descriptor["node_id"])
-            if hashlib.sha256(source["content_json"].encode("utf-8")).hexdigest() != descriptor["sha256"]:
-                raise ToolError("Captured context source changed; inspect source integrity")
-            value = json.loads(source["content_json"])
-            text = value if isinstance(value, str) else source["content_json"]
-        elif descriptor["kind"] == "cell":
-            if part not in {"source", "result", "output"}:
-                raise ToolError("Cell expansion part must be source, result or output")
-            artifact_part = "result" if part == "output" else part
-            ref = descriptor[artifact_part + "_ref"]
-            text = self._artifact_text(ref, source_chat_id, str(descriptor.get(artifact_part + "_sha256") or ""))
-            if part == "output":
-                evidence = json.loads(text).get("output_evidence") or {}
-                if not evidence.get("ref"):
-                    raise ToolError("This cell has no retained output-event evidence; expand its result for recorded omissions")
-                text = self._artifact_text(evidence["ref"], source_chat_id, str(evidence.get("sha256") or ""))
-        else:
-            from agent_engine.snapshot_store import SnapshotCursor
-            snapshot = self.runtimes.snapshot_store.load_cursor_sync(SnapshotCursor(
-                descriptor["thread_id"], int(descriptor["sequence"]), descriptor["snapshot_id"],
-            ))
-            if snapshot is None or str(snapshot.state.get("chat_id") or "") != source_chat_id:
-                raise ToolError("Captured snapshot is unavailable or belongs to another session")
-            text = json.dumps(_visible_messages(snapshot.state.get("messages") or []), ensure_ascii=False)
-        start, cap = max(0, int(offset)), max(1, min(int(max_chars), 100_000))
-        return {"schema": RESULT_SCHEMA, "view_id": view_id, "source": descriptor, "text": text[start:start + cap],
-                "offset": start, "offset_unit": "Unicode characters", "total_chars": len(text),
-                "has_more": start + cap < len(text), "next_offset": start + cap if start + cap < len(text) else None}
+               max_chars: int = 12000, part: str = 'result'):
+        view, descriptor = self._descriptor(chat_id, view_id, source_id)
+        start, cap = max(0, int(offset)), max(1, min(int(max_chars), 100000))
+        text = self._expansion_text(view, descriptor, part)
+        return {'schema': RESULT_SCHEMA, 'view_id': view_id, 'source': descriptor, 'text': text[start:start+cap],
+                'offset': start, 'offset_unit': 'Unicode characters', 'total_chars': len(text),
+                'has_more': start+cap<len(text), 'next_offset': start+cap if start+cap<len(text) else None}
 
 
 def context_handle(host, context, view_id: str):
@@ -348,14 +407,14 @@ def context_handle(host, context, view_id: str):
     methods = [
         {"name": "status", "params": [], "returns": "dict", "description": "Inspect this frozen source view and its coverage."},
         {"name": "refresh", "params": [], "returns": "context", "description": "Capture a new view of committed sources."},
-        {"name": "read", "returns": "dict", "description": "Read bounded descriptors/neighbor pages; expand an ID for exact content.", "params": [
+        {"name": "read", "returns": "dict", "description": "Read bounded descriptor items with source_id and preview; expand an ID for exact content.", "params": [
             {"name": "after", "type": "int", "default": 0}, {"name": "limit", "type": "int", "default": 50},
             {"name": "kind", "type": "str", "default": ""}, {"name": "around", "type": "str", "default": ""},
             {"name": "before", "type": "int", "default": 2}]},
-        {"name": "search", "returns": "dict", "description": "Literal Unicode search within this view; returns IDs, snippets and search coverage.", "params": [
+        {"name": "search", "returns": "dict", "description": "Literal Unicode search; items contain source_id, snippet and match_offset in the indexed projection, plus search coverage. JSON/snapshot expansion offsets can differ.", "params": [
             {"name": "query", "type": "str", "required": True}, {"name": "limit", "type": "int", "default": 20},
             {"name": "after", "type": "int", "default": 0}, {"name": "kind", "type": "str", "default": ""}]},
-        {"name": "expand", "returns": "dict", "description": "Expand source text or a cell part (source/result/output) with character continuation; output retains event/evidence omission metadata.", "params": [
+        {"name": "expand", "returns": "dict", "description": "Read ['text'] for exact source or cell part (source/result/output), following next_offset for continuation. Output retains event/evidence omission metadata.", "params": [
             {"name": "source_id", "type": "str", "required": True}, {"name": "offset", "type": "int", "default": 0},
             {"name": "max_chars", "type": "int", "default": 12000}, {"name": "part", "type": "str", "default": "result"}]},
     ]

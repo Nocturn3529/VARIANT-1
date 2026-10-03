@@ -543,6 +543,7 @@ export type RuntimeApi = {
   toggleMaximize?: () => void;
   close?: () => void;
   pickFolder?: () => Promise<string | null | undefined>;
+  chooseContextExportPath?: (format:"jsonl"|"markdown") => Promise<{ok?:boolean;cancelled:boolean;path?:string;overwrite?:boolean;error?:string}>;
   getPathForFile?: (file: File) => string;
   openAppPath?: (key: string) => Promise<{ok?: boolean; reason?: string} | null | undefined>;
   openLocalPath?: (path: string) => Promise<{ok?: boolean; reason?: string} | null | undefined>;

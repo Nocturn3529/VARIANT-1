@@ -231,7 +231,8 @@ def test_refresh_reuses_index_text_without_collapsing_distinct_messages(tmp_path
     repeated = service.search(chat, second, query="older plan")["items"]
     assert len(repeated) == 2 and repeated[0]["source_id"] != repeated[1]["source_id"]
     with sqlite3.connect(service.path) as conn:
-        assert conn.execute("SELECT COUNT(*) FROM context_source").fetchone()[0] == 5
+        assert conn.execute("SELECT COUNT(*) FROM context_record").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM context_member").fetchone()[0] == 3
         assert conn.execute("SELECT COUNT(*) FROM context_text").fetchone()[0] == 2
     service.delete_chat(chat)
     with sqlite3.connect(service.path) as conn:

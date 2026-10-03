@@ -6,7 +6,7 @@ import json
 
 from model_providers import ProviderRequestError
 from model_runtime.context import normalize_model_route, context_limit_tokens, validate_worker_model_route
-from model_runtime.provider_recovery import REQUEST_BUDGET, RequestBudget, classify_provider_error
+from model_runtime.provider_recovery import PROFILES, REQUEST_BUDGET, RequestBudget, classify_provider_error
 
 
 def route_key(router, route):
@@ -106,7 +106,7 @@ async def stream_with_recovery(router, messages, options, *, recovery_profile=No
 
     policy = scope.policy
     enabled = bool(allow_recovery and scope.allow_recovery and policy["enabled"])
-    auxiliary = bool(options.get("internal_projection"))
+    auxiliary = bool(options.get("internal_projection")) or recovery_profile in PROFILES
     explicit_auxiliary = policy["auxiliary_routes"].get(recovery_profile, []) if enabled else []
     if explicit_auxiliary:
         candidates = normalized_routes(router, explicit_auxiliary)
@@ -144,6 +144,10 @@ async def stream_with_recovery(router, messages, options, *, recovery_profile=No
             changed = route_key(router, candidate) != route_key(router, scope.primary)
             call_messages = portable_messages(messages) if changed or scope.force_portable else messages
             call_options = {**options, "route": candidate["mode"]}
+            if explicit_auxiliary and explicit_auxiliary[index].get("reasoning_effort") and call_options.get("reasoning_budget") == 0:
+                # Keep lightweight machinery defaults when no effort is chosen.
+                # An explicit user route effort takes precedence over that default.
+                call_options["reasoning_budget"] = None
             # A candidate's exact context limit/capabilities must be re-admitted
             # before OAuth/model I/O. Don't replace primary compaction policy.
             if changed or explicit_auxiliary:

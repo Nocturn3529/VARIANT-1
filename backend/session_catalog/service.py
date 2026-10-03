@@ -1862,7 +1862,10 @@ class CatalogService:
                 "`history.expand(source_id=...)`. Views are frozen; "
                 "`history.refresh()` captures newer commits. Read returned "
                 "coverage and continuation fields; inspect ['items'] or ['text'] "
-                "explicitly to display the selected evidence."
+                "explicitly to display the selected evidence. Read items use "
+                "`preview`; search hits use `snippet` and `source_id`. "
+                "`print(history.expand(source_id=hit['source_id'])['text'])` "
+                "displays the selected source; follow `next_offset` for its tail."
             )
         if process_available and process_task:
             current_parts.append(

@@ -21,13 +21,14 @@ const handlers = new Map();
 const opens = [], reveals = [];
 const deck = {}, monitor = {}, overlay = {};
 let picks = 0;
+let saves=0,saveChoice={canceled:true},saveOptions;
 const moduleResult = {exports: {}};
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
   module: moduleResult, exports: moduleResult.exports,
   require: id => id === 'electron' ? {
     ipcMain: {handle: (name, fn) => handlers.set(name, fn), on: () => {}},
     BrowserWindow: {fromWebContents: sender => sender},
-    dialog: {showOpenDialog: async () => {picks++; return {canceled: true};}},
+    dialog: {showOpenDialog: async () => {picks++; return {canceled: true};},showSaveDialog:async(_owner,options)=>{saves++;saveOptions=options;return saveChoice;}},
     shell: {openPath: async value => {opens.push(value); return '';}, showItemInFolder: value => reveals.push(value)},
   } : localRequire(id),
   __dirname: root, process, Buffer, console, setTimeout, clearTimeout,
@@ -41,6 +42,15 @@ moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
 (async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'variant1-ipc-review-'));
   try {
+    const chooseExport=handlers.get('context-export:choose-path');
+    assert.ok(chooseExport);
+    assert.equal((await chooseExport({sender:overlay},'jsonl')).error,'untrusted_sender');
+    assert.equal((await chooseExport({sender:deck},'yaml')).error,'invalid_export_format');assert.equal(saves,0);
+    assert.equal((await chooseExport({sender:deck},'jsonl')).cancelled,true);assert.equal(saveOptions.defaultPath,'session-context.jsonl');
+    const exportPath=path.join(scratch,'context.jsonl');fs.writeFileSync(exportPath,'Fixture');saveChoice={canceled:false,filePath:exportPath};
+    const selectedExport=await chooseExport({sender:deck},'jsonl');assert.equal(selectedExport.path,exportPath);assert.equal(selectedExport.overwrite,true);
+    let resolveSave;saveChoice=new Promise(resolve=>{resolveSave=resolve;});const choosing=chooseExport({sender:deck},'markdown');
+    assert.equal((await chooseExport({sender:deck},'markdown')).error,'save_dialog_busy');resolveSave({canceled:true});await choosing;
     for (const channel of ['branches','history','review-files','review-diff']) {
       const handler=handlers.get(`workbench:git:${channel}`);
       assert.ok(handler,`${channel} read is registered`);

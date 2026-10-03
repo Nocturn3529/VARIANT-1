@@ -102,9 +102,15 @@ portable checkpoints, durable chat records, and on-demand session context have
 separate contracts, and not every live object is restorable. Agents retrieve
 earlier session evidence through `session.context()`; the harness does not inject
 stored profiles or inferred fact memories, or extract memories after turns.
+Settings includes a Session context browser for frozen views, search, source
+details, and JSONL or Markdown exports. Goal controls remain separately available.
 Cross-session memory is deferred.
 Portable checkpointing and
 restoration are disabled by default. See [state lifetimes](docs/ARCHITECTURE.md#state-lifetimes).
+
+Model routing Settings can configure ordered backup models and separate
+routes for internal JSON, summary, and vision calls. Recovery is disabled by
+default; saving routes does not change the selected main model.
 
 ## Development
 

@@ -168,11 +168,15 @@ def builtin_profiles() -> list[ProviderProfile]:
         _o("openrouter", "OpenRouter", "https://openrouter.ai/api/v1",
            ("OPENROUTER_API_KEY",), "openai/gpt-4o-mini", aliases=("or",),
            models_url="https://openrouter.ai/api/v1/models", reasoning=True,
-           reasoning_efforts=("low", "medium", "high"),
+           reasoning_efforts=("minimal", "low", "medium", "high", "xhigh", "max"),
            reasoning_effort_field="reasoning.effort",
            reasoning_model_rules=tuple({**rule, "patterns": tuple(
                "openai/" + pattern for pattern in rule["patterns"]
-           )} for rule in _OPENAI_REASONING_RULES),
+           )} for rule in _OPENAI_REASONING_RULES) + (
+               # Preserve established machinery defaults; newly exposed user
+               # effort choices do not implicitly change internal profiles.
+               {"patterns": ("*",), "efforts": ("low", "medium", "high")},
+           ),
            vision=True,
            signup="https://openrouter.ai/", description="Multi-provider model router.",
            headers={"HTTP-Referer": "https://variant1.local", "X-Title": "VARIANT-1"}),

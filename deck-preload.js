@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('variant1Deck', {
     return () => ipcRenderer.removeListener('workbench:fs:changed', listener);
   },
   getWorkbenchGitStatus: (localPath) => ipcRenderer.invoke('workbench:git:status', localPath),
+  chooseContextExportPath: format => ipcRenderer.invoke('context-export:choose-path', format),
   getWorkbenchGitBranches: (localPath, options) => ipcRenderer.invoke('workbench:git:branches', localPath, options || {}),
   getWorkbenchGitHistory: (localPath, options) => ipcRenderer.invoke('workbench:git:history', localPath, options || {}),
   getWorkbenchReviewFiles: (localPath, options) => ipcRenderer.invoke('workbench:git:review-files', localPath, options || {}),

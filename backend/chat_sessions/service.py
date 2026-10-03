@@ -1336,6 +1336,46 @@ class ChatSessionService:
             and row.get("text")
         ]
 
+    def context_head(self, sid: str) -> dict | None:
+        """Small source-owner watermark; does not enumerate ancestry."""
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            return dict(owner) if owner is not None else None
+
+    def context_nodes(self, sid: str, conversation_id: str, node_ids: list[str]) -> list[dict]:
+        """Bounded immutable nodes/parents for the internal context indexer.
+
+        The indexer follows edges from an owner-certified captured head. This
+        reader is not exposed as a model capability; view membership is checked
+        by SessionContextService before source expansion.
+        """
+        ids = list(dict.fromkeys(str(node) for node in node_ids))
+        if len(ids) > 200:
+            raise ValueError('Context node page exceeds 200 nodes')
+        if not ids:
+            return []
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None or owner['conversation_id'] != conversation_id:
+                raise ValueError('Context conversation owner changed or is unavailable')
+            placeholders = ','.join('?' for _ in ids)
+            rows = conn.execute('SELECT * FROM conversation_node WHERE conversation_id=? AND node_id IN (' + placeholders + ')', (conversation_id, *ids)).fetchall()
+            parents = {node: [] for node in ids}
+            for edge in conn.execute('SELECT DISTINCT from_node_id,to_node_id FROM conversation_edge WHERE conversation_id=? AND to_node_id IN (' + placeholders + ') AND from_node_id IS NOT NULL', (conversation_id, *ids)):
+                parents[edge['to_node_id']].append(edge['from_node_id'])
+            return [{**dict(row), 'parents': parents[row['node_id']]} for row in rows]
+
+    def context_source_record(self, sid: str, conversation_id: str, node_id: str) -> dict:
+        """Resolve a record already authorized by a retained frozen view.
+
+        Rewinding the live branch must not revoke an observation previously
+        captured by that session. Conversation deletion still revokes it.
+        """
+        rows = self.context_nodes(sid, conversation_id, [node_id])
+        if not rows:
+            raise ValueError('Context source is unavailable')
+        return rows[0]
+
     def context_sources(self, sid: str) -> dict:
         """Exact committed ancestry for an on-demand reader, not UI history."""
         with self.repository._read() as conn:
@@ -1344,8 +1384,8 @@ class ChatSessionService:
                 return {"cursor": None, "items": []}
             rows = conn.execute(
                 "WITH RECURSIVE ancestry(node_id) AS (SELECT ? UNION "
-                "SELECT e.from_node_id FROM conversation_edge e JOIN ancestry a "
-                "ON e.to_node_id=a.node_id WHERE e.conversation_id=? AND e.from_node_id IS NOT NULL) "
+                "SELECT e.from_node_id FROM ancestry a CROSS JOIN conversation_edge e "
+                "WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL) "
                 "SELECT n.* FROM conversation_node n JOIN ancestry a "
                 "ON n.node_id=a.node_id WHERE n.conversation_id=?",
                 (owner["head_node_id"], owner["conversation_id"], owner["conversation_id"]),

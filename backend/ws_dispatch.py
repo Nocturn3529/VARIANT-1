@@ -27,6 +27,8 @@ import ws_automations
 import ws_inference_platform
 import ws_local_models
 import ws_service_settings
+import ws_provider_recovery
+import ws_context_browser
 import ws_work
 import ws_chat_sessions
 import ws_kernel
@@ -828,6 +830,8 @@ ws_automations.register(on)
 ws_inference_platform.register(on)
 ws_local_models.register(on)
 ws_service_settings.register(on)
+ws_provider_recovery.register(on)
+ws_context_browser.register(on)
 ws_work.register(on)
 ws_chat_sessions.register(on)
 ws_kernel.register(on)

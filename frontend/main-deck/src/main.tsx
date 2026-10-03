@@ -64,6 +64,8 @@ import {installBrowserDownloads} from "./workbench/browserDownloads";
 import {ingestBrowserSettings, setBrowserSettingsConnection, setBrowserSettingsContext} from "./browserSettingsStore";
 import {ingestLocalModels, setLocalModelsConnection, setLocalModelsContext} from "./localModelsStore";
 import {ingestServiceSettings, setServiceSettingsConnection, setServiceSettingsContext} from "./serviceSettingsStore";
+import {ingestExternalContextSettings,setExternalContextSettingsConnection,setExternalContextSettingsContext} from "./externalContextSettingsStore";
+import {ingestProviderRouting,setProviderRoutingConnection,setProviderRoutingContext} from "./providerRoutingStore";
 import {ingestChatProjects,setChatProjectContext} from "./state/chatProjectStore";
 import {
   REACT_MODULE_MESSAGE_TYPES,
@@ -248,6 +250,8 @@ if(!detachedChatId())reg("react-runtime-browser-host", storeModuleHooks({
 reg("react-runtime-service-settings", storeModuleHooks({
   setContext: setServiceSettingsContext, setConnection: setServiceSettingsConnection, ingest: ingestServiceSettings,
 }));
+reg("react-runtime-external-context-settings",storeModuleHooks({setContext:setExternalContextSettingsContext,setConnection:setExternalContextSettingsConnection,ingest:ingestExternalContextSettings}));
+reg("react-runtime-provider-routing",storeModuleHooks({setContext:setProviderRoutingContext,setConnection:setProviderRoutingConnection,ingest:ingestProviderRouting}));
 
 reg("react-runtime-local-models", storeModuleHooks({
   setContext: setLocalModelsContext, setConnection: setLocalModelsConnection, ingest: ingestLocalModels,
