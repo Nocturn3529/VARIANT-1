@@ -154,7 +154,11 @@ export function PythonKernelsTab() {
   const running = rows.filter(row => row.busy).length;
   const queued = rows.reduce((sum, row) => sum + row.queuedCells, 0);
   const cpu = rows.reduce((sum, row) => sum + (row.cpuPercent || 0), 0);
-  const memory = rows.reduce((sum, row) => sum + (row.treeMemoryBytes ?? row.memoryBytes ?? 0), 0);
+  // Unmeasured kernels are unknown, not zero: the total covers measured ones
+  // and says so when some are missing.
+  const measured = rows.filter(row => (row.treeMemoryBytes ?? row.memoryBytes) !== null);
+  const memory = measured.reduce((sum, row) => sum + (row.treeMemoryBytes ?? row.memoryBytes ?? 0), 0);
+  const unmeasured = rows.length - measured.length;
   const capacity = inventory.capacity;
   const agents = new Map(chat.agentTeam.agents.map(agent => [agent.chatId, agent.name]));
   return <section className="python-kernels deck-instrument" aria-labelledby="python-kernels-title">
@@ -175,7 +179,7 @@ export function PythonKernelsTab() {
       <article className="deck-metric"><span className="deck-metric__label">Running now</span><strong className="deck-metric__value">{running}</strong><small className="deck-metric__detail">{queued ? `${queued} cells queued` : "No cells queued"}</small></article>
       <article className="deck-metric"><span className="deck-metric__label">Subagent slots</span><strong className="deck-metric__value">{capacity ? `${capacity.active} / ${capacity.maxActive}` : "—"}</strong><small className="deck-metric__detail">{capacity ? `${capacity.admitted} / ${capacity.maxAdmitted} admitted · depth ${capacity.maxDepth} · ${capacity.mode}` : "Child runtime unavailable"}</small></article>
       <article className="deck-metric"><span className="deck-metric__label">CPU</span><strong className="deck-metric__value">{rows.some(row => row.cpuPercent !== null) ? `${cpu.toFixed(cpu >= 10 ? 0 : 1)}%` : "—"}</strong><small className="deck-metric__detail">Interpreters · one core = 100%</small></article>
-      <article className="deck-metric"><span className="deck-metric__label">Memory</span><strong className="deck-metric__value">{rows.length ? bytes(memory) : "—"}</strong><small className="deck-metric__detail">Owned process trees</small></article>
+      <article className="deck-metric"><span className="deck-metric__label">Memory</span><strong className="deck-metric__value">{!rows.length ? "—" : !measured.length ? "Unknown" : `${unmeasured ? "≥ " : ""}${bytes(memory)}`}</strong><small className="deck-metric__detail" title={unmeasured ? `Owned process trees of measured kernels; ${unmeasured} ${unmeasured === 1 ? "kernel has" : "kernels have"} no measurement yet` : undefined}>{rows.length && !measured.length ? "Not measured yet" : unmeasured ? `${unmeasured} unmeasured` : "Owned process trees"}</small></article>
     </div>
     {inventory.error ? <p className="python-kernels__error" role="alert">{inventory.error}</p> : null}
     {!inventory.connected && rows.length ? <p className="python-kernels__note" role="status">Backend offline. Showing the last observed kernels.</p> : null}

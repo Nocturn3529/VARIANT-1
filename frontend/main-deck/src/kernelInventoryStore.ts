@@ -40,6 +40,7 @@ export function setKernelInventoryConnection(status: string) {
   const connected = status === "connected";
   if (!connected) {
     for (const id of timers.keys()) finish(id);
+    staleHistory.clear();
     // Their replies can no longer arrive, and a pending history id refuses
     // every later load for that chat, so release it with the other requests.
     const history = Object.fromEntries(Object.entries(store.getState().history)
@@ -100,17 +101,23 @@ export function chatRuntimeAction(chatId: string, action: "stop_cell" | "reset_s
   return !!chatId && store.getState().connected && store.send({type: "chat:runtime:action", id: chatId, action});
 }
 
+/** Chats asked to reread while a read was in flight; that reply reads once more. */
+const staleHistory = new Set<string>();
+
 /** The newest cells from a kernel's durable ledger. */
 export function loadKernelHistory(chatId: string, tail = 12): boolean {
   const state = store.getState();
-  if (!state.connected || !chatId || state.history[chatId]?.requestId) return false;
+  if (!state.connected || !chatId) return false;
+  if (state.history[chatId]?.requestId) { staleHistory.add(chatId); return false; }
   const requestId = crypto.randomUUID();
   const previous = state.history[chatId];
   store.setState({history: {...state.history, [chatId]: {requestId, items: previous?.items || [], error: ""}}});
   timers.set(requestId, setTimeout(() => {
     finish(requestId);
     const current = store.getState().history[chatId];
-    if (current?.requestId === requestId) store.setState({history: {...store.getState().history, [chatId]: {...current, requestId: "", error: "No cell history reply received."}}});
+    if (current?.requestId !== requestId) return;
+    staleHistory.delete(chatId);
+    store.setState({history: {...store.getState().history, [chatId]: {...current, requestId: "", error: "No cell history reply received."}}});
   }, 15000));
   if (store.send({type: "kernel:history", chat_id: chatId, tail, request_id: requestId})) return true;
   finish(requestId);
@@ -185,5 +192,7 @@ export function ingestKernelInventory(message: Record<string, unknown>): void {
         errorCode: text(item.error_code), label: text(item.label)};
     });
     store.setState({history: {...state.history, [entry[0]]: {requestId: "", items, error: ""}}});
+    // A cell finished while this read was in flight: catch up once.
+    if (staleHistory.delete(entry[0])) loadKernelHistory(entry[0]);
   }
 }

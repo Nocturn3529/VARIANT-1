@@ -47,8 +47,10 @@ export function isPrimaryView(value: string): value is PrimaryView {
 const requestedInitialView = validViews.has(initialView as PrimaryView)
   ? initialView as PrimaryView
   : "chat";
+// Retired deep links open where navigateTo routes them: runtime is Overview › Python.
+if (requestedInitialView === "runtime") selectOverviewTab("python");
 const store = createExternalStore<AppState>({
-  view: requestedInitialView === "memory" ? "settings" : requestedInitialView,
+  view: requestedInitialView === "memory" ? "settings" : requestedInitialView === "runtime" ? "overview" : requestedInitialView,
   settingsReturnView: "chat",
   settingsCategory: requestedInitialView === "memory" ? "session-context" : "general",
 });
