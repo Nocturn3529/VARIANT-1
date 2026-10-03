@@ -12,6 +12,7 @@ from endurance_mission import grade, mission, publish_feed
 from run_endurance import AdoptedBackendProcess, EnduranceBackend, ObserverClient, free_model_preflight, initialize
 from model_runtime.usage_ledger import ModelUsageLedger
 from tests.test_model_usage_ledger import request
+from endurance_reconcile import generation_usage, reconcile_usage
 
 
 def test_lab_initialization_is_once_only_and_does_not_reset_retained_state(tmp_path):
@@ -99,6 +100,22 @@ def test_usage_export_streams_null_coverage_corrected_usage_and_group_totals(tmp
     assert restored.totals()==ledger.totals()
     assert restored.groups('goal')[0]['total_tokens']==16
     assert 'total_tokens' in (tmp_path/'export'/'requests.csv').read_text(encoding='utf-8').splitlines()[0]
+    assert '1/2 known' in (tmp_path/'export'/'summary.md').read_text(encoding='utf-8')
+
+
+def test_reconciliation_preserves_native_token_units_and_never_stores_provider_content(tmp_path):
+    ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
+    ledger.record(request())
+    ledger.patch_response('mreq-a',{'provider_generation_id':'gen-known'})
+    ledger.patch_terminal('mreq-a',outcome='cancelled')
+    result=reconcile_usage(ledger,'unused fixture credential',fetch=lambda identity:{'id':identity,
+        'native_tokens_prompt':10,'native_tokens_completion':6,'native_tokens_reasoning':4,
+        'tokens_prompt':100,'tokens_completion':200,'total_cost':0,'prompt':'private content','external_user':'private identity'})
+    row=ledger.get('mreq-a')
+    assert result['updated']==1 and row['usage']['total_tokens']==16
+    assert row['usage']['cost_usd']==0 and row['outcome']=='cancelled'
+    assert 'private' not in json.dumps(row)
+    assert generation_usage({'tokens_prompt':100})['input_tokens'] is None
 
 
 def test_preflight_rejects_paid_missing_or_non_tool_models(tmp_path,monkeypatch):

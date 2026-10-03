@@ -31,7 +31,7 @@ def _usage(value):
         result[key] = value.get(key) is True
     reported = value.get("reported_fields")
     reported = reported if isinstance(reported, (list, tuple)) else ()
-    result["reported_fields"] = [key for key in TOKEN_FIELDS if key in reported]
+    result["reported_fields"] = [key for key in _COUNT_FIELDS if key in reported]
     cost = value.get("cost_usd")
     if type(cost) in (int, float) and 0 <= cost < 10**12:
         result["cost_usd"] = cost
@@ -113,7 +113,7 @@ class ModelUsageLedger:
                 for key in _COUNT_FIELDS:
                     if cleaned.get(key) is None and prior.get(key) is not None:
                         cleaned[key] = prior[key]
-                cleaned['reported_fields'] = [key for key in TOKEN_FIELDS
+                cleaned['reported_fields'] = [key for key in _COUNT_FIELDS
                     if key in cleaned['reported_fields'] or key in prior.get('reported_fields',[])]
             changed = conn.execute("UPDATE model_usage_request SET usage_json=?,outcome=CASE WHEN finished_at IS NULL THEN 'usage_observed' ELSE outcome END WHERE manifest_id=?",
                 (json.dumps(cleaned, allow_nan=False), _text(identity, 160))).rowcount

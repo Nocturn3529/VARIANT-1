@@ -107,4 +107,16 @@ def export_usage(ledger, directory):
                'groups':{kind:ledger.groups(kind) for kind in ('model','session','goal','day')},
                'limitations':'Unknown counters are null. Reported counts show field coverage; reasoning is already included in output where the provider defines it that way. Superseded attempt durations are unknown.'}
     (destination/'summary.json').write_text(json.dumps(summary,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
+    def display(value):
+        return 'unknown' if value is None else str(value)
+    lines=['# Endurance usage','',
+           '| Group | Requests | Input | Output | Reasoning | Total | Total coverage |',
+           '| --- | ---: | ---: | ---: | ---: | ---: | --- |']
+    for kind,rows in [('swarm',[{'identity':'all',**summary['totals']}]),*summary['groups'].items()]:
+        for row in rows:
+            label=(kind+': '+row['identity']).replace('|','\\|').replace('\n',' ')
+            lines.append('| '+label+' | '+' | '.join(display(row.get(key)) for key in ('requests','input_tokens','output_tokens','reasoning_tokens','total_tokens'))
+                         +' | '+str(row['total_tokens_known_requests'])+'/'+str(row['requests'])+' known |')
+    lines.extend(['',summary['limitations'],''])
+    (destination/'summary.md').write_text('\n'.join(lines),encoding='utf-8')
     return summary

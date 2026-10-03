@@ -206,7 +206,7 @@ class ObserverClient:
                 kind = str(row.get('type') or '')
                 if kind in {'run:settled','peer:changed','work:event','model:request_manifest','error'}:
                     # No prompt bodies, full replies, credentials, or error strings.
-                    value = {key:row[key] for key in ('session_id','run_id','status','source','message_id','revision','manifest_id','code') if key in row}
+                    value = {key:row[key] for key in ('session_id','chat_id','run_id','status','source','message_id','revision','manifest_id','code') if key in row}
                     if kind == 'work:event':
                         event = row.get('event') or {}
                         value = {key:event.get(key) for key in ('event_type','aggregate_kind','aggregate_id','aggregate_version','sequence')}
@@ -279,9 +279,11 @@ def resource_sample(backend, project):
         import psutil
         root = psutil.Process(backend.process.pid)
         processes = [root,*root.children(recursive=True)]
-        sample.update(process_count=len(processes),tree_rss_bytes=sum(p.memory_info().rss for p in processes if p.is_running()))
+        measurements=[(p.memory_info().rss,p.cpu_times()) for p in processes if p.is_running()]
+        sample.update(process_count=len(processes),tree_rss_bytes=sum(row[0] for row in measurements),
+                      tree_cpu_time_s=sum(row[1].user+row[1].system for row in measurements))
     except Exception:
-        sample.update(process_count=None,tree_rss_bytes=None)
+        sample.update(process_count=None,tree_rss_bytes=None,tree_cpu_time_s=None)
     for name,directory in (('data',backend.data_dir),('project',Path(project))):
         total, count, complete = 0, 0, True
         deadline=time.monotonic()+1
@@ -436,13 +438,20 @@ async def run_owned(root, *, tick=30, final_grace=300):
                             int(plan['duration_s']/plan['feed_interval_s']))
                 expected = publish_feed(plan['project'],cycle)
                 journal.append('feed_revision',{'revision':cycle},identity=f'feed:{cycle}')
+                status_started=time.monotonic()
                 goal = await client.command({'type':'goal:status:get','session_id':sessions[0]['id'],'goal_id':goal_id})
+                status_latency=time.monotonic()-status_started
                 state = goal['result']['goal']['status']
-                journal.append('sample',await asyncio.to_thread(resource_sample,backend,plan['project']))
+                sample=await asyncio.to_thread(resource_sample,backend,plan['project'])
+                sample['goal_status_latency_s']=status_latency
+                sample['runtime']=goal['result'].get('runtime')
+                sample['accounting']=goal['result'].get('accounting')
+                journal.append('sample',sample)
                 artifact_grade = await asyncio.to_thread(grade,plan['project'],expected,now=now,deadline=deadline)
                 report = {'schema':'variant1.endurance-status.v1','run_id':plan['run_id'],'commit':plan['commit'],
                     'goal_id':goal_id,'goal_status':state,'elapsed_s':now-journal.get('started_at'),'deadline':deadline,
                     'usage':ledger.totals(),'artifact_grade':artifact_grade,
+                    'latest_sample':sample,
                     'full_mission_qualified':False,'review_required':['citations','test quality','browser/desktop coverage','operating records','peer collaboration'],
                     'capability_availability':{'native_browser':'requires an attached browser host','desktop':'environment dependent; not certified by controller'}}
                 write_json(root/'status.json',report)
@@ -498,7 +507,7 @@ async def run_owned(root, *, tick=30, final_grace=300):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('operation',choices=['init','preflight','admit','run','status','pause','resume','continue','stop','export'])
+    parser.add_argument('operation',choices=['init','preflight','admit','run','status','pause','resume','continue','stop','export','reconcile'])
     parser.add_argument('--root',required=True)
     parser.add_argument('--models',nargs='+',default=list(DEFAULT_MODELS))
     parser.add_argument('--duration',type=float,default=7200)
@@ -528,13 +537,22 @@ def main():
         journal.set('control',{'id':uuid.uuid4().hex,'action':'cancel' if args.operation=='stop' else args.operation,'guidance':args.guidance})
     elif args.operation=='status':
         print((root/'status.json').read_text(encoding='utf-8') if (root/'status.json').exists() else json.dumps({'status':'prepared','plan':plan}))
-    elif args.operation=='export':
+    elif args.operation in {'export','reconcile'}:
         sys.path.insert(0,str(BACKEND))
         from model_runtime.usage_ledger import ModelUsageLedger
         path = root/'runtime-data'/'data'/'model-usage.sqlite3'
         if not path.is_file():
             raise ValueError('No usage ledger exists yet')
-        print(json.dumps(export_usage(ModelUsageLedger(path),root/'usage')['totals'],indent=2))
+        ledger=ModelUsageLedger(path)
+        if args.operation=='reconcile':
+            from endurance_reconcile import reconcile_usage
+            load_disposable_credential()
+            key=os.environ.get('OPENROUTER_API_KEY','').strip()
+            if not key:raise ValueError('A disposable OpenRouter credential is required')
+            result=reconcile_usage(ledger,key)
+            journal.append('usage_reconciliation',result)
+            print(json.dumps(result,indent=2))
+        print(json.dumps(export_usage(ledger,root/'usage')['totals'],indent=2))
     return 0
 
 

@@ -100,6 +100,10 @@ turn. Reasoning counters are not added again to provider totals. Missing counter
 remain null; superseded attempt durations remain unknown. OpenAI-compatible streams
 retain observed identity and reported partial usage before interruption. Observation
 failures remain visible and do not fail inference.
+Optional observer reconciliation reads OpenRouter generation usage metadata for
+already recorded generation IDs. It retains native-token counters and reported
+costs, excludes normalized router counts with different token units, and never
+requests stored generation content.
 
 The experimental endurance observer runs outside the isolated backend. Its SQLite
 journal retains session identities, feed revisions, interventions and bounded

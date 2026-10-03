@@ -129,6 +129,7 @@ Initialize once, then run the same lab to retain its sessions and evidence:
 ```powershell
 backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py init --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab" --duration 7200
 backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py preflight --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py admit --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
 backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py run --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
 ```
 
@@ -139,6 +140,8 @@ selected by `VARIANT1_ENDURANCE_CREDENTIAL_FILE`. `status`, `pause`, `resume`,
 operator action for blocked work. Reports distinguish artifact checks from full
 mission qualification, which still needs review. Catalog checks and short runs
 do not certify days of uptime or every browser/desktop stack.
+`reconcile` optionally refreshes missing native usage and cost measurements from
+OpenRouter generation metadata. It does not retrieve stored prompts or completions.
 
 Original VARIANT-1 code is available under the [MIT License](LICENSE).
 Third-party components retain their own licenses; see

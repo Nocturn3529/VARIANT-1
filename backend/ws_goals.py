@@ -89,7 +89,13 @@ def register(on):
         async def action():
             service = _runtime(srv,session,msg)
             goal = await asyncio.to_thread(service.get,str(msg.get('goal_id') or ''))
-            return {'goal':goal.to_dict()}
+            runtimes = getattr(srv.require_runtime(),'session_runtimes',None)
+            runtime = await asyncio.to_thread(runtimes.snapshot,goal.owner_chat_id) if runtimes else {}
+            bus = getattr(getattr(srv,'router',None),'_manifest_bus',None)
+            return {'goal':goal.to_dict(),
+                'runtime':{key:runtime.get(key) for key in ('busy','queued_inputs','pause_state','configuration_pending')},
+                'accounting':{'available':getattr(bus,'usage_ledger',None) is not None,
+                              'failures':getattr(bus,'ledger_failures',None)}}
         await _respond(websocket,msg,'status',action,mutation=False)
 
     @on('goal:finish')
