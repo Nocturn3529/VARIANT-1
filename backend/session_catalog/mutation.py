@@ -41,6 +41,7 @@ from .mutation_contracts import (
     utc_timestamp as _now,
 )
 from .mutation_worker_client import MutationWorkerClient
+from kernel_runtime.proxy_arguments import declared_parameter_order
 
 
 MUTATION_SCHEMA = "variant1.astb.session-mutation.v2"
@@ -783,6 +784,7 @@ class MutationManager:
             slot_id: str = "",
             slot_version: int = 0,
             effect_class: str = "",
+            signature: str = "",
         ) -> None:
             name = str(qualified_name or "").strip()
             if not name or name in contracts:
@@ -804,7 +806,12 @@ class MutationManager:
                     or binding.get("effect_class")
                     or "external_side_effect"
                 ),
-                "parameters": [str(name) for name in contract_params],
+                # Positional calls in the worker bind in the declared order,
+                # exactly as the kernel proxy does.
+                "parameters": declared_parameter_order(
+                    contract_params,
+                    str(signature or binding.get("signature") or ""),
+                ),
                 "fixed_arguments": dict(fixed_arguments or {}),
                 "argument_envelope": bool(argument_envelope),
             }
@@ -846,6 +853,7 @@ class MutationManager:
                         },
                         slot_id=slot_id,
                         effect_class=str(method.get("effect_class") or ""),
+                        signature=str(method.get("signature") or ""),
                     )
 
             for api in category.get("python_apis") or ():
@@ -879,6 +887,7 @@ class MutationManager:
                         },
                         slot_id=slot_id,
                         effect_class=str(method.get("effect_class") or ""),
+                        signature=str(method.get("signature") or ""),
                     )
 
         # Activated session tools are finite slot versions, not a growing

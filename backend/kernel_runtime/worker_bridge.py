@@ -37,6 +37,7 @@ from .bridge_protocol import (
     write_async_frame,
     write_sync_frame,
 )
+from .proxy_arguments import declared_parameter_order
 from .wire_values import unpack_value
 
 
@@ -2289,37 +2290,18 @@ class CapabilityProxy:
         )
         params = []
         raw_params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
-        required: list[tuple[str, dict]] = []
-        optional: list[tuple[str, dict]] = []
-        for name, spec in raw_params.items():
-            item = (_identifier(str(name)), spec if isinstance(spec, dict) else {})
-            (required if item[1].get("required") else optional).append(item)
-        ordered = required + optional
-        # Catalog artifacts are canonical JSON, so object keys are sorted when
-        # they cross the host/worker boundary.  The catalog's explicit
-        # signature retains the author-declared Python argument order; recover
-        # it here so positional calls do not silently bind to alphabetical
-        # fields when a mounted method is called positionally.
-        raw_signature = str(descriptor.get("signature") or "").strip()
-        left = raw_signature.find("(")
-        right = raw_signature.rfind(")")
-        if 0 <= left < right:
-            # Defaults may contain commas, quoted text or nested containers.
-            # Parse only the syntax; no default expression is ever evaluated.
-            try:
-                parsed = ast.parse("def _contract" + raw_signature[left:right + 1] + ": pass")
-                arguments = parsed.body[0].args
-                signature_names = [item.arg for item in
-                                   arguments.posonlyargs + arguments.args + arguments.kwonlyargs]
-            except (SyntaxError, ValueError):
-                signature_names = []
-            by_name = {name: spec for name, spec in ordered}
-            if (
-                len(signature_names) == len(by_name)
-                and len(set(signature_names)) == len(signature_names)
-                and set(signature_names) == set(by_name)
-            ):
-                ordered = [(name, by_name[name]) for name in signature_names]
+        specs = {
+            _identifier(str(name)): spec if isinstance(spec, dict) else {}
+            for name, spec in raw_params.items()
+        }
+        # Catalog keys arrive sorted; bind positionals in the author's declared
+        # order, the same order mutation workers use.
+        ordered = [
+            (name, specs[name])
+            for name in declared_parameter_order(
+                specs, str(descriptor.get("signature") or "")
+            )
+        ]
         self._ordered_names = [name for name, _ in ordered]
         self._param_specs = {name: dict(spec) for name, spec in ordered}
         for name, spec in ordered:
@@ -2950,10 +2932,19 @@ def _promoted_helper_contract(
         closure_variables = None
     if closure_variables is not None:
         for name, value in sorted(closure_variables.globals.items()):
-            if isinstance(value, (CapabilityProxy, ReadOnlyTools, MountedPythonAPI)):
-                # Mounted capabilities are resolved as mutation dependencies.
-                continue
             statement = ""
+            if isinstance(value, (CapabilityProxy, ReadOnlyTools, MountedPythonAPI)):
+                # Mounted capabilities exist in the worker under their own
+                # names; rebind any other name the helper used for them.
+                target = (
+                    value.__qualname__ if isinstance(value, CapabilityProxy)
+                    else object.__getattribute__(value, "_namespace")
+                    if isinstance(value, ReadOnlyTools)
+                    else object.__getattribute__(value, "_name")
+                )
+                if name != target:
+                    prelude.extend(ast.parse(f"{name} = {target}", mode="exec").body)
+                continue
             if isinstance(value, types.ModuleType):
                 module_name = str(getattr(value, "__name__", "") or "")
                 if module_name and all(part.isidentifier() for part in module_name.split(".")):
