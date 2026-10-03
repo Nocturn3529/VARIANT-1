@@ -1,4 +1,5 @@
 import {createExternalStore} from "../state/createModuleStore";
+import {installInputModality} from "../ui/inputModality";
 import {notifyToast} from "../state/toastStore";
 import type {RuntimeApi} from "../types";
 import {unstable_batchedUpdates} from "react-dom";
@@ -136,6 +137,7 @@ export function openNativeWindow(id: string, title: string, bounds?: {width?: nu
         || !child.document.getElementById("native-popout-root")) return;
       clearInterval(timer); pending.delete(id);
       child.document.title = `${title} — VARIANT-1`;
+      installInputModality(child.document);
       child.addEventListener("beforeunload", event => {if(!closeNativeWindow(id)){event.preventDefault();event.returnValue="";}});
       store.setState({[id]: {window: child, document: child.document, title, phase: "ready", pinned: !!bounds?.pinned}});
     } catch (error) { fail(String(error)); }

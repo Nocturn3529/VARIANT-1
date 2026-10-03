@@ -25,7 +25,7 @@ function createChatWindows({appRoot,getDeckWindow,getBackendInfo,isTrustedIpcSen
     let win=windows.get(id);
     if(win && !win.isDestroyed()){if(win.isMinimized())win.restore();win.show();win.focus();return {ok:true};}
     win=new BrowserWindow({width:680,height:760,minWidth:380,minHeight:400,frame:false,show:false,
-      title:String(title || 'Chat').slice(0,160),backgroundColor:'#0e0e0e',autoHideMenuBar:true,
+      title:String(title || 'Chat').slice(0,160),backgroundColor:'#090a0a',autoHideMenuBar:true,
       webPreferences:{preload:path.join(appRoot,'chat-preload.js'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
     windows.set(id,win);titles.set(id,String(title || "Chat").slice(0,160));hardenAppWindow(win);
     win.webContents.on("page-title-updated",event=>event.preventDefault());

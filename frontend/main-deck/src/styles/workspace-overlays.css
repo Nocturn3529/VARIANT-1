@@ -103,9 +103,12 @@
 /* System, Inference and Cloud are one-screen tabs: they fill the frame exactly,
    so charts take the spare height and long lists scroll inside. */
 .deck-overlay.utility-overlay--overview .overview-page:is([data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack { flex: 1 1 0; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+.deck-overlay.utility-overlay--overview .overview-page[data-tab="summary"] > .overview-summary { flex: 1 1 0; }
+@container overview (max-width: 830px) {
+  .deck-overlay.utility-overlay--overview .overview-page[data-tab="summary"] > .overview-summary { flex: 1 0 auto; }
+}
 .deck-overlay.utility-overlay--overview .overview-page:is([data-tab="system"], [data-tab="inference"], [data-tab="cloud"]) > .overview-widget-stack > .deck-instrument { min-height: 0; display: flex; flex-direction: column; }
 .native-utility-content.utility-overlay--overview { background: var(--deck-surface-void); }
-.utility-overlay--runtime { width: min(480px, calc(100vw - 40px)); }
 .utility-overlay--automations { width: min(850px, calc(100vw - 40px)); }
 .utility-overlay > .deck-destination-scroll { flex: 1; }
 .utility-tabs { display: flex; flex: none; flex-wrap: wrap; gap: 3px; padding: 12px 0; border-bottom: 1px solid var(--deck-line); }
@@ -184,9 +187,8 @@
 .app-shell button:not(:disabled):active { filter: brightness(.85); }
 @media (max-width: 830px) {
   .footer-runtime small { display: none; }
-  .deck-overlay, .deck-overlay.settings-overlay, .utility-overlay--overview, .utility-overlay--automations, .utility-overlay--runtime { width: calc(100vw - 24px); max-height: calc(100dvh - 48px); }
+  .deck-overlay, .deck-overlay.settings-overlay, .utility-overlay--overview, .utility-overlay--automations { width: calc(100vw - 24px); max-height: calc(100dvh - 48px); }
   .deck-overlay.settings-overlay { height: calc(100dvh - 48px); }
-  .utility-overlay--runtime { width: min(480px, calc(100vw - 24px)); }
   .utility-overlay--overview { width: min(680px, calc(100vw - 24px)); }
   .deck-overlay .settings-overlay__layout { grid-template-columns: minmax(0, 1fr); }
   .deck-overlay .settings-overlay__main { padding: 12px 16px 20px; }

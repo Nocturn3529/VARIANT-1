@@ -49,7 +49,7 @@ function PaletteDialog({mode}: {mode: "all" | "windows"}) {
         const tab = [...getPreviewState().tabs].reverse().find(item => item.target.kind === "url" && (item.ownerChatId || "") === (getSessionState().displayedSessionId || ""));
         if (tab) revealPane(`preview:${tab.id}`, "right"); else openBrowser();
       }},
-      {id: "runtime", label: "Python runtime", group: "Utilities", icon: "kernel", run: () => navigateTo("runtime")},
+      {id: "runtime", label: "Python runtime", detail: "Overview › Summary", group: "Utilities", icon: "kernel", run: () => navigateTo("runtime")},
       {id: "overview", label: "Overview", group: "Utilities", icon: "overview", run: () => navigateTo("overview")},
       {id: "automations", label: "Automations", group: "Utilities", icon: "clock", run: () => navigateTo("automations")},
       {id: "logs", label: "Log monitor", group: "Utilities", icon: "terminal", run: () => window.variant1Deck?.openMonitor?.()},

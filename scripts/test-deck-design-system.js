@@ -32,7 +32,7 @@ const designSystem = read(path.join(
 ));
 assert.match(designSystem, /--font-ui:\s*"Segoe WPC", "Segoe UI"/,
   'the accepted Mono UI uses the system Segoe stack');
-assert.match(designSystem, /--deck-canvas:\s*#0e0e0e/,
+assert.match(designSystem, /--deck-canvas:\s*#090a0a/,
   'the shared system must retain its black canvas');
 assert.match(designSystem, /--deck-text-primary:\s*#eaeaea/,
   'the shared system must retain its neutral white primary ink');
@@ -189,15 +189,16 @@ assert.match(overviewDestination, /<LocalInferenceWidget[\s\S]*onRefresh=\{\(\) 
   'Overview refresh must be delegated to the first telemetry instrument');
 assert.match(localInference, /local-inference-header[\s\S]*id="overview-refresh"[\s\S]*local-inference-runtime/,
   'Overview refresh must remain between the first instrument title and runtime readout');
-assert.match(overviewDestination, /<details className="overview-request-row"[\s\S]*<summary>[\s\S]*<RequestReceiptCard receipt=\{receipt\}\/>/,
-  'Overview request attempts must list one row per attempt that expands to its full receipt');
+assert.match(read(path.join('frontend', 'main-deck', 'src', 'overview', 'OverviewSummary.tsx')), /overview-summary__runtime[\s\S]*<RuntimeDetails\/>/,
+  'the Python runtime lives in Overview › Summary');
+assert.doesNotMatch(overviewDestination, /"requests"/, 'the Overview has no Requests tab');
 
 const settingsApp = read(path.join('frontend', 'main-deck', 'src', 'DeckApp.tsx'));
 const settingsOverlay = read(path.join('frontend', 'main-deck', 'src', 'SettingsOverlay.tsx'));
 const settingsCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'settings.css'));
 assert.doesNotMatch(settingsApp, /settings-header|settings-saved-state|settings-nav-glyph|settings-category-footer/,
   'Settings must not restore its retired route header, decorative nav glyphs, or local-build footer');
-for (const kind of ['runtime', 'overview', 'automations']) {
+for (const kind of ['overview', 'automations']) {
   assert.ok(settingsApp.includes(`<UtilitySurface kind="${kind}"`), `${kind} must use a utility overlay`);
 }
 assert.match(read('frontend/main-deck/src/SettingsPageContent.tsx'), /goals: <GoalsDestination\/>/,

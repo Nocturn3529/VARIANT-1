@@ -50,44 +50,38 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     }
   }
   try {
-    await click(client, 'Python runtime and backend status');
-    await waitFor(client, `document.querySelector('[aria-label="Pop out python runtime"]')`, 'runtime popout action');
-    await click(client, 'Pop out python runtime');
-    const runtime = await childFor('utility:runtime');
-    await waitFor(runtime, `document.querySelector('.runtime-summary .kernel-glyph.is-ready canvas')`, 'native procedural kernel canvas');
-    assert.ok(await runtime.evaluate(`document.body.innerText.includes('Python kernel')`));
-    assert.equal(await client.evaluate(`document.querySelectorAll('.runtime-details').length`), 0, 'runtime is moved, not duplicated');
-    assert.equal(await runtime.evaluate(`typeof window.variant1Deck`), 'undefined', 'child does not receive the privileged Deck bridge');
-    assert.equal(await runtime.evaluate(`document.querySelectorAll('script').length`), 0, 'child cannot bootstrap another backend socket');
-    await click(client, 'Python runtime and backend status');
-    assert.equal((await getJson('/json/list')).filter(item => item.url.includes('surface=utility%3Aruntime')).length, 1);
-    await click(runtime, 'Keep window on top');
-    await waitFor(runtime, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'true'`, 'native pin state');
+    // The Python runtime lives in Overview › Summary; the Overview pops out,
+    // pins, leaves the Deck bounds and docks back with its selected tab.
+    await click(client, 'Overview');
+    await waitFor(client, `document.querySelector('.overview-summary .runtime-summary .kernel-glyph.is-ready canvas')`, 'procedural kernel canvas in Overview summary');
+    await click(client, 'Pop out overview');
+    const overview = await childFor('utility:overview');
+    await waitFor(overview, `document.querySelector('.runtime-summary .kernel-glyph.is-ready canvas')`, 'native procedural kernel canvas');
+    assert.ok(await overview.evaluate(`document.body.innerText.includes('Python kernel')`));
+    assert.equal(await client.evaluate(`document.querySelectorAll('.overview-scroll').length`), 0, 'Overview is moved, not duplicated');
+    assert.equal(await overview.evaluate(`typeof window.variant1Deck`), 'undefined', 'child does not receive the privileged Deck bridge');
+    assert.equal(await overview.evaluate(`document.querySelectorAll('script').length`), 0, 'child cannot bootstrap another backend socket');
+    await click(client, 'Overview');
+    assert.equal((await getJson('/json/list')).filter(item => item.url.includes('surface=utility%3Aoverview')).length, 1);
+    await click(overview, 'Keep window on top');
+    await waitFor(overview, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'true'`, 'native pin state');
     await client.evaluate(`window.variant1Deck.toggleMaximize(); true`);
     await pause(150);
     const owner = await client.evaluate(`({left: screenX, top: screenY, right: screenX + outerWidth, width: outerWidth})`);
-    await runtime.evaluate(`window.moveTo(${owner.right - 70}, ${owner.top + 30}); true`);
-    await waitFor(runtime, `screenX + outerWidth > ${owner.right} || screenX < ${owner.left}`, 'window outside the Deck bounds');
-    const shot = await runtime.call('Page.captureScreenshot', {format: 'png'});
-    fs.writeFileSync(path.join(require('./native-test-artifacts')(root,'artifacts','panels'), 'native-runtime-popout.png'), Buffer.from(shot.data, 'base64'));
-    await dock(runtime, 'Dock Python runtime panel', `document.querySelector('dialog[open] .runtime-details')`);
-    await click(client, 'Close python runtime');
-    console.log('native runtime: shared state, one window, pin, outside bounds, and docking passed');
-
-    await click(client, 'Overview');
-    await waitFor(client, `document.querySelector('.overview-scroll')`, 'overview content');
-    await client.evaluate(`[...document.querySelectorAll('.overview-scroll .utility-tabs button')].find(button => button.textContent === 'Requests').click(); true`);
-    await click(client, 'Pop out overview');
-    const overview = await childFor('utility:overview');
-    assert.equal(await overview.evaluate(`document.querySelector('.utility-tabs [aria-pressed="true"]').textContent`), 'Requests');
+    await overview.evaluate(`window.moveTo(${owner.right - 70}, ${owner.top + 30}); true`);
+    await waitFor(overview, `screenX + outerWidth > ${owner.right} || screenX < ${owner.left}`, 'window outside the Deck bounds');
+    const shot = await overview.call('Page.captureScreenshot', {format: 'png'});
+    fs.writeFileSync(path.join(require('./native-test-artifacts')(root,'artifacts','panels'), 'native-overview-popout.png'), Buffer.from(shot.data, 'base64'));
+    await overview.evaluate(`[...document.querySelectorAll('.utility-tabs button')].find(button => button.textContent === 'Cloud').click(); true`);
+    await waitFor(overview, `document.querySelector('.utility-tabs [aria-pressed="true"]')?.textContent === 'Cloud'`, 'detached tab selection');
     const before = websocketFrames.filter(frame => frame.includes('>') && frame.includes('hardware:telemetry')).length;
     await pause(1350);
     assert.ok(websocketFrames.filter(frame => frame.includes('>') && frame.includes('hardware:telemetry')).length > before,
       'Overview must continue polling while Chat is the main surface');
     await dock(overview, 'Dock Overview panel', `document.querySelector('dialog[open] .overview-scroll')`);
-    assert.equal(await client.evaluate(`document.querySelector('.overview-scroll .utility-tabs [aria-pressed="true"]').textContent`), 'Requests');
+    assert.equal(await client.evaluate(`document.querySelector('.overview-scroll .utility-tabs [aria-pressed="true"]').textContent`), 'Cloud');
     await click(client, 'Close overview');
-    console.log('native Overview: selected detail and live telemetry survived the round trip');
+    console.log('native Overview: runtime summary, one window, pin, outside bounds, selected tab and live telemetry survived the round trip');
 
     await client.evaluate(`document.querySelector('.history-utility-button').click(); true`);
     await waitFor(client, `document.querySelector('[aria-label="Pop out automations"]')`, 'automation popout action');
@@ -263,6 +257,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await client.evaluate(`window.resizeTo(800, 680); true`);
     await client.call('Emulation.setDeviceMetricsOverride', {width:800,height:680,deviceScaleFactor:1,mobile:false});
     await waitFor(client, `innerWidth <= 830`, 'compact main window');
+    await waitFor(client, `document.querySelector('[aria-label="Show agent sessions"]')`, 'compact layout applied');
     await click(client, 'Show agent sessions');
     await waitFor(client, `document.querySelector('.workbench-side-overlay .history-panel')`, 'compact Chats drawer');
     assert.ok(await client.evaluate(`!!document.querySelector('.workbench-side-overlay #history-search-input')`));

@@ -1,13 +1,14 @@
 import {useEffect, useRef, useState, type CSSProperties, type ReactNode} from "react";
 import {asRecord as record} from "../state/storePrimitives";
 import type {OverviewTelemetry} from "../overviewStore";
+import {RuntimeDetails} from "../RuntimeOverlay";
+import type {OverviewTab} from "./overviewTabStore";
 
 /**
- * Overview at a glance: one tile per section, each opening its tab. Tiles
- * show the one number that matters plus a small graphic in that section's
- * graph hue; everything else stays monochrome.
+ * Overview at a glance: the Python runtime (status, actions, retained
+ * sessions) beside one tile per section, each opening its tab. Tiles show
+ * the number that matters plus a small graphic in that section's graph hue.
  */
-export type OverviewTab = "summary" | "inference" | "system" | "cloud" | "models" | "requests";
 
 const HISTORY = 40;
 
@@ -84,11 +85,8 @@ function Tile({tab, title, status, tone, onOpen, children}: {
   </button>;
 }
 
-export function OverviewSummary({telemetry, kernelLabel, connected, session, onOpen, onRefresh}: {
+export function OverviewSummary({telemetry, onOpen, onRefresh}: {
   telemetry: OverviewTelemetry;
-  kernelLabel: string;
-  connected: boolean;
-  session: string;
   onOpen: (tab: OverviewTab) => void;
   onRefresh: () => void;
 }) {
@@ -121,18 +119,10 @@ export function OverviewSummary({telemetry, kernelLabel, connected, session, onO
   const cloudRequests = numeric(totals.cloud_requests) || 0;
   const localShare = local + cloudRequests ? Math.round(local / (local + cloudRequests) * 100) : null;
 
-  const latest = telemetry.modelRequests[0];
-  const deliveryIssues = telemetry.modelRequestWindow.droppedEvents + telemetry.modelRequestWindow.publishFailures;
-  const latestTime = latest?.capturedAt ? new Date(latest.capturedAt > 1e10 ? latest.capturedAt : latest.capturedAt * 1000) : null;
-
   return <div className="overview-summary" aria-label="Overview at a glance">
-    <div className="overview-summary__status">
-      <span className="deck-status" data-tone={connected ? "positive" : undefined}>{kernelLabel}</span>
-      <span>{connected ? "Backend connected locally" : "Backend offline"}</span>
-      <span>{session}</span>
-      <button type="button" className="overview-summary__refresh" onClick={onRefresh}>Refresh</button>
-    </div>
+    <section className="overview-summary__runtime" aria-label="Python runtime"><RuntimeDetails/></section>
     <div className="overview-summary__grid">
+      <button type="button" className="overview-summary__refresh" onClick={onRefresh}>Refresh telemetry</button>
       <Tile tab="inference" title="Inference" status={inferenceStatus} tone={state === "decode" || state === "prefill" ? "live" : state === "error" ? "warning" : engineReady ? "positive" : undefined} onOpen={onOpen}>
         <strong className="overview-tile__value">{decode ? decode.toFixed(1) : "—"}<small>tok/s decode</small></strong>
         <Sparkline values={decodeHistory}/>
@@ -159,17 +149,6 @@ export function OverviewSummary({telemetry, kernelLabel, connected, session, onO
           <b style={{width: `${localShare ?? 0}%`}}/><b style={{width: `${localShare === null ? 0 : 100 - localShare}%`}}/>
         </div>
         <p className="overview-tile__facts"><span>{compact(numeric(totals.requests))} requests</span><span>{localShare === null ? "No routed requests" : `${localShare}% local · ${100 - localShare}% cloud`}</span></p>
-      </Tile>
-      <Tile tab="requests" title="Latest request" status={deliveryIssues ? `${deliveryIssues} delivery issues` : latest ? `${telemetry.modelRequests.length} retained` : "Waiting"} tone={deliveryIssues ? "warning" : latest ? "positive" : undefined} onOpen={onOpen}>
-        <strong className="overview-tile__value is-text">{latest?.route.model || "No request yet"}</strong>
-        <dl className="overview-tile__grid">
-          <div><dt>Route</dt><dd>{latest ? [latest.route.physicalMode, latest.route.provider].filter(Boolean).join(" / ") || "—" : "—"}</dd></div>
-          <div><dt>Tokens</dt><dd>{latest?.usage?.totalTokens != null ? compact(latest.usage.totalTokens) : "—"}</dd></div>
-          <div><dt>Cost</dt><dd>{latest?.usage?.costUsd != null ? money(latest.usage.costUsd) : "—"}</dd></div>
-          <div><dt>Captured</dt><dd>{latestTime && !Number.isNaN(latestTime.getTime()) ? latestTime.toLocaleTimeString() : "—"}</dd></div>
-          <div><dt>Budget alerts</dt><dd>{telemetry.modelRequests.filter(receipt => receipt.budget.overBudget).length}</dd></div>
-          <div><dt>Metadata only</dt><dd>{telemetry.modelRequests.filter(receipt => receipt.privacy.status === "metadata_only").length}</dd></div>
-        </dl>
       </Tile>
     </div>
   </div>;

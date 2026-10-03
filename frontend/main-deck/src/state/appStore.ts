@@ -3,6 +3,7 @@ import {closeCompactPane, hidePane, PANE, revealPane} from "../workbench/workben
 import {getDeckRuntime} from "../runtime/runtimeBridge";
 import {createExternalStore} from "./createModuleStore";
 import {focusNativeWindow, nativeUtilityKey} from "../workbench/nativeWindowStore";
+import {selectOverviewTab} from "../overview/overviewTabStore";
 
 export type PrimaryView =
   | "chat"
@@ -53,6 +54,8 @@ const store = createExternalStore<AppState>({
 });
 
 export function navigateTo(view: PrimaryView): void {
+  // The Python runtime lives in Overview › Summary.
+  if (view === "runtime") { selectOverviewTab("summary"); view = "overview"; }
   if (["runtime", "overview", "automations"].includes(view) && focusNativeWindow(nativeUtilityKey(view))) return;
   // Route the public Memory deep link to its current Settings page.
   if (view === "memory") {

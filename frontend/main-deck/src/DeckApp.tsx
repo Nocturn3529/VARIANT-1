@@ -5,7 +5,6 @@ import {ChatDestination} from "./ChatDestination";
 import {ActionPalette} from "./ui/ActionPalette";
 import {openPalette} from "./state/paletteStore";
 import {Icon} from "./ui/Icon";
-import {KernelGlyph} from "./motion/KernelGlyph";
 import {lazy, Suspense, useEffect} from "react";
 import {cancelChatTurn, notifyChat, useChatState} from "./chatStore";
 import {LazySurface} from "./ui/LazySurface";
@@ -18,7 +17,6 @@ import {requestNewSession} from "./state/sessionStore";
 import {toggleMic} from "./state/micStore";
 import {Workbench} from "./workbench/Workbench";
 import {isWorkbenchPaneVisible, PANE, resetWorkbenchLayout, setWorkbenchEditMode, useWorkbenchState, rightPanelsVisible,toggleRightPanels} from "./workbench/workbenchStore";
-import {kernelStatusLabel, RuntimeDetails} from "./RuntimeOverlay";
 import {NativeSurface} from "./workbench/NativeSurface";
 import {installNativeWindowBridge, nativeUtilityKey, openNativeWindow, useNativeWindows} from "./workbench/nativeWindowStore";
 import {setOverviewDetached} from "./overviewStore";
@@ -29,12 +27,12 @@ const OverviewDestination = lazy(() => import("./deferred/destinations").then(mo
 const SettingsOverlay = lazy(() => import("./deferred/settings").then(module => ({default: module.SettingsOverlay})));
 const closeUtility = () => navigateTo("chat");
 
-function UtilitySurface({kind, api}: {kind: "overview" | "runtime" | "automations"; api: RuntimeApi | null}) {
+function UtilitySurface({kind, api}: {kind: "overview" | "automations"; api: RuntimeApi | null}) {
   const app = useAppState();
   const records = useNativeWindows();
   const id = nativeUtilityKey(kind);
   const record = records[id];
-  const title = kind === "runtime" ? "Python runtime" : kind === "overview" ? "Overview" : "Automations";
+  const title = kind === "overview" ? "Overview" : "Automations";
   const detached = !!record;
   useEffect(() => {
     if (kind === "overview") setOverviewDetached(detached);
@@ -45,11 +43,10 @@ function UtilitySurface({kind, api}: {kind: "overview" | "runtime" | "automation
   return <Overlay className={`utility-overlay utility-overlay--${kind}`} labelledBy={`${kind}-overlay-title`} open={app.view === kind && !detached} onClose={closeUtility}>
     <NativeSurface id={id} title={title} onClosed={dock => { if (dock) navigateTo(kind); }}>
       {!detached ? <OverlayHeader title={title} id={`${kind}-overlay-title`} onClose={closeUtility}
-        onPopout={api?.supportsNativeWindows ? () => { openNativeWindow(id, title, {width: kind === "runtime" ? 480 : 720, height: 600}); } : undefined}/> : null}
+        onPopout={api?.supportsNativeWindows ? () => { openNativeWindow(id, title, {width: kind === "overview" ? 960 : 720, height: kind === "overview" ? 600 : 600}); } : undefined}/> : null}
       <div className={`native-utility-content utility-overlay utility-overlay--${kind}`}>
         {kind === "overview" ? <LazySurface label="Overview"><OverviewDestination/></LazySurface> : null}
         {kind === "automations" ? <LazySurface label="Automations"><AutomationsDestination/></LazySurface> : null}
-        {kind === "runtime" ? <RuntimeDetails/> : null}
       </div>
     </NativeSurface>
   </Overlay>;
@@ -89,14 +86,8 @@ function WorkbenchTitlebarTools() {
 function SectionFooter({api}: {api: RuntimeApi | null}) {
   useNativeWindows();
   const app = useAppState();
-  const chat = useChatState();
-  const kernelLabel = kernelStatusLabel(chat.connected, chat.runtime?.kernelState);
   return <footer className="section-footer" aria-label="Main Deck footer">
-    <div className="section-footer__nav" aria-label="Runtime and utilities">
-      <button type="button" className="section-footer__button footer-runtime" aria-label="Python runtime and backend status" aria-haspopup="dialog" aria-expanded={app.view === "runtime"} onClick={() => navigateTo("runtime")}>
-        <KernelGlyph seed={`${chat.sessionId}:${chat.runtime?.kernelGeneration}`} phase={!chat.connected ? "offline" : chat.runtime?.kernelState === "busy" ? "running" : "idle"} mutation={chat.runtime?.mutationEffectiveEnabled} size={24}/>
-        <span>{kernelLabel}</span><small>{chat.connected ? "Backend connected" : "Backend offline"}</small>
-      </button>
+    <div className="section-footer__nav" aria-label="Utilities">
       <button type="button" className="section-footer__button" aria-label="Log monitor" onClick={async () => {
         try {
           const result = await api?.openMonitor?.();
@@ -150,7 +141,6 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
     <header className="titlebar"><SessionsRailCap/><div className="titlebar__drag"/><WorkbenchTitlebarTools/><HeaderTools/><WindowControls api={api}/></header>
     <div className="workspace"><main className="workbench-view"><Workbench api={api}/></main></div>
     <SectionFooter api={api}/>
-    <UtilitySurface kind="runtime" api={api}/>
     <UtilitySurface kind="overview" api={api}/>
     <UtilitySurface kind="automations" api={api}/>
     {settingsOpen ? <Suspense fallback={<SettingsOverlayFallback/>}><SettingsOverlay category={app.settingsCategory} onClose={closeSettings}/></Suspense> : null}

@@ -63,7 +63,7 @@ function createAppWindows(deps) {
       minWidth: 760,
       minHeight: 520,
       title: 'VARIANT-1',
-      backgroundColor: '#101112',
+      backgroundColor: '#090a0a',
       frame: false,
       autoHideMenuBar: true,
       show: false,
