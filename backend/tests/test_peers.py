@@ -37,6 +37,34 @@ def _stack(tmp_path):
     return service, runtimes, sessions, chat, first, second
 
 
+@pytest.mark.asyncio
+async def test_peer_receiver_launch_does_not_inherit_sender_goal_run_or_chat(tmp_path):
+    from run_context import Variant1RunContext, bind_run_context, current_run_context
+    from work_fabric.scope import WorkScope
+    service,runtimes,sessions,_chat,first,second=_stack(tmp_path)
+    runtime=SimpleNamespace(sessions=sessions,session_runtimes=runtimes)
+    host=SimpleNamespace(hub=SimpleNamespace(broadcast=AsyncMock()),require_runtime=lambda:runtime)
+    chat=ChatService(host=host,transcript=None,models=None)
+    seen=[]
+    async def turn(transport,text,session,**kwargs):
+        seen.append(current_run_context())
+        runtimes.repository.transition_ticket(kwargs['ticket_id'],'completed',expected=('preparing',),proof={'test':True})
+    chat.run_task=turn
+    runtimes.enqueue_input(second,'Independent peer work',delivery='follow_up',source='peer')
+    sender=Variant1RunContext.create(source='chat',session_id=first,
+        work_scope=WorkScope(chat_id=first,goal_id='sender-goal'),metadata={'_server_bound_kind':'chat'})
+    try:
+        with bind_run_context(sender):
+            launched=await chat.start_next_queued_input(second)
+            await launched['_task']
+        receiver=seen[0]
+        assert receiver.session_id==second and receiver.work_scope.chat_id==second
+        assert receiver.work_scope.goal_id=='' and receiver.parent_run_id==''
+        assert receiver.chat_session.viewed_session_id==second and receiver.run_id!=sender.run_id
+    finally:
+        await service.shutdown()
+
+
 async def _settle_service(service, runtimes):
     await service.shutdown()
     await runtimes.shutdown()

@@ -236,6 +236,8 @@ def _cloud_retry_delay(
         if not math.isfinite(requested) or requested > bound:
             return None
         return requested
+    if getattr(exc,'model_specific_rate_limit',False):
+        return 30.0  # Shared free upstream capacity gets a deliberate quiet interval.
     delay = CLOUD_RETRY_BASE_SECONDS * (2 ** max(0, int(failed_attempt)))
     return delay * random.uniform(.75, 1.25) if jitter else delay
 

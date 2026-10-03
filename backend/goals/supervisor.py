@@ -474,7 +474,8 @@ class GoalSupervisor:
             }
         target = self._aggregate_status(goal)
         outcome=self.repository.state_get(goal.goal_id,'objective_outcome') or {}
-        if target=='blocked' and goal.completion_policy.get('auto_continue') and outcome.get('status')=='continuing':
+        if (target=='blocked' and goal.completion_policy.get('auto_continue')
+                and outcome.get('status')=='continuing' and outcome.get('continuation_allowed',True)):
             step=self.repository.get_step(goal.goal_id,str(outcome.get('step_id') or ''))
             if step is not None and step.status=='blocked':
                 goal,_=self.repository.retry_step(goal.goal_id,step.step_id,

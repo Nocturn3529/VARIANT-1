@@ -15,7 +15,7 @@ from work_fabric.scope import coerce_work_scope
 from work_fabric.service import WorkService
 
 
-def stack(tmp_path):
+def stack(tmp_path, *, terminal_status='ok'):
     work = WorkService.open(str(tmp_path / "work.sqlite3"), worker_id="parent-goal-test")
     goals = create_goal_service(work)
     registry = SessionRuntimeRegistry(SessionRuntimeRepository(str(tmp_path / "runtime.sqlite3")))
@@ -38,7 +38,7 @@ def stack(tmp_path):
         registry.begin_run(args["runtime_admission_id"], run_id=run.run_id, thread_id=run.thread_id, source="goal")
         runs.append((run, text, args))
         await gate.wait()
-        receipts["owner"] = {"run_id": run.run_id, "status": "ok", "settled": True}
+        receipts["owner"] = {"run_id": run.run_id, "status": terminal_status, "settled": True}
     runtime.chat = SimpleNamespace(launch_reserved_turn=lambda transport, text, session, **args:
         launch_reserved_chat_turn(host, run_task, transport, text, session, **args))
     return work, goals, parent, registry, gate, runs, receipts
@@ -182,6 +182,18 @@ async def test_final_persistence_after_admission_release_is_not_misclassified_as
     await parent._tasks[goal_id][1]
     await asyncio.sleep(0)
     assert (await goals.supervisor.tick(goal_id))['status']=='blocked'
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupted_parent_turn_cannot_restart_from_earlier_continuation_claim(tmp_path):
+    work,goals,parent,registry,gate,runs,_=stack(tmp_path,terminal_status='cancelled')
+    goal_id=await launch(goals,runs)
+    parent.report(invocation(runs[0][0]),status='continuing',summary='More work remains')
+    assert (await finish(goals,goal_id,gate,registry))['status']=='blocked'
+    assert goals.repository.state_get(goal_id,'objective_outcome')['continuation_allowed'] is False
+    await goals.supervisor.tick(goal_id)
+    assert len(runs)==1
     await work.shutdown()
 
 

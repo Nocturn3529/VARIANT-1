@@ -2190,7 +2190,8 @@ class CatalogService:
                 if context is not None and context.work_scope.goal_id and self.host is not None:
                     goals = self.host.require_runtime().goals
                     goal = goals.get(context.work_scope.goal_id)
-                    if goal is not None and goal.completion_policy.get('execution_owner') == 'parent':
+                    if (goal is not None and goal.owner_chat_id == context.chat_id
+                            and goal.completion_policy.get('execution_owner') == 'parent'):
                         return goals.parent_session.report(context, **args)
                 if context is None or self.children is None:
                     raise ToolError('session.report_outcome requires an admitted child cell')

@@ -224,7 +224,8 @@ class ParentSessionGoals:
             awaited = report.get('wait_for_message_ids') or []
             if awaited and (peers is None or any(peers.repository.find_result_reply(item) is None for item in awaited)):
                 return None
-        self._outcome(wait.goal_id, {**report, "step_id": wait.step_id})
+        self._outcome(wait.goal_id, {**report, "step_id": wait.step_id,
+            'execution_status':slot.get('status'), 'continuation_allowed':slot.get('status')=='finished'})
         success = slot.get("status") == "finished" and report.get("status") == "completed"
         effect = self.goals.repository.get_effect(wait.matcher["effect_id"])
         if effect is not None and effect.status == "dispatched":

@@ -297,16 +297,32 @@ class ChatService:
 
         session = ConnectionSession(viewed_session_id=chat_id)
         transport = NativeChatEventTransport(self.host, chat_id)
-        task = self.launch_reserved_turn(
-            transport,
-            str(claimed.get("text") or ""),
-            session,
-            runtime_admission_id=admission_id,
-            client_id=str(claimed.get("client_id") or ""),
-            source=str(claimed.get("source") or "peer"),
-            ticket_id=str(claimed.get("id") or ""),
-            task_name=f"peer-chat-turn:{chat_id[:48]}",
-        )
+        from run_context import Variant1RunContext, bind_run_context
+        from work_fabric.scope import WorkScope
+        text = str(claimed.get('text') or '')
+        factory = getattr(self.host,'make_run_context',None)
+        try:
+            if callable(factory):
+                context = factory('chat',text,session=session,chat_transport=transport,
+                    inherit_parent=False,metadata={'_server_bound_kind':'chat','chat_id':chat_id})
+            else:
+                context = Variant1RunContext.create(source='chat',session_id=chat_id,
+                    work_scope=WorkScope(chat_id=chat_id),chat_session=session,chat_transport=transport,
+                    metadata={'_server_bound_kind':'chat','chat_id':chat_id})
+            with bind_run_context(context):
+                task = self.launch_reserved_turn(
+                    transport, text, session,
+                    runtime_admission_id=admission_id,
+                    client_id=str(claimed.get("client_id") or ""),
+                    source=str(claimed.get("source") or "peer"),
+                    ticket_id=str(claimed.get("id") or ""),
+                    task_name=f"peer-chat-turn:{chat_id[:48]}",
+                )
+        except BaseException:
+            registry.repository.transition_ticket(str(claimed['id']),'parked',
+                expected=('selected','preparing'),error='peer_context_launch_failed')
+            registry.finish_run(admission_id,status='admission_failed')
+            raise
         return {
             "status": "started",
             "chat_id": chat_id,

@@ -305,7 +305,7 @@ async def run(root, *, tick=30, final_grace=300):
         return await run_owned(root,tick=tick,final_grace=final_grace)
 
 
-async def admit(root, *, timeout=600):
+async def admit(root, *, timeout=600, only=None, retry_blocked=False):
     """Short real-provider route/Goal gate; this is not a swarm endurance grade."""
     root=Path(root).resolve()
     with observer_lease(root):
@@ -313,6 +313,9 @@ async def admit(root, *, timeout=600):
         plan=journal.get('plan')
         if plan is None or source_commit()!=plan['commit']:
             raise ValueError('Initialize an admission lab at the current committed source')
+        selected=set(only or [route['model'] for route in plan['routes']])
+        if not selected or selected-set(route['model'] for route in plan['routes']):
+            raise ValueError('Admission selection must use models pinned in this lab')
         require_clean_source()
         load_disposable_credential()
         if not os.environ.get('OPENROUTER_API_KEY','').strip():
@@ -322,6 +325,11 @@ async def admit(root, *, timeout=600):
         connection,client,ledger=None,None,None
         report={'schema':'variant1.endurance-admission.v1','commit':plan['commit'],'catalog':catalog,
                 'cases':[],'limitations':'Short individual Goal qualification. No swarm collaboration, browser/desktop coverage, or long-duration claim.'}
+        previous=root/'admission.json'
+        if previous.exists():
+            archived=root/f'admission-{time.time_ns()}.json'
+            previous.rename(archived)
+            report['previous_report']=archived.name
         sys.path.insert(0,str(BACKEND))
         from model_runtime.usage_ledger import ModelUsageLedger
         try:
@@ -332,6 +340,8 @@ async def admit(root, *, timeout=600):
                 sessions=await prepare_sessions(client,journal,plan)
                 ledger=ModelUsageLedger(backend.data_dir/'data'/'model-usage.sqlite3')
                 for index,session in enumerate(sessions):
+                    if session['route']['model'] not in selected:
+                        continue
                     workspace=Path(plan['project'])/f'admission-{index}'
                     workspace.mkdir(parents=True,exist_ok=True)
                     await client.command({'type':'chat:project:set','chat_id':session['id'],'root':str(workspace)})
@@ -341,6 +351,10 @@ async def admit(root, *, timeout=600):
                             'Write its computed result to proof.json with an integer value field and a verified boolean field. '
                             'Verify the calculation and inspect the saved file. Complete only after the deliverable is verified.'},timeout=90)
                     goal_id=accepted['result']['goal']['goal_id']
+                    if accepted['result']['goal']['status']=='blocked' and retry_blocked:
+                        await client.command({'type':'goal:continue','session_id':session['id'],'goal_id':goal_id,
+                            'expected_version':accepted['result']['goal']['version'],'message':''},timeout=90)
+                        journal.append('operator_control',{'action':'admission_retry','model':session['route']['model'],'goal_id':goal_id})
                     started=time.monotonic()
                     status='queued'
                     while time.monotonic()-started < timeout:
@@ -493,6 +507,8 @@ def main():
     parser.add_argument('--project')
     parser.add_argument('--guidance',default='')
     parser.add_argument('--timeout',type=float,default=600)
+    parser.add_argument('--only',nargs='+',help='Admit only these models from the existing lab plan')
+    parser.add_argument('--retry-blocked',action='store_true',help='Explicitly continue a blocked admission Goal; record the operator intervention')
     args = parser.parse_args()
     root = Path(args.root).resolve()
     if args.operation=='init':
@@ -505,7 +521,7 @@ def main():
     if args.operation=='run':
         return asyncio.run(run(root,tick=args.tick))
     if args.operation=='admit':
-        return asyncio.run(admit(root,timeout=args.timeout))
+        return asyncio.run(admit(root,timeout=args.timeout,only=args.only,retry_blocked=args.retry_blocked))
     if args.operation=='preflight':
         print(json.dumps(free_model_preflight(plan['routes']),indent=2))
     elif args.operation in {'pause','resume','continue','stop'}:

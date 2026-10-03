@@ -70,6 +70,14 @@ def test_shared_openrouter_upstream_throttle_is_distinct_from_account_limits(byo
     assert not hasattr(error,'raw')
 
 
+def test_shared_upstream_default_backoff_is_quiet_and_explicit_retry_after_wins():
+    error=ProviderRequestError('openrouter','upstream throttle',status_code=429)
+    error.model_specific_rate_limit=True
+    assert cloud._cloud_retry_delay(error,0)==30
+    error.retry_after_seconds=12
+    assert cloud._cloud_retry_delay(error,0)==12
+
+
 @pytest.mark.asyncio
 async def test_upstream_model_throttle_keeps_other_model_credential_usable_without_key_rotation(tmp_path,monkeypatch):
     result=router(tmp_path,monkeypatch,max_attempts=1,fallback_routes=[])
