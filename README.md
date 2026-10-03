@@ -32,7 +32,7 @@ Use the release notes for the behavior and qualification of a downloaded build.
 - **Continue work within a live session.** Reuse Python variables, imports, and
   helper functions across calls instead of recreating that working state for
   each step. Live state is not a guarantee of recovery after a restart.
-  The Python runtime view shows retained sessions and offers explicit release
+  The runtime panel in Overview > Summary shows retained sessions and offers explicit release
   controls; closing a generation ends its live objects and background Python work.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB

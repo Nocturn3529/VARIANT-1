@@ -58,7 +58,7 @@ Resource status reports a disabled memory quota and its pressure ratio as `null`
 while retaining available usage measurements. A configured quota with an unknown
 usage measurement also has an unknown pressure ratio.
 
-The Python runtime view inventories retained sessions and distinguishes live
+The runtime panel in Overview > Summary inventories retained sessions and distinguishes live
 interpreter measurements from earlier worker snapshots. Tree RSS is a sum of
 owned processes and can count shared pages more than once. Releasing a session
 is explicit, generation-fenced, and refused while a run is admitted, including
