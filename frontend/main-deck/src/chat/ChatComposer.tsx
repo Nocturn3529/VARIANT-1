@@ -321,13 +321,11 @@ function ContextMeter({
  * the picker or making another change.
  */
 function SettingNotice({label, error, onChoose, onDismiss}: {label: string; error: string; onChoose: () => void; onDismiss: () => void}) {
+  const title = label ? `Couldn't switch to ${label}.` : "Couldn't apply that change.";
   return <div className="composer-setting-notice deck-pop" role="alert">
     <Icon name="error"/>
-    <div className="composer-setting-notice__body">
-      <strong>{label ? `Couldn't switch to ${label}` : "Couldn't apply that change"}</strong>
-      <p>{error}</p>
-      <button type="button" onClick={onChoose}>Choose another model</button>
-    </div>
+    <p className="composer-setting-notice__text" title={`${title} ${error}`}><strong>{title}</strong> {error}</p>
+    <button type="button" className="composer-setting-notice__choose" onClick={onChoose}>Choose another model</button>
     <button type="button" className="composer-setting-notice__close" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><Icon name="close"/></button>
   </div>;
 }

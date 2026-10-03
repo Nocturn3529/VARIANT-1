@@ -30,6 +30,10 @@
   --deck-surface-raised: #222222;
   --deck-surface-strong: #262626;
   --deck-surface-panel: #141414;
+  /* Near-black of the preview panes; the Overview's base surface. */
+  --deck-surface-void: #090a0a;
+  --deck-void-raised: #101111;
+  --deck-void-strong: #171818;
   --deck-line: #2a2a2a;
   --deck-line-soft: #202020;
   --deck-line-strong: #363636;
@@ -127,6 +131,17 @@
    *   1180 wide    — context inspector overlay
    * React reads the same numbers from layout.ts.
    */
+}
+
+/* Near-black theme scope (Overview): canonical surfaces map onto the preview
+   panes' black, so components keep consuming the usual tokens. */
+.deck-theme-void {
+  --deck-canvas: var(--deck-surface-void);
+  --deck-surface-panel: var(--deck-surface-void);
+  --deck-surface-subtle: var(--deck-void-raised);
+  --deck-surface-raised: var(--deck-void-raised);
+  --deck-surface-strong: var(--deck-void-strong);
+  background: var(--deck-surface-void);
 }
 
 :root[data-density="compact"] {
@@ -490,19 +505,15 @@ body,
   font: var(--deck-text-xs)/1.45 var(--font-ui);
 }
 
+/* Instrument status reads like every other status: a toned dot and plain
+   text (no box, no uppercase mono). */
 .deck-instrument__status {
   display: inline-flex;
   align-items: center;
   flex: none;
-  padding: 7px 9px;
-  gap: 7px;
-  border: 1px solid var(--deck-line);
-  border-radius: var(--deck-radius-sm);
-  color: var(--deck-text-faint);
-  background: var(--deck-surface-raised);
-  font: 600 var(--deck-text-xs) var(--font-mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
+  gap: 6px;
+  color: var(--deck-text-secondary);
+  font: 500 var(--deck-text-xs)/1.2 var(--font-ui);
   white-space: nowrap;
 }
 
@@ -512,21 +523,13 @@ body,
   display: block;
   flex: none;
   border-radius: 50%;
-  background: currentColor;
-}
-
-.deck-instrument__status[data-state="live"],
-.deck-instrument__status.is-live {
-  color: var(--deck-signal-lime);
+  background: var(--deck-text-faint);
 }
 
 .deck-instrument__status[data-state="live"] > i,
-.deck-instrument__status.is-live > i {
-  box-shadow: 0 0 9px currentColor;
-}
-
-.deck-instrument__status[data-state="warning"] { color: var(--deck-signal-amber); }
-.deck-instrument__status[data-state="danger"] { color: var(--deck-signal-red); }
+.deck-instrument__status.is-live > i { background: var(--deck-positive); }
+.deck-instrument__status[data-state="warning"] > i { background: var(--deck-warning); }
+.deck-instrument__status[data-state="danger"] > i { background: var(--deck-danger); }
 
 .deck-instrument__controls {
   min-width: 0;

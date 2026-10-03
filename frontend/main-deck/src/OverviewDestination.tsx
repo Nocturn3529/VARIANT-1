@@ -17,6 +17,8 @@ import {
   type OverviewTelemetry,
 } from "./overviewStore";
 import {EmptyState} from "./ui/EmptyState";
+import {OverviewSummary, type OverviewTab} from "./overview/OverviewSummary";
+import {Icon} from "./ui/Icon";
 
 const tokenFormatter = new Intl.NumberFormat(undefined, {maximumFractionDigits: 0});
 
@@ -65,6 +67,30 @@ function RequestReceiptCard({receipt}: {receipt: ModelRequestReceipt}) {
   </article>;
 }
 
+/** One line per attempt; the full receipt opens beneath it. */
+function RequestRow({receipt, open}: {receipt: ModelRequestReceipt; open: boolean}) {
+  const date = receipt.capturedAt ? new Date(receipt.capturedAt > 1e10 ? receipt.capturedAt : receipt.capturedAt * 1000) : null;
+  const usage = receipt.usage;
+  const tokens = usage?.linked && usage.totalTokens !== null ? `${usage.estimated ? "≈ " : ""}${formatTokens(usage.totalTokens)}` : "—";
+  const cost = usage?.costUsd != null ? `${usage.estimated ? "≈ " : ""}$${usage.costUsd.toFixed(4)}` : "—";
+  return <details className="overview-request-row" open={open}>
+    <summary>
+      <time dateTime={date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined}>{date && !Number.isNaN(date.getTime()) ? date.toLocaleTimeString() : "—"}</time>
+      <strong title={receipt.route.model}>{receipt.route.model || "Model unavailable"}</strong>
+      <span>{[receipt.route.physicalMode, receipt.route.provider].filter(Boolean).join(" / ") || "route unavailable"}</span>
+      <span className="overview-request-row__num" title="Tokens">{tokens}</span>
+      <span className="overview-request-row__num" title="Cost">{cost}</span>
+      <span className="overview-request-row__flags">
+        {receipt.attempt > 1 ? <em className="deck-status">Attempt {receipt.attempt}</em> : null}
+        {receipt.budget.overBudget ? <em className="deck-status" data-tone="warning">Over budget</em> : null}
+        {receipt.privacy.status === "retained_data" ? <em className="deck-status" data-tone="warning">Retained data</em> : null}
+      </span>
+      <Icon name="chevron" className="overview-request-row__chevron"/>
+    </summary>
+    <RequestReceiptCard receipt={receipt}/>
+  </details>;
+}
+
 function ModelRequestInspector({telemetry}: {telemetry: OverviewTelemetry}) {
   const receipts = telemetry.modelRequests.slice(0, 12);
   const deliveryIssues = telemetry.modelRequestWindow.droppedEvents + telemetry.modelRequestWindow.publishFailures;
@@ -94,47 +120,37 @@ function ModelRequestInspector({telemetry}: {telemetry: OverviewTelemetry}) {
       <article className={`deck-metric${budgetAlerts ? " is-alert" : ""}`}><span className="deck-metric__label">Budget alerts</span><strong className="deck-metric__value">{budgetAlerts}</strong><small className="deck-metric__detail">Across the visible attempts</small></article>
       <article className={`deck-metric${deliveryIssues ? " is-alert" : ""}`}><span className="deck-metric__label">Delivery health</span><strong className="deck-metric__value">{deliveryIssues ? `${deliveryIssues} issues` : "Healthy"}</strong><small className="deck-metric__detail">{deliveryIssues ? `${telemetry.modelRequestWindow.droppedEvents} dropped · ${telemetry.modelRequestWindow.publishFailures} failed` : "No receipt loss reported"}</small></article>
     </div>
-    <div className="overview-request-list deck-data-list" aria-live="polite">{receipts.length ? receipts.map(receipt => <RequestReceiptCard key={receipt.manifestId} receipt={receipt}/>) : <EmptyState tone="panel" title="No model requests captured yet" description="Local and cloud request receipts appear after inference begins." />}</div>
+    <div className="overview-request-list deck-data-list" aria-live="polite">{receipts.length ? receipts.map((receipt, index) => <RequestRow key={receipt.manifestId} receipt={receipt} open={index === 0}/>) : <EmptyState tone="panel" title="No model requests captured yet" description="Local and cloud request receipts appear after inference begins." />}</div>
   </section>;
 }
 
 export function OverviewDestination() {
   const telemetry = useOverviewTelemetry();
   const chat = useChatState();
-  const [tab, setTab] = useState("summary");
+  const [tab, setTab] = useState<OverviewTab>("summary");
   useEffect(() => {
     if (telemetry.active) requestTelemetry({notify: true});
   }, [telemetry.active]);
-  const latest = telemetry.modelRequests[0];
-  const metric = (value: unknown, unit = "") => typeof value === "number" && Number.isFinite(value) ? `${value.toLocaleString(undefined, {maximumFractionDigits: 1})}${unit}` : "—";
-  return <div className="overview-scroll overview-shell overview-widget-shell deck-destination-scroll">
+  return <div className="overview-scroll overview-shell overview-widget-shell deck-destination-scroll deck-theme-void">
     <nav className="utility-tabs" aria-label="Overview details">
-      {["summary", "inference", "system", "cloud", "models", "requests"].map(id => <button type="button" key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{id[0].toUpperCase() + id.slice(1)}</button>)}
+      {(["summary", "inference", "system", "cloud", "models", "requests"] as OverviewTab[]).map(id => <button type="button" key={id} aria-pressed={tab === id} onClick={() => setTab(id)}>{id[0].toUpperCase() + id.slice(1)}</button>)}
     </nav>
-    <div className="overview-page deck-destination-page">
-      {tab === "summary" ? <div className="overview-compact">
-        <div className="overview-compact__status"><strong>{kernelStatusLabel(chat.connected, chat.runtime?.kernelState)}</strong><span>{chat.connected ? "Backend connected locally" : "Backend offline"}</span></div>
-        <dl className="overview-compact__metrics">
-          <div><dt>Decode</dt><dd>{metric(telemetry.inference?.decode_tps, " tok/s")}</dd></div>
-          <div><dt>First token</dt><dd>{metric(telemetry.inference?.ttft_ms, " ms")}</dd></div>
-          <div><dt>Request receipts</dt><dd>{telemetry.modelRequests.length}</dd></div>
-        </dl>
-        <dl className="runtime-details__rows">
-          <div><dt>Python session</dt><dd>{chat.runtime ? `Generation ${chat.runtime.kernelGeneration} · ${chat.runtime.selectedCategoryId || "no category"}` : "Not started"}</dd></div>
-          <div><dt>Latest model</dt><dd>{latest?.route.model || "No request captured"}</dd></div>
-          <div><dt>Route</dt><dd>{latest ? [latest.route.physicalMode, latest.route.provider].filter(Boolean).join(" / ") : "—"}</dd></div>
-          <div><dt>Latest token usage</dt><dd>{metric(latest?.usage?.totalTokens)}</dd></div>
-          <div><dt>Latest cost</dt><dd>{latest?.usage?.costUsd == null ? "Not reported" : `$${latest.usage.costUsd.toFixed(4)}`}</dd></div>
-        </dl>
-        <button type="button" className="overview-refresh" onClick={() => requestTelemetry({notify: true})}>Refresh telemetry</button>
-      </div> : null}
-      <div className="overview-widget-stack">
+    <div className="overview-page deck-destination-page" key={tab} data-tab={tab}>
+      {tab === "summary" ? <OverviewSummary
+        telemetry={telemetry}
+        kernelLabel={kernelStatusLabel(chat.connected, chat.runtime?.kernelState)}
+        connected={chat.connected}
+        session={chat.runtime ? `Python generation ${chat.runtime.kernelGeneration} · ${chat.runtime.selectedCategoryId || "no category"}` : "Python session not started"}
+        onOpen={setTab}
+        onRefresh={() => requestTelemetry({notify: true})}
+      /> : null}
+      {tab !== "summary" ? <div className="overview-widget-stack">
         {tab === "inference" ? <LocalInferenceWidget telemetry={telemetry.inference} onRefresh={() => requestTelemetry({notify: true})}/> : null}
         {tab === "system" ? <LivePerformanceWidget telemetry={telemetry.hardware}/> : null}
         {tab === "cloud" ? <ApiCostLimitsWidget telemetry={telemetry.cloudUsage}/> : null}
         {tab === "models" ? <ModelUsageWidget telemetry={telemetry.modelUsage}/> : null}
         {tab === "requests" ? <ModelRequestInspector telemetry={telemetry}/> : null}
-      </div>
+      </div> : null}
     </div>
   </div>;
 }

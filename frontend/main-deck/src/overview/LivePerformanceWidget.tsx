@@ -194,7 +194,7 @@ function buildResources(
       },
       metrics: active ? [
         metric("Utilization", percent(row.utilization_pct), "All GPU engines"),
-        metric("VRAM", `${gb(row.vram_used_mb)} / ${gb(row.vram_total_mb)}`, "Dedicated memory"),
+        metric("VRAM", `${(numeric(row.vram_used_mb) / 1024).toFixed(1)} / ${gb(row.vram_total_mb)}`, "Dedicated memory"),
         metric("Temperature", valueOrDash(row.temperature_c, value => `${value.toFixed(0)} °C`), "GPU sensor"),
         metric("Power", valueOrDash(row.power_draw_w, value => `${value.toFixed(1)} W`), powerLimit === null ? "Board draw" : `${powerLimit.toFixed(0)} W board limit`),
       ] : [
@@ -282,8 +282,8 @@ function PerformancePanel({
         <h3 className="deck-section-band__title" id={`performance-${resource.key}-title`}>{resource.name}</h3>
       </div>
       <div className="live-performance-legend" aria-label={`${resource.name} chart legend`}>
-        <span className="is-total"><i />Total usage</span>
-        <span className="is-variant1"><i />VARIANT-1 usage</span>
+        <span className="is-total"><i />Total<b> usage</b></span>
+        <span className="is-variant1"><i />VARIANT-1<b> usage</b></span>
       </div>
       <strong className={`live-performance-hardware${live ? " is-live" : ""}`}>{resource.hardware}</strong>
     </header>

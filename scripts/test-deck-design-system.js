@@ -189,8 +189,8 @@ assert.match(overviewDestination, /<LocalInferenceWidget[\s\S]*onRefresh=\{\(\) 
   'Overview refresh must be delegated to the first telemetry instrument');
 assert.match(localInference, /local-inference-header[\s\S]*id="overview-refresh"[\s\S]*local-inference-runtime/,
   'Overview refresh must remain between the first instrument title and runtime readout');
-assert.match(overviewCss, /\.overview-request-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s,
-  'Overview request attempts must use the available wide frame as a two-lane stream');
+assert.match(overviewDestination, /<details className="overview-request-row"[\s\S]*<summary>[\s\S]*<RequestReceiptCard receipt=\{receipt\}\/>/,
+  'Overview request attempts must list one row per attempt that expands to its full receipt');
 
 const settingsApp = read(path.join('frontend', 'main-deck', 'src', 'DeckApp.tsx'));
 const settingsOverlay = read(path.join('frontend', 'main-deck', 'src', 'SettingsOverlay.tsx'));

@@ -119,13 +119,12 @@
 .composer-preparation button:hover, .composer-mic-status button:hover:not(:disabled) { background: var(--deck-surface-raised); }
 .composer-mic-error { padding: 9px 13px 0; margin: 0; color: var(--deck-text-secondary); font: var(--deck-label-text)/1.5 var(--font-ui); }
 /* A rejected model change floats above the composer, never inside the input. */
-.composer .composer-setting-notice { position: absolute; z-index: 8; left: 0; bottom: calc(100% + 8px); width: min(440px, 100%); display: flex; align-items: flex-start; gap: 10px; padding: 11px 8px 11px 12px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-lg); background: var(--deck-surface-raised); box-shadow: var(--deck-shadow); transform-origin: bottom left; }
-.composer-setting-notice > .deck-icon { margin-top: 1px; color: var(--deck-warning); }
-.composer-setting-notice__body { min-width: 0; flex: 1; display: grid; justify-items: start; gap: 4px; }
-.composer-setting-notice__body strong { color: var(--deck-text-primary); font: 600 var(--deck-text-sm)/1.35 var(--font-ui); }
-.composer-setting-notice__body p { margin: 0; color: var(--deck-text-secondary); font: var(--deck-label-text)/1.5 var(--font-ui); overflow-wrap: anywhere; }
-.composer-setting-notice__body button { margin-top: 5px; padding: 4px 9px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); color: var(--deck-text-primary); background: transparent; font: 500 var(--deck-text-xs)/1.3 var(--font-ui); cursor: pointer; }
-.composer-setting-notice__body button:hover { background: var(--deck-surface-strong); }
+.composer .composer-setting-notice { position: absolute; z-index: 8; right: 0; bottom: calc(100% + 8px); left: 0; display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-lg); background: var(--deck-surface-raised); box-shadow: var(--deck-shadow); transform-origin: bottom center; }
+.composer-setting-notice > .deck-icon { flex: none; color: var(--deck-warning); }
+.composer-setting-notice__text { display: -webkit-box; min-width: 0; flex: 1; margin: 0; overflow: hidden; color: var(--deck-text-secondary); font: var(--deck-label-text)/1.45 var(--font-ui); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.composer-setting-notice__text strong { color: var(--deck-text-primary); font-weight: 600; }
+.composer-setting-notice__choose { flex: none; padding: 4px 9px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); color: var(--deck-text-primary); background: transparent; font: 500 var(--deck-text-xs)/1.3 var(--font-ui); white-space: nowrap; cursor: pointer; }
+.composer-setting-notice__choose:hover { background: var(--deck-surface-strong); }
 .composer-setting-notice__close { width: 24px; height: 24px; display: grid; flex: none; place-items: center; padding: 0; border: 0; border-radius: var(--deck-radius-sm); color: var(--deck-text-muted); background: transparent; cursor: pointer; }
 .composer-setting-notice__close:hover { color: var(--deck-text-primary); background: var(--deck-surface-subtle); }
 .composer-setting-notice__close .deck-icon { width: 14px; height: 14px; }

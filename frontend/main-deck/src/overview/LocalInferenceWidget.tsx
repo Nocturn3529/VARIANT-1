@@ -138,7 +138,7 @@ function LatencyMetric({label, value, detail}: {
   value: string;
   detail: string;
 }) {
-  return <article className="deck-data-cell">
+  return <article className="deck-data-cell" title={detail}>
     <span className="deck-data-cell__label">{label}</span>
     <strong className="deck-data-cell__value">{value}</strong>
     <small className="deck-data-cell__detail">{detail}</small>
@@ -416,12 +416,12 @@ export function LocalInferenceWidget({
           >
             <defs>
               <linearGradient id="local-decode-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="var(--deck-signal-cyan)" stopOpacity=".28" />
-                <stop offset="1" stopColor="var(--deck-signal-cyan)" stopOpacity="0" />
+                <stop offset="0" stopColor="var(--deck-chart-blue)" stopOpacity=".28" />
+                <stop offset="1" stopColor="var(--deck-chart-blue)" stopOpacity="0" />
               </linearGradient>
               <linearGradient id="local-prefill-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="var(--deck-signal-indigo)" stopOpacity=".24" />
-                <stop offset="1" stopColor="var(--deck-signal-indigo)" stopOpacity="0" />
+                <stop offset="0" stopColor="var(--deck-chart-violet)" stopOpacity=".24" />
+                <stop offset="1" stopColor="var(--deck-chart-violet)" stopOpacity="0" />
               </linearGradient>
             </defs>
             <g className="local-inference-chart-grid" aria-hidden="true">
