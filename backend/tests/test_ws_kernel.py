@@ -134,8 +134,8 @@ async def test_kernel_history_interrupt_restart_accept_explicit_chat_with_detach
     server, session, manager = _stack()
     tails = []
 
-    def history(chat_id, *, after_sequence=0, limit=100, tail=None):
-        tails.append((chat_id, tail))
+    def history(chat_id, *, after_sequence=0, limit=100, tail=None, labels=False):
+        tails.append((chat_id, tail, labels))
         return {"items": [], "next_sequence": 0}
 
     manager.execution_history = history
@@ -152,7 +152,7 @@ async def test_kernel_history_interrupt_restart_accept_explicit_chat_with_detach
         server, websocket, session,
         {"type": "kernel:restart", "request_id": "r", "chat_id": "other"},
     )
-    assert tails == [("other", 5)]
+    assert tails == [("other", 5, True)]
     assert manager.calls == [
         ("interrupt", "other", "stop"), ("restart", "other", "operator_restart"),
     ]

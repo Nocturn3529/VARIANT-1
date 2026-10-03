@@ -948,11 +948,13 @@ class KernelRuntimeManager:
         through_sequence: int | None = None,
         limit: int = 100,
         tail: int | None = None,
+        labels: bool = False,
     ) -> dict[str, Any]:
         """Return a bounded monotonic page from the durable cell ledger.
 
         ``tail`` returns the newest cells instead (oldest first) and ignores
-        ``after_sequence``.
+        ``after_sequence``. ``labels`` adds a display label per cell, which
+        reads each cell's source artifact; only interactive views request it.
         """
 
         chat_id = str(runtime_chat_id or "").strip()
@@ -970,6 +972,9 @@ class KernelRuntimeManager:
         items = []
         for row in rows:
             item = row.to_dict()
+            if not labels:
+                items.append(item)
+                continue
             try:
                 source = self.artifact_store.read_bytes_scoped(
                     row.source_ref, chat_id

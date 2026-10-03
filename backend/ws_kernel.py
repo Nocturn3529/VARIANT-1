@@ -137,6 +137,7 @@ def register(on):
             after_sequence=max(0, int(msg.get("after_sequence") or 0)),
             limit=max(1, min(int(msg.get("limit") or 100), 500)),
             tail=_history_tail(msg),
+            labels=True,
         )
         await websocket.send_json({
             "type": "kernel:history",

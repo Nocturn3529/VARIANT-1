@@ -69,8 +69,16 @@ async def test_inventory_reports_running_cell_queue_last_cell_and_last_exit(kern
     await asyncio.gather(running, waiting)
     assert manager.live_inventory()[0]["current_cell"] is None
 
-    history = manager.execution_history(chat, tail=1)
+    history = manager.execution_history(chat, tail=1, labels=True)
     assert [item["label"] for item in history["items"]] == ["value = 1 # first line"]
+    reads = []
+    original = manager.artifact_store.read_bytes_scoped
+    manager.artifact_store.read_bytes_scoped = lambda *a, **k: reads.append(a) or original(*a, **k)
+    try:
+        unlabeled = manager.execution_history(chat, limit=100)
+    finally:
+        manager.artifact_store.read_bytes_scoped = original
+    assert reads == [] and all("label" not in item for item in unlabeled["items"])
 
     await manager.restart(chat, reason="operator_restart")
     await manager.execute(chat_id=chat, code="value = 3", run_id="r1", outer_tool_call_id="c1")
