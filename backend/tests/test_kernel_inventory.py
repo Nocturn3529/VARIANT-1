@@ -38,6 +38,59 @@ async def test_inventory_measures_real_interpreter_and_release_preserves_other_c
 
 
 @pytest.mark.asyncio
+async def test_inventory_reports_running_cell_queue_last_cell_and_last_exit(kernel_stack):
+    import asyncio
+
+    manager, runtimes, _ = kernel_stack
+    chat = "observed"
+    runtimes.ensure_runtime(chat, is_new=True)
+    first = await manager.execute(chat_id=chat, code="\n\nvalue = 1  # first line\n", run_id="r0",
+                                  outer_tool_call_id="c0")
+    assert first.ok
+    row = manager.live_inventory()[0]
+    assert row["current_cell"] is None and row["queued_cells"] == 0
+    assert row["last_cell"]["execution_id"] == first.execution_id
+    assert row["last_cell"]["status"] == "ok" and row["last_exit"] is None
+
+    lease = manager._leases[chat]
+    running = asyncio.create_task(lease.execute(
+        "import time\ntime.sleep(1.5)", manager_admission(manager, lease, "slow")))
+    waiting = asyncio.create_task(lease.execute(
+        "after = 2", manager_admission(manager, lease, "queued")))
+    for _ in range(200):
+        row = manager.live_inventory()[0]
+        if row["current_cell"] and row["queued_cells"] == 1:
+            break
+        await asyncio.sleep(0.02)
+    assert row["current_cell"]["label"] == "import time"
+    assert row["current_cell"]["execution_id"] == "slow"
+    assert row["current_cell"]["started_at"] > 0
+    assert row["queued_cells"] == 1
+    await asyncio.gather(running, waiting)
+    assert manager.live_inventory()[0]["current_cell"] is None
+
+    history = manager.execution_history(chat, tail=1)
+    assert [item["label"] for item in history["items"]] == ["value = 1 # first line"]
+
+    await manager.restart(chat, reason="operator_restart")
+    await manager.execute(chat_id=chat, code="value = 3", run_id="r1", outer_tool_call_id="c1")
+    exit_row = manager.live_inventory()[0]["last_exit"]
+    assert exit_row["reason"] == "operator_restart"
+    assert exit_row["generation"] == first.generation
+
+
+def manager_admission(manager, lease, execution_id):
+    from kernel_runtime.contracts import ExecutionAdmission
+
+    return ExecutionAdmission(
+        execution_id=execution_id, chat_id=lease.chat_id, run_id="direct",
+        outer_tool_call_id=execution_id, generation=lease.generation,
+        catalog_release_id="", mount_revision=0, selected_category_id="",
+        overlay_revision=0, environment_digest="", workspace_root_ids=(),
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("state", ["unhealthy", "close_failed"])
 async def test_manual_release_can_retry_idle_unhealthy_cleanup(kernel_stack, state):
     manager, runtimes, _ = kernel_stack

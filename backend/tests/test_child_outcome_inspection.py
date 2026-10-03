@@ -71,6 +71,15 @@ async def test_roster_is_scoped_monotonic_and_reveals_real_lineage(manager):
     assert manager.inspection_snapshot('unrelated',child_id=a['child_id'])['children']==[]
 
 @pytest.mark.asyncio
+async def test_capacity_status_reports_configured_limits_and_current_use(manager):
+    a=await manager.spawn('parent',task='one');await manager.spawn('other-parent',task='two')
+    running(manager,a);manager._active_executions=1
+    status=manager.capacity_status()
+    assert {k:status[k] for k in ('max_active','max_admitted','max_depth')}=={
+        k:manager.capacity()[k] for k in ('max_active','max_admitted','max_depth')}
+    assert status['active']==1 and status['admitted']==2 and status['mode'] in {'cloud','local'}
+
+@pytest.mark.asyncio
 async def test_roster_last_activity_is_fenced_to_running_generation(manager,monkeypatch):
     from observability import activity
     monkeypatch.setattr(activity,'_LAST_SESSION_ACTIVITY',activity.OrderedDict())

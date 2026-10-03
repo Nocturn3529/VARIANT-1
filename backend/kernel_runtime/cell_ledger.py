@@ -22,6 +22,22 @@ from tool_core import json_safe
 CELL_LEDGER_SCHEMA = "variant1.kernel-cell-ledger.v1"
 CELL_ENTRY_SCHEMA = "variant1.kernel-cell-ledger-entry.v2"
 _MAX_PAGE = 500
+CELL_LABEL_CHARS = 120
+
+
+def cell_label(source: str) -> str:
+    """First non-empty source line for display, credential-sanitized then clipped."""
+
+    line = next(
+        (item.strip() for item in str(source or "").splitlines() if item.strip()),
+        "",
+    )
+    if not line:
+        return ""
+    from observability.display_projection import safe_display
+
+    text = " ".join(str(safe_display(line)).split())
+    return text[:CELL_LABEL_CHARS]
 
 
 def _json(value: Any) -> str:

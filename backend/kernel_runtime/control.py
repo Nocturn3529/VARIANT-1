@@ -15,12 +15,15 @@ def status(host: Any, chat_id: str) -> dict[str, Any]:
 
 
 def history(
-    host: Any, chat_id: str, *, after_sequence: int = 0, limit: int = 100
+    host: Any, chat_id: str, *, after_sequence: int = 0, limit: int = 100,
+    tail: int | None = None,
 ) -> dict[str, Any]:
+    extra = {"tail": int(tail)} if tail is not None else {}
     return manager(host).execution_history(
         str(chat_id),
         after_sequence=max(0, int(after_sequence)),
         limit=max(1, min(int(limit), 500)),
+        **extra,
     )
 
 

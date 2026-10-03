@@ -27,6 +27,7 @@ from process_tree import CREATE_SUSPENDED, resume_owned_process
 
 from .bridge import KernelBridgeServer
 from .capsules import KernelCapsuleError
+from .cell_ledger import cell_label
 from .contracts import (
     ExecutionAdmission,
     KernelAutoRestoreError,
@@ -341,6 +342,9 @@ class KernelLease:
         self._last_output_pressure: dict[str, Any] = {}
         self._background_events: list[dict[str, Any]] = []
         self._worker_diagnostics: list[str] = []
+        # Display-only view of the cell holding execution_lock.
+        self.current_cell: dict[str, Any] | None = None
+        self.close_reason = ""
         self._auto_restore_lock = asyncio.Lock()
         self._auto_restore_attempted = False
         self._auto_restore_error: KernelAutoRestoreError | None = None
@@ -1534,6 +1538,13 @@ class KernelLease:
                 raise KernelUnavailable("CPython REPL transport is absent")
             self.state = "busy"
             started = time.monotonic()
+            self.current_cell = {
+                "execution_id": admission.execution_id,
+                "run_id": admission.run_id,
+                "outer_tool_call_id": admission.outer_tool_call_id,
+                "started_at": time.time(),
+                "label": cell_label(code),
+            }
             collector = CellOutputCollector(
                 limits=self.manager.limits.output,
                 artifact_store=self.manager.artifact_store,
@@ -1755,6 +1766,7 @@ class KernelLease:
                 await self.close(reason="protocol_error", hard=True)
                 hard_restarted = True
             finally:
+                self.current_cell = None
                 self._admissions.pop(admission.execution_id, None)
                 if self.bridge is not None:
                     await self.bridge.forget_execution(admission.execution_id)
@@ -1884,6 +1896,7 @@ class KernelLease:
         self, *, reason: str, hard: bool, force_close: asyncio.Event
     ) -> None:
         self.state = "stopping"
+        self.close_reason = str(reason or "")
         for cancellation in self._cell_cancellations.values():
             cancellation.set()
         transport = self.transport

@@ -23,6 +23,35 @@ def _chat_id(srv: Any, session: Any) -> str:
         return ""
 
 
+def _target_chat_id(srv: Any, session: Any, msg: dict) -> str:
+    """Explicit chat_id, or the displayed chat; detached windows stay scoped."""
+
+    requested = str(msg.get("chat_id") or "").strip()
+    own = _chat_id(srv, session)
+    if not requested:
+        return own
+    if getattr(session, "view_role", "main") == "detached_chat" and requested != own:
+        raise ValueError("invalid_chat_scope")
+    return requested
+
+
+def _history_tail(msg: dict) -> int | None:
+    value = msg.get("tail")
+    if value is None:
+        return None
+    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= 50:
+        raise ValueError("tail must be an integer from 1 to 50")
+    return value
+
+
+def _children_capacity(srv: Any) -> dict[str, Any] | None:
+    try:
+        children = srv.require_runtime().catalog.children
+        return children.capacity_status() if children is not None else None
+    except Exception:
+        return None
+
+
 _mutation = CorrelatedResponder(
     family="kernel",
     schema="variant1.kernel-command.v1",
@@ -40,8 +69,10 @@ def register(on):
             saved = runtime.sessions.get_session(row["chat_id"]) or {}
             row["title"] = str(saved.get("title") or row["chat_id"])
             row["busy"] = runtime.session_runtimes.is_busy(row["chat_id"])
+        capacity = await asyncio.to_thread(_children_capacity, srv)
         await websocket.send_json({"type": "kernel:inventory:result",
-                                   "request_id": _request_id(msg), "items": rows})
+                                   "request_id": _request_id(msg), "items": rows,
+                                   "children_capacity": capacity})
 
     @on("kernel:release")
     async def kernel_release(srv, websocket, session, msg):
@@ -97,13 +128,15 @@ def register(on):
 
     @on("kernel:history")
     async def kernel_history(srv, websocket, session, msg):
-        chat_id = _chat_id(srv, session)
+        chat_id = _target_chat_id(srv, session, msg)
         if not chat_id:
             raise ValueError("no active runtime chat")
-        result = kernel_control.history(
+        result = await asyncio.to_thread(
+            kernel_control.history,
             srv, chat_id,
             after_sequence=max(0, int(msg.get("after_sequence") or 0)),
             limit=max(1, min(int(msg.get("limit") or 100), 500)),
+            tail=_history_tail(msg),
         )
         await websocket.send_json({
             "type": "kernel:history",
@@ -143,7 +176,7 @@ def register(on):
     @on("kernel:interrupt")
     async def kernel_interrupt(srv, websocket, session, msg):
         async def action() -> dict[str, Any]:
-            chat_id = _chat_id(srv, session)
+            chat_id = _target_chat_id(srv, session, msg)
             if not chat_id:
                 raise ValueError("no active runtime chat")
             return await kernel_control.interrupt(
@@ -155,7 +188,7 @@ def register(on):
     @on("kernel:restart")
     async def kernel_restart(srv, websocket, session, msg):
         async def action() -> dict[str, Any]:
-            chat_id = _chat_id(srv, session)
+            chat_id = _target_chat_id(srv, session, msg)
             if not chat_id:
                 raise ValueError("no active runtime chat")
             return await kernel_control.restart(
