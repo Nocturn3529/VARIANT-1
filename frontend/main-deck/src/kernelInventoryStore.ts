@@ -40,7 +40,11 @@ export function setKernelInventoryConnection(status: string) {
   const connected = status === "connected";
   if (!connected) {
     for (const id of timers.keys()) finish(id);
-    store.setState({requestId: "", closing: {}, actions: {}});
+    // Their replies can no longer arrive, and a pending history id refuses
+    // every later load for that chat, so release it with the other requests.
+    const history = Object.fromEntries(Object.entries(store.getState().history)
+      .map(([chatId, entry]) => [chatId, entry.requestId ? {...entry, requestId: ""} : entry]));
+    store.setState({requestId: "", closing: {}, actions: {}, history});
   }
   store.setConnected(connected);
 }

@@ -75,6 +75,26 @@ export async function run() {
     ingestKernelInventory({type: "kernel:inventory:result", request_id: refreshId, items: []});
   });
   assert.equal(getKernelInventory().items.length, 1, "late replies cannot overwrite offline observations");
+
+  // A history read lost to a disconnect must not refuse later reads, and an
+  // open row reads its cells again once the backend is back.
+  const historyReads = () => commands.filter(command => command.type === "kernel:history");
+  await act(async () => setKernelInventoryConnection("connected"));
+  await act(async () => host.querySelector<HTMLButtonElement>(".python-kernel__toggle")!.click());
+  assert.equal(historyReads().length, 1, "opening a row reads its cells");
+  const lost = historyReads()[0];
+  await act(async () => setKernelInventoryConnection("offline"));
+  assert.equal(getKernelInventory().history.A?.requestId, "", "a disconnect releases the pending history read");
+  await act(async () => setKernelInventoryConnection("connected"));
+  assert.equal(historyReads().length, 2, "an open row reads its cells again after a reconnect");
+  const reread = historyReads()[1];
+  assert.notEqual(reread.request_id, lost.request_id);
+  await act(async () => ingestKernelInventory({type: "kernel:history", request_id: lost.request_id, chat_id: "A",
+    items: [{sequence: 1, execution_id: "lost", status: "completed", label: "lost_cell()"}]}));
+  assert.doesNotMatch(host.textContent || "", /lost_cell/, "a reply to the lost read is ignored");
+  await act(async () => ingestKernelInventory({type: "kernel:history", request_id: reread.request_id, chat_id: "A",
+    items: [{sequence: 2, execution_id: "x2", status: "completed", duration_ms: 40, label: "df.describe()"}]}));
+  assert.match(host.textContent || "", /df\.describe\(\)/);
   await act(async () => root.unmount()); host.remove();
-  console.log("Session experience: authoritative readiness, no auto-send, advanced mutation, correlated inventory and generation-fenced release passed");
+  console.log("Session experience: authoritative readiness, no auto-send, advanced mutation, correlated inventory, generation-fenced release and kernel history across reconnects passed");
 }

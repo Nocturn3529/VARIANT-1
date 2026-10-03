@@ -74,7 +74,8 @@ function KernelRow({row, now, current, agentName, open, onToggle}: {
   const history = inventory.history[row.chatId];
   const action = inventory.actions[row.chatId];
   const closing = !!inventory.closing[row.chatId];
-  useEffect(() => { if (open) loadKernelHistory(row.chatId); }, [open, row.chatId, row.lastCell?.executionId]);
+  // An open row reads its cells again once the backend reconnects.
+  useEffect(() => { if (open) loadKernelHistory(row.chatId); }, [open, row.chatId, row.lastCell?.executionId, inventory.connected]);
   const state = row.busy ? {label: "Running", tone: "live" as const} : STATE[row.state] || {label: row.state.replace(/_/g, " ")};
   const cell = row.currentCell;
   const runtime = current ? chat.runtime : null;
