@@ -374,6 +374,7 @@ async def test_webhook_recovery_reuses_original_occurrence_after_edits(tmp_path)
     task = store.add("Original", "Original prompt", {"type": "webhook", "token": "secret"})
     response = await handle_webhook(host, "secret", SimpleNamespace(
         headers={"idempotency-key": "first"}, body=AsyncMock(return_value=b"body"),
+        client=SimpleNamespace(host="127.0.0.1"),
     ))
     admitted = json.loads(response.body)
     assert admitted["work_job_id"]

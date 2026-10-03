@@ -676,6 +676,7 @@ async def test_webhook_202_is_backed_by_durable_trigger_claim(
     request = SimpleNamespace(
         headers={"idempotency-key": "request-1"},
         body=AsyncMock(return_value=b"payload"),
+        client=SimpleNamespace(host="127.0.0.1"),
     )
     response = await server_http.handle_webhook(srv, "secret", request)
     body = json.loads(response.body)
