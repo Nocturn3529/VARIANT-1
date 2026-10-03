@@ -16,11 +16,16 @@ def test_empty_profile_is_powershell_on_windows_and_sh_elsewhere(monkeypatch):
     assert posix.argv[0] == "/bin/sh"
 
     monkeypatch.setattr("execution_hosts.profiles.os.name", "nt")
+    monkeypatch.setenv("SystemRoot", r"C:\Windows")
+    powershell = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
     monkeypatch.setattr(
-        "execution_hosts.profiles.shutil.which",
-        lambda name: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if name == "powershell.exe" else None,
+        "execution_hosts.profiles.os.path.isfile",
+        lambda path: path == powershell,
     )
+    def reject_path_lookup(name):
+        raise AssertionError(f"Windows system shell must not use PATH lookup: {name}")
+
+    monkeypatch.setattr("execution_hosts.profiles.shutil.which", reject_path_lookup)
     windows = registry.resolve("")
     assert windows.name == "powershell"
-    assert windows.argv[0].lower().endswith("powershell.exe")
+    assert windows.argv[0] == powershell

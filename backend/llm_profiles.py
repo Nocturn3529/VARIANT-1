@@ -80,6 +80,8 @@ async def complete(router, messages: list, *, profile: str,
         # summary attempt gets a new one. Automatic prefix caching may still
         # share matching bytes, which is outside the harness's control.
         stream_args["prompt_cache_key"] = f"internal:{profile}:{uuid4().hex}"
+    if getattr(router, "supports_provider_recovery", False) is True:
+        stream_args["recovery_profile"] = profile
     async def _consume(args: dict) -> str:
         local_parts: list[str] = []
         async with aclosing(router.stream(messages, **args)) as owned_stream:

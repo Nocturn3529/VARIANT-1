@@ -399,7 +399,7 @@ def _tool_call_parts(call: dict) -> tuple[str, str, str, dict]:
     return call_id, name, printable, parsed
 
 
-def _serialize_message_for_summary(message: dict) -> str:
+def _serialize_message_for_summary(message: dict, *, call_labels: dict | None = None, result_label: str = "") -> str:
     """Pi-style transcript serialization, including native tool arguments."""
     role = str(message.get("role") or "?")
     chunks = []
@@ -412,7 +412,7 @@ def _serialize_message_for_summary(message: dict) -> str:
         call_id, name, arguments, _ = _tool_call_parts(call)
         if not name:
             continue
-        label = f"tool_call {call_id}" if call_id else "tool_call"
+        label = f"tool_call {call_id}" if call_id else f"tool_call {(call_labels or {}).get(id(call), 'unpaired')}"
         chunks.append(
             f"{label}: {name}({_summary_clip(arguments, 2_000)})"
         )
@@ -420,9 +420,41 @@ def _serialize_message_for_summary(message: dict) -> str:
         return ""
     if role == "tool":
         call_id = str(message.get("tool_call_id") or "")
-        label = f"tool result {call_id}" if call_id else "tool result"
+        label = result_label or (f"tool result {call_id}" if call_id else "tool result unpaired")
+        if message.get("is_error") is True:
+            label += " [FAILED]"
         return f"{label}:\n" + "\n".join(chunks)
     return f"{role}: " + "\n".join(chunks)
+
+
+def _summary_labels(messages: list[dict]) -> tuple[dict, dict]:
+    calls, results, by_id = {}, {}, {}
+    pending = []
+    sequence = 0
+    for message in messages:
+        if message.get("role") == "assistant":
+            pending = []
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict):
+                    continue
+                call_id, name, _, _ = _tool_call_parts(call)
+                sequence += 1
+                label = f"{call_id or '#' + str(sequence)} {name}".strip()
+                calls[id(call)] = f"#{sequence}"
+                if call_id:
+                    by_id[call_id] = label
+                pending.append(label)
+        elif message.get("role") == "tool":
+            call_id = str(message.get("tool_call_id") or "")
+            label = by_id.get(call_id)
+            # A single contiguous anonymous call/result is defensible. Parallel
+            # anonymous batches remain explicitly unpaired rather than guessed.
+            if not call_id and len(pending) == 1:
+                label = pending.pop()
+            results[id(message)] = "tool result " + (label or call_id or "unpaired")
+        else:
+            pending = []
+    return calls, results
 
 
 def _bounded_summary_transcript(entries: list[str], limit: int) -> str:
@@ -473,10 +505,14 @@ def _merge_line_range(ranges: list[list[int]], start: int, end: int) -> None:
     ranges[:] = merged
 
 
-def _collect_file_state(messages: list[dict]) -> dict:
+def _collect_file_state(messages: list[dict], *, resolve_state: Callable | None = None) -> dict:
     """Collect exact read coverage and modified files from compacted messages."""
     read: dict[str, dict] = {}
     modified: set[str] = set()
+    failed_calls = {
+        str(message.get("tool_call_id") or "")
+        for message in messages if message.get("role") == "tool" and message.get("is_error") is True
+    }
 
     def record_read(path: str, start: int, end: int, total: int) -> None:
         clean_path = str(path or "").strip()
@@ -521,11 +557,21 @@ def _collect_file_state(messages: list[dict]) -> dict:
 
     for message in messages:
         content = _content_text(message.get("content"))
+        if message.get("is_error") is True:
+            continue
         for state_match in _COMPACT_FILE_STATE_RE.finditer(content):
             try:
                 prior = json.loads(state_match.group(1))
             except (TypeError, ValueError, json.JSONDecodeError):
                 continue
+            source_ref = str(prior.get("full_state_ref") or "") if isinstance(prior, dict) else ""
+            if source_ref and resolve_state is not None:
+                try:
+                    complete = resolve_state(source_ref)
+                    if isinstance(complete, dict):
+                        absorb_state(complete)
+                except Exception:
+                    pass  # Omission remains explicit; never fabricate recovery.
             absorb_state(prior)
 
         for match in _READ_RESULT_RE.finditer(content):
@@ -536,7 +582,9 @@ def _collect_file_state(messages: list[dict]) -> dict:
         for call in message.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
-            _, name, _, args = _tool_call_parts(call)
+            call_id, name, _, args = _tool_call_parts(call)
+            if call_id and call_id in failed_calls:
+                continue
             if name == "apply_patch":
                 for change in args.get("changes") or []:
                     if isinstance(change, dict) and str(change.get("path") or "").strip():
@@ -557,11 +605,24 @@ def _collect_file_state(messages: list[dict]) -> dict:
     }
 
 
-def _render_file_state(state: dict) -> str:
+def _render_file_state(state: dict, *, max_chars: int = 6_000, full_state_ref: str = "") -> str:
     if not (state.get("read_files") or state.get("modified_files")):
         return ""
-    payload = json.dumps(state, ensure_ascii=False, sort_keys=True, indent=2)
-    return f"{COMPACT_FILE_STATE_OPEN}\n{payload}\n{COMPACT_FILE_STATE_CLOSE}"
+    view = copy.deepcopy(state)
+    def render():
+        payload = json.dumps(view, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return f"{COMPACT_FILE_STATE_OPEN}\n{payload}\n{COMPACT_FILE_STATE_CLOSE}"
+    if len(render()) <= max_chars:
+        return render()
+    view.update(omitted_read_files=0, omitted_modified_files=0)
+    if full_state_ref:
+        view["full_state_ref"] = full_state_ref
+    for key, count_key in (("read_files", "omitted_read_files"), ("modified_files", "omitted_modified_files")):
+        while view.get(key) and len(render()) > max_chars:
+            drop = max(1, len(view[key]) // 2)
+            del view[key][-drop:]
+            view[count_key] += drop
+    return render()
 
 
 async def compress_messages(
@@ -574,6 +635,8 @@ async def compress_messages(
     goal_context: str = "",
     on_compacted: Callable[[str, list], Any] | None = None,
     retry_state: CompactionRetryState | None = None,
+    retain_file_state: Callable | None = None,
+    resolve_file_state: Callable | None = None,
 ) -> list:
     """Summarize the middle of a long transcript via the injected completer.
 
@@ -628,6 +691,7 @@ async def compress_messages(
     ]
     before_metrics = context_lineage.message_metrics(messages)
     entries = []
+    call_labels, result_labels = _summary_labels(messages)
     raw_middle_chars = 0
     affected_projection = 0
     for m in evidence:
@@ -638,7 +702,7 @@ async def compress_messages(
                 _, name, arguments, _ = _tool_call_parts(call)
                 raw_size += len(name) + len(arguments)
         raw_middle_chars += raw_size
-        projected = _serialize_message_for_summary(m)
+        projected = _serialize_message_for_summary(m, call_labels=call_labels, result_label=result_labels.get(id(m), ""))
         if projected:
             entries.append(projected)
             if len(projected) < raw_size:
@@ -648,10 +712,18 @@ async def compress_messages(
 
     # Capture the whole current transcript, not just the summarized middle, so
     # exact file-read progress survives the lossy model-authored recap.
-    file_state = _render_file_state(_collect_file_state(messages))
+    complete_state = _collect_file_state(messages, resolve_state=resolve_file_state)
+    state_ref = ""
+    if retain_file_state is not None and len(_render_file_state(complete_state, max_chars=10**12)) > 6_000:
+        try:
+            state_ref = str(retain_file_state(complete_state) or "")
+        except Exception:
+            pass
+    file_state = _render_file_state(complete_state, full_state_ref=state_ref)
     state_section = (
-        "Authoritative file state recovered from successful tool results. "
-        "Preserve its exact paths, ranges, totals, and next offsets:\n"
+        "Recorded file-state metadata. Listed edit-call paths alone do not prove "
+        "successful modification; use matched outcomes. Preserve exact paths, "
+        "ranges, totals, next offsets, source references and omission counts:\n"
         + file_state
         if file_state
         else ""

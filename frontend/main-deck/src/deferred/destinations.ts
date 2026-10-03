@@ -1,3 +1,3 @@
 export {AutomationsDestination} from "../AutomationsDestination";
-export {MemoryDestination} from "../MemoryDestination";
+export {GoalsDestination} from "../GoalsDestination";
 export {OverviewDestination} from "../OverviewDestination";

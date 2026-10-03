@@ -169,7 +169,7 @@ CATEGORY_PYTHON_API_BLUEPRINT: dict[str, tuple[PythonAPISpec, ...]] = {
     "operate": (),
     "base": (
         _api("toolbelt", "Immutable category discovery, mounting, and mutation control."),
-        _api("session", "Compact current chat, runtime, mount, and continuity status."),
+        _api("session", "Current session/runtime status and on-demand earlier context: ctx=session.context(); ctx.status(), ctx.search(query), ctx.read(), ctx.expand(source_id)."),
     ),
 }
 

@@ -1,0 +1,3 @@
+'use strict';
+const {execFileSync}=require('node:child_process');
+execFileSync(process.execPath,[require('node:path').join(__dirname,'test-frontend-maintainability.js'),'--context-routing'],{stdio:'inherit'});

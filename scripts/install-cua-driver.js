@@ -7,9 +7,9 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const https = require('https');
 const path = require('path');
 const {execFileSync} = require('child_process');
+const {downloadPinnedAsset} = require('./download-pinned-asset');
 
 const VERSION = '0.28.2';
 const TAG = 'cua-driver-rs-v0.28.2';
@@ -48,30 +48,6 @@ function assetFor(platform, arch) {
 
 function binaryName(platform) {
   return platform === 'win32' ? 'cua-driver.exe' : 'cua-driver';
-}
-
-function download(url, destination) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destination);
-    const request = https.get(url, {headers: {'user-agent': 'variant1-setup'}}, (response) => {
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        file.close();
-        fs.rmSync(destination, {force: true});
-        download(response.headers.location, destination).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        file.close();
-        fs.rmSync(destination, {force: true});
-        reject(new Error('download failed: HTTP ' + response.statusCode));
-        return;
-      }
-      response.pipe(file);
-      file.on('finish', () => file.close(resolve));
-    });
-    request.on('error', reject);
-    file.on('error', reject);
-  });
 }
 
 function sha256(file) {
@@ -114,13 +90,20 @@ async function installCuaDriver(options = {}) {
   const archive = path.join(destinationDir, asset.name);
   const url = BASE + asset.name;
   console.log('downloading cua-driver ' + VERSION + ' (' + asset.name + ')');
-  await download(url, archive);
+  await downloadPinnedAsset(url, archive, {
+    onRetry: ({attempt, attempts, delayMs, error}) => console.warn(
+      `cua-driver download attempt ${attempt}/${attempts} failed (${error.code || error.message}); retrying in ${delayMs}ms`,
+    ),
+  });
   const digest = sha256(archive);
   if (digest !== asset.sha256) {
     fs.rmSync(archive, {force: true});
     throw new Error('cua-driver checksum mismatch');
   }
   const extractDir = path.join(destinationDir, 'extract');
+  if (path.dirname(path.resolve(extractDir)) !== path.resolve(destinationDir)) {
+    throw new Error('cua-driver extraction path escaped its install directory');
+  }
   fs.rmSync(extractDir, {recursive: true, force: true});
   fs.mkdirSync(extractDir, {recursive: true});
   execFileSync('tar', ['-xf', archive, '-C', extractDir], {stdio: 'inherit'});

@@ -20,13 +20,15 @@ from typing import Any, Awaitable, Callable, Dict
 import clarification
 import ws_tools
 import ws_browser
-import ws_memory
+import ws_goal_loops
 import ws_config
 import ws_surface
 import ws_automations
 import ws_inference_platform
 import ws_local_models
 import ws_service_settings
+import ws_provider_recovery
+import ws_context_browser
 import ws_work
 import ws_chat_sessions
 import ws_kernel
@@ -821,13 +823,15 @@ async def _clarification_response(srv, websocket, session, msg):
 
 ws_tools.register(on)
 ws_browser.register(on)
-ws_memory.register(on)
+ws_goal_loops.register(on)
 ws_config.register(on)
 ws_surface.register(on)
 ws_automations.register(on)
 ws_inference_platform.register(on)
 ws_local_models.register(on)
 ws_service_settings.register(on)
+ws_provider_recovery.register(on)
+ws_context_browser.register(on)
 ws_work.register(on)
 ws_chat_sessions.register(on)
 ws_kernel.register(on)

@@ -6,6 +6,8 @@ from llm_router import LLMRouter
 class RouteAwareRouter:
     bind_model_route = LLMRouter.bind_model_route
     bound_model_route = LLMRouter.bound_model_route
+    push_model_route = LLMRouter.push_model_route
+    reset_model_route = staticmethod(LLMRouter.reset_model_route)
 
     def __init__(self, *, mode="cloud"):
         self.mode = mode

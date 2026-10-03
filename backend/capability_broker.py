@@ -889,13 +889,25 @@ class CapabilityBroker:
                 ),
             )
 
-        prefix = raw[:self.inline_result_bytes].decode("utf-8", errors="replace")
+        from text_limits import truncated_text
+
+        if isinstance(value, bytes):
+            prefix, _ = truncated_text(
+                f"Binary result unavailable ({len(raw)} bytes; no artifact store).",
+                self.inline_result_bytes,
+            )
+            retained = 0
+        else:
+            prefix, retained = truncated_text(
+                raw.decode("utf-8", errors="replace"), self.inline_result_bytes,
+                marker="\n[Result truncated; full result unavailable]",
+            )
         return (
             (ContentBlock(type="text", text=prefix),),
             (),
             TruncationRecord(
-                admitted_bytes=min(len(raw), self.inline_result_bytes),
-                dropped_bytes=max(0, len(raw) - self.inline_result_bytes),
+                admitted_bytes=retained,
+                dropped_bytes=max(0, len(raw) - retained),
             ),
         )
 

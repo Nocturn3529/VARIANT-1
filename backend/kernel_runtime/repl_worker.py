@@ -121,24 +121,32 @@ class _EventTextStream(io.TextIOBase):
         self._emitted_for_id = True
 
     def _flush_pending(self, *, force: bool = False) -> None:
-        while self._pending:
-            if len(self._pending) >= self.chunk_bytes:
-                size = self._utf8_prefix_size(self._pending, self.chunk_bytes)
-            elif force:
-                size = len(self._pending)
-            elif not self._emitted_for_id and b"\n" in self._pending:
-                size = self._pending.index(b"\n") + 1
-            elif self._pending.count(b"\n") >= 16:
-                newline = -1
-                start = 0
-                for _ in range(16):
-                    newline = self._pending.index(b"\n", start)
-                    start = newline + 1
-                size = newline + 1
-            else:
-                return
-            raw, self._pending = self._pending[:size], self._pending[size:]
-            self._emit_raw(raw)
+        pending, offset = self._pending, 0
+        try:
+            while offset < len(pending):
+                remaining = len(pending) - offset
+                if remaining >= self.chunk_bytes:
+                    size = self._utf8_prefix_size(
+                        pending[offset:offset + self.chunk_bytes + 4], self.chunk_bytes,
+                    )
+                elif force:
+                    size = remaining
+                elif not self._emitted_for_id and b"\n" in pending[offset:]:
+                    size = pending.index(b"\n", offset) - offset + 1
+                elif pending.count(b"\n", offset) >= 16:
+                    start = offset
+                    for _ in range(16):
+                        newline = pending.index(b"\n", start)
+                        start = newline + 1
+                    size = start - offset
+                else:
+                    break
+                raw = pending[offset:offset + size]
+                offset += size
+                self._emit_raw(raw)
+        finally:
+            # Only the small leftover is copied; never each remaining large tail.
+            self._pending = pending[offset:]
 
     @staticmethod
     def _utf8_prefix_size(raw: bytes, limit: int) -> int:
@@ -624,6 +632,7 @@ class ReplWorker:
     def _read_requests(self) -> None:
         assert self.loop is not None
         pending = bytearray()
+        head = searched = 0
         oversized = False
         try:
             while True:
@@ -637,7 +646,7 @@ class ReplWorker:
                     )
                     return
                 if not chunk:
-                    if pending:
+                    if len(pending) > head:
                         self.loop.call_soon_threadsafe(
                             self.queue.put_nowait,
                             {"_protocol_error": "REPL frame ended before newline"},
@@ -646,18 +655,21 @@ class ReplWorker:
                     return
                 pending.extend(chunk)
                 while True:
-                    newline = pending.find(b"\n")
+                    newline = pending.find(b"\n", searched)
                     if newline < 0:
-                        if len(pending) > self.emitter.max_frame_bytes:
+                        searched = len(pending)
+                        if oversized or len(pending) - head > self.emitter.max_frame_bytes:
                             pending.clear()
-                            oversized = True
-                            self.loop.call_soon_threadsafe(
-                                self.queue.put_nowait,
-                                {"_protocol_error": "REPL frame is oversized"},
-                            )
+                            head = searched = 0
+                            if not oversized:
+                                oversized = True
+                                self.loop.call_soon_threadsafe(
+                                    self.queue.put_nowait,
+                                    {"_protocol_error": "REPL frame is oversized"},
+                                )
                         break
-                    raw = bytes(pending[: newline + 1])
-                    del pending[: newline + 1]
+                    raw = bytes(pending[head:newline + 1])
+                    head = searched = newline + 1
                     if oversized:
                         oversized = False
                         continue
@@ -692,6 +704,10 @@ class ReplWorker:
                                     str(validated["id"])
                                 )
                     self.loop.call_soon_threadsafe(self.queue.put_nowait, frame)
+                if head and head >= len(pending) // 2:
+                    del pending[:head]
+                    searched -= head
+                    head = 0
         except BaseException as exc:
             with suppress(RuntimeError):
                 self.loop.call_soon_threadsafe(

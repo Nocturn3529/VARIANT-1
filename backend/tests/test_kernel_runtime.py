@@ -1244,7 +1244,8 @@ async def test_task_cancellation_records_partial_cell_before_reraising(kernel_st
         await manager.shutdown()
 
 
-def test_prior_host_admission_is_reconciled_without_replay_or_invented_timing(kernel_stack, tmp_path):
+@pytest.mark.asyncio
+async def test_prior_host_admission_is_reconciled_without_replay_or_invented_timing(kernel_stack, tmp_path):
     import subprocess
     import sys
     manager, runtimes, artifacts = kernel_stack
@@ -1255,11 +1256,15 @@ def test_prior_host_admission_is_reconciled_without_replay_or_invented_timing(ke
     # A separate host exits without a completion row; SQLite must retain the
     # admission even on a non-clean process exit.
     script = ('import os\nfrom kernel_runtime.cell_ledger import KernelCellLedgerStore\n'
-              f'KernelCellLedgerStore({manager.cell_ledger.path!r}).admit("dead-host", {evidence!r})\n'
+              'from kernel_runtime.ownership import process_identity\n'
+              f'evidence = {evidence!r}\n'
+              'evidence["storage_owner"] = process_identity("dead-host")\n'
+              f'KernelCellLedgerStore({manager.cell_ledger.path!r}).admit("dead-host", evidence)\n'
               'os._exit(7)\n')
     exited = subprocess.run([sys.executable, '-c', script], cwd=os.path.dirname(os.path.dirname(__file__)),
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=10)
     assert exited.returncode == 7
+    await manager.shutdown()
     replacement = KernelRuntimeManager(registry=runtimes, broker=manager.broker, artifact_store=artifacts,
         root=manager.root, instance_id='replacement-host', app_root=manager.app_root,
         catalog_service=manager.catalog_service, cell_ledger_path=manager.cell_ledger.path)
@@ -1269,6 +1274,7 @@ def test_prior_host_admission_is_reconciled_without_replay_or_invented_timing(ke
     assert replacement.cell_ledger.unsettled() == ()
     replacement._recover_interrupted_cell_evidence()
     assert len(replacement.cell_ledger.list('crashed-chat')) == 1
+    await replacement.shutdown()
 
 
 @pytest.mark.asyncio

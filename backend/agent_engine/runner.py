@@ -265,6 +265,8 @@ def prepare_main_chat_run(
             else None
         ),
     )
+    if is_resume and isinstance(resume_snap, dict) and isinstance(resume_snap.get("model_recovery"), dict):
+        state["model_recovery"] = copy.deepcopy(resume_snap["model_recovery"])
     resume_chat_id = (
         str(resume_snap.get("chat_id") or "").strip()
         if is_resume and isinstance(resume_snap, dict)
@@ -381,6 +383,8 @@ def prepare_headless_worker_run(
         ),
         "schema_specs": list(initial_specs),
     }
+    if is_resume and isinstance(resume_snap, dict) and isinstance(resume_snap.get("model_recovery"), dict):
+        state["model_recovery"] = copy.deepcopy(resume_snap["model_recovery"])
     restored_desktop = (
         dict(resume_snap.get("desktop") or {})
         if is_resume and isinstance(resume_snap, dict)

@@ -2,9 +2,9 @@
 
 One ordinary user turn flows: pure ``ChatTurnPlan`` setup (attachments, engine
 gate, resume, session bind, project capability) → product ``ChatRoute``
-hooks (direct commands and memory) → memory, attachment context,
+hooks (direct commands) → attachment context,
 and tool discovery → the native agent runner → shared turn finalizer
-(show, speak, persist, remember).
+(show, speak, persist).
 The model answers directly or calls the provider-visible persistent-Python action; a direct first response
 exits the state machine immediately.
 
@@ -69,13 +69,6 @@ class ChatIoPorts:
     children: Any = None
 
 
-@dataclass
-class ChatMemoryPorts:
-    mem_query: Callable[..., Awaitable[list]]
-    mem_add: Callable[..., Awaitable[None]]
-    extract_and_store: Callable[..., Awaitable[list[str]]]
-    remember_explicit: Optional[Callable[..., Awaitable[bool]]] = None
-    silent_prefetch: Optional[Callable[..., Awaitable[list]]] = None
 
 
 @dataclass
@@ -131,7 +124,6 @@ class ChatPorts:
     """Live server dependencies for one chat turn (nested groups only)."""
 
     io: ChatIoPorts
-    memory: ChatMemoryPorts
     vision: ChatVisionPorts
     tools: ChatToolsPorts
     session: ChatSessionPorts
@@ -140,7 +132,7 @@ class ChatPorts:
 
 
 from chat_context_stage import (  # noqa: E402 - ChatPorts TYPE_CHECKING cycle
-    append_dynamic_memory_context,
+    append_current_context,
     build_chat_context_stage,
 )
 from chat_agent_stage import run_chat_agent_stage  # noqa: E402

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from host_chat_service import ChatService
 from host_lifecycle_service import LifecycleService
-from host_memory_service import MemoryService
+from external_context import SessionContextService, register_context_router
 from host_model_service import ModelService
 from host_runtime import HostRuntime
 from host_tool_service import ToolSurfaceService
@@ -158,7 +158,11 @@ def install_host_runtime(
         peers.bind_publisher(host.hub.broadcast)
     runtime = HostRuntime(
         chat=chat,
-        memory=MemoryService(host, astb.memory_store),
+        session_context=SessionContextService(
+            database_path=os.path.join(data_root, "session-context.sqlite3"), sessions=sessions,
+            kernel=astb.kernel, artifacts=astb.session_artifacts, runtimes=astb.session_runtimes,
+            children=astb.catalog.children,
+        ),
         models=models,
         voice=SpeechService(host),
         workflows=workflows,
@@ -185,6 +189,9 @@ def install_host_runtime(
         lifecycle=LifecycleService(host),
     )
     host.install_runtime(runtime)
+    runtime.session_runtimes.register_chat_cleanup(runtime.session_context.delete_chat)
+    runtime.session_runtimes.register_chat_tombstone_cleanup(runtime.session_context.delete_chat)
+    register_context_router(host)
     runtime.session_runtimes.register_chat_cleanup(work.delete_chat)
     runtime.session_runtimes.register_chat_cleanup(goals.delete_chat)
     runtime.session_runtimes.register_chat_cleanup(peers.delete_chat)

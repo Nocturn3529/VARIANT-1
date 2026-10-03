@@ -3,6 +3,30 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const {assetFor, VERSION} = require('./install-cua-driver');
+const fs = require('node:fs/promises');
+const http = require('node:http');
+const os = require('node:os');
+const path = require('node:path');
+const {downloadPinnedAsset} = require('./download-pinned-asset');
+
+async function fixture(t, handle) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'variant1-cua-download-'));
+  const server = http.createServer(handle);
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    const resolved = path.resolve(directory);
+    assert.equal(path.dirname(resolved), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(resolved).startsWith('variant1-cua-download-'));
+    await fs.rm(resolved, {recursive: true, force: true});
+  });
+  return {
+    url: 'http://127.0.0.1:' + server.address().port,
+    destination: path.join(directory, 'asset.zip'), directory,
+    options: {get: http.get, baseDelayMs: 0, timeoutMs: 1000},
+  };
+}
 
 test('pinned cua-driver covers the install platforms', () => {
   assert.equal(VERSION, '0.28.2');
@@ -13,4 +37,59 @@ test('pinned cua-driver covers the install platforms', () => {
   }
   assert.equal(assetFor('darwin', 'arm64').name, assetFor('darwin', 'x64').name);
   assert.equal(assetFor('freebsd', 'x64'), null);
+});
+
+test('a timed-out partial download retries without publishing its bytes', async t => {
+  let calls = 0;
+  const f = await fixture(t, (_req, res) => {
+    if (++calls === 1) { res.writeHead(200); res.write('partial'); return; }
+    res.end('complete pinned archive');
+  });
+  await fs.writeFile(f.destination, 'old archive');
+  const retries = [];
+  await downloadPinnedAsset(f.url, f.destination, {
+    ...f.options, timeoutMs: 75, onRetry: info => retries.push(info.error.code),
+  });
+  assert.equal(calls, 2);
+  assert.deepEqual(retries, ['ETIMEDOUT']);
+  assert.equal(await fs.readFile(f.destination, 'utf8'), 'complete pinned archive');
+  assert.deepEqual(await fs.readdir(f.directory), ['asset.zip']);
+});
+
+test('relative redirects work and transient HTTP failure is bounded', async t => {
+  let assetCalls = 0;
+  const f = await fixture(t, (req, res) => {
+    if (req.url === '/') { res.writeHead(302, {Location: '/asset'}); res.end(); return; }
+    if (++assetCalls === 1) { res.writeHead(503, {'Retry-After': '0'}); res.end(); return; }
+    res.end('verified bytes');
+  });
+  await downloadPinnedAsset(f.url, f.destination, f.options);
+  assert.equal(assetCalls, 2);
+  assert.equal(await fs.readFile(f.destination, 'utf8'), 'verified bytes');
+});
+
+test('permanent HTTP failure is not retried and leaves no partial file', async t => {
+  let calls = 0;
+  const f = await fixture(t, (_req, res) => { calls++; res.writeHead(404); res.end(); });
+  await assert.rejects(downloadPinnedAsset(f.url, f.destination, f.options), /HTTP 404/);
+  assert.equal(calls, 1);
+  assert.deepEqual(await fs.readdir(f.directory), []);
+});
+
+test('redirect loops and excessive server waits fail instead of hanging setup', async t => {
+  const loop = await fixture(t, (_req, res) => { res.writeHead(302, {Location: '/'}); res.end(); });
+  await assert.rejects(downloadPinnedAsset(loop.url, loop.destination, {...loop.options, maxRedirects: 2}), /redirect limit/);
+  const wait = await fixture(t, (_req, res) => { res.writeHead(429, {'Retry-After': '3600'}); res.end(); });
+  await assert.rejects(downloadPinnedAsset(wait.url, wait.destination, wait.options), /HTTP 429/);
+});
+
+test('truncated responses exhaust a fixed attempt budget and clean staging', async t => {
+  let calls = 0;
+  const f = await fixture(t, (_req, res) => {
+    calls++; res.writeHead(200, {'Content-Length': 100}); res.write('short');
+    setImmediate(() => res.destroy());
+  });
+  await assert.rejects(downloadPinnedAsset(f.url, f.destination, {...f.options, attempts: 2}));
+  assert.equal(calls, 2);
+  assert.deepEqual(await fs.readdir(f.directory), []);
 });

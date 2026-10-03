@@ -42,7 +42,7 @@ export async function run() {
     assert.equal(commands.filter(command=>command.type==="chat").length,0,"Shift+Enter is reserved for newlines");
 
     await input(textarea,"/");await act(async()=>key(textarea,"ArrowDown"));await act(async()=>key(textarea,"Enter"));
-    assert.equal(getChatState().draft,"/system-status","Enter chooses the highlighted command without sending it");
+    assert.equal(getChatState().draft,"/goal ","Enter chooses the highlighted command without sending it");
     assert.equal(commands.filter(command=>command.type==="chat").length,0);
     await act(async()=>key(textarea,"Escape"));
     assert.equal(host.querySelector("#composer-command-menu"),null);

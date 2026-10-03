@@ -93,7 +93,7 @@ async def start_critical_services(h: Any) -> None:
 
 
 async def start_optional_services(h: Any) -> None:
-    """Warm optional engines, memory, sidecars, and event workers."""
+    """Warm optional engines, sidecars, and event workers."""
     runtime = h.require_runtime()
     router = _router(h)
     hub = _hub(h)
@@ -223,13 +223,6 @@ async def start_workers(h: Any) -> list:
                 h,
                 lifecycle.automation_loop(),
                 name="automation-loop",
-                long_lived=True,
-                degrade=True,
-            ),
-            _supervise_task(
-                h,
-                lifecycle.consolidation_loop(),
-                name="consolidation-loop",
                 long_lived=True,
                 degrade=True,
             ),

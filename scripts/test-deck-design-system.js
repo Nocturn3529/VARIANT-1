@@ -169,14 +169,14 @@ assert.match(shellCss, /\.app-shell\s*\{[^}]*grid-template-rows:\s*var\(--titleb
 assert.doesNotMatch(shellCss + designSystem + automationCss, /\.(?:has-working-bar|deck-destination-view|automations-view)\b/,
   'retired page-layout scaffolding must stay removed');
 
-const memoryDestination = read(path.join('frontend', 'main-deck', 'src', 'MemoryDestination.tsx'));
-const memoryCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'memory.css'));
+const memoryDestination = read(path.join('frontend', 'main-deck', 'src', 'GoalsDestination.tsx'));
+const memoryCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'goals.css'));
 assert.doesNotMatch(memoryDestination, /deck-destination-header|memory-header|memory-privacy-note/,
   'Memory must remain a deliberate single-page route without the retired header or privacy promotion');
-assert.match(memoryDestination, /memory-page__utilities[\s\S]*id="memory-refresh"[\s\S]*id="memory-tidy"[\s\S]*memory-tabs/,
-  'Memory utilities must remain compact in-page controls ahead of the memory instruments');
-assert.match(memoryDestination, /memory-workspace-grid[\s\S]*memory-loops-section[\s\S]*core-profile-card[\s\S]*archival-memory-section/,
-  'Memory must compose Runs, Core, and Archive as one responsive grid');
+assert.match(memoryDestination, /memory-page__utilities[\s\S]*id="goals-refresh"/,
+  'Goals must retain a compact refresh control');
+assert.match(memoryDestination, /memory-loops-section[\s\S]*loop-layout/,
+  'Goals must preserve the run list and detail controls');
 assert.doesNotMatch(memoryDestination + memoryCss, /memory-primary-layout/,
   'the retired centered Memory column layout must stay deleted');
 
@@ -200,7 +200,7 @@ assert.doesNotMatch(settingsApp, /settings-header|settings-saved-state|settings-
 for (const kind of ['runtime', 'overview', 'automations']) {
   assert.ok(settingsApp.includes(`<UtilitySurface kind="${kind}"`), `${kind} must use a utility overlay`);
 }
-assert.match(read('frontend/main-deck/src/SettingsPageContent.tsx'), /memory: <MemoryDestination\/>/,
+assert.match(read('frontend/main-deck/src/SettingsPageContent.tsx'), /goals: <GoalsDestination\/>/,
   'Memory stays in Settings rather than an unused primary-page wrapper');
 assert.match(settingsApp, /<main className="workbench-view"><Workbench api=\{api\}/,
   'the Chat workbench stays mounted beneath every utility overlay');

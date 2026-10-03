@@ -35,7 +35,7 @@ def test_session_work_scope_uses_the_viewed_chat_identity():
 
 @pytest.mark.asyncio
 async def test_all_ui_domain_scope_helpers_follow_viewed_chat():
-    import ws_execution, ws_work, ws_memory, ws_kernel
+    import ws_execution, ws_work, ws_goal_loops, ws_kernel
     session = SimpleNamespace(active=SimpleNamespace(runtime_chat_id="A", turn_session_id="A"),
                               viewed_session_id="B")
     execution_srv = SimpleNamespace(
@@ -46,7 +46,7 @@ async def test_all_ui_domain_scope_helpers_follow_viewed_chat():
     assert ws_execution._chat_id(
         execution_srv, session, {"chat_id": "B"},
     ) == "B"
-    for module in (ws_work, ws_memory, ws_kernel):
+    for module in (ws_work, ws_goal_loops, ws_kernel):
         assert module._chat_id(None, session) == "B"
 
 

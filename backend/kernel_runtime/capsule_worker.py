@@ -608,12 +608,13 @@ def _encoded_chunks(value: Any, serializer: str) -> Iterable[bytes]:
     raise ValueError(f"unsupported serializer {serializer!r}")
 
 
-def _measure(value: Any, serializer: str, *, byte_limit: int) -> tuple[int, str]:
+def _capture_encoding(value: Any, serializer: str, *, byte_limit: int) -> tuple[int, str, bytes, str]:
+    """Bound, count and hash one retained representation in a single traversal."""
     total = 0
     if serializer == "numpy.npy.v1":
         raw_bytes = int(getattr(value, "nbytes", 0) or 0)
         if raw_bytes > max(0, int(byte_limit)):
-            return raw_bytes, "capsule_value_too_large"
+            return raw_bytes, "", b"", "capsule_value_too_large"
     elif serializer == "pandas.arrow.v1":
         try:
             if str(type(value).__name__) == "DataFrame":
@@ -624,39 +625,43 @@ def _measure(value: Any, serializer: str, *, byte_limit: int) -> tuple[int, str]
         except Exception:
             raw_bytes = 0
         if raw_bytes > max(0, int(byte_limit)):
-            return raw_bytes, "capsule_value_too_large"
+            return raw_bytes, "", b"", "capsule_value_too_large"
     elif serializer == "arrow.ipc.v1":
         raw_bytes = int(getattr(value, "nbytes", 0) or 0)
         if raw_bytes > max(0, int(byte_limit)):
-            return raw_bytes, "capsule_value_too_large"
+            return raw_bytes, "", b"", "capsule_value_too_large"
     elif serializer == "safetensors.numpy.v1":
         raw_bytes = sum(
             int(getattr(item, "nbytes", 0) or 0) for item in value.values()
         )
         if raw_bytes > max(0, int(byte_limit)):
-            return raw_bytes, "capsule_value_too_large"
+            return raw_bytes, "", b"", "capsule_value_too_large"
+    digest = hashlib.sha256()
+    retained = bytearray()
     try:
         for chunk in _encoded_chunks(value, serializer):
             total += len(chunk)
             if total > max(0, int(byte_limit)):
-                return total, "capsule_value_too_large"
+                return total, "", b"", "capsule_value_too_large"
+            digest.update(chunk)
+            retained.extend(chunk)
     except Exception:
-        return total, "serialization_error"
-    return total, ""
+        return total, "", b"", "serialization_error"
+    return total, digest.hexdigest(), bytes(retained), ""
 
 
-def _digest(value: Any, serializer: str) -> str:
+def _digest(value: Any, serializer: str, *, expected_bytes: int) -> str:
+    """Validate the captured size while hashing; never join a growing value."""
     digest = hashlib.sha256()
+    size = 0
     for chunk in _encoded_chunks(value, serializer):
+        size += len(chunk)
+        if size > expected_bytes:
+            raise RuntimeError("serializer grew during capsule capture")
         digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _materialize(value: Any, serializer: str, expected_bytes: int) -> bytes:
-    raw = b"".join(_encoded_chunks(value, serializer))
-    if len(raw) != int(expected_bytes):
+    if size != expected_bytes:
         raise RuntimeError("serializer byte count changed during capsule capture")
-    return raw
+    return digest.hexdigest()
 
 
 def _worker_error(code: str, message: str, **details: Any) -> dict[str, Any]:
@@ -944,7 +949,7 @@ class KernelCapsuleWorker:
                     "Kernel capsule contains too many serializable values.",
                     count=len(values) + 1,
                 )
-            size, measure_error = _measure(
+            size, sha256, raw, measure_error = _capture_encoding(
                 value,
                 serializer,
                 byte_limit=limits["max_value_bytes"],
@@ -977,15 +982,6 @@ class KernelCapsuleWorker:
                     max_total_value_bytes=limits["max_total_value_bytes"],
                 )
             total_bytes += size
-            try:
-                sha256 = _digest(value, serializer)
-            except Exception:
-                excluded.append({
-                    "name": name,
-                    "type": type_name,
-                    "reason": "serialization_error",
-                })
-                continue
             previous = known.get(name) or {}
             reused = (
                 str(previous.get("serializer") or "") == serializer
@@ -1021,14 +1017,14 @@ class KernelCapsuleWorker:
                         name=name,
                     )
                 try:
-                    raw = _materialize(value, serializer, size)
+                    validation_sha256 = _digest(value, serializer, expected_bytes=size)
                 except Exception:
                     return _worker_error(
                         "capsule_value_changed_during_capture",
                         f"Kernel capsule value {name!r} changed during capture.",
                         name=name,
                     )
-                if hashlib.sha256(raw).hexdigest() != sha256:
+                if validation_sha256 != sha256:
                     return _worker_error(
                         "capsule_value_changed_during_capture",
                         f"Kernel capsule value {name!r} changed during capture.",

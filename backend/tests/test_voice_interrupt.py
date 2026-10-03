@@ -122,7 +122,7 @@ async def test_tts_skipped_entirely_when_already_interrupted(fake_ws, session):
     session.request_interrupt()
     synth = AsyncMock(return_value=b"audio")
     with (
-        patch_host_runtime(server.APP, chat={"extract_and_store": AsyncMock()}),
+        patch_host_runtime(server.APP, chat={}),
         patch.object(server.APP, "tts_enabled", return_value=True),
         patch.object(tts, "available", return_value=True),
         patch.object(tts, "synthesize", new=synth),
@@ -154,7 +154,7 @@ async def test_tts_dropped_when_superseded_mid_synthesis(fake_ws, session):
         return b"stale-audio"
 
     with (
-        patch_host_runtime(server.APP, chat={"extract_and_store": AsyncMock()}),
+        patch_host_runtime(server.APP, chat={}),
         patch.object(server.APP, "tts_enabled", return_value=True),
         patch.object(tts, "available", return_value=True),
         patch.object(tts, "synthesize", new=slow_synthesize),
@@ -170,7 +170,7 @@ async def test_tts_sent_normally_when_not_interrupted(fake_ws, session):
     """Sanity check: the happy path is unaffected -- speech still plays when
     nothing interrupted the turn."""
     with (
-        patch_host_runtime(server.APP, chat={"extract_and_store": AsyncMock()}),
+        patch_host_runtime(server.APP, chat={}),
         patch.object(server.APP, "tts_enabled", return_value=True),
         patch.object(
             server.APP.require_runtime().voice,

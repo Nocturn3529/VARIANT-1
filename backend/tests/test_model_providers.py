@@ -380,7 +380,7 @@ async def test_failed_cloud_attempt_cannot_contaminate_tool_calls(monkeypatch):
             },
         }])
         if profile.name == "openai":
-            raise ProviderRequestError("openai", "pre-output failure")
+            raise ProviderRequestError("openai", "pre-output authentication failure", status_code=401)
         stream_diagnostics.note_finish_reason("tool_calls")
         yield "ok"
 
@@ -413,7 +413,7 @@ async def test_cloud_discards_failed_attempt_reasoning_before_fallback(monkeypat
                         prompt_cache_identity=None):
         calls.append(profile.name)
         reasoning_sink("visible reasoning")
-        raise ProviderRequestError(profile.name, "failed after reasoning")
+        raise ProviderRequestError(profile.name, "failed after reasoning", status_code=401)
         yield
 
     monkeypatch.setattr(llm_cloud_stream, "call_cloud_once", fake_call)

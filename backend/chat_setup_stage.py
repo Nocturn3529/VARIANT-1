@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 from agent_engine.snapshot_utils import is_resume_request, is_terminal_commit_only_state
 from chat_attachments import display_user_message
 from chat_commands import is_direct_command
-from chat_memory import parse_remember_command
 from chat_stage_result import ChatStageContinue, ChatStageDone, ChatStageResult
 from chat_stream import bind_turn_identity, infer_turn_source, stream_meta
 from chat_turn_plan import (
@@ -133,10 +132,7 @@ async def prepare_chat_turn_stage(
     apply_chat_turn_plan(session, plan)
     session.active.turn_persisted = False
 
-    direct_command = (
-        parse_remember_command(attachment.model_text) is not None
-        or is_direct_command(attachment.model_text)
-    )
+    direct_command = is_direct_command(attachment.model_text)
     engine = check_engine_ready(ports.io.router)
     if not engine.ok and not direct_command:
         return ChatStageDone(_done(mood=engine.mood, text=engine.text))

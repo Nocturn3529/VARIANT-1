@@ -138,10 +138,9 @@ async def test_resume_with_native_snapshot_restores_goal_and_messages(tmp_path, 
     with (
         _patch_chat_runtime(
             vision_state=lambda: (False, "text"),
-            extract_and_store=AsyncMock(),
+
         ),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_OFF),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value={"id": "run-resume", "step": 0}),
@@ -197,10 +196,9 @@ async def test_resume_flag_without_matching_text_uses_native_snapshot(tmp_path, 
     with (
         _patch_chat_runtime(
             vision_state=lambda: (False, "text"),
-            extract_and_store=AsyncMock(),
+
         ),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_OFF),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value=None),
@@ -243,10 +241,9 @@ async def test_ordinary_follow_up_inherits_interrupted_internal_graph(
     with (
         _patch_chat_runtime(
             vision_state=lambda: (False, "text"),
-            extract_and_store=AsyncMock(),
+
         ),
         patch.object(server.APP, "router", _mock_router(fake_stream)),
-        patch.object(server.APP, "mem_query", new=AsyncMock(return_value=[])),
         patch.object(server.APP, "vision_cfg", return_value=VISION_OFF),
         patch.object(server.APP, "emit_activity", new=AsyncMock()),
         patch.object(server.APP, "new_run", return_value=None),

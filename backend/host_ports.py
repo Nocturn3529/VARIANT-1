@@ -17,7 +17,6 @@ from automation import runner as automation_runner
 import chat_pipeline
 from session_catalog import child_worker
 import llm_router
-import memory_tools
 from observability import system_info
 import tools
 from observability.activity import args_preview as _args_preview
@@ -93,15 +92,6 @@ def child_worker_ports(h) -> child_worker.ChildWorkerPorts:
     )
 
 
-def memory_ports(h) -> memory_tools.MemoryPorts:
-    runtime = h.require_runtime()
-    return memory_tools.MemoryPorts(
-        store=runtime.memory.store,
-        sessions=runtime.sessions,
-        router=h.router,
-        hub=h.hub,
-        engine_status_msg=h.engine_status_message,
-    )
 
 
 async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
@@ -184,7 +174,6 @@ def automation_ports(h) -> automation_runner.AutomationPorts:
         history=h.automation_history,
         emit=h.emit_activity,
         new_run=h.new_run,
-        mem_query=h.mem_query,
         build_system_prompt=chat.build_system_prompt,
         require_bound_run_context=h.require_bound_run_context,
         prior_incomplete_run=workflows.prior_incomplete_automation_run,
@@ -211,13 +200,6 @@ def chat_ports(h) -> chat_pipeline.ChatPorts:
             emit=h.emit_activity,
             runtime_registry=runtime.session_runtimes,
             children=runtime.catalog.children,
-        ),
-        memory=chat_pipeline.ChatMemoryPorts(
-            mem_query=h.mem_query,
-            mem_add=h.mem_add,
-            remember_explicit=chat.remember_explicit,
-            extract_and_store=chat.extract_and_store,
-            silent_prefetch=h.mem_prefetch,
         ),
         vision=chat_pipeline.ChatVisionPorts(
             vision_state=chat.vision_state,

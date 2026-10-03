@@ -223,6 +223,9 @@ def pin_frozen_local_model_paths(local: dict[str, Any]) -> dict[str, Any]:
 
 def configure_candidate_route(config: dict, provider: str, model: str, adapter: str) -> None:
     """Admit an explicit isolated test candidate while preserving operator denies."""
+    config["provider_recovery"] = {"enabled": False}
+    if isinstance(config.get("cloud"), dict):
+        config["cloud"].pop("fallback_chain", None)
     if os.environ.get("VARIANT1_QUALIFICATION_CANDIDATE_ROUTE") != "1": return
     if str(BACKEND) not in sys.path: sys.path.insert(0, str(BACKEND))
     from session_catalog.support import SupportMatrix

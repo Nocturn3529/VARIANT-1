@@ -674,9 +674,9 @@ class ConversationRepository:
             return False
         row = conn.execute(
             "WITH RECURSIVE ancestry(node_id) AS ("
-            " SELECT ? UNION SELECT e.from_node_id FROM conversation_edge e "
-            " JOIN ancestry a ON e.to_node_id=a.node_id "
-            " WHERE e.conversation_id=? AND e.from_node_id IS NOT NULL"
+            " SELECT ? UNION SELECT e.from_node_id FROM ancestry a "
+            " CROSS JOIN conversation_edge e "
+            " WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL"
             ") SELECT 1 FROM ancestry WHERE node_id=? LIMIT 1",
             (head, str(conversation_id), target),
         ).fetchone()
@@ -694,9 +694,9 @@ class ConversationRepository:
                 raise InvalidConversationGraph(f"node {head!r} is not in branch ancestry")
             rows = conn.execute(
                 "WITH RECURSIVE ancestry(node_id) AS ("
-                " SELECT ? UNION SELECT e.from_node_id FROM conversation_edge e "
-                " JOIN ancestry a ON e.to_node_id=a.node_id "
-                " WHERE e.conversation_id=? AND e.from_node_id IS NOT NULL"
+                " SELECT ? UNION SELECT e.from_node_id FROM ancestry a "
+                " CROSS JOIN conversation_edge e "
+                " WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL"
                 ") SELECT DISTINCT n.* FROM conversation_node n JOIN ancestry a "
                 "ON a.node_id=n.node_id ORDER BY n.created_at DESC, n.node_id DESC LIMIT ?",
                 (head, branch.conversation_id, min(20000, max(1, limit))),

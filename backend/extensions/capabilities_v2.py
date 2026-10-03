@@ -602,7 +602,13 @@ def register_extension_v2_tools(host: Any) -> None:
 
     async def connectors_search(args: dict[str, Any]):
         limit = max(1, min(int(args.get("limit") or 100), 500))
-        mcp_rows = list(await mcp_v2_search({**args, "limit": limit}))
+        mcp_matches = _runtime(host).mcp.search(
+            str(args.get("query") or ""),
+            kind=str(args.get("kind") or ""), server_id=str(args.get("server_id") or ""),
+        )
+        mcp_rows = list(mcp_matches[:limit])
+        plugin_probe_limit = min(500, limit + 1)
+        plugin_rows = await plugins_search({**args, "limit": plugin_probe_limit})
         # The primary match and its exact schema are one disclosure event.  The
         # model can use the familiar result['mcp'][0] path without a redundant
         # schema round trip; secondary candidates remain summary-only.
@@ -621,8 +627,14 @@ def register_extension_v2_tools(host: Any) -> None:
             "mcp": mcp_handles,
             "plugins": [
                 plugin_handle(row)
-                for row in await plugins_search({**args, "limit": limit})
+                for row in plugin_rows[:limit]
             ],
+            "coverage": {
+                "mcp_matches": len(mcp_matches), "mcp_omitted": max(0, len(mcp_matches) - limit),
+                "plugins_complete": len(plugin_rows) < plugin_probe_limit,
+                "plugins_omitted_at_least": max(0, len(plugin_rows) - limit),
+                "bounded": len(mcp_matches) > limit or len(plugin_rows) >= plugin_probe_limit,
+            },
             "top_match": top_match,
             "guidance": (
                 "The highest-confidence MCP match includes its exact compact "

@@ -21,7 +21,6 @@ from agent_engine.shared_ports import AgentContextPorts
 from chat_pipeline import (
     ChatCommandPorts,
     ChatIoPorts,
-    ChatMemoryPorts,
     ChatPorts,
     ChatSessionPorts,
     ChatToolsPorts,
@@ -44,11 +43,6 @@ def _make_chat_ports() -> ChatPorts:
             hub=SimpleNamespace(broadcast=anoop),
             sessions=SimpleNamespace(get_active=lambda: "s1"),
             emit=anoop,
-        ),
-        memory=ChatMemoryPorts(
-            mem_query=anoop,
-            mem_add=anoop,
-            extract_and_store=anoop,
         ),
         vision=ChatVisionPorts(
             vision_state=lambda: (False, "single"),
@@ -92,7 +86,6 @@ def test_chat_ports_nested_construction():
     sentinel = lambda: True
     ports = ChatPorts(
         io=base.io,
-        memory=base.memory,
         vision=base.vision,
         tools=base.tools,
         session=base.session,

@@ -146,11 +146,6 @@ function ComposerCapabilities({
 
 const COMPOSER_COMMANDS = [
   {
-    name: "/remember",
-    description: "Save an explicit durable memory",
-    insert: "/remember ",
-  },
-  {
     name: "/system-status",
     description: "Show current device resource status",
     insert: "/system-status",

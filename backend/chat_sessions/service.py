@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import heapq
 import json
 import os
 import threading
@@ -1334,6 +1335,101 @@ class ChatSessionService:
             and row.get("role") in {"user", "assistant"}
             and row.get("text")
         ]
+
+    def context_head(self, sid: str) -> dict | None:
+        """Small source-owner watermark; does not enumerate ancestry."""
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            return dict(owner) if owner is not None else None
+
+    def context_nodes(self, sid: str, conversation_id: str, node_ids: list[str]) -> list[dict]:
+        """Bounded immutable nodes/parents for the internal context indexer.
+
+        The indexer follows edges from an owner-certified captured head. This
+        reader is not exposed as a model capability; view membership is checked
+        by SessionContextService before source expansion.
+        """
+        ids = list(dict.fromkeys(str(node) for node in node_ids))
+        if len(ids) > 200:
+            raise ValueError('Context node page exceeds 200 nodes')
+        if not ids:
+            return []
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None or owner['conversation_id'] != conversation_id:
+                raise ValueError('Context conversation owner changed or is unavailable')
+            placeholders = ','.join('?' for _ in ids)
+            rows = conn.execute('SELECT * FROM conversation_node WHERE conversation_id=? AND node_id IN (' + placeholders + ')', (conversation_id, *ids)).fetchall()
+            parents = {node: [] for node in ids}
+            for edge in conn.execute('SELECT DISTINCT from_node_id,to_node_id FROM conversation_edge WHERE conversation_id=? AND to_node_id IN (' + placeholders + ') AND from_node_id IS NOT NULL', (conversation_id, *ids)):
+                parents[edge['to_node_id']].append(edge['from_node_id'])
+            return [{**dict(row), 'parents': parents[row['node_id']]} for row in rows]
+
+    def context_source_record(self, sid: str, conversation_id: str, node_id: str) -> dict:
+        """Resolve a record already authorized by a retained frozen view.
+
+        Rewinding the live branch must not revoke an observation previously
+        captured by that session. Conversation deletion still revokes it.
+        """
+        rows = self.context_nodes(sid, conversation_id, [node_id])
+        if not rows:
+            raise ValueError('Context source is unavailable')
+        return rows[0]
+
+    def context_sources(self, sid: str) -> dict:
+        """Exact committed ancestry for an on-demand reader, not UI history."""
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None:
+                return {"cursor": None, "items": []}
+            rows = conn.execute(
+                "WITH RECURSIVE ancestry(node_id) AS (SELECT ? UNION "
+                "SELECT e.from_node_id FROM ancestry a CROSS JOIN conversation_edge e "
+                "WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL) "
+                "SELECT n.* FROM conversation_node n JOIN ancestry a "
+                "ON n.node_id=a.node_id WHERE n.conversation_id=?",
+                (owner["head_node_id"], owner["conversation_id"], owner["conversation_id"]),
+            ).fetchall() if owner["head_node_id"] else []
+            # Unique-node traversal avoids exponential paths through merged DAGs.
+            # Topological ordering respects causality even when clocks coincide
+            # or timestamps were imported from another host.
+            by_id = {row["node_id"]: row for row in rows}
+            parents = {node: set() for node in by_id}
+            children = {node: set() for node in by_id}
+            for edge in conn.execute(
+                "SELECT from_node_id,to_node_id FROM conversation_edge WHERE conversation_id=?",
+                (owner["conversation_id"],),
+            ):
+                parent, child = edge["from_node_id"], edge["to_node_id"]
+                if parent in by_id and child in by_id:
+                    parents[child].add(parent)
+                    children[parent].add(child)
+            ready = [(by_id[node]["created_at"], node) for node in by_id if not parents[node]]
+            heapq.heapify(ready)
+            ordered = []
+            while ready:
+                _, node = heapq.heappop(ready)
+                ordered.append(by_id[node])
+                for child in children[node]:
+                    parents[child].remove(node)
+                    if not parents[child]:
+                        heapq.heappush(ready, (by_id[child]["created_at"], child))
+            if len(ordered) != len(rows):
+                raise ValueError("Session context ancestry contains a cycle")
+            return {"cursor": coverage(owner, ordered), "items": [dict(row) for row in ordered]}
+
+    def context_source(self, sid: str, head_node_id: str, node_id: str) -> dict:
+        with self.repository._read() as conn:
+            owner = self._context_owner(conn, sid)
+            if owner is None or not self.repository._is_reachable_tx(
+                conn, owner["conversation_id"], owner["head_node_id"], head_node_id,
+            ) or not self.repository._is_reachable_tx(conn, owner["conversation_id"], head_node_id, node_id):
+                raise ValueError("context source is outside this session's captured ancestry")
+            row = conn.execute("SELECT * FROM conversation_node WHERE node_id=? AND conversation_id=?",
+                               (node_id, owner["conversation_id"])).fetchone()
+            if row is None:
+                raise ValueError("context source is unavailable")
+            return dict(row)
 
     def search(
         self, query: str, *, limit: int = 8, max_sessions: int = 200,

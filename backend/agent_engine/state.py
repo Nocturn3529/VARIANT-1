@@ -200,6 +200,7 @@ class RunState(TypedDict, total=False):
     observability: List[ObservabilityEvent]
     errors: List[str]
     config_name: str
+    model_recovery: Dict[str, Any]
     worker: WorkerRunState
     # Loop routing + disclosure mirrors only (JSON-serializable). Live Task is
     # sole authority on MainChatLive; task top-level fields are

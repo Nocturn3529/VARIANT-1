@@ -8,8 +8,6 @@ from typing import TYPE_CHECKING
 
 from model_runtime.hardware import detect_hardware
 import host_orphan
-import lifecycle
-import memory_tools
 
 if TYPE_CHECKING:
     from app_host import AppHost
@@ -32,14 +30,10 @@ class LifecycleService:
     async def automation_loop(self) -> None:
         await self.host.require_runtime().workflows.automation_loop()
 
-    async def consolidation_loop(self) -> None:
-        await memory_tools.consolidation_loop(
-            self.host.require_runtime().memory.consolidate_once)
 
     def dev_reset_on_launch(self) -> None:
         runtime = self.host.require_runtime()
         catalog = runtime.catalog
-        lifecycle.dev_reset_on_launch(runtime.memory.store)
         if os.environ.get("VARIANT1_DEV_RESET", "").strip().lower() in {
             "1", "true", "yes", "on",
         }:

@@ -1,4 +1,4 @@
-import {MemoryDestination} from "./MemoryDestination";
+import {GoalsDestination} from "./GoalsDestination";
 import type {SettingsCategory} from "./state/appStore";
 import {AboutSettings} from "./AboutSettings";
 import {AgentToolsSettings} from "./AgentToolsSettings";
@@ -9,6 +9,8 @@ import {SettingsPage} from "./ui/Settings";
 import {VoiceSettings} from "./VoiceSettings";
 import {ToolsAndKeysSettings} from "./ToolsAndKeysSettings";
 import {BrowserSettings} from "./BrowserSettings";
+import {ExternalContextSettings} from "./ExternalContextSettings";
+import {ProviderRoutingSettings} from "./ProviderRoutingSettings";
 
 export function SettingsPageContent({category}: {category: SettingsCategory}) {
   const content = {
@@ -17,6 +19,7 @@ export function SettingsPageContent({category}: {category: SettingsCategory}) {
     "provider-keys": <PlatformSettings page="provider-keys"/>,
     "custom-endpoints": <PlatformSettings page="custom-endpoints"/>,
     "local-models": <GeneralSettings page="local-models"/>,
+    "provider-routing": <ProviderRoutingSettings/>,
     "tools-keys": <ToolsAndKeysSettings/>,
     search: <AgentToolsSettings/>,
     browser: <BrowserSettings/>,
@@ -24,7 +27,8 @@ export function SettingsPageContent({category}: {category: SettingsCategory}) {
     messaging: <PlatformSettings page="messaging"/>,
     plugins: <PluginsSettings/>,
     about: <AboutSettings/>,
-    memory: <MemoryDestination/>,
+    goals: <GoalsDestination/>,
+    "session-context": <ExternalContextSettings/>,
   };
   return <SettingsPage>{content[category]}</SettingsPage>;
 }

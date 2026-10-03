@@ -848,6 +848,7 @@ class KernelLease:
         # is not a KernelUnavailable and so also escaped the manager's retry.
         boot_output: deque[str] = deque(maxlen=_BOOT_OUTPUT_FRAMES)
         try:
+            _write_private_json(os.path.join(self.root, "owner.json"), self.manager._storage_owner.identity)
             _write_private_json(self.descriptor_file, self._descriptor_document())
             self._capability_gate = _CapabilityConcurrencyGate(self.manager.fanout_limit(self.chat_id))
             self.bridge = KernelBridgeServer(

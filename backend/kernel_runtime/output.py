@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import json
 import re
 from typing import Any, Callable
+from text_limits import utf8_prefix
 
 from .worker_context import NAMESPACE_IDENTIFIER_CHARS, NAMESPACE_INVENTORY_LIMIT
 
@@ -331,6 +332,7 @@ class CellOutputCollector:
             0, int(self.limits.max_events) - self.result.admitted_events
         )
         admitted = min(len(raw), message_limit, cell_remaining) if event_remaining else 0
+        admitted = len(utf8_prefix(raw, admitted))
         dropped = len(raw) - admitted
         if admitted:
             visible = raw[:admitted].decode("utf-8", errors="replace")

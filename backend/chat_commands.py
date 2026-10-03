@@ -10,6 +10,7 @@ from chat_routes import RouteDecision
 
 
 _STATUS_COMMAND = re.compile(r"^\s*/system-status(?:\s+(.*))?\s*$", re.I | re.S)
+_RETIRED_REMEMBER_COMMAND = re.compile(r"^\s*/remember(?:\s+.*)?\s*$", re.I | re.S)
 
 
 def parse_system_status_command(text: str) -> str | None:
@@ -18,7 +19,7 @@ def parse_system_status_command(text: str) -> str | None:
 
 
 def is_direct_command(text: str) -> bool:
-    return parse_system_status_command(text) is not None
+    return parse_system_status_command(text) is not None or bool(_RETIRED_REMEMBER_COMMAND.match(text))
 
 
 class CommandChatRoute:
@@ -37,6 +38,13 @@ class CommandChatRoute:
         resume_state: Any,
         reserved: bool,
     ) -> RouteDecision:
+        if _RETIRED_REMEMBER_COMMAND.match(str(text or "")):
+            await finish_chat_turn(
+                ports, websocket, session, text, "neutral",
+                "Cross-session fact memory has been retired. Session history is available "
+                "to the agent through session.context(); /remember no longer saves facts.",
+            )
+            return RouteDecision(handled=True)
         status_arg = parse_system_status_command(text)
         if status_arg is not None:
             if status_arg:
@@ -51,7 +59,7 @@ class CommandChatRoute:
                     print(f"[commands] /system-status failed: {exc}", flush=True)
                     reply, mood = str(exc) or "System status is unavailable.", "concerned"
             await finish_chat_turn(
-                ports, websocket, session, text, mood, reply, extract_memory=False)
+                ports, websocket, session, text, mood, reply)
             return RouteDecision(handled=True)
 
         return RouteDecision()

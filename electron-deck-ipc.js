@@ -212,6 +212,21 @@ function registerDeckIpc(deps) {
   const gitStatus = createReadCache(target => workbenchGitStatus(target).catch(error => ({ok:false,files:[],error:String(error?.stderr || error?.message || error)})));
   const invalidateGit = () => {gitStatus.invalidate();reviewReader.invalidate();};
   const watchers = createWorkbenchWatchers({hiddenNames: WORKBENCH_HIDDEN_NAMES, changed: invalidateGit});
+  let choosingContextExport=false;
+  ipcMain.handle('context-export:choose-path',async(event,format)=>{
+    if(!deckWin() || !isTrustedIpcSender(event,deckWin()))return {ok:false,cancelled:false,error:'untrusted_sender'};
+    if(!['jsonl','markdown'].includes(format))return {ok:false,cancelled:false,error:'invalid_export_format'};
+    if(choosingContextExport)return {ok:false,cancelled:false,error:'save_dialog_busy'};
+    choosingContextExport=true;
+    try {
+      const extension=format==='jsonl'?'jsonl':'md';
+      const choice=await dialog.showSaveDialog(deckWin(),{title:'Export frozen session context',defaultPath:`session-context.${extension}`,filters:[{name:format==='jsonl'?'JSON Lines':'Markdown',extensions:[extension]}],properties:['showOverwriteConfirmation','createDirectory']});
+      if(choice.canceled)return {ok:true,cancelled:true};
+      const target=normalizeAbsoluteLocalPath(choice.filePath);if(!target)return {ok:false,cancelled:false,error:'invalid_export_path'};
+      return {ok:true,cancelled:false,path:target,overwrite:fs.existsSync(target)};
+    }catch(error){return {ok:false,cancelled:false,error:String(error?.message || error)};}
+    finally{choosingContextExport=false;}
+  });
 
   ipcMain.handle('settings:get', (event) => (
     deckWin() && isTrustedIpcSender(event, deckWin()) ? readSettings() : null

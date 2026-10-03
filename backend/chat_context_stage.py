@@ -1,4 +1,4 @@
-"""Memory, capability, project, prompt, and tool projection chat stage."""
+"""Capability, project, prompt, and tool projection chat stage."""
 
 from __future__ import annotations
 
@@ -91,9 +91,8 @@ class ChatAgentRequest:
     session_capabilities: dict[str, Any] = field(default_factory=dict)
 
 
-def append_dynamic_memory_context(
+def append_current_context(
     text: str,
-    memory_block: str = "",
     run_receipt_block: str = "",
     *,
     current_context: str = "",
@@ -101,12 +100,9 @@ def append_dynamic_memory_context(
     """Place fresh host context beside the request, outside instructions."""
     parts = []
     current = str(current_context or "").strip()
-    memory = str(memory_block or "").strip()[:2000]
     previous_run = str(run_receipt_block or "").strip()[:2400]
     if current:
         parts.append("## Current host context\n" + current)
-    if memory:
-        parts.append("## Relevant memory\n" + memory)
     if previous_run:
         parts.append(
             previous_run
@@ -130,7 +126,6 @@ def project_chat_prompt(
     runtime_projection: prompt_builder.PromptProjection,
     text: str,
     *,
-    memory_block: str = "",
     run_receipt_block: str = "",
 ) -> tuple[str, str]:
     """Return stable instructions and the current model-visible user item."""
@@ -144,9 +139,8 @@ def project_chat_prompt(
         host_projection.current,
         runtime_projection.current,
     )
-    agent_text = append_dynamic_memory_context(
+    agent_text = append_current_context(
         text,
-        memory_block,
         run_receipt_block,
         current_context=current_context,
     )
@@ -163,9 +157,6 @@ async def build_chat_context_stage(
     plan = prepared.plan
     text = prepared.text
     resume_plan = plan.resume
-    prefetch = ports.memory.silent_prefetch or ports.memory.mem_query
-    memories = await prefetch(text, 2)
-
     catalog_specs = ports.tools.provider_specs(session)
     snapshot = tool_discovery.ToolCatalogSnapshot.from_specs(catalog_specs)
     full_tool_specs = [dict(spec) for spec in snapshot.specs]
@@ -217,7 +208,6 @@ async def build_chat_context_stage(
         else ""
     )
     prompt_context = ports.tools.prompt_context(
-        memories,
         attachment_context=attachment_context,
     )
     project_root = str(getattr(prompt_context, "cwd", "") or "").strip()
@@ -242,10 +232,6 @@ async def build_chat_context_stage(
             except Exception:
                 _LOG.exception("previous run receipt could not be rendered")
 
-    dynamic_memory = str(
-        getattr(prompt_context, "memory_block", "") or ""
-    ).strip()
-    prompt_context.memory_block = ""
     diagnostic_ctx = current_run_context()
     diagnostic_run_id = str(
         getattr(diagnostic_ctx, "run_id", "") or "-")
@@ -255,7 +241,7 @@ async def build_chat_context_stage(
         f"[turn] context run_id={diagnostic_run_id} "
         f"session={diagnostic_session_id} "
         f"cwd={project_root or '-'} "
-        f"history={len(session.convo or [])} memories={len(memories or [])} "
+        f"history={len(session.convo or [])} "
         f"images={len(model_images)} "
         f"available_tools={len(full_tool_specs or [])}",
         flush=True,
@@ -270,7 +256,6 @@ async def build_chat_context_stage(
         prompt_context,
         runtime_projection,
         text,
-        memory_block=dynamic_memory,
         run_receipt_block=previous_run_block,
     )
     receipt = build_chat_context_receipt(ChatContextEvidence(
@@ -283,7 +268,6 @@ async def build_chat_context_stage(
         attachment_suffix=attachments.attach_suffix,
         display_attachments=list(attachments.display_attachments),
         attachment_text=prepared.attachment_text,
-        memories=memories,
         catalog_specs=catalog_specs,
         disclosed_tool_specs=full_tool_specs,
         previous_run_block=previous_run_block,

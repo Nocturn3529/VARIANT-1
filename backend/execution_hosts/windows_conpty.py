@@ -16,6 +16,7 @@ import time
 from typing import Any, Callable, Sequence
 
 from process_tree import OwnedProcessTree, dispose_process_tree, process_started_at
+from .command_environment import helper_environment, windows_system_executable
 
 OutputCallback = Callable[[str, bytes], None]
 
@@ -518,7 +519,7 @@ class WindowsConPtyProcess:
                 stopped = False
         try:
             if not stopped:
-                command = ["taskkill.exe", "/PID", str(self.pid), "/T"]
+                command = [windows_system_executable("taskkill.exe"), "/PID", str(self.pid), "/T"]
                 if force:
                     command.append("/F")
                 completed = subprocess.run(
@@ -526,6 +527,7 @@ class WindowsConPtyProcess:
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, timeout=5, check=False,
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    env=helper_environment(),
                 )
                 if completed.returncode == 0:
                     stopped = self.wait(timeout=2.0) is not None

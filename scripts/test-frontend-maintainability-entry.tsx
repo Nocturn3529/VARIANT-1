@@ -3,7 +3,7 @@ import {act} from "react";
 import {createRoot} from "react-dom/client";
 import {AutomationsDestination} from "../frontend/main-deck/src/AutomationsDestination";
 import * as automation from "../frontend/main-deck/src/automationStore";
-import {setMemoryConnection, setMemoryContext} from "../frontend/main-deck/src/memoryStore";
+import {setGoalsConnection, setGoalsContext} from "../frontend/main-deck/src/goalsStore";
 import {VoiceSettings} from "../frontend/main-deck/src/VoiceSettings";
 import {setGeneralContext, ingestGeneral} from "../frontend/main-deck/src/generalStore";
 import {CustomEndpointsPanel,LocalRuntimePanel} from "../frontend/main-deck/src/ProviderCenter";
@@ -115,8 +115,8 @@ async function testSpeechAndEndpoints() {
 }
 
 async function testTransportAndWatchers() {
-  automation.setAutomationContext(context); setMemoryContext(context);
-  for (const connect of [automation.setAutomationConnection, setMemoryConnection]) {
+  automation.setAutomationContext(context); setGoalsContext(context);
+  for (const connect of [automation.setAutomationConnection, setGoalsConnection]) {
     connect("offline"); sent.length = 0; connect("connected");
     const count = sent.length; assert.ok(count > 0);
     await pause(220); sent.length = 0;

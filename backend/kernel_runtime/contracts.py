@@ -225,7 +225,8 @@ class KernelExecutionResult:
             value = str(self.output.error_value or message or "Capability failed.")
             rendered = f"ERROR capability_error: {value}".strip()
             if len(rendered) > MAX_MODEL_ERROR_CHARS:
-                rendered = rendered[:MAX_MODEL_ERROR_CHARS] + "\n[diagnostic truncated]"
+                marker = "\n[diagnostic truncated]"
+                rendered = rendered[:MAX_MODEL_ERROR_CHARS - len(marker)] + marker
             return "\n".join(
                 part for part in (rendered, runtime_note, namespace_footer) if part
             )
@@ -257,8 +258,20 @@ class KernelExecutionResult:
                 parts.extend(("Traceback tail:", "\n".join(trace)))
             rendered = "\n".join(part for part in parts if part).strip()
             if len(rendered) > MAX_MODEL_ERROR_CHARS:
-                tail_budget = max(1, MAX_MODEL_ERROR_CHARS - len(heading) - 2)
-                rendered = heading + "\n" + rendered[-tail_budget:]
+                marker = "[diagnostic truncated]"
+                heading = heading[:MAX_MODEL_ERROR_CHARS // 3]
+                sections = []
+                if streams.strip():
+                    sections.append(("Output tail:", streams[-MAX_MODEL_STREAM_TAIL_CHARS:].strip()))
+                if trace:
+                    sections.append(("Traceback tail:", "\n".join(trace)))
+                room = MAX_MODEL_ERROR_CHARS - len(heading) - len(marker) - 2
+                labels = sum(len(label) + 1 for label, _ in sections) + max(0, len(sections) - 1)
+                body_cap = max(0, (room - labels) // max(1, len(sections)))
+                rendered = "\n".join((heading, marker, *(
+                    label + "\n" + body[-body_cap:] if body_cap else label
+                    for label, body in sections
+                )))
             return "\n".join(
                 part for part in (rendered, runtime_note, namespace_footer) if part
             )
@@ -270,7 +283,8 @@ class KernelExecutionResult:
         else:
             rendered = f"{heading}: {message}" if message else heading
         if len(rendered) > MAX_MODEL_ERROR_CHARS:
-            rendered = rendered[:MAX_MODEL_ERROR_CHARS] + "\n[diagnostic truncated]"
+            marker = "\n[diagnostic truncated]"
+            rendered = rendered[:MAX_MODEL_ERROR_CHARS - len(marker)] + marker
         return "\n".join(
             part for part in (rendered, runtime_note, namespace_footer) if part
         )

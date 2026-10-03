@@ -19,6 +19,7 @@ from process_tree import (
     process_started_at,
 )
 from .pipe_reader import PipeInput, PipeReader, join_readers, stop_readers
+from .command_environment import helper_environment, windows_system_executable
 
 
 OutputCallback = Callable[[str, bytes], None]
@@ -96,7 +97,7 @@ def terminate_process_tree(
             pass
     if os.name == "nt":
         try:
-            command = ["taskkill.exe", "/PID", str(process.pid), "/T"]
+            command = [windows_system_executable("taskkill.exe"), "/PID", str(process.pid), "/T"]
             if force:
                 command.append("/F")
             completed = subprocess.run(
@@ -104,6 +105,7 @@ def terminate_process_tree(
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL, timeout=5, check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                env=helper_environment(),
             )
             if completed.returncode == 0:
                 try:

@@ -61,7 +61,13 @@ class ExecutionProfileRegistry:
                              for key, value in dict(environment or {}).items()},
             )
         if name == "powershell":
-            executable = shutil.which("powershell.exe" if os.name == "nt" else "pwsh")
+            if os.name == "nt":
+                from .command_environment import windows_system_executable
+                executable = windows_system_executable("powershell.exe")
+                if not os.path.isfile(executable):
+                    executable = None
+            else:
+                executable = shutil.which("pwsh")
             if not executable:
                 raise ExecutionValidationError("PowerShell is not installed")
             command = (executable, "-NoLogo")

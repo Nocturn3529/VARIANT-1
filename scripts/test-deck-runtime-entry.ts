@@ -54,13 +54,11 @@ import {
   setAutomationContext,
 } from "../frontend/main-deck/src/automationStore";
 import {
-  addCoreFact,
   createLoop,
-  setDraftFact,
   setDraftLoopGoal,
   setDraftLoopTitle,
-  setMemoryContext,
-} from "../frontend/main-deck/src/memoryStore";
+  setGoalsContext,
+} from "../frontend/main-deck/src/goalsStore";
 import {
   disposeTerminalRuntime,
   getTerminalSnapshot,
@@ -1774,34 +1772,30 @@ function testOfflineWritesKeepDrafts(): void {
   assert.match(getAutomationState().saveError, /offline/i);
 
   const sent: Array<Record<string, unknown>> = [];
-  setMemoryContext({
+  setGoalsContext({
     send: () => false,
     notify: message => notices.push(message),
   });
-  setDraftFact("Keep this fact");
-  assert.equal(addCoreFact(), false);
   setDraftLoopTitle("Retained run title");
   setDraftLoopGoal("Retained run goal");
   assert.equal(createLoop(), false);
 
-  setMemoryContext({
+  setGoalsContext({
     send: payload => {
       sent.push(payload as Record<string, unknown>);
       return true;
     },
     notify: message => notices.push(message),
   });
-  assert.equal(addCoreFact(), true, "offline fact draft must remain retryable");
-  assert.equal(sent.at(-1)?.text, "Keep this fact");
   assert.equal(createLoop(), true, "offline project-run draft must remain retryable");
   assert.equal(sent.at(-1)?.title, "Retained run title");
   assert.equal(sent.at(-1)?.goal, "Retained run goal");
 }
 
 function testMemoryProjectRunRouting(): void {
-  const routed = REACT_MODULE_MESSAGE_TYPES["react-runtime-memory"];
-  for (const type of ["memory:loops", "memory:loop", "memory:loop:promote"] as const) {
-    assert.ok(routed.includes(type), `${type} must reach the Memory runtime module`);
+  const routed = REACT_MODULE_MESSAGE_TYPES["react-runtime-goals"];
+  for (const type of ["goals:loops", "goals:loop"] as const) {
+    assert.ok(routed.includes(type), `${type} must reach the Goals runtime module`);
   }
 }
 

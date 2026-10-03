@@ -39,6 +39,7 @@ function run(file, args, options = {}) {
 }
 
 const playwrightBrowsersDir = path.join(root, 'backend', '.playwright-browsers');
+let setupPhase = 'Python environment';
 
 try {
   if (!fs.existsSync(venvPy)) {
@@ -76,6 +77,7 @@ try {
     throw new Error('missing backend/requirements.txt and backend/requirements.lock');
   }
   console.log('installing from ' + depsFile);
+  setupPhase = 'Python dependencies';
   run(venvPy, ['-m', 'pip', 'install', '-r', depsFile]);
 
   // Browser automation v1 uses Playwright-managed isolated Chromium. The Python
@@ -97,12 +99,15 @@ try {
       '`npm run setup:backend`; packaged VARIANT-1 provisions it on first use.');
   }
 
+  setupPhase = 'pinned desktop driver download/install';
   run(process.execPath, [path.join('scripts', 'install-cua-driver.js')]);
 
   console.log('\nBackend ready. Speech model weights are user-supplied under models/speech/.');
   console.log('Run `npm start`.');
 } catch (err) {
-  console.error('\nBackend setup failed:', err.message);
-  console.error('Make sure CPython 3.13 x64 is installed and on your PATH.');
+  console.error('\nBackend setup failed during ' + setupPhase + ':', err.message);
+  if (setupPhase === 'Python environment') {
+    console.error('Make sure CPython 3.13 x64 is installed and on your PATH.');
+  }
   process.exit(1);
 }

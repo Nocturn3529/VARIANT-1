@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Callable
 
 import clarification
-import memory_tools
 import tools
 
 
@@ -94,7 +93,3 @@ async def tool_ask_user(host, args) -> str:
         host.require_runtime().work.interactions,
         args or {},
     )
-
-
-async def consolidate_memory_once(host) -> int:
-    return await memory_tools.consolidate_memory_once(_ports(host, "memory_ports"))

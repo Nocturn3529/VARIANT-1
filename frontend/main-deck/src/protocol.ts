@@ -45,6 +45,8 @@ export const REACT_MODULE_MESSAGE_TYPES = {
     "browser:host:command", "browser:host:registered",
   ],
   "react-runtime-service-settings": ["service-settings:result"],
+  "react-runtime-external-context-settings": ["external-context:result", "chat:session:deleted"],
+  "react-runtime-provider-routing": ["provider-recovery:result"],
   "react-runtime-local-models": ["local-models:result"],
   "react-runtime-browser-settings": [
     "browser:settings", "browser:state", "browser:selection:result", "browser:resolve:result", "browser:recordings",
@@ -79,11 +81,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
     "execution:snapshot", "terminal:accepted", "terminal:rejected",
     "process:accepted", "process:rejected",
   ],
-  "react-runtime-memory": [
-    "memory:core", "memory:list", "memory:proposals",
-    "memory:loops", "memory:loop", "memory:loop:promote",
-    "memory:consolidate", "memory:export", "memory:error",
-  ],
+  "react-runtime-goals": ["goals:loops", "goals:loop"],
   "react-runtime-automations": [
     "automations", "automations:history", "automation:accepted", "automation:error",
   ],

@@ -729,7 +729,7 @@ async def test_mutation_replaces_and_resets_the_children_object_slot(
         assert {
             method["alias"]
             for method in restored["mounted_objects"]["children"]["methods"]
-        } == {"spawn", "list", "tree"}
+        } == {"spawn", "list", "tree", "wait"}
     finally:
         await manager.shutdown()
 

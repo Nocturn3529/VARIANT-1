@@ -59,7 +59,6 @@ class AstbServices:
     kernel: Any
     actions: ToolActionRuntime
     session_artifacts: Any
-    memory_store: Any
 
 
 def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServices:
@@ -111,9 +110,8 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
     session_artifacts = ContentAddressedArtifactStore(
         os.path.join(catalog_root, "artifacts")
     )
-    from memory_store import MemoryStore
-
-    memory_store = MemoryStore(catalog_database)
+    from external_context import retire_fact_memory
+    retire_fact_memory(catalog_database)
     broker = CapabilityBroker(
         registry=registry,
         runtime_registry=session_runtimes,
@@ -200,7 +198,6 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
     )
     catalog_holder["catalog"] = catalog
     session_runtimes.register_chat_cleanup(catalog.repository.delete_chat_state)
-    session_runtimes.register_chat_cleanup(memory_store.delete_chat)
     session_runtimes.register_chat_cleanup(catalog.mutation.delete_chat)
     if catalog.children is not None:
         session_runtimes.register_chat_cleanup(catalog.children.delete_chat)
@@ -298,7 +295,6 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
         kernel=kernel,
         actions=actions,
         session_artifacts=session_artifacts,
-        memory_store=memory_store,
     )
 
 
