@@ -2763,8 +2763,10 @@ class MutationManager:
                     dependencies = json.loads(
                         str(prior.get("dependencies_json") or "[]")
                     )
+                    inherited = methods.get(prior_alias) or {}
                     inherited_effect = str(
-                        (methods.get(prior_alias) or {}).get("effect_class") or "pure"
+                        inherited.get("dependency_effect_class")
+                        or inherited.get("effect_class") or "pure"
                     )
                     prior_effect = max(
                         [inherited_effect] + [
@@ -2785,7 +2787,8 @@ class MutationManager:
                         "capability_id": ref.capability_id,
                         "schema_revision": ref.schema_revision,
                         "handler_revision": ref.handler_revision,
-                        "effect_class": prior_effect,
+                        "effect_class": "external_side_effect",
+                        "dependency_effect_class": prior_effect,
                         "description": str(prior.get("purpose") or ""),
                         "params": prior_params,
                         "signature": binding_signature(prior_alias, prior_params),
@@ -2841,7 +2844,11 @@ class MutationManager:
                 "capability_id": ref.capability_id,
                 "schema_revision": ref.schema_revision,
                 "handler_revision": ref.handler_revision,
-                "effect_class": effect_class,
+                # Session code can do anything ordinary Python can, so it is
+                # disclosed with the class the broker enforces for it. The
+                # mounted-proxy dependencies stay visible separately.
+                "effect_class": "external_side_effect",
+                "dependency_effect_class": effect_class,
                 "description": str(row["purpose"]),
                 "params": params,
                 "signature": binding_signature(str(row["alias"]), params),
