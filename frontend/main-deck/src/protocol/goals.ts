@@ -49,6 +49,7 @@ export type ComposerGoalSnapshot = Readonly<{
   goal: ComposerGoal;
   submission_request_id:string;
   completion_basis:string;
+  historyLimited?:boolean;
   admittedContinuation:Readonly<{requestId:string;message:string;stepId:string;previousAttempt:number;jobId:string}>|null;
   capabilities: Readonly<{pause_scheduling:boolean;pause_active_work:boolean;resume:boolean;cancel:boolean;continue:boolean;retry_cleanup:boolean;finish:boolean;archive:boolean}>;
   objectiveOutcome:ObjectiveOutcome;
@@ -80,6 +81,7 @@ export function parseComposerGoalSnapshot(value:unknown):ComposerGoalSnapshot|nu
   const termination=(row.termination && typeof row.termination==="object"?row.termination:{}) as Record<string,unknown>;
   return {goal,submission_request_id:row.submission_request_id,completion_basis:typeof row.completion_basis==="string"?row.completion_basis:"",
     admittedContinuation:admittedContinuation(row),
+    historyLimited:!!row.history_coverage && (row.history_coverage as Record<string,unknown>).complete===false,
     capabilities:{pause_scheduling:capabilities.pause_scheduling===true,pause_active_work:capabilities.pause_active_work===true,
       resume:capabilities.resume===true,cancel:capabilities.cancel===true,continue:capabilities.continue===true,retry_cleanup:capabilities.retry_cleanup===true,finish:capabilities.finish===true,archive:capabilities.archive===true},
     objectiveOutcome:parseObjectiveOutcome(row.objective_outcome),terminationKind:typeof termination.kind==="string"?termination.kind:"",

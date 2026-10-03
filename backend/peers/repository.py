@@ -169,6 +169,7 @@ class PeerRepository:
             if "message_kind" not in columns:
                 # Existing messages retain their originally requested wake semantics.
                 conn.execute("ALTER TABLE peer_message ADD COLUMN message_kind TEXT NOT NULL DEFAULT 'request'")
+            conn.execute("CREATE INDEX IF NOT EXISTS peer_message_reply ON peer_message(in_reply_to,sequence)")
 
     @staticmethod
     def _tick(conn: sqlite3.Connection) -> int:
@@ -519,6 +520,13 @@ class PeerRepository:
             return self._message(conn.execute(
                 "SELECT * FROM peer_message WHERE in_reply_to=? "
                 "ORDER BY sequence LIMIT 1", (str(message_id),),
+            ).fetchone())
+
+    def find_result_reply(self, message_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            return self._message(conn.execute(
+                "SELECT * FROM peer_message WHERE in_reply_to=? AND message_kind='result' "
+                "ORDER BY sequence LIMIT 1", (str(message_id),)
             ).fetchone())
 
     def list_messages(

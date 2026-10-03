@@ -72,6 +72,44 @@ checkpointing and restoration are optional and disabled by default.
 
 Chat history, model continuation records, artifacts, reusable
 tool source, and live Python objects have different persistence contracts.
+
+New composer Goals execute ordinary admitted turns in their visible owning chat.
+The durable session writer, pinned model route, canonical history and Python
+generation remain the same. Optional children are explicitly delegated; existing
+Goal records with a child execution contract retain that contract. A structured
+`session.report_outcome()` claim distinguishes completed, blocked and continuing
+work. A continuing owner may name its outgoing peer requests in
+`wait_for_message_ids`; correlated result messages wake the Goal when all arrive.
+Notices and unrelated results do not create new Goal turns.
+
+Parent-turn waits release the Work execution slot and use terminal/idle events
+instead of half-second successor jobs. Idle admission gives queued inputs and
+configuration changes priority. Exact admission/run identities fence reports and
+cancellation. Restart recovery reconciles once and blocks an uncertain parent
+turn rather than replaying its effects. Pausing scheduling lets an admitted turn
+settle; cancellation stops Goal-attributed managed processes and delegated roots
+while retaining the parent session. Goal token/provider-call budgets read the
+durable request accounting before admitting another turn.
+
+The metadata-only `data/model-usage.sqlite3` ledger retains physical requests
+independently of the bounded model inspector. It records session/Goal/run lineage,
+provider/model, retries, available token fields and their reported coverage,
+generation identifiers and terminal outcomes. Incremental rollups retain totals
+per session, Goal, model and UTC day without rescanning request history on each
+turn. Reasoning counters are not added again to provider totals. Missing counters
+remain null; superseded attempt durations remain unknown. OpenAI-compatible streams
+retain observed identity and reported partial usage before interruption. Observation
+failures remain visible and do not fail inference.
+
+The experimental endurance observer runs outside the isolated backend. Its SQLite
+journal retains session identities, feed revisions, interventions and bounded
+metadata samples. Agents receive an outcome-level mission and evolving resources;
+the observer does not assign team work or synthesize continuation prompts. A local
+lease prevents concurrent observers from owning one lab. Source commits and model
+routes are pinned per phase; catalog checks reject unavailable or non-free routes.
+JSONL/CSV exports use a consistent database snapshot and bounded batches. Artifact
+grades, continuous-operation evidence and recovery interventions remain distinct;
+the controller does not claim full mission qualification from file checks alone.
 The former fact/profile memory store, automatic recall, extraction, proposals,
 approvals, and consolidation have been retired. Startup removes only those
 memory tables from the shared ASTB database. Goal records and their controls

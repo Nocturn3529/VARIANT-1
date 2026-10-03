@@ -137,7 +137,8 @@ class ComposerGoals:
                     owner_chat_id=chat_id, goal_id=goal_id, correlation_id=request_id,
                     completion_policy={'entrypoint': 'composer_goal',
                                        'submission_request_id': request_id,
-                                       'completion_basis': 'structured_child_report',
+                                       'execution_owner': 'parent',
+                                       'completion_basis': 'structured_parent_report',
                                        'auto_continue': True})
             # A retry after a lost reply or a crash between durable boundaries
             # continues the same goal. It never creates a second child/goal.

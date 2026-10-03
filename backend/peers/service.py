@@ -164,6 +164,12 @@ class PeerCommunicationService:
         }
         self._change_event.set()
         self._change_event = asyncio.Event()
+        try:
+            goals = getattr(self.host.require_runtime(), 'goals', None)
+            if goals is not None and goals.parent_session is not None:
+                goals.parent_session.notify_peer_result(row)
+        except Exception:
+            _LOG.exception('Goal peer-result wake unavailable')
         publisher = self._publisher
         if not callable(publisher):
             return

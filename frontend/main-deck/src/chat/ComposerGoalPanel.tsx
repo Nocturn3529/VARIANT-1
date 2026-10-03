@@ -40,6 +40,7 @@ export function ComposerGoalPanel() {
         <span>Cleanup <strong>{snapshot.cleanup.complete?"complete":snapshot.cleanup.status==="complete"?"unconfirmed":snapshot.cleanup.status.replaceAll("_"," ")}</strong></span>
       </div>
       {snapshot.objectiveOutcome.summary?<p>{snapshot.objectiveOutcome.summary}</p>:null}
+      {snapshot.historyLimited?<small>History preview limited to recent records. Earlier records remain stored.</small>:null}
       {snapshot.reports.filter(report=>report.text).map(report=><details className="composer-goal__report" key={`${report.childId}:${report.stepId}`}>
         <summary>Agent report <small>{report.status.replaceAll("_"," ")}</small></summary>
         <p>{report.text}</p>{report.truncated?<small>Report preview truncated.</small>:null}

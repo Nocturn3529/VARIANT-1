@@ -84,6 +84,14 @@ def _with_reports(srv, snapshot):
 
 
 def register(on):
+    @on('goal:status:get')
+    async def goal_status(srv,websocket,session,msg):
+        async def action():
+            service = _runtime(srv,session,msg)
+            goal = await asyncio.to_thread(service.get,str(msg.get('goal_id') or ''))
+            return {'goal':goal.to_dict()}
+        await _respond(websocket,msg,'status',action,mutation=False)
+
     @on('goal:finish')
     async def goal_finish(srv,websocket,session,msg):
         async def action():

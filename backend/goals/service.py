@@ -40,6 +40,8 @@ class GoalService:
             if str(name).strip() and callable(resolver)
         }
         self._cancellation_handler: Callable[[GoalRecord, str], Any] | None = None
+        self.event_driven_wait_sources: set[str] = set()
+        self.parent_session = None
         self._cleanup_locks=weakref.WeakValueDictionary()
         from .supervisor import GoalSupervisor
         self.supervisor = GoalSupervisor(self, executor=self.executor)
@@ -139,17 +141,15 @@ class GoalService:
         steps = self.repository.list_steps(goal_id)
         injectable = {"agent", "python", "process", "child", "integration"}
         configured = set(self.executor.supported_kinds)
+        history = self.repository.snapshot_history(goal_id)
         return {
             "schema": "variant1.goal-snapshot.v1",
             "goal": goal.to_dict(),
             "steps": [step.to_dict(dependencies=dependencies.get(step.step_id, ()))
                       for step in steps],
-            "attempts": [item.to_dict() for item in self.repository.list_attempts(goal_id)],
+            **history['items'],
+            "history_coverage": history['coverage'],
             "state": self.repository.state_get(goal_id),
-            "attention": [item.to_dict() for item in self.repository.list_attention(goal_id)],
-            "waits": [item.to_dict() for item in self.repository.list_waits(goal_id)],
-            "effects": [item.to_dict() for item in self.repository.list_effects(goal_id)],
-            "artifacts": [item.to_dict() for item in self.repository.list_artifacts(goal_id)],
             "event_cursor": self.repository.event_cursor(goal_id),
             "runtime_disclosure": {
                 "native_state_machine_only": True,
@@ -368,7 +368,7 @@ class GoalService:
         self, goal_id: str, key: str, value: Any, *, expected_version: int,
         actor: str = "user",
     ) -> GoalRecord:
-        if key in {'objective_outcome','resource_cleanup','termination','continuation_request'} or key.startswith('cancel_request:'):
+        if key in {'objective_outcome','resource_cleanup','termination','continuation_request','parent_turn'} or key.startswith('cancel_request:'):
             raise GoalTransitionError('This state key is maintained by the canonical goal lifecycle')
         return self.repository.state_set(
             goal_id, key, value, expected_version=expected_version,

@@ -666,6 +666,22 @@ class ExecutionRepository:
     ) -> None:
         append_json_scope_visibility(clauses, args, column, scope)
 
+    def live_ids_for_goal(self, goal_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        result = []
+        with self._read() as conn:
+            for table, key, states in (
+                ('execution_terminal', 'terminal_id', ACTIVE_TERMINAL_STATES),
+                ('execution_process', 'process_id', ACTIVE_PROCESS_STATES),
+            ):
+                values = sorted(states)
+                rows = conn.execute(
+                    f"SELECT {key} FROM {table} WHERE state IN ({','.join('?' for _ in values)}) "
+                    "AND json_extract(scope_json,'$.goal_id')=? ORDER BY " + key,
+                    (*values, str(goal_id)),
+                ).fetchall()
+                result.append(tuple(str(row[key]) for row in rows))
+        return tuple(result)
+
     def record_action(
         self, entity_kind: str, entity_id: str, event_type: str,
         payload: Mapping[str, Any] | None = None,

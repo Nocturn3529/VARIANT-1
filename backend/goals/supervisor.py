@@ -99,7 +99,9 @@ class GoalSupervisor:
                 for wait in pending_waits
                 if wait.wake_at
             )
-            if any(wait.source in self.service.wait_resolvers for wait in pending_waits):
+            if any(wait.source in self.service.wait_resolvers
+                   and wait.source not in self.service.event_driven_wait_sources
+                   for wait in pending_waits):
                 wake_at_values.append(time.time() + 0.5)
             wake_at_values.extend(
                 step.lease_expires_at
@@ -235,6 +237,10 @@ class GoalSupervisor:
                 matcher=result.wait_matcher, wake_at=result.wake_at,
                 actor=WorkActor("system", self.worker_id),
             )
+            if result.wait_source in self.service.event_driven_wait_sources:
+                # Close the idle/terminal event-before-wait-commit race once.
+                # Unchanged waits still create no timer or successor polling job.
+                await self._wake_due(self.repository.require_goal(goal.goal_id), time.time())
             return self.repository.require_goal(goal.goal_id)
         if result.status == "retry_scheduled":
             goal, _ = self.repository.finish_step(
@@ -433,6 +439,9 @@ class GoalSupervisor:
                 goal.goal_id, "running", expected_version=goal.version,
                 actor=WorkActor("system", self.worker_id),
             )
+        if self.service.parent_session is not None and goal.completion_policy.get('execution_owner') == 'parent':
+            self.service.parent_session.refresh_budget(goal_id)
+            goal = self.repository.require_goal(goal_id)
         budget = budget_allows(goal, now=current_time)
         if not budget.allowed:
             goal = self.repository.transition_goal(

@@ -101,6 +101,8 @@ def recover_goal_supervisors(service: Any, *, now: float | None = None) -> dict[
             if wait.wake_at
         ]
         if any(wait.source in service.wait_resolvers for wait in pending_waits):
+            # Reconcile once after restart, including event-driven runs whose
+            # process-owned admission vanished. Only legacy sources keep polling.
             wake_candidates.append(current + 0.5)
         wake_candidates.extend(
             step.lease_expires_at

@@ -57,6 +57,10 @@ Use the release notes for the behavior and qualification of a downloaded build.
   the cancelled request; a later explicit request can start normally.
 - **Adapt tools when needed.** Optional chat-local tool authoring can change
   executable tool methods. Authoring is off by default and does not train model weights.
+- **Run a Goal in its owning session.** The session agent retains its conversation,
+  model route, peer identity, and live Python state while working toward the
+  objective. It can explicitly delegate children or coordinate other sessions.
+  Goal completion records the agent's claim and the available evidence.
 
 ## Costs and model access
 
@@ -117,6 +121,24 @@ default; saving routes does not change the selected main model.
 See [CONTRIBUTING.md](CONTRIBUTING.md), [validation](docs/VALIDATION.md), and
 [release management](docs/RELEASING.md). Report ordinary bugs through Issues with
 redacted reproduction steps. For sensitive reports, use [SECURITY.md](SECURITY.md).
+
+The experimental endurance controller in `experiments/live-canary/run_endurance.py`
+creates a disposable lab with one Goal coordinator and independent cloud collaborators.
+Initialize once, then run the same lab to retain its sessions and evidence:
+
+```powershell
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py init --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab" --duration 7200
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py preflight --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py run --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+```
+
+Commit the tested source before initializing a pinned live phase. The controller
+requires a disposable `OPENROUTER_API_KEY`, or a platform-encrypted credential file
+selected by `VARIANT1_ENDURANCE_CREDENTIAL_FILE`. `status`, `pause`, `resume`,
+`continue`, `stop`, and `export` use the same `--root`; `continue` is an explicit
+operator action for blocked work. Reports distinguish artifact checks from full
+mission qualification, which still needs review. Catalog checks and short runs
+do not certify days of uptime or every browser/desktop stack.
 
 Original VARIANT-1 code is available under the [MIT License](LICENSE).
 Third-party components retain their own licenses; see

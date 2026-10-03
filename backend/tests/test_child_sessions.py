@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -104,6 +105,25 @@ def _manager(database_path, host, artifact_store):
 
 def _runtimes(host):
     return host.require_runtime().session_runtimes
+
+
+@pytest.mark.asyncio
+async def test_explicit_child_keeps_parent_goal_scope_across_queued_dispatch(tmp_path,monkeypatch):
+    from run_context import bind_run_context
+    from work_fabric.scope import WorkScope
+    host=_Host(tmp_path/'children.sqlite3')
+    manager=_manager(str(tmp_path/'children.sqlite3'),host,ContentAddressedArtifactStore(str(tmp_path/'artifacts')))
+    monkeypatch.setattr(manager,'_enqueue',AsyncMock(return_value='held'))
+    context=Variant1RunContext.create(source='chat',session_id='parent',
+        work_scope=WorkScope(chat_id='parent',goal_id='goal-attribution',step_id='goal-step'))
+    with bind_run_context(context):
+        child=await manager.spawn('parent',task='Explicitly delegated work')
+    assert child['work_scope']['goal_id']=='goal-attribution'
+    assert child['work_scope']['chat_id']==child['child_chat_id']
+    assert manager.goal_roots('goal-attribution','parent')[0]['child_id']==child['child_id']
+    assert manager.goal_roots('another-goal','parent')==[]
+    job_id=manager._admit_job(child['child_id'])
+    assert manager.work.jobs.get(job_id).scope.goal_id=='goal-attribution'
 
 
 @pytest.mark.asyncio

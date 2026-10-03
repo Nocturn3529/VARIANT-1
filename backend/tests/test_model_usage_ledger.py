@@ -67,6 +67,20 @@ def test_paging_and_attribution_include_distinct_physical_retries(tmp_path):
     assert ledger.totals(goal_id="goal-a")["requests"] == 3
 
 
+def test_real_request_manifest_carries_goal_scope_into_durable_accounting(tmp_path):
+    from run_context import Variant1RunContext, bind_run_context
+    from model_runtime.request_manifest import _run_identity
+    from work_fabric.scope import WorkScope
+    context = Variant1RunContext.create(source="chat", run_id="run", session_id="owner",
+        work_scope=WorkScope(chat_id="owner", goal_id="goal-live", step_id="execute"))
+    value = request()
+    with bind_run_context(context):
+        value['run'] = _run_identity()
+    ledger = ModelUsageLedger(tmp_path / 'usage.sqlite3')
+    ledger.record(value)
+    assert ledger.totals(goal_id='goal-live')['requests'] == 1
+
+
 @pytest.mark.asyncio
 async def test_long_request_usage_and_generation_survive_receipt_eviction(tmp_path, monkeypatch):
     from llm_manifest_bus import ModelRequestManifestBus
@@ -99,3 +113,41 @@ async def test_observation_failure_is_visible_without_breaking_inference_receipt
     await bus.record(request())
     assert len(bus.snapshot()["items"]) == 1
     assert bus.snapshot()["usage_ledger_failures"] == 1
+
+
+def test_interrupted_stream_retains_generation_and_reported_partial_usage(tmp_path):
+    from llm_router import LLMRouter
+    from llm_manifest_bus import ModelRequestManifestBus
+    from model_runtime.request_manifest import observe_provider_chunk
+    ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
+    ledger.record(request())
+    router=object.__new__(LLMRouter)
+    router._manifest_bus=ModelRequestManifestBus(usage_ledger=ledger)
+    observe_provider_chunk(router,'mreq-a',{'id':'gen-observed','usage':{'completion_tokens':4,'completion_tokens_details':{'reasoning_tokens':3}}})
+    ledger.patch_terminal('mreq-a',outcome='cancelled',duration_s=2)
+    row=ledger.get('mreq-a')
+    assert row['response']['provider_generation_id']=='gen-observed'
+    assert row['usage']['output_tokens']==4 and row['usage']['input_tokens'] is None
+    assert row['usage']['total_tokens'] is None and row['usage']['reasoning_tokens']==3
+    assert row['outcome']=='cancelled'
+    assert router._manifest_bus.snapshot()['usage_totals']['calls']==0
+
+
+def test_logical_call_finalization_marks_only_last_attempt_duration_and_keeps_missing_usage(tmp_path):
+    import model_runtime.request_manifest as manifests
+    ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
+    ledger.record(request())
+    ledger.record(request('mreq-b'))
+    class Router:
+        def _patch_model_request_manifest_terminal(self,identity,**kwargs):
+            ledger.patch_terminal(identity,**kwargs)
+    router=Router()
+    token=manifests.begin_model_call(requested_route='cloud',selected_mode='cloud')
+    scope=manifests._MODEL_CALL_SCOPE.get()
+    import time
+    scope.requests.extend([(router,'mreq-a',time.monotonic()),(router,'mreq-b',time.monotonic())])
+    manifests.end_model_call(token,outcome='failed')
+    assert ledger.get('mreq-a')['outcome']=='superseded'
+    assert ledger.get('mreq-a')['duration_s'] is None
+    assert ledger.get('mreq-b')['outcome']=='failed'
+    assert ledger.get('mreq-b')['usage'] is None

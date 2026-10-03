@@ -29,6 +29,7 @@ from model_runtime.message_graph import (
     render_openai_chat,
 )
 from model_runtime.request_manifest import (
+    observe_provider_chunk,
     model_request_event_hooks,
     patch_provider_response_identity,
     provider_response_identity,
@@ -535,6 +536,7 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     if event.done:
                         break
                     obj = event.payload or {}
+                    observe_provider_chunk(router, event_hooks.request_ref, obj)
                     stream_error = _provider_stream_error(label, obj)
                     if stream_error is not None:
                         raise stream_error

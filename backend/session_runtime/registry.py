@@ -83,6 +83,20 @@ class SessionRuntimeRegistry:
         self._chat_cleanup: list[Callable[[str], Any]] = []
         self._chat_tombstone_cleanup: list[Callable[[str], Any]] = []
         self._snapshot_store = snapshot_store
+        self._idle_listeners: list[Callable[[str], Any]] = []
+
+    def register_idle_listener(self, callback: Callable[[str], Any]) -> None:
+        if not callable(callback):
+            raise TypeError("idle listener must be callable")
+        with self._guard:
+            self._idle_listeners.append(callback)
+
+    def _notify_idle(self, chat_id: str) -> None:
+        for callback in tuple(self._idle_listeners):
+            try:
+                callback(chat_id)
+            except Exception:
+                self._emit("runtime:idle_listener_failed", chat_id=chat_id, status="error")
 
     @property
     def snapshot_store(self):
@@ -629,6 +643,7 @@ class SessionRuntimeRegistry:
             with self._guard:
                 if live.settings_change_id == token:
                     live.settings_change_id = ""
+            self._notify_idle(clean)
 
     @staticmethod
     def _budget_allows(record: ChatRuntimeRecord) -> bool:
@@ -674,6 +689,8 @@ class SessionRuntimeRegistry:
                 live = self._live.get(clean)
                 if live is None or live.admission or live.settings_change_id:
                     return None
+                if fields.get("require_empty_queue") and self.queued_input_count(clean):
+                    return None
                 retirement = live.kernel_retirement
             if retirement is not None:
                 # One cancelled waiter must not cancel the shared retirement
@@ -687,6 +704,7 @@ class SessionRuntimeRegistry:
         *,
         attachment_id: str = "",
         background: bool = False,
+        require_empty_queue: bool = False,
     ) -> str | None:
         clean = self._chat_id(chat_id)
         record = self.ensure_runtime(clean)
@@ -701,6 +719,8 @@ class SessionRuntimeRegistry:
         with self._guard:
             live = self._live.setdefault(clean, _LiveRuntime(clean))
             if live.settings_change_id or live.kernel_retirement is not None:
+                return None
+            if require_empty_queue and self.queued_input_count(clean):
                 return None
             admission = live.admission
             if admission is not None:
@@ -797,6 +817,7 @@ class SessionRuntimeRegistry:
             run_id=admission.run_id,
             admission_id=admission.admission_id,
         )
+        self._notify_idle(admission.chat_id)
 
     @staticmethod
     def _pause_state(admission: _RunAdmission | None) -> str:
@@ -950,12 +971,14 @@ class SessionRuntimeRegistry:
                 return None
             return attachment.session, attachment.transport
 
-    def cancel_active_run(self, chat_id: str) -> asyncio.Task | None:
+    def cancel_active_run(self, chat_id: str, *, expected_admission_id: str = "") -> asyncio.Task | None:
         """Cancel the one run owned by this durable chat, if any."""
         clean = self._chat_id(chat_id)
         with self._guard:
             live = self._live.get(clean)
             admission = live.admission if live is not None else None
+            if expected_admission_id and (admission is None or admission.admission_id != expected_admission_id):
+                return None
             task = admission.task if admission is not None else None
             if task is None or task.done():
                 return None

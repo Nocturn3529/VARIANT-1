@@ -458,6 +458,29 @@ class LLMRouter:
         """Patch and republish the exact bounded request receipt, fail-open."""
         self._manifest_bus.patch_usage(manifest_ref, normalized_usage)
 
+    def _patch_model_request_manifest_terminal(self, manifest_ref, *, outcome, duration_s=None):
+        ledger = self._manifest_bus.usage_ledger
+        if ledger is not None:
+            try:
+                ledger.patch_terminal(self._manifest_bus.manifest_id_from_ref(manifest_ref),
+                    outcome=outcome, duration_s=duration_s)
+            except Exception:
+                self._manifest_bus.ledger_failures += 1
+
+    def _patch_model_request_manifest_partial_usage(self, manifest_ref, raw_usage):
+        normalized = normalize_manifest_usage('openrouter', raw_usage=raw_usage)
+        for field in ('input_tokens', 'output_tokens', 'total_tokens', 'prompt_token_volume', 'uncached_input_tokens', 'token_volume'):
+            basis = {'prompt_token_volume': 'input_tokens', 'uncached_input_tokens': 'input_tokens', 'token_volume': 'total_tokens'}.get(field, field)
+            if basis not in normalized['reported_fields']:
+                normalized[field] = None
+        # Incomplete observations must not preempt the final UI/CloudUsage count.
+        ledger = self._manifest_bus.usage_ledger
+        if ledger is not None:
+            try:
+                ledger.patch_usage(self._manifest_bus.manifest_id_from_ref(manifest_ref), normalized, partial=True)
+            except Exception:
+                self._manifest_bus.ledger_failures += 1
+
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,
     ) -> None:
@@ -1872,6 +1895,9 @@ class LLMRouter:
         except asyncio.CancelledError:
             status = "cancelled"
             raise
+        except GeneratorExit:
+            status = "closed"
+            raise
         except Exception as exc:
             code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
             try:
@@ -1899,7 +1925,7 @@ class LLMRouter:
                 f"status={status}{extra}",
                 flush=True,
             )
-            end_model_call(model_call_token)
+            end_model_call(model_call_token, outcome='succeeded' if status == 'ok' else 'cancelled' if status == 'cancelled' else 'unknown' if status == 'closed' else 'failed')
 
     def set_local_gate(self, factory) -> None:
         """Wrap local generation in a scheduler slot. ``factory()`` returns an

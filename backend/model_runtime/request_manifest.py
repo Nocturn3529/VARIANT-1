@@ -24,7 +24,7 @@ import json
 import time
 import uuid
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 from llm_usage import current_usage_category
 
@@ -104,12 +104,27 @@ def patch_provider_response_identity(
         pass
 
 
+def observe_provider_chunk(router: Any, manifest_ref: Any, value: dict) -> None:
+    """Retain allowlisted identity and reported usage before a stream can fail."""
+    identity = provider_response_identity(value)
+    if identity:
+        patch_provider_response_identity(router, manifest_ref, identity)
+    usage = value.get('usage')
+    patcher = getattr(router, '_patch_model_request_manifest_partial_usage', None)
+    if isinstance(usage, dict) and usage and callable(patcher):
+        try:
+            patcher(manifest_ref, usage)
+        except Exception:
+            pass
+
+
 @dataclass
 class _ModelCallScope:
     logical_call_id: str
     requested_route: str
     selected_mode: str
     attempt: int = 0
+    requests: list = field(default_factory=list)
 
     def next_attempt(self) -> int:
         self.attempt += 1
@@ -145,8 +160,19 @@ def begin_model_call(*, requested_route: str | None, selected_mode: str) -> Toke
     return _MODEL_CALL_SCOPE.set(scope)
 
 
-def end_model_call(token: Token | None) -> None:
+def end_model_call(token: Token | None, *, outcome: str = "unknown") -> None:
     if token is not None:
+        scope = _MODEL_CALL_SCOPE.get()
+        if scope is not None:
+            for index, (router, identity, started) in enumerate(scope.requests):
+                terminal = getattr(router, '_patch_model_request_manifest_terminal', None)
+                if callable(terminal):
+                    try:
+                        latest = index == len(scope.requests) - 1
+                        terminal(identity, outcome=outcome if latest else 'superseded',
+                                 duration_s=max(0, time.monotonic() - started) if latest else None)
+                    except Exception:
+                        pass
         _MODEL_CALL_SCOPE.reset(token)
 
 
@@ -192,6 +218,9 @@ def _run_identity() -> dict:
         "run_id": str(getattr(ctx, "run_id", "") or "")[:160],
         "source": str(getattr(ctx, "source", "") or "")[:80],
         "session_id": session_id[:160],
+        "thread_id": str(getattr(ctx, "thread_id", "") or "")[:160],
+        "parent_run_id": str(getattr(ctx, "parent_run_id", "") or "")[:160],
+        "work_scope": ctx.work_scope.to_dict(include_empty=False),
     }
 
 
@@ -774,6 +803,9 @@ def model_request_event_hooks(
                 output_budget=output_budget,
             )
             request_ref["manifest_id"] = str(manifest.get("manifest_id") or "")
+            scope = _MODEL_CALL_SCOPE.get()
+            if scope is not None:
+                scope.requests.append((router, request_ref['manifest_id'], time.monotonic()))
             await _emit_manifest(router, manifest)
         except Exception:
             # Observability must never prevent a provider request.

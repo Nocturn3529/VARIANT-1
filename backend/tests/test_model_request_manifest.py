@@ -742,6 +742,9 @@ def test_run_identity_includes_the_interactive_chat_session():
         "run_id": "run-chat",
         "source": "chat",
         "session_id": "chat-7",
+        "thread_id": "run-chat",
+        "parent_run_id": "",
+        "work_scope": {},
     }
 
 
@@ -765,6 +768,9 @@ def test_headless_manifest_includes_durable_runtime_and_harness_revisions():
         "run_id": "run-worker",
         "source": "automation",
         "session_id": "worker:automation:manifest-canary",
+        "thread_id": "run-worker",
+        "parent_run_id": "",
+        "work_scope": {},
     }
     assert manifest["surface"] == {
         "action_surface": "trusted-local.v1",

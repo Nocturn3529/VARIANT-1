@@ -139,6 +139,9 @@ def install_host_runtime(
     coding.startup()
     goals = create_goal_service(work)
     goal_adapters = build_goal_host_handlers(host, goals)
+    from goals.parent_session import ParentSessionGoals
+    parent_goals = ParentSessionGoals(host, goals, goal_adapters)
+    astb.session_runtimes.register_idle_listener(parent_goals.notify_idle)
     goals.register_cancellation_handler(goal_adapters.cancel_goal_resources)
     for kind, handler in goal_adapters.handlers().items():
         goals.executor.register(kind, handler)

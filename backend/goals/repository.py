@@ -288,6 +288,10 @@ class GoalRepository:
                         UNIQUE(goal_id, step_id, artifact_ref, role),
                         FOREIGN KEY(goal_id) REFERENCES workflow_goal(goal_id)
                     );
+                    CREATE INDEX IF NOT EXISTS idx_goal_attempt_preview ON workflow_step_attempt(goal_id,started_at,attempt_id);
+                    CREATE INDEX IF NOT EXISTS idx_goal_wait_preview ON workflow_wait(goal_id,created_at,wait_id);
+                    CREATE INDEX IF NOT EXISTS idx_goal_effect_preview ON workflow_effect(goal_id,sequence);
+                    CREATE INDEX IF NOT EXISTS idx_goal_artifact_preview ON workflow_goal_artifact(goal_id,created_at,link_id);
 
                     """
                 )
@@ -1780,6 +1784,33 @@ class GoalRepository:
                 (str(goal_id),),
             ).fetchall()
         return [item for row in rows if (item := self._effect(row)) is not None]
+
+    def get_effect(self, effect_id: str) -> EffectRecord | None:
+        with self.work._read() as conn:
+            return self._effect(conn.execute(
+                "SELECT * FROM workflow_effect WHERE effect_id=?", (str(effect_id),)
+            ).fetchone())
+
+    def snapshot_history(self, goal_id: str, *, limit: int = 100) -> dict:
+        """Bound read-side previews without deleting authoritative history."""
+        cap=max(1,min(int(limit),500))
+        def artifact(row):
+            return GoalArtifactRecord(link_id=str(row['link_id']),goal_id=str(row['goal_id']),
+                step_id=str(row['step_id'] or ''),artifact_ref=str(row['artifact_ref']),role=str(row['role']),
+                metadata=_load(row['metadata_json'],dict,'artifact metadata'),created_at=float(row['created_at']))
+        sources=(('attempts','workflow_step_attempt','started_at DESC,attempt_id DESC',self._attempt),
+                 ('waits','workflow_wait','created_at DESC,wait_id DESC',self._wait),
+                 ('effects','workflow_effect','sequence DESC',self._effect),
+                 ('attention','workflow_attention',"(status='open') DESC,created_at DESC,attention_id DESC",self._attention),
+                 ('artifacts','workflow_goal_artifact','created_at DESC,link_id DESC',artifact))
+        items,counts={},{}
+        with self.work._read() as conn:
+            for name,table,order,factory in sources:
+                counts[name]=int(conn.execute('SELECT COUNT(*) FROM '+table+' WHERE goal_id=?',(str(goal_id),)).fetchone()[0])
+                rows=conn.execute('SELECT * FROM '+table+' WHERE goal_id=? ORDER BY '+order+' LIMIT ?',
+                                  (str(goal_id),cap)).fetchall()
+                items[name]=[factory(row).to_dict() for row in reversed(rows)]
+        return {'items':items,'coverage':{'limit':cap,'counts':counts,'complete':all(value<=cap for value in counts.values())}}
 
     def retry_step(
         self, goal_id: str, step_id: str, *, expected_version: int,
