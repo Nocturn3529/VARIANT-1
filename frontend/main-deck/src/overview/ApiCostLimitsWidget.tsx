@@ -33,11 +33,11 @@ type RadialTooltip = {
 };
 
 const PROVIDER_COLORS: Record<string, string> = {
-  openai: "var(--deck-signal-cyan)",
-  anthropic: "var(--deck-signal-indigo)",
-  gemini: "var(--deck-signal-lime)",
-  xai: "var(--deck-signal-magenta)",
-  nvidia: "var(--deck-signal-orange)",
+  openai: "var(--deck-chart-blue)",
+  anthropic: "var(--deck-chart-amber)",
+  gemini: "var(--deck-chart-violet)",
+  xai: "var(--deck-chart-rose)",
+  nvidia: "var(--deck-chart-teal)",
 };
 const RING_RADIUS = 154;
 const CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;

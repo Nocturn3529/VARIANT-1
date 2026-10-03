@@ -32,7 +32,7 @@ const designSystem = read(path.join(
 ));
 assert.match(designSystem, /--font-ui:\s*"Segoe WPC", "Segoe UI"/,
   'the accepted Mono UI uses the system Segoe stack');
-assert.match(designSystem, /--deck-canvas:\s*#0e0e0e/,
+assert.match(designSystem, /--deck-canvas:\s*#090a0a/,
   'the shared system must retain its black canvas');
 assert.match(designSystem, /--deck-text-primary:\s*#eaeaea/,
   'the shared system must retain its neutral white primary ink');
@@ -189,15 +189,16 @@ assert.match(overviewDestination, /<LocalInferenceWidget[\s\S]*onRefresh=\{\(\) 
   'Overview refresh must be delegated to the first telemetry instrument');
 assert.match(localInference, /local-inference-header[\s\S]*id="overview-refresh"[\s\S]*local-inference-runtime/,
   'Overview refresh must remain between the first instrument title and runtime readout');
-assert.match(overviewCss, /\.overview-request-list\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/s,
-  'Overview request attempts must use the available wide frame as a two-lane stream');
+assert.match(overviewDestination, /TABS[^\n]*"python"[\s\S]*<PythonKernelsTab\/>/,
+  'Python kernels are the Overview\'s first tab');
+assert.doesNotMatch(overviewDestination, /"requests"/, 'the Overview has no Requests tab');
 
 const settingsApp = read(path.join('frontend', 'main-deck', 'src', 'DeckApp.tsx'));
 const settingsOverlay = read(path.join('frontend', 'main-deck', 'src', 'SettingsOverlay.tsx'));
 const settingsCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'settings.css'));
 assert.doesNotMatch(settingsApp, /settings-header|settings-saved-state|settings-nav-glyph|settings-category-footer/,
   'Settings must not restore its retired route header, decorative nav glyphs, or local-build footer');
-for (const kind of ['runtime', 'overview', 'automations']) {
+for (const kind of ['overview', 'automations']) {
   assert.ok(settingsApp.includes(`<UtilitySurface kind="${kind}"`), `${kind} must use a utility overlay`);
 }
 assert.match(read('frontend/main-deck/src/SettingsPageContent.tsx'), /goals: <GoalsDestination\/>/,
@@ -235,7 +236,9 @@ assert.doesNotMatch(chat + chatMessages, /chat-jump-latest|>\s*Latest\s*</,
 assert.doesNotMatch(deckApp + shellCss + designSystem, /titlebar__center|window-title/,
   'the titlebar must not restore global route or conversation text');
 assert.match(deckApp, /<header className="titlebar">[\s\S]*titlebar__drag[\s\S]*<WindowControls/,
-  'the text-free titlebar must retain its drag surface, brand, and window controls');
+  'the text-free titlebar must retain its drag surface and window controls');
+assert.match(read(path.join('frontend', 'main-deck', 'src', 'chat', 'ChatMessageList.tsx')), /runtime-chat-empty[\s\S]*chat-brand[\s\S]*<KernelGlyph/,
+  'the brand mark lives at the center of an empty chat');
 assert.match(read(path.join('frontend', 'main-deck', 'src', 'styles', 'composer.css')), /--context-accent:/,
   'the context meter retains category geometry in the monochrome system');
 
@@ -243,6 +246,14 @@ assert.match(overviewCss, /var\(--deck-signal-(?:cyan|indigo|lime|amber|orange|m
   'Overview telemetry must consume the shared intentional signal palette');
 assert.doesNotMatch(overviewCss, /#[0-9a-f]{6}/i,
   'Overview must not bypass canonical signal tokens with route-local color literals');
+// Color stays in the graphs: the chart hues are consumed only by Overview charts.
+for (const name of cssFiles.filter(name => !['design-system.css', 'overview.css'].includes(name))) {
+  assert.doesNotMatch(fs.readFileSync(path.join(stylesDir, name), 'utf8'), /--deck-chart-/,
+    `${name} must not use the graph palette outside charts`);
+}
+for (const file of sourceFiles(path.join(root, 'frontend/main-deck/src')).filter(file => !file.includes(`${path.sep}overview${path.sep}`))) {
+  assert.doesNotMatch(fs.readFileSync(file, 'utf8'), /--deck-chart-/, `${path.relative(root, file)} must not use the graph palette outside charts`);
+}
 
 assert.ok(!fs.existsSync(path.join(stylesDir, 'overview-shell-theme.css')),
   'the retired Overview shell theme must stay deleted');
@@ -299,6 +310,20 @@ for (const name of cssFiles) {
       `${name} has unsanctioned media query: ${query}`,
     );
   }
+  // esbuild only warns on a stray brace, and a browser then drops whichever
+  // rule the parser folds it into.
+  const blank = text => text.replace(/[^\n]/g, ' ');
+  const structure = fs.readFileSync(path.join(stylesDir, name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, blank);
+  let depth = 0;
+  for (const [index, line] of structure.split('\n').entries()) {
+    for (const character of line) {
+      depth += character === '{' ? 1 : character === '}' ? -1 : 0;
+      assert.ok(depth >= 0, `${name} closes a block it never opened on line ${index + 1}`);
+    }
+  }
+  assert.strictEqual(depth, 0, `${name} leaves ${depth} block(s) unclosed`);
 }
 
 // References must resolve to a stylesheet definition or a deliberately supplied

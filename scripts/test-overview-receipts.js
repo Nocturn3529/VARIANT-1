@@ -385,12 +385,8 @@ for (const view of [
   assert.match(view, /deck-instrument/,
     "every Overview widget must compose the shared instrument contract");
 }
-assert.match(overviewView, /overview-request-inspector deck-instrument/,
-  "request receipts must render as a peer instrument");
-assert.match(overviewView, /overview-request-summary deck-metric-rail/,
-  "request receipts must expose their bounded state in a metric rail");
-assert.match(overviewView, /overview-request-list deck-data-list/,
-  "request receipts must use the flat shared data-list grammar");
+assert.doesNotMatch(overviewView, /"requests"|RequestReceiptCard|overview-request-/,
+  "the Overview no longer has a Requests tab; receipt normalization above stays covered in the store");
 for (const hook of [
   "deck-instrument",
   "deck-instrument__header",
@@ -434,41 +430,4 @@ assert.match(fixtureView, /prompt_text_stored:\s*true/,
 assert.match(fixtureView, /dropped_events:\s*[1-9]/,
   "development receipts must preserve visual QA for delivery warnings");
 
-// Render the actual private receipt card without introducing a test-only
-// product export. No live app, effects, or backend requests are involved.
-const viewPath=path.join(root,"frontend/main-deck/src/OverviewDestination.tsx");
-const cardModule=new Module(viewPath,module);cardModule.filename=viewPath;cardModule.paths=Module._nodeModulePaths(root);
-// Isolate the actual card and its formatters from sibling widgets' window
-// initialization. Fail if the source boundary changes instead of testing a copy.
-const cardStart=overviewView.indexOf('const tokenFormatter'),cardEnd=overviewView.indexOf('function ModelRequestInspector');
-assert.ok(cardStart>=0&&cardEnd>cardStart);
-cardModule._compile(esbuild.buildSync({stdin:{contents:overviewView.slice(cardStart,cardEnd)+"\nexport {RequestReceiptCard};",resolveDir:path.dirname(viewPath),sourcefile:viewPath,loader:"tsx"},bundle:true,platform:"node",format:"cjs",packages:"external",jsx:"automatic",write:false,logLevel:"silent"}).outputFiles[0].text,viewPath);
-const React=require("react"),{renderToStaticMarkup}=require("react-dom/server"),{JSDOM}=require("jsdom");
-function usageCard(usage) {
-  const supplied=normalizeModelRequestManifest({...raw,usage});
-  const markup=renderToStaticMarkup(React.createElement(cardModule.exports.RequestReceiptCard,{receipt:supplied}));
-  const dom=new JSDOM(markup),cell=dom.window.document.querySelector('[data-usage-provenance]');
-  const result={receipt:supplied,text:cell.textContent,kind:cell.getAttribute('data-usage-provenance')};dom.window.close();return result;
-}
-const estimate=usageCard({measurement:"estimated",provider_reported:false,estimated:false,input_tokens:0,output_tokens:114});
-assert.strictEqual(estimate.receipt.usage.estimated,true,"canonical estimated metadata overrides an absent/false auxiliary flag");
-assert.strictEqual(estimate.kind,"estimated");assert.match(estimate.text,/Estimated usage/);assert.match(estimate.text,/≈ 0 in/);assert.match(estimate.text,/≈ 114 tokens/);
-assert.doesNotMatch(estimate.text,/Provider-reported/);
-const nestedEstimate=usageCard({tokens:{measurement:"estimated",input_tokens:0,output_tokens:4}});
-assert.strictEqual(nestedEstimate.kind,"estimated");assert.strictEqual(nestedEstimate.receipt.usage.estimated,true);
-const reportedZero=usageCard({measurement:"provider_reported",provider_reported:true,input_tokens:0,output_tokens:0});
-assert.strictEqual(reportedZero.kind,"provider_reported");assert.match(reportedZero.text,/Provider-reported usage0 tokens0 in · 0 out/);assert.doesNotMatch(reportedZero.text,/≈/);
-const canonicalReported=usageCard({measurement:"provider_reported",input_tokens:12,output_tokens:3});
-assert.strictEqual(canonicalReported.kind,"provider_reported");assert.match(canonicalReported.text,/15 tokens/);
-for(const missing of [undefined,{}, {measurement:"provider_reported",provider_reported:true}, {measurement:"unavailable",provider_reported:false,input_tokens:0,output_tokens:0}, {linked:false,provider_reported:true,input_tokens:0}, {input_tokens:0,output_tokens:0}]) {
-  const card=usageCard(missing);assert.strictEqual(card.kind,"unavailable");assert.match(card.text,/Usage unavailable—Token counts not available/);assert.doesNotMatch(card.text,/0 in|0 out|0 tokens/);
-}
-const partial=usageCard({measurement:"provider_reported",input_tokens:null,output_tokens:7});
-assert.strictEqual(partial.receipt.usage.promptTokens,null);assert.strictEqual(partial.receipt.usage.totalTokens,null);
-assert.match(partial.text,/Total unavailable— in · 7 out/);assert.doesNotMatch(partial.text,/0 in/);
-const partialEstimate=usageCard({measurement:"estimated",output_tokens:7});
-assert.match(partialEstimate.text,/Total unavailable— in · ≈ 7 out/);
-const conflicting=usageCard({measurement:"estimated",provider_reported:true,total_tokens:20});
-assert.strictEqual(conflicting.kind,"estimated","estimated evidence must not be presented as exact provider usage");
-console.log("overview usage provenance: supplied estimated, nested, reported-zero, partial and unavailable receipts render distinctly");
 console.log("overview request receipts: all tests passed");

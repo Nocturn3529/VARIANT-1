@@ -50,6 +50,45 @@ async def test_emit_activity_uses_bound_run_context():
 
 
 @pytest.mark.asyncio
+async def test_emit_activity_retains_latest_display_step_per_session(monkeypatch):
+    from observability import activity
+
+    monkeypatch.setattr(activity, "_LAST_SESSION_ACTIVITY", activity.OrderedDict())
+    monkeypatch.setattr(activity, "_LAST_SESSION_ACTIVITY_LIMIT", 2)
+
+    async def capture(_msg):
+        return None
+
+    monkeypatch.setattr(HUB, "broadcast", capture)
+    ctx = Variant1RunContext.create(
+        source="subagent", title="t", run_id="child-run", session_id="child-chat"
+    )
+    with bind_run_context(ctx):
+        await emit_activity("tool:start", tool="read_file", status="running",
+                            call_id="c1", args_preview='{"path": "secret"}')
+        await emit_activity("agent_runtime:checkpoint", text="internal")
+    entry = activity.last_session_activity("child-chat")
+    assert entry is not None
+    assert {key: entry[key] for key in ("event", "tool", "status", "title", "run_id")} == {
+        "event": "tool:start", "tool": "read_file", "status": "running",
+        "title": None, "run_id": "child-run",
+    }
+    assert set(entry) == {"event", "tool", "status", "title", "ts", "run_id"}
+    entry["tool"] = "mutated"
+    assert activity.last_session_activity("child-chat")["tool"] == "read_file"
+
+    await emit_activity("note", text="no session")
+    for chat in ("a", "b", "c"):
+        with bind_run_context(Variant1RunContext.create(
+            source="subagent", run_id=f"run-{chat}", session_id=chat
+        )):
+            await emit_activity("task:step", title=f"step {chat}")
+    assert activity.last_session_activity("child-chat") is None
+    assert activity.last_session_activity("a") is None
+    assert activity.last_session_activity("c")["title"] == "step c"
+
+
+@pytest.mark.asyncio
 async def test_emit_activity_without_context_has_no_run_id_fallback():
     """No process-global _CURRENT_RUN — untagged emit lacks run_id."""
     seen = []

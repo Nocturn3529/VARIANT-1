@@ -27,6 +27,7 @@ import {
   requestSessionContext,
   getContextForSession,
   changeSessionSettings,
+  dismissSettingsError,
   useSessionContextState,
   type SessionContextState,
 } from "../sessionContextStore";
@@ -35,9 +36,7 @@ import {getSessionState,useSessionState} from "../state/sessionStore";
 import {setChatDelivery, submitUserInput} from "./composer";
 import {getComposerRevision,turnApi} from "./stateCore";
 import {currentPause,requestChatPause} from "./pause";
-import {InputQueuePanel} from "./InputQueuePanel";
-import {ComposerGoalPanel} from "./ComposerGoalPanel";
-import {AgentTeamPanel} from "./AgentTeamPanel";
+import {ActivityDock} from "./ActivityDock";
 import {parseGoalCommand} from "./goalCommand";
 import {queueAdmissionPending} from "./inputQueue";
 import {invalidatePendingChatAttachments} from "./attachments";
@@ -122,7 +121,11 @@ function ComposerCapabilities({
 
   if (!mutationControl.visible) return null;
   return <details className="composer-session-tools">
-    <summary>Session tools{mutationControl.checked ? " · Authoring on" : runtime?.activeSlots ? " · Active tools" : ""}</summary>
+    <summary className={mutationControl.checked ? "is-authoring" : undefined}>
+      <Icon name="kernel"/><span>Session tools</span>
+      {mutationControl.checked ? <small>Authoring on</small> : runtime?.activeSlots ? <small>Active tools</small> : null}
+      <Icon name="down" className="composer-session-tools__chevron"/>
+    </summary>
     <div className="composer-session-tools__content" role="group" aria-label="Session capabilities">
     <MutationSwitch
       sessionId={sessionId}
@@ -312,6 +315,21 @@ function ContextMeter({
   </div>;
 }
 
+/**
+ * A rejected model or reasoning change. It floats above the composer (the
+ * input stays clear) and stays until read: dismissed, or replaced by opening
+ * the picker or making another change.
+ */
+function SettingNotice({label, error, onChoose, onDismiss}: {label: string; error: string; onChoose: () => void; onDismiss: () => void}) {
+  const title = label ? `Couldn't switch to ${label}.` : "Couldn't apply that change.";
+  return <div className="composer-setting-notice deck-pop" role="alert">
+    <Icon name="error"/>
+    <p className="composer-setting-notice__text" title={`${title} ${error}`}><strong>{title}</strong> {error}</p>
+    <button type="button" className="composer-setting-notice__choose" onClick={onChoose}>Choose another model</button>
+    <button type="button" className="composer-setting-notice__close" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><Icon name="close"/></button>
+  </div>;
+}
+
 export function ChatComposer() {
   const navigating = !!useSessionState().pendingAction;
   const {
@@ -486,14 +504,18 @@ export function ChatComposer() {
   >
     {dragOver ? <div className="composer-drop-hint" aria-hidden="true">Drop files or folders to attach</div> : null}
     <ClarificationCard />
-    <AgentTeamPanel/>
+    <ActivityDock/>
     <div className="composer" id="composer" data-state={!connected ? "offline" : stopPending ? "stopping" : turnActive ? "working" : "ready"}>
+      {composerContext.settingsError && !modelMenuOpen ? <SettingNotice
+        label={composerContext.settingsErrorLabel}
+        error={composerContext.settingsError}
+        onChoose={() => { dismissSettingsError(sessionId || ""); setContextMenuOpen(false); setModelMenuOpen(true); }}
+        onDismiss={() => dismissSettingsError(sessionId || "")}
+      /> : null}
       <div className="composer__supplements">
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
         <ComposerChips attachments={attachments} disabled={turnActive} />
         {attachmentsPreparing>0 ? <div className="composer-preparation" role="status"><i className="composer-spinner" aria-hidden="true"/><span>Preparing {attachmentsPreparing} {attachmentsPreparing===1 ? "attachment" : "attachments"}…</span><button type="button" onClick={invalidatePendingChatAttachments}>Cancel</button></div> : null}
-        <InputQueuePanel/>
-        <ComposerGoalPanel/>
         {!inputQueue.snapshot && (queued.length || queuedFollowUps) && turnActive ? <details className="composer-input-queue">
           <summary><Icon name="queue"/>Inputs for this task <span>{Math.max(queued.length, queuedFollowUps)}</span><Icon name="down"/></summary>
           {queued.map(message => <div className="composer-input-queue__item" key={message.localId || message.ticketId}>
@@ -502,7 +524,6 @@ export function ChatComposer() {
         </details> : null}
         {!["idle", "error"].includes(micPhase) ? <div className="composer-mic-status" role="status"><Icon name="mic"/><strong>{micPhase === "recording" ? "Recording" : micPhase === "requesting" ? "Opening microphone" : micPhase === "transcribing" ? "Transcribing" : "Preparing audio"}</strong><span>{micChat || "Current chat"}</span><div className="composer-mic-status__actions">{micPhase==="recording" ? <button type="button" onClick={toggleMic}>Finish recording</button> : null}<button type="button" onClick={cancelMic} disabled={micPhase==="encoding"}>{micPhase==="recording" ? "Discard" : "Cancel"}</button></div></div> : null}
         {micPhase === "error" && micError ? <p className="composer-mic-error" role="alert">{micError}</p> : null}
-        {composerContext.settingsError ? <p className="composer-setting-error" role="alert">{composerContext.settingsError}</p> : null}
       </div>
       {turnActive ? <div className="composer-delivery-choice" role="group" aria-label="Active task delivery">
         <button type="button" aria-pressed={deliveryMode === "steer"} title="Wait for the current model or tool step to finish; does not interrupt Python" onClick={() => setChatDelivery("steer",sessionId)}><Icon name="send"/>Steer current task</button>
@@ -630,6 +651,7 @@ export function ChatComposer() {
               buttonRef={modelButtonRef}
               onToggle={() => {
                 setContextMenuOpen(false);
+                dismissSettingsError(sessionId || "");
                 setModelMenuOpen(open => !open);
               }}
               onClose={() => setModelMenuOpen(false)}

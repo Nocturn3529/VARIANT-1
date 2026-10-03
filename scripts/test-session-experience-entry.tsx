@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
-import {ChatSetupGuide} from "../frontend/main-deck/src/chat/ChatSetupGuide";
-import {KernelInventory} from "../frontend/main-deck/src/KernelInventory";
+import {PythonKernelsTab} from "../frontend/main-deck/src/overview/PythonKernelsTab";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
-import {initialChatState, setChatState, getChatState, setChatContext} from "../frontend/main-deck/src/chat/stateCore";
+import {initialChatState, setChatState, setChatContext} from "../frontend/main-deck/src/chat/stateCore";
 import {ingest as ingestPlatform} from "../frontend/main-deck/src/store";
-import {getAppState} from "../frontend/main-deck/src/state/appStore";
 import {noteDisplayedSession} from "../frontend/main-deck/src/state/sessionStore";
 import {applyRuntimeSnapshot} from "../frontend/main-deck/src/chat/session";
-import {ingestSessionContext, requestSessionContext, setSessionContextConnection} from "../frontend/main-deck/src/sessionContextStore";
+import {getContextForSession, ingestSessionContext, requestSessionContext, setSessionContextConnection} from "../frontend/main-deck/src/sessionContextStore";
 import {setKernelInventoryContext, setKernelInventoryConnection, ingestKernelInventory,
   getKernelInventory, releaseKernel} from "../frontend/main-deck/src/kernelInventoryStore";
 
@@ -19,31 +17,26 @@ export async function run() {
   const commands: Record<string, unknown>[] = [];
   const context = {send: (command: Record<string, unknown>) => {commands.push(command); return true;}, notify() {}};
   setChatContext(context);
+  // Model readiness is scoped to this chat's route; the empty chat no longer renders a setup guide.
   await act(async () => {
     setChatState({...initialChatState(), sessionId: "A", connected: true}); noteDisplayedSession("A");
     ingestPlatform({type: "hello", model_ready: false});
-    root.render(<ChatSetupGuide/>);
   });
   const button = (text: string) => [...host.querySelectorAll<HTMLButtonElement>("button")].find(item => item.textContent === text)!;
-  assert.ok(button("Use an example").disabled, "an unready model cannot be advertised as ready");
-  await act(async () => button("Connect model").click());
-  assert.equal(getAppState().settingsCategory, "providers");
+  const configured = () => getContextForSession("A").modelConfigured;
+  assert.notEqual(configured(), true, "an unready model cannot be advertised as ready");
   await act(async () => ingestPlatform({type: "engine", model_ready: true}));
-  assert.ok(button("Use an example").disabled, "global readiness must not advertise another chat's route");
+  assert.notEqual(configured(), true, "global readiness must not advertise another chat's route");
   await act(async () => {
     requestSessionContext("A");
     setSessionContextConnection("connected");
     ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7", model_configured: true});
   });
-  assert.ok(!button("Use an example").disabled);
+  assert.equal(configured(), true);
   await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7"}));
-  assert.ok(!button("Use an example").disabled, "usage-only projections preserve matching configuration observations");
+  assert.equal(configured(), true, "usage-only projections preserve matching configuration observations");
   await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "openai", model: "gpt-4o"}));
-  assert.ok(button("Use an example").disabled, "configuration observations cannot transfer to another model route");
-  await act(async () => ingestSessionContext({type: "chat:context", session_id: "A", route: "cloud", provider: "xai", model: "grok-4.7", model_configured: true}));
-  await act(async () => button("Use an example").click());
-  assert.match(getChatState().draft, /average/);
-  assert.ok(!commands.some(command => command.type === "chat"), "examples fill drafts without sending inference");
+  assert.notEqual(configured(), true, "configuration observations cannot transfer to another model route");
   await act(async () => {
     applyRuntimeSnapshot("A", {action_surface: "trusted-local.v1", mutation_enabled: false,
       mutation_toggle_available: true, kernel: {state: "ready", generation: 1}});
@@ -56,7 +49,7 @@ export async function run() {
   assert.ok(tools.querySelector("[role=switch]"), "advanced authoring remains accessible");
 
   setKernelInventoryContext(context);
-  await act(async () => {setKernelInventoryConnection("connected"); root.render(<KernelInventory/>);});
+  await act(async () => {setKernelInventoryConnection("connected"); root.render(<PythonKernelsTab/>);});
   const requestId = getKernelInventory().requestId;
   const row = {chat_id: "A", title: "Sample chat", generation: 1, state: "ready", busy: false,
     age_s: 120, idle_s: 30, resources: {process: {}, tree: {}, measurement_source: "unavailable"}};
@@ -82,6 +75,26 @@ export async function run() {
     ingestKernelInventory({type: "kernel:inventory:result", request_id: refreshId, items: []});
   });
   assert.equal(getKernelInventory().items.length, 1, "late replies cannot overwrite offline observations");
+
+  // A history read lost to a disconnect must not refuse later reads, and an
+  // open row reads its cells again once the backend is back.
+  const historyReads = () => commands.filter(command => command.type === "kernel:history");
+  await act(async () => setKernelInventoryConnection("connected"));
+  await act(async () => host.querySelector<HTMLButtonElement>(".python-kernel__toggle")!.click());
+  assert.equal(historyReads().length, 1, "opening a row reads its cells");
+  const lost = historyReads()[0];
+  await act(async () => setKernelInventoryConnection("offline"));
+  assert.equal(getKernelInventory().history.A?.requestId, "", "a disconnect releases the pending history read");
+  await act(async () => setKernelInventoryConnection("connected"));
+  assert.equal(historyReads().length, 2, "an open row reads its cells again after a reconnect");
+  const reread = historyReads()[1];
+  assert.notEqual(reread.request_id, lost.request_id);
+  await act(async () => ingestKernelInventory({type: "kernel:history", request_id: lost.request_id, chat_id: "A",
+    items: [{sequence: 1, execution_id: "lost", status: "completed", label: "lost_cell()"}]}));
+  assert.doesNotMatch(host.textContent || "", /lost_cell/, "a reply to the lost read is ignored");
+  await act(async () => ingestKernelInventory({type: "kernel:history", request_id: reread.request_id, chat_id: "A",
+    items: [{sequence: 2, execution_id: "x2", status: "completed", duration_ms: 40, label: "df.describe()"}]}));
+  assert.match(host.textContent || "", /df\.describe\(\)/);
   await act(async () => root.unmount()); host.remove();
-  console.log("Session experience: authoritative readiness, no auto-send, advanced mutation, correlated inventory and generation-fenced release passed");
+  console.log("Session experience: authoritative readiness, no auto-send, advanced mutation, correlated inventory, generation-fenced release and kernel history across reconnects passed");
 }

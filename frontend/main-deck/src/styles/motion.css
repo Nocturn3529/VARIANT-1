@@ -1,0 +1,43 @@
+/*
+ * Micro-interactions. Every animation here answers a state change (open,
+ * copy, count, step, press); nothing loops on settled UI. Reduced motion
+ * (in-app setting or OS) collapses all of them through index.css.
+ */
+
+/* Disclosure chevrons and rotating icons turn instead of jumping. */
+.deck-icon { transition: transform var(--deck-motion-fast) var(--deck-ease-out); }
+
+/* Menus and popovers grow out of their trigger. */
+.deck-pop { animation: deck-pop-in 150ms var(--deck-ease-out); transform-origin: top left; }
+@keyframes deck-pop-in { from { opacity: 0; transform: translateY(-3px) scale(.98); } to { opacity: 1; transform: none; } }
+
+/* Press feedback on compact controls. */
+.app-shell :is(.activity-chip, .composer-icon-button, .titlebar-thread-tools button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button):not(:disabled):active { transform: scale(.96); }
+.app-shell :is(.activity-chip, .composer-icon-button, .titlebar-thread-tools button, .titlebar-workbench-tools button, .workbench-terminal-toolbar button, .copy-button) { transition: transform 90ms var(--deck-ease-out), background-color var(--deck-motion-fast) ease, color var(--deck-motion-fast) ease; }
+
+/* Copy morphs to a check in place. */
+.copy-button { display: inline-flex; align-items: center; gap: 5px; }
+.copy-button__icon { display: inline-grid; place-items: center; }
+.copy-button__icon .deck-icon { width: 12px; height: 12px; }
+.copy-button[data-state="copied"] { color: var(--deck-text-primary); }
+.copy-button[data-state="copied"] .copy-button__icon { animation: copy-confirm 280ms var(--deck-ease-spring); }
+.copy-button[data-state="failed"] { color: var(--deck-danger); }
+.message-actions .copy-button[data-state="idle"] .copy-button__icon { display: none; }
+@keyframes copy-confirm { from { opacity: 0; transform: scale(.4) rotate(-12deg); } to { opacity: 1; transform: none; } }
+
+/* Composer delivery controls swap with a short settle (send ↔ steer/pause/stop). */
+.composer__send-group > :is(.send-button, .composer-delivery-send) { animation: control-swap 170ms var(--deck-ease-out); }
+@keyframes control-swap { from { opacity: 0; transform: translateY(3px) scale(.96); } to { opacity: 1; transform: none; } }
+
+/* Activity chips arrive, and their counts tick. */
+.activity-chip { animation: chip-arrive 220ms var(--deck-ease-out); }
+.activity-chip__text { display: inline-block; animation: chip-tick 200ms var(--deck-ease-out); }
+@keyframes chip-arrive { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes chip-tick { from { opacity: .3; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* A subagent's live step crossfades as it changes. */
+.agent-team__current { animation: step-change 240ms var(--deck-ease-out); }
+@keyframes step-change { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
+
+/* Finished goal steps fill in rather than snapping. */
+.composer-goal__progress > i { transition: background-color var(--deck-motion-slow) var(--deck-ease-out); }

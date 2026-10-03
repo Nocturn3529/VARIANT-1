@@ -13,7 +13,7 @@ const appStore = read('frontend/main-deck/src/state/appStore.ts');
 const main = read('frontend/main-deck/src/main.tsx');
 const protocol = read('frontend/main-deck/src/protocol.ts');
 const composer = read('frontend/main-deck/src/chat/ChatComposer.tsx');
-const chatDest = read('frontend/main-deck/src/ChatDestination.tsx');
+const headerTools = read('frontend/main-deck/src/shell/HeaderTools.tsx');
 const modelPicker = read('frontend/main-deck/src/chat/ModelPicker.tsx');
 const sessionContextStore = read('frontend/main-deck/src/sessionContextStore.ts');
 const automationStore = read('frontend/main-deck/src/automationStore.ts');
@@ -117,8 +117,11 @@ assert.match(terminalSurface, /allowProposedApi:\s*true[\s\S]*loadAddon\(unicode
   'Unicode11 must not crash a restored xterm instance');
 assert.match(terminalSurface, /snapshots\.size>12/, "retained emulator snapshots must remain bounded");
 assert.match(terminalSurface, /end:appliedEnd\.current,cols:terminal\.cols,rows:terminal\.rows/, "snapshots retain their consumed stream offset and terminal dimensions");
-assert.match(terminalPanel, /selectedProcessId[\s\S]*Close process mirror/,
-  'background processes must render as closeable read-only mirrors');
+const backgroundProcesses = read('frontend/main-deck/src/chat/BackgroundProcesses.tsx');
+assert.match(backgroundProcesses, /selectProcess\(process\.id,chatId\)[\s\S]*clearProcessSelection\(chatId\)[\s\S]*<pre/,
+  'background processes must render as closeable read-only mirrors in the activity overlay');
+assert.doesNotMatch(terminalPanel, /selectedProcessId|state\.processes/,
+  'agent processes are listed in one place: the composer activity overlay, not the Terminal pane');
 assert.doesNotMatch(terminalStore + main, /terminalStart|electron-deck-terminal|installTerminalBridge/,
   'a second Electron PTY authority must not exist');
 assert.doesNotMatch(activityRouting, /appendTerminalOutput/,
@@ -153,7 +156,8 @@ assert.match(workbench, /keepAlive:\s*true/,
 assert.match(workbench, /workbench-pane-layer[\s\S]*pane\.render\(\)/,
   'inactive browser and file previews must stay mounted inside their tab group');
 
-assert.match(chatDest, /WORKBAR_TABS[\s\S]*terminal[\s\S]*review[\s\S]*browser/);
+assert.match(headerTools, /PANEL_TOOLS[\s\S]*files[\s\S]*terminal[\s\S]*review[\s\S]*browser[\s\S]*data-view="settings"/,
+  'the window header carries the thread panels (Files included) and Settings');
 assert.match(activityRouting, /apply_patch[\s\S]*browser_[\s\S]*run_command/);
 assert.match(activityRouting, /A one-shot run_command does not own a PTY/);
 assert.match(chatCss, /\.history-item__select\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1/s);

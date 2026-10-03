@@ -53,7 +53,7 @@ export function PopupMenu({x, y, className, onClose, children}: {
       });
     };
   }, [ownerDocument]);
-  return createPortal(<div ref={ref} role="menu" popover="manual" data-deck-menu="" className={className} style={{position: "fixed", inset: "auto", margin: 0, ...position}}
+  return createPortal(<div ref={ref} role="menu" popover="manual" data-deck-menu="" className={`${className} deck-pop`} style={{position: "fixed", inset: "auto", margin: 0, ...position}}
     onPointerDown={event => event.stopPropagation()}
     onContextMenu={event => event.preventDefault()}
     onKeyDown={event => {

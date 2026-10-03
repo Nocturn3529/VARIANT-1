@@ -61,6 +61,7 @@ import {
 } from "./store";
 import { storeModuleHooks } from "./runtime/regStore";
 import {installBrowserDownloads} from "./workbench/browserDownloads";
+import {installInputModality} from "./ui/inputModality";
 import {ingestBrowserSettings, setBrowserSettingsConnection, setBrowserSettingsContext} from "./browserSettingsStore";
 import {ingestLocalModels, setLocalModelsConnection, setLocalModelsContext} from "./localModelsStore";
 import {ingestServiceSettings, setServiceSettingsConnection, setServiceSettingsContext} from "./serviceSettingsStore";
@@ -154,6 +155,7 @@ deckRuntime.subscribeState(() => {
 });
 declare const __VARIANT1_FIXTURES__: boolean;
 const disposeBrowserDownloads = installBrowserDownloads(api);
+installInputModality(document);
 if (typeof __VARIANT1_FIXTURES__ !== "undefined" && __VARIANT1_FIXTURES__
   && new URLSearchParams(window.location.search).get("fixture") === "1") {
   document.addEventListener("variant1:fixture-state", event => {

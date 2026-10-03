@@ -25,11 +25,15 @@
 :root {
   color-scheme: dark;
 
-  --deck-canvas: #0e0e0e;
+  --deck-canvas: #090a0a;
   --deck-surface-subtle: #181818;
   --deck-surface-raised: #222222;
   --deck-surface-strong: #262626;
   --deck-surface-panel: #141414;
+  /* Near-black of the preview panes; the Overview's base surface. */
+  --deck-surface-void: #090a0a;
+  --deck-void-raised: #101111;
+  --deck-void-strong: #171818;
   --deck-line: #2a2a2a;
   --deck-line-soft: #202020;
   --deck-line-strong: #363636;
@@ -43,6 +47,8 @@
   --deck-accent-line: #363636;
   /* Reserved for enabled mutation authority; ordinary controls stay neutral. */
   --deck-mutation: #39ff14;
+  /* The same deliberate green, reserved for work that is live right now. */
+  --deck-live: var(--deck-mutation);
   --deck-positive: #abd3b4;
   --deck-positive-soft: #222222;
   --deck-warning: #e4c78d;
@@ -55,6 +61,11 @@
   --deck-diff-surface: var(--deck-surface-panel);
   --deck-diff-added-surface: rgba(171, 211, 180, .08);
   --deck-diff-deleted-surface: rgba(239, 170, 162, .08);
+  /* Code syntax: one palette for file preview, Review diffs and agent-generated code. */
+  --deck-syntax-comment: #747b79;
+  --deck-syntax-string: #a6d189;
+  --deck-syntax-number: #efb080;
+  --deck-syntax-keyword: #b99be8;
   --deck-focus: rgba(255, 255, 255, .42);
 
   /* Mono telemetry. Labels distinguish resources and series. */
@@ -68,6 +79,14 @@
   --deck-signal-warm: #c8c8c8;
   --deck-signal-neutral: #e3e3e3;
   --deck-signal-idle: #454545;
+
+  /* Graph hues. Color stays out of the chrome: these fill charts and their
+     legend swatches only, never text, borders or controls. */
+  --deck-chart-blue: #6ea8fe;
+  --deck-chart-violet: #b49cf2;
+  --deck-chart-amber: #f2b36f;
+  --deck-chart-teal: #4fd1bf;
+  --deck-chart-rose: #f28fae;
 
   --font-ui: "Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-sans: var(--font-ui);
@@ -91,8 +110,14 @@
   --deck-label-text: 12px;
   --deck-motion-fast: 110ms;
   --deck-motion-panel: 180ms;
+  --deck-motion-slow: 320ms;
+  /* Decelerating ease for entrances; a slight overshoot for confirmations. */
+  --deck-ease-out: cubic-bezier(.2, .8, .2, 1);
+  --deck-ease-spring: cubic-bezier(.3, 1.45, .5, 1);
   --deck-page-gutter: clamp(14px, 1.4vw, 28px);
   --history-width: 237px;
+  /* Measured width of the docked Agent sessions panel (set on the header). */
+  --rail-width: var(--history-width);
   --context-width: 360px;
   --titlebar-height: 32px;
   --footer-height: 28px;
@@ -108,6 +133,17 @@
    */
 }
 
+/* Near-black theme scope (Overview): canonical surfaces map onto the preview
+   panes' black, so components keep consuming the usual tokens. */
+.deck-theme-void {
+  --deck-canvas: var(--deck-surface-void);
+  --deck-surface-panel: var(--deck-surface-void);
+  --deck-surface-subtle: var(--deck-void-raised);
+  --deck-surface-raised: var(--deck-void-raised);
+  --deck-surface-strong: var(--deck-void-strong);
+  background: var(--deck-surface-void);
+}
+
 :root[data-density="compact"] {
   --deck-control-height: 28px;
   --deck-chat-text: 13px;
@@ -118,6 +154,7 @@
 :root[data-motion="reduced"] {
   --deck-motion-fast: 0ms;
   --deck-motion-panel: 0ms;
+  --deck-motion-slow: 0ms;
 }
 
 .deck-input-dialog {
@@ -174,12 +211,6 @@ body,
   border-color: var(--deck-line);
 }
 
-.app-shell .titlebar__mark {
-  color: var(--deck-text-primary);
-  background: transparent;
-  box-shadow: none;
-}
-
 .app-shell .titlebar__name {
   color: var(--deck-text-primary);
   font-family: var(--font-sans);
@@ -231,26 +262,32 @@ body,
   padding: 20px 0 32px;
 }
 
+/* One status badge app-wide: a quiet dot plus plain text. The dot alone
+   carries tone (positive, live, warning, danger); text stays neutral. */
 .deck-status {
   display: inline-flex;
   align-items: center;
-  padding: 3px 7px;
-  gap: 5px;
-  border-radius: 999px;
+  gap: 6px;
   color: var(--deck-text-secondary);
-  background: var(--deck-surface-raised);
-  font: var(--deck-text-xs) var(--font-mono);
+  font: 500 var(--deck-text-xs)/1 var(--font-ui);
+  font-style: normal;
   white-space: nowrap;
 }
 
-.deck-status::before,
-.deck-status > i {
-  width: 5px;
-  height: 5px;
+.deck-status::before {
+  width: 6px;
+  height: 6px;
   display: block;
+  flex: none;
   border-radius: 50%;
-  background: currentColor;
+  background: var(--deck-text-faint);
+  content: "";
 }
+
+.deck-status[data-tone="positive"]::before { background: var(--deck-positive); }
+.deck-status[data-tone="live"]::before { background: var(--deck-live); }
+.deck-status[data-tone="warning"]::before { background: var(--deck-warning); }
+.deck-status[data-tone="danger"]::before { background: var(--deck-danger); }
 
 .deck-button {
   height: var(--deck-control-height);
@@ -468,19 +505,15 @@ body,
   font: var(--deck-text-xs)/1.45 var(--font-ui);
 }
 
+/* Instrument status reads like every other status: a toned dot and plain
+   text (no box, no uppercase mono). */
 .deck-instrument__status {
   display: inline-flex;
   align-items: center;
   flex: none;
-  padding: 7px 9px;
-  gap: 7px;
-  border: 1px solid var(--deck-line);
-  border-radius: var(--deck-radius-sm);
-  color: var(--deck-text-faint);
-  background: var(--deck-surface-raised);
-  font: 600 var(--deck-text-xs) var(--font-mono);
-  letter-spacing: .06em;
-  text-transform: uppercase;
+  gap: 6px;
+  color: var(--deck-text-secondary);
+  font: 500 var(--deck-text-xs)/1.2 var(--font-ui);
   white-space: nowrap;
 }
 
@@ -490,21 +523,13 @@ body,
   display: block;
   flex: none;
   border-radius: 50%;
-  background: currentColor;
-}
-
-.deck-instrument__status[data-state="live"],
-.deck-instrument__status.is-live {
-  color: var(--deck-signal-lime);
+  background: var(--deck-text-faint);
 }
 
 .deck-instrument__status[data-state="live"] > i,
-.deck-instrument__status.is-live > i {
-  box-shadow: 0 0 9px currentColor;
-}
-
-.deck-instrument__status[data-state="warning"] { color: var(--deck-signal-amber); }
-.deck-instrument__status[data-state="danger"] { color: var(--deck-signal-red); }
+.deck-instrument__status.is-live > i { background: var(--deck-positive); }
+.deck-instrument__status[data-state="warning"] > i { background: var(--deck-warning); }
+.deck-instrument__status[data-state="danger"] > i { background: var(--deck-danger); }
 
 .deck-instrument__controls {
   min-width: 0;
@@ -761,4 +786,14 @@ body,
 @media (max-width: 830px) {
   :root { --deck-page-gutter: 12px; }
   .deck-destination-page { padding-top: 14px; padding-bottom: 28px; }
+}
+
+/* Text for assistive technology only: icon buttons keep a real label. */
+.deck-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }

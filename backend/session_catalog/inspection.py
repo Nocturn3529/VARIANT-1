@@ -1,6 +1,26 @@
 """Bounded authoritative child roster, separate from model-facing tool output."""
 import json
 
+from observability.activity import last_session_activity
+
+
+def _last_activity(row):
+    """Latest display-safe step of a running child, fenced to its current run.
+
+    Only steps emitted at or after this generation's ``started_at`` qualify, so
+    a restarted child never shows the previous run's step.
+    """
+    if str(row['status'] or '') != 'running':
+        return None
+    entry = last_session_activity(row['child_chat_id'])
+    if entry is None:
+        return None
+    started = float(row['started_at'] or 0.0)
+    # Activity timestamps are rounded to milliseconds.
+    if float(entry.get('ts') or 0.0) + 0.001 < started:
+        return None
+    return entry
+
 class ChildInspection:
     def inspection_snapshot(self,chat_id,*,limit=200,child_id=''):
         cap=max(1,min(500,int(limit)))
@@ -43,7 +63,8 @@ class ChildInspection:
                 model_route=json.loads(row['model_route_json'] or '{}'),cleanup=cleanup,
                 usage=usage,usage_rollup_state=str(row['usage_rollup_state'] or ''),
                 usage_rollup_error=str(row['usage_rollup_error'] or ''),
-                work_job_id=str(row['work_job_id'] or ''),error=str(row['error'] or ''))
+                work_job_id=str(row['work_job_id'] or ''),error=str(row['error'] or ''),
+                last_activity=_last_activity(row))
             if child_id:
                 from .children import reported_child_text
                 report=reported_child_text(row['result_text'] or '')

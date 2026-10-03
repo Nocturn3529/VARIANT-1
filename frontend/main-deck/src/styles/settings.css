@@ -192,7 +192,8 @@
   padding-left: clamp(18px, 3vw, 42px);
 }
 
-.settings-page-heading { padding-top: 54px; padding-bottom: 20px; border-bottom: 1px solid var(--deck-line); }
+/* Sections carry the only divider (their top border), so boundaries never double up. */
+.settings-page-heading { padding-top: 54px; padding-bottom: 20px; }
 .settings-page-heading h1 { margin: 0; color: var(--deck-text-primary); font-size: clamp(20px, 2vw, 26px); font-weight: 650; letter-spacing: -.02em; }
 .settings-page-heading p { max-width: 660px; margin: 6px 0 0; color: var(--deck-text-faint); font-size: var(--deck-text-sm); line-height: 1.5; }
 .settings-page-body { padding-top: 18px; padding-bottom: 72px; }
@@ -275,7 +276,7 @@
   line-height: 1.5;
 }
 .settings-section__action { flex: none; }
-.settings-section__rows { border-bottom: 1px solid var(--deck-line); }
+.settings-section__rows { border-bottom: 0; }
 .settings-section__rows > * + * { border-top: 1px solid var(--deck-line-soft); }
 
 .setting-row {
@@ -852,7 +853,6 @@
 .provider-account-row__copy { display: grid; min-width: 0; gap: 3px; }
 .provider-account-row__title { display: flex; align-items: center; min-width: 0; gap: 8px; }
 .provider-account-row__title strong { overflow: hidden; color: var(--deck-text-primary); font-size: var(--deck-text-sm); text-overflow: ellipsis; white-space: nowrap; }
-.provider-account-row__title em { padding: 2px 7px; color: var(--deck-positive); background: color-mix(in srgb, var(--deck-positive) 10%, transparent); font-size: var(--deck-text-xs); font-style: normal; }
 .provider-account-row__copy small { overflow: hidden; color: var(--deck-text-faint); font-size: var(--deck-text-xs); line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .provider-account-row__trail { color: var(--deck-text-faint); font-size: var(--deck-text-md); }
 .provider-account-row__remove { display: grid; width: 28px; height: 28px; margin-right: 8px; place-items: center; border: 0; border-radius: 5px; color: var(--deck-text-muted); background: transparent; cursor: pointer; }
@@ -1006,7 +1006,6 @@
 .custom-endpoint-row > button:first-child { display: grid; min-width: 0; gap: 3px; padding: 0; border: 0; color: inherit; background: transparent; text-align: left; cursor: pointer; }
 .custom-endpoint-row__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .custom-endpoint-row__title strong { overflow: hidden; color: var(--deck-text-primary); font-size: var(--deck-text-sm); text-overflow: ellipsis; white-space: nowrap; }
-.custom-endpoint-row__title em { padding: 2px 7px; color: var(--deck-positive); background: color-mix(in srgb, var(--deck-positive) 10%, transparent); font-size: var(--deck-text-xs); font-style: normal; }
 .custom-endpoint-row code,
 .custom-endpoint-row small { overflow: hidden; color: var(--deck-text-faint); font-size: var(--deck-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .custom-endpoint-row__actions { display: flex; align-items: center; gap: 6px; }

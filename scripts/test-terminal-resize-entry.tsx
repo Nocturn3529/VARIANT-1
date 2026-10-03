@@ -2,7 +2,7 @@ import {createRoot} from "react-dom/client";
 import {createPortal} from "react-dom";
 import {TerminalPanel} from "../frontend/main-deck/src/context/TerminalPanel";
 import {SurfaceDocumentContext} from "../frontend/main-deck/src/ui/SurfaceDocument";
-import {ingestTerminal,setTerminalConnection,setTerminalContext,disposeTerminalRuntime,getTerminalSnapshot,selectProcess} from "../frontend/main-deck/src/context/terminalStore";
+import {ingestTerminal,setTerminalConnection,setTerminalContext,disposeTerminalRuntime,getTerminalSnapshot,selectProcess,dismissExitedProcesses} from "../frontend/main-deck/src/context/terminalStore";
 const commands:Record<string,unknown>[]=[];
 let size={cols:80,rows:24},inFlight=0,maxInFlight=0,storageWrites=0;
 const oldSet=Storage.prototype.setItem;
@@ -52,11 +52,14 @@ Object.assign(window,{runTerminalResize:async()=>{
   const detachedResized=check(popup.document);
   mount(document);await pause(450);popup.close();
   const redocked=check(document);
-  document.querySelector<HTMLButtonElement>('[aria-label="Remove exited processes"]')!.click();await pause(30);
+  // Agent processes are listed by the composer activity overlay; the Terminal pane shows terminals only.
+  const terminalPaneListsProcesses=!!document.querySelector('[data-process-id]');
+  dismissExitedProcesses();await pause(30);
   ingestTerminal({type:"execution:snapshot",terminals:[record()],processes});await pause(30);
-  const endedRemoved=!document.querySelector('[data-process-id="old-helper"]'),livePreserved=!!document.querySelector('[data-process-id="live-helper"]');
+  const processIds=getTerminalSnapshot().processes.map(process=>process.id);
+  const endedRemoved=!processIds.includes("old-helper"),livePreserved=processIds.includes("live-helper");
   selectProcess("live-helper");const beforeLogs=commands.filter(row=>row.type==="process:logs").length;await pause(450);
   const logReads=commands.filter(row=>row.type==="process:logs").length-beforeLogs;
-  const result={docked,detached,detachedResized,redocked,resizeRequests,maxInFlight,storageWrites,endedRemoved,livePreserved,logReads,openCommands:commands.filter(row=>row.type==="terminal:open").length,outputStart:getTerminalSnapshot().outputStart};
+  const result={docked,detached,detachedResized,redocked,resizeRequests,maxInFlight,storageWrites,endedRemoved,livePreserved,terminalPaneListsProcesses,logReads,openCommands:commands.filter(row=>row.type==="terminal:open").length,outputStart:getTerminalSnapshot().outputStart};
   disposeTerminalRuntime();root.unmount();Storage.prototype.setItem=oldSet;return result;
 }});

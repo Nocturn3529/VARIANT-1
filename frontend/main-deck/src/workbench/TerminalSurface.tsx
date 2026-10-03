@@ -1,4 +1,5 @@
 import {focusMainComposer} from "../ui/SurfaceDocument";
+import {Icon} from "../ui/Icon";
 import {useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
 import {Terminal} from "@xterm/xterm";
@@ -21,7 +22,7 @@ function terminalTheme() {
     foreground: "#d8dde6",
     cursor: "#e9e7df",
     cursorAccent: "#090a0a",
-    selectionBackground: "#46647a88",
+    selectionBackground: "rgba(234, 234, 234, 0.2)",
     black: "#11151a",
     red: "#ef6b73",
     green: "#65d6ad",
@@ -255,7 +256,8 @@ export function PersistentTerminalSurface({chatId = ""}: {chatId?:string}) {
       chatId={chatId} id={selected.id} active={!!rect} live={selected.state === "running" || selected.state === "starting"}
       output={state.output} outputStart={state.outputStart} cols={selected.cols} rows={selected.rows} key={selected.id}
     /> : <div className="workbench-terminal-empty">
-      <button type="button" disabled={!state.connected || state.opening} onClick={() => void openNewTerminal(undefined,chatId)}>{state.opening ? "Opening terminal…" : "Open terminal"}</button>
+      <button type="button" disabled={!state.connected || state.opening} onClick={() => void openNewTerminal(undefined,chatId)}><Icon name="terminal"/>{state.opening ? "Opening terminal…" : "Open terminal"}</button>
+      <small>{state.connected ? "Ctrl+Shift+` opens a new terminal" : "Waiting for the backend"}</small>
     </div>}
   </div>, ownerDocument.body);
 }

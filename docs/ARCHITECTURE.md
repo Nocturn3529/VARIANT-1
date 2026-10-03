@@ -58,7 +58,8 @@ Resource status reports a disabled memory quota and its pressure ratio as `null`
 while retaining available usage measurements. A configured quota with an unknown
 usage measurement also has an unknown pressure ratio.
 
-The Python runtime view inventories retained sessions and distinguishes live
+Overview > Python lists every live kernel with its current cell, queued cells, CPU,
+and memory, inventories retained sessions, and distinguishes live
 interpreter measurements from earlier worker snapshots. Tree RSS is a sum of
 owned processes and can count shared pages more than once. Releasing a session
 is explicit, generation-fenced, and refused while a run is admitted, including
@@ -320,8 +321,8 @@ must be removed when the child connection stops.
 
 Fresh workbenches keep empty side panes hidden until requested or a first project
 is selected. Saved layouts and explicit visibility changes take precedence.
-The empty chat guide reads configuration for the chat's selected model route
-from backend projections. Examples fill drafts without sending them.
+An empty chat shows only the product mark. Model readiness is still read
+for the chat's selected model route from backend projections.
 Mutation authoring is available under
 Session tools; disabling authoring preserves already activated overlays.
 

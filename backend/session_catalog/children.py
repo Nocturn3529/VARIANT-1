@@ -571,6 +571,20 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             "max_admitted": bounded("max_admitted", 16, 64),
         }
 
+    def capacity_status(self) -> dict[str, int | str]:
+        """Configured child concurrency plus current process-wide usage."""
+
+        with self._lock, self._connect() as conn:
+            admitted = int(conn.execute(
+                "SELECT COUNT(*) FROM astb_child_handle "
+                "WHERE status IN ('queued','running')"
+            ).fetchone()[0])
+        return {
+            **self.capacity(),
+            "active": int(self._active_executions),
+            "admitted": admitted,
+        }
+
     @asynccontextmanager
     async def _execution_slot(self):
         """Admit one child against the current host-owned route capacity.

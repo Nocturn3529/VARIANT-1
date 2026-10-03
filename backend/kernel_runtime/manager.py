@@ -19,7 +19,7 @@ from core_invariants import canonical_digest
 from session_catalog.profiles import is_action_surface
 from work_fabric.scope import coerce_work_scope
 
-from .cell_ledger import CELL_LEDGER_SCHEMA, KernelCellLedgerStore
+from .cell_ledger import CELL_LEDGER_SCHEMA, KernelCellLedgerStore, cell_label
 from .contracts import (
     ExecutionAdmission,
     KernelAutoRestoreError,
@@ -98,6 +98,8 @@ class KernelRuntimeManager:
             self.cell_ledger = KernelCellLedgerStore(ledger_path)
             self._recover_interrupted_cell_evidence()
             self._leases: dict[str, KernelLease] = {}
+            # Most recent generation close per chat since this process started.
+            self._last_exits: dict[str, dict[str, Any]] = {}
             self.continuity = KernelContinuityCoordinator(self)
             self._boot_locks: dict[str, asyncio.Lock] = {}
             self._boot_slots = asyncio.Semaphore(max(1, self.limits.max_boot_concurrency))
@@ -474,6 +476,11 @@ class KernelRuntimeManager:
                         self._boot_tasks.discard(current_task)
 
     def lease_closed(self, chat_id: str, lease: KernelLease) -> None:
+        self._last_exits[str(chat_id)] = {
+            "reason": str(getattr(lease, "close_reason", "") or "unknown"),
+            "at": time.time(),
+            "generation": int(lease.generation),
+        }
         if self._leases.get(str(chat_id)) is lease:
             self._leases.pop(str(chat_id), None)
         with suppress(Exception):
@@ -940,19 +947,42 @@ class KernelRuntimeManager:
         after_sequence: int = 0,
         through_sequence: int | None = None,
         limit: int = 100,
+        tail: int | None = None,
+        labels: bool = False,
     ) -> dict[str, Any]:
-        """Return a bounded monotonic page from the durable cell ledger."""
+        """Return a bounded monotonic page from the durable cell ledger.
+
+        ``tail`` returns the newest cells instead (oldest first) and ignores
+        ``after_sequence``. ``labels`` adds a display label per cell, which
+        reads each cell's source artifact; only interactive views request it.
+        """
 
         chat_id = str(runtime_chat_id or "").strip()
         if not chat_id:
             raise ValueError("runtime_chat_id is required")
-        rows = self.cell_ledger.list(
-            chat_id,
-            after_sequence=max(0, int(after_sequence or 0)),
-            through_sequence=through_sequence,
-            limit=max(1, min(int(limit or 100), 500)),
-        )
-        items = [row.to_dict() for row in rows]
+        if tail is not None:
+            rows = self.cell_ledger.tail(chat_id, limit=max(1, min(int(tail), 50)))
+        else:
+            rows = self.cell_ledger.list(
+                chat_id,
+                after_sequence=max(0, int(after_sequence or 0)),
+                through_sequence=through_sequence,
+                limit=max(1, min(int(limit or 100), 500)),
+            )
+        items = []
+        for row in rows:
+            item = row.to_dict()
+            if not labels:
+                items.append(item)
+                continue
+            try:
+                source = self.artifact_store.read_bytes_scoped(
+                    row.source_ref, chat_id
+                ).decode("utf-8", errors="replace") if row.source_ref else ""
+                item["label"] = cell_label(source)
+            except Exception:
+                item["label"] = ""
+            items.append(item)
         return {
             "schema": CELL_LEDGER_SCHEMA,
             "runtime_chat_id": chat_id,
@@ -1283,15 +1313,44 @@ class KernelRuntimeManager:
     def _lease_resource_status(self, lease: KernelLease) -> dict[str, Any]:
         return resource_status(lease, self.limits, self.capsule_limits)
 
+    def _last_cell(self, chat_id: str) -> dict[str, Any] | None:
+        try:
+            record = self.cell_ledger.latest(chat_id)
+        except Exception:
+            return None
+        if record is None:
+            return None
+        row = record.to_dict()
+        return {key: row[key] for key in (
+            "execution_id", "status", "duration_ms", "error_code", "completed_at")}
+
+    @staticmethod
+    def _queued_cells(lease: KernelLease) -> int:
+        # asyncio.Lock keeps its waiters privately; count live ones only.
+        waiters = getattr(lease.execution_lock, "_waiters", None) or ()
+        return sum(1 for waiter in waiters if not waiter.done())
+
     def live_inventory(self) -> list[dict[str, Any]]:
         now = time.monotonic()
-        return [
-            {"chat_id": lease.chat_id, "generation": lease.generation,
-             "state": lease.state, "age_s": max(0.0, now - lease.created_at),
-             "idle_s": max(0.0, now - lease.last_used_at),
-             "resources": self._lease_resource_status(lease)}
-            for lease in list(self._leases.values()) if not lease._closed
-        ]
+        rows = []
+        for lease in list(self._leases.values()):
+            if lease._closed:
+                continue
+            current = lease.current_cell
+            rows.append({
+                "chat_id": lease.chat_id, "generation": lease.generation,
+                "state": lease.state, "age_s": max(0.0, now - lease.created_at),
+                "idle_s": max(0.0, now - lease.last_used_at),
+                "resources": self._lease_resource_status(lease),
+                "current_cell": dict(current) if current else None,
+                "queued_cells": self._queued_cells(lease),
+                "last_cell": self._last_cell(lease.chat_id),
+                "last_exit": (
+                    dict(self._last_exits[lease.chat_id])
+                    if lease.chat_id in self._last_exits else None
+                ),
+            })
+        return rows
 
     async def release_idle(self, chat_id: str, *, expected_generation: int) -> dict[str, Any]:
         lease = self._leases.get(str(chat_id))

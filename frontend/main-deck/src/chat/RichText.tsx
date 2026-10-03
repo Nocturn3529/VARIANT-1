@@ -1,4 +1,5 @@
 import {Component, useEffect, useMemo, useRef, useState, type ReactNode} from "react";
+import {CopyButton} from "../ui/CopyButton";
 import {notifyChat} from "../chatStore";
 import runtimeLib, {type InlineToken, type MdBlock} from "./runtimeLib";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
@@ -46,16 +47,7 @@ function CodeBlock({language, text, deferHighlight = false}: {language: string; 
   return <figure className="runtime-code-block">
     <figcaption>
       <span>{language || "code"}</span>
-      <button
-        type="button"
-        onClick={() => {
-          navigator.clipboard.writeText(text || "")
-            .then(() => notifyChat("Code copied"))
-            .catch(() => notifyChat("Couldn't copy code"));
-        }}
-      >
-        Copy
-      </button>
+      <CopyButton text={text} title="Copy code"/>
     </figcaption>
     <pre>
       <code data-language={language || undefined}>
