@@ -6,6 +6,7 @@ import {GrokControl} from "./GrokControl";
 import {PeerDialog} from "./PeerControl";
 import {peerRequestKey,requestPeer,usePeers} from "./peerStore";
 import {grokDeliveryLabel} from "./grokSessions";
+import {Icon} from "../ui/Icon";
 
 function ConnectorDialog({chatId,onClose}:{chatId:string;onClose:()=>void}) {
   const state=usePeers(),[messages,setMessages]=useState(false);
@@ -29,6 +30,6 @@ function ConnectorDialog({chatId,onClose}:{chatId:string;onClose:()=>void}) {
 export function ConnectorControl({chatId,terminalId}:{chatId:string;terminalId?:string}) {
   const owner=useSurfaceDocument(),[open,setOpen]=useState(false),state=usePeers();
   const peer=terminalId ? Object.values(state.peers).find(item=>item.kind==="external_harness" && item.terminal_id===terminalId) : undefined;
-  return <><button type="button" title={peer ? `${peer.display_name} · ${peer.status}` : "Terminal agent connections"} disabled={!chatId} onClick={()=>setOpen(true)}>Connectors</button>
+  return <><button type="button" title={peer ? `${peer.display_name} · ${peer.status}` : "Terminal agent connections"} disabled={!chatId} onClick={()=>setOpen(true)}><Icon name="peers"/><span className="deck-sr-only">Connectors</span></button>
     {open ? createPortal(<ConnectorDialog key={chatId} chatId={chatId} onClose={()=>setOpen(false)}/>,owner.body):null}</>;
 }

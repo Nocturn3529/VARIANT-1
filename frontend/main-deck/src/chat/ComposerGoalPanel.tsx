@@ -6,6 +6,8 @@ import {refreshComposerGoal,requestGoalControl,setGoalGuidance,MAX_GOAL_GUIDANCE
 
 const statusLabels:Record<string,string>={draft:"Draft",queued:"Queued",running:"Running",waiting_user:"Waiting for your input",
   waiting_external:"Waiting for an external result",blocked:"Blocked",paused:"Scheduling paused",succeeded:"Execution finished",failed:"Execution failed",cancelled:"Cancelled",archived:"Archived"};
+const DONE_STEP=/succeed|complete|done|finish/;
+const stepState=(status:string)=>DONE_STEP.test(status)?"done":/run|start|progress/.test(status)?"running":/fail|error|block/.test(status)?"failed":"pending";
 
 export function ComposerGoalPanel() {
   const state=useChatSelection(state=>({goal:state.goal,sessionId:state.sessionId,connected:state.connected}),shallowChatSelection),goal=state.goal,snapshot=goal.snapshot;
@@ -22,12 +24,16 @@ export function ComposerGoalPanel() {
     :pending?.operation==="continue"?"Continuing goal…":pending?.operation==="finish"?"Ending goal…":pending?.operation==="archive"?"Removing finished goal…":"";
   const lifecycle=record ? snapshot?.cleanup.status==="pending"?"Cleanup pending":snapshot?.cleanup.status==="failed"?"Cleanup failed":snapshot?.terminationKind==="user_finished"?"Ended by you":record.status==="cancelled" && snapshot?.cleanup.complete?"Stopped":statusLabels[record.status]:"Awaiting confirmation";
   return <section className="composer-goal" aria-label="Durable goal" data-goal-id={record?.goal_id}>
-    <header><strong><Icon name="queue"/>Goal</strong><span role="status">{lifecycle}</span>
+    <header><strong><Icon name="goal"/>Goal</strong><span role="status">{lifecycle}</span>
       <button type="button" className="composer-icon-button" aria-label="Refresh goal" aria-busy={!!goal.refreshRequestId} disabled={!state.connected || navigating} onClick={()=>refreshComposerGoal(true)}><Icon name="refresh"/></button></header>
     {record ? <>
-      <code>{record.goal_id}</code>
-      <details><summary>{record.title || record.objective}</summary><p className="composer-goal__objective">{record.objective}</p>
-        {snapshot.steps.length ? <ol>{snapshot.steps.map(step=><li key={step.id}><span>{step.title}</span><small>{step.status.replaceAll("_"," ")}</small></li>)}</ol> : null}
+      <p className="composer-goal__title">{record.title || record.objective}</p>
+      {snapshot.steps.length ? <div className="composer-goal__progress" role="img" aria-label={`${snapshot.steps.filter(step=>DONE_STEP.test(step.status)).length} of ${snapshot.steps.length} steps finished`}>
+        {snapshot.steps.map(step=><i key={step.id} data-step-state={stepState(step.status)} title={`${step.title} · ${step.status.replaceAll("_"," ")}`}/>)}
+      </div> : null}
+      <details><summary>Objective and steps</summary><p className="composer-goal__objective">{record.objective}</p>
+        {snapshot.steps.length ? <ol>{snapshot.steps.map(step=><li key={step.id} data-step-state={stepState(step.status)}><span>{step.title}</span><small>{step.status.replaceAll("_"," ")}</small></li>)}</ol> : null}
+        <code>{record.goal_id}</code>
       </details>
       <div className="composer-goal__facts" aria-label="Goal outcome and cleanup">
         <span>Objective <strong>{snapshot.objectiveOutcome.status}</strong></span>

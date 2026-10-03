@@ -3,66 +3,61 @@
 <head>
   <meta charset="UTF-8" />
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self' variant1:; connect-src 'none'; style-src 'self' 'unsafe-inline' variant1: https://fonts.googleapis.com; font-src 'self' variant1: https://fonts.gstatic.com; script-src 'self' variant1:; img-src 'self' variant1: data:;" />
+        content="default-src 'self' variant1:; connect-src 'none'; style-src 'self' 'unsafe-inline' variant1:; font-src 'self' variant1:; script-src 'self' variant1:; img-src 'self' variant1: data:;" />
   <title>VARIANT-1 — Logs</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="variant1://app/frontend/monitor.css" />
 </head>
 <body>
-  <div class="mon-panel" id="mon-panel">
-    <div class="corner corner-tl" aria-hidden="true"></div>
-    <div class="corner corner-tr" aria-hidden="true"></div>
-    <div class="corner corner-bl" aria-hidden="true"></div>
-    <div class="corner corner-br" aria-hidden="true"></div>
-
-    <div class="hud-scanlines" aria-hidden="true"></div>
-    <div class="hud-sweep" aria-hidden="true"></div>
-
-    <header class="mon-header" id="bar">
-      <span class="mon-header__diamond" aria-hidden="true">◆</span>
-      <span class="mon-header__brand">VARIANT1</span>
-      <span class="mon-header__sub">// LIVE LOGS</span>
-      <span class="mon-header__spacer"></span>
-      <span id="live-dot" class="live-dot working" title="Streaming session log"></span>
-      <span class="live-label">LIVE</span>
-      <button type="button" id="mon-pin" class="mon-close mon-window-button" title="Keep window on top" aria-label="Keep Log monitor on top" aria-pressed="true">Pin</button>
-      <button type="button" id="mon-minimize" class="mon-close mon-window-button" title="Minimize" aria-label="Minimize Log monitor">−</button>
-      <button type="button" id="mon-maximize" class="mon-close mon-window-button" title="Maximize or restore" aria-label="Maximize or restore Log monitor">❐</button>
-      <button type="button" id="mon-close" class="mon-close" title="Close">✕</button>
+  <div class="mon">
+    <header class="mon-chrome" id="bar">
+      <span id="live-dot" class="live-dot" title="Streaming the session log" aria-hidden="true"></span>
+      <strong class="mon-chrome__title">Log monitor</strong>
+      <small class="mon-chrome__sub">main0.log · this session</small>
+      <span class="mon-chrome__spacer"></span>
+      <button type="button" id="mon-pin" class="mon-chrome__button" title="Keep window on top" aria-label="Keep Log monitor on top" aria-pressed="true">Pin</button>
+      <button type="button" id="mon-minimize" class="mon-chrome__button is-icon" title="Minimize" aria-label="Minimize Log monitor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg></button>
+      <button type="button" id="mon-maximize" class="mon-chrome__button is-icon" title="Maximize or restore" aria-label="Maximize or restore Log monitor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5Z"/></svg></button>
+      <button type="button" id="mon-close" class="mon-chrome__button is-icon is-close" title="Close" aria-label="Close Log monitor"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M6 18 18 6"/></svg></button>
     </header>
 
-    <div class="mon-toolbar">
-      <span class="mon-toolbar__meta">SOURCE:<span class="mon-toolbar__hi">main0</span></span>
-      <span class="mon-toolbar__sep">|</span>
-      <span class="mon-toolbar__meta">LINES:<span id="line-count" class="mon-toolbar__val">0</span></span>
-      <span class="mon-toolbar__sep">|</span>
-      <span class="mon-toolbar__meta">AUTO-SCROLL:<span id="scroll-state" class="mon-toolbar__hi">ON</span></span>
+    <div class="mon-toolbar" role="toolbar" aria-label="Log tools">
+      <label class="mon-search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 17a6.5 6.5 0 1 0 0-13 6.5 6.5 0 0 0 0 13Zm5-1 4.5 4.5"/></svg>
+        <input id="filter" type="search" placeholder="Filter lines" autocomplete="off" spellcheck="false" aria-label="Filter log lines" />
+      </label>
+      <div class="mon-levels" role="group" aria-label="Show">
+        <button type="button" data-level="all" aria-pressed="true">All</button>
+        <button type="button" data-level="error" aria-pressed="false">Errors <span id="count-error">0</span></button>
+        <button type="button" data-level="warn" aria-pressed="false">Warnings <span id="count-warn">0</span></button>
+        <button type="button" data-level="activity" aria-pressed="false">Activity <span id="count-activity">0</span></button>
+      </div>
       <span class="mon-toolbar__spacer"></span>
-      <button type="button" id="btn-copy" class="mon-tool-btn" title="Copy all lines">Copy</button>
-      <button type="button" id="btn-clear" class="mon-tool-btn" title="Clear session log view">Clear</button>
-      <button type="button" id="btn-folder" class="mon-tool-btn" title="Open logs folder">Folder</button>
-      <span id="clock" class="mon-clock">00:00:00</span>
+      <button type="button" id="btn-wrap" class="mon-tool" aria-pressed="true" title="Wrap long lines">Wrap</button>
+      <button type="button" id="btn-copy" class="mon-tool" title="Copy all lines">Copy</button>
+      <button type="button" id="btn-clear" class="mon-tool" title="Clear this session's log view">Clear</button>
+      <button type="button" id="btn-folder" class="mon-tool" title="Open the logs folder">Folder</button>
     </div>
 
-    <main id="feed" class="mon-feed" aria-live="polite" aria-label="Session log">
-      <div id="empty" class="empty">
-        <div class="empty__prompt">&gt; AWAITING LOG LINES<span class="caret">_</span></div>
-        <p class="empty__hint">Same stream as <code>logs/main0.log</code> — backend, renderer, activity mirrors, and main process.</p>
+    <main id="feed" class="mon-feed is-wrapped" aria-live="polite" aria-label="Session log">
+      <div id="empty" class="mon-empty">
+        <strong>Waiting for log lines<span class="caret">_</span></strong>
+        <p>The same stream as <code>logs/main0.log</code>: backend, renderer, activity mirrors and the main process.</p>
       </div>
+      <p id="no-match" class="mon-empty is-filtered" hidden>No lines match this filter.</p>
     </main>
 
-    <button type="button" id="resume-btn" class="resume-btn" hidden>
-      ▼ <span id="new-count">0</span> NEW · JUMP TO END
+    <button type="button" id="resume-btn" class="mon-resume" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 9 7 7 7-7"/></svg><span id="new-count">0</span> new lines
     </button>
 
     <footer class="mon-footer">
-      <span>SESSION ONLY · main1 history kept on disk</span>
-      <span class="mon-footer__rule" aria-hidden="true"></span>
-      <span id="copy-status" class="mon-footer__status" hidden></span>
-      <span class="mon-footer__rule" aria-hidden="true"></span>
-      <span>READ-ONLY</span>
+      <span><span id="line-count">0</span> lines</span>
+      <span class="mon-footer__dot" aria-hidden="true">·</span>
+      <span>Auto-scroll <span id="scroll-state">on</span></span>
+      <span id="copy-status" class="mon-footer__status" role="status" hidden></span>
+      <span class="mon-footer__spacer"></span>
+      <span class="mon-footer__faint">Session only · main1.log keeps filtered diagnostics · Read-only</span>
+      <span id="clock" class="mon-footer__clock">00:00:00</span>
     </footer>
   </div>
 

@@ -1,0 +1,176 @@
+/*
+ * Composer activity: faded chips above the composer and one centered overlay.
+ * Minimal by design: 12px rows, 11px sublines, no outlines on chips.
+ * --deck-live (the mutation green) marks only work that is live right now.
+ */
+
+/* Braille spinner: every frame in the DOM, scrolled by a stepped transform. */
+.braille-spinner { width: 1em; height: 1em; display: inline-flex; align-items: center; justify-content: center; flex: none; font: 15px/1 "Cascadia Mono", "Segoe UI Symbol", monospace; }
+.braille-spinner__window { height: 1em; display: block; overflow: hidden; line-height: 1em; }
+.braille-spinner__strip { display: flex; flex-direction: column; animation: braille-spin var(--braille-duration, 800ms) steps(var(--braille-frames, 10)) infinite; }
+.braille-spinner__strip > span { height: 1em; display: block; line-height: 1em; }
+.braille-spinner__window[data-paused] .braille-spinner__strip { animation-play-state: paused; }
+@keyframes braille-spin { to { transform: translateY(calc(-1em * var(--braille-frames, 10))); } }
+
+/* Status marks: spinner while live, otherwise a 6px dot or ring. */
+.activity-mark { width: 14px; height: 14px; display: inline-grid; place-items: center; flex: none; }
+.activity-mark > i { width: 6px; height: 6px; display: block; border-radius: 50%; background: var(--deck-text-faint); }
+.activity-mark--live { color: var(--deck-live); }
+.activity-mark--queued > i { background: transparent; box-shadow: inset 0 0 0 1px var(--deck-text-muted); }
+.activity-mark--done > i { background: var(--deck-text-muted); }
+.activity-mark--failed > i { background: var(--deck-danger); }
+.activity-mark--attention > i { background: var(--deck-warning); }
+.activity-mark--stopped > i { border-radius: 1px; background: var(--deck-text-muted); }
+
+/* Chips: faded boxes, no outlines. */
+.activity-dock { margin: 0 0 6px; }
+.activity-dock__bar { min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.activity-chip { min-width: 0; height: 24px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px 0 7px; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-secondary); background: rgba(255, 255, 255, .045); font: 500 var(--deck-text-sm)/1 var(--font-ui); white-space: nowrap; cursor: pointer; transition: background-color var(--deck-motion-fast) ease, color var(--deck-motion-fast) ease; }
+.activity-chip:hover { color: var(--deck-text-primary); background: rgba(255, 255, 255, .075); }
+.activity-chip[aria-expanded="true"] { color: var(--deck-text-primary); background: rgba(255, 255, 255, .09); }
+
+/* Overlay: one centered square for whichever chip was opened. */
+.deck-overlay.activity-overlay { width: min(560px, calc(100vw - 40px)); height: min(560px, calc(100dvh - 80px)); }
+.activity-overlay__header { min-height: 44px; display: flex; align-items: center; gap: 6px; flex: none; padding: 0 8px 0 14px; border-bottom: 1px solid var(--deck-line-soft); }
+.activity-overlay__title { margin: 0; color: var(--deck-text-primary); font: 600 var(--deck-text-md)/1 var(--font-ui); }
+.activity-overlay__header:has(.activity-overlay__tabs) .activity-overlay__title { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.activity-overlay__tabs { min-width: 0; display: flex; align-items: center; gap: 2px; margin-left: -6px; overflow-x: auto; scrollbar-width: none; }
+.activity-overlay__tabs button { height: 28px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px 0 7px; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-muted); background: transparent; font: 500 var(--deck-text-sm)/1 var(--font-ui); white-space: nowrap; cursor: pointer; }
+.activity-overlay__tabs button:hover { color: var(--deck-text-primary); }
+.activity-overlay__tabs button[aria-current="true"] { color: var(--deck-text-primary); background: rgba(255, 255, 255, .06); }
+.activity-overlay__close { width: 28px; height: 28px; display: grid; place-items: center; margin-left: auto; padding: 0; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-muted); background: transparent; cursor: pointer; }
+.activity-overlay__close:hover { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.activity-overlay__close .deck-icon { width: 14px; height: 14px; }
+.activity-overlay__body { min-height: 0; flex: 1; overflow: auto; padding: 4px 0 8px; scrollbar-width: thin; scrollbar-color: rgba(255, 255, 255, .16) transparent; }
+.activity-overlay__body > div { min-height: 100%; }
+.activity-overlay__body > div[hidden] { display: none; }
+
+/* Sections: the tab names them, so each header is a slim meta line. */
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) { max-height: none; margin: 0; padding: 0; overflow: visible; border: 0; border-radius: 0; color: var(--deck-text-secondary); background: transparent; font: var(--deck-text-sm)/1.45 var(--font-ui); }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) > header { min-height: 32px; display: flex; align-items: center; gap: 8px; margin: 0; padding: 0 8px 0 14px; color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal) > header > strong { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) > header > :is(span, small) { flex: 1; min-width: 0; color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) > header > button { width: 24px; height: 24px; min-width: 24px; min-height: 24px; display: grid; place-items: center; margin-left: auto; padding: 0; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-faint); background: transparent; cursor: pointer; }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) > header > button:hover:not(:disabled) { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal, .background-processes) > header .deck-icon { width: 13px; height: 13px; }
+.activity-overlay :is(.agent-team, .composer-input-queue, .composer-goal) > p[role="alert"] { margin: 6px 14px; color: var(--deck-danger); font-size: var(--deck-text-xs); }
+.activity-overlay [hidden] { display: none !important; }
+
+/* Shared quiet action button (faded box, no outline). */
+.activity-overlay :is(.composer-input-queue__actions, .composer-goal__controls, .background-processes__detail header) button,
+.activity-overlay .background-processes__clear { height: 24px; min-height: 24px; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-secondary); background: rgba(255, 255, 255, .05); font: 500 var(--deck-text-xs)/1 var(--font-ui); cursor: pointer; }
+.activity-overlay :is(.composer-input-queue__actions, .composer-goal__controls, .background-processes__detail header) button:hover:not(:disabled),
+.activity-overlay .background-processes__clear:hover { color: var(--deck-text-primary); background: rgba(255, 255, 255, .09); }
+.activity-overlay :is(.composer-input-queue__actions, .composer-goal__controls) button:disabled { opacity: .4; cursor: default; }
+.activity-overlay .background-processes > header > .background-processes__clear { width: auto; margin-left: 0; color: var(--deck-text-muted); }
+.activity-overlay .composer-goal__controls .deck-icon { width: 11px; height: 11px; }
+
+/* Agents: one row each; the live step or status sits beneath. */
+.agent-team__roster { display: grid; }
+.agent-team__card { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: start; gap: 10px; padding: 7px 14px; border: 0; color: var(--deck-text-secondary); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.agent-team__card:hover { background: rgba(255, 255, 255, .035); }
+.agent-team__card:focus-visible { outline: 2px solid var(--deck-text-primary); outline-offset: -2px; }
+.agent-team__card > .activity-mark { margin-top: 2px; }
+.agent-team__main { min-width: 0; display: grid; gap: 1px; }
+.agent-team__line { min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; white-space: nowrap; }
+.agent-team__name { flex: none; color: var(--deck-text-primary); font-weight: 600; }
+.agent-team__task { min-width: 0; overflow: hidden; color: var(--deck-text-muted); text-overflow: ellipsis; }
+.agent-team__sub { min-width: 0; display: flex; gap: 8px; overflow: hidden; color: var(--deck-text-faint); font-size: var(--deck-text-xs); white-space: nowrap; }
+.agent-team__sub > span { overflow: hidden; text-overflow: ellipsis; }
+.agent-team__current { color: var(--deck-text-secondary); }
+.agent-team__time { padding-top: 1px; color: var(--deck-text-faint); font: var(--deck-text-xs)/1.4 var(--font-mono); }
+.agent-team__finished > summary { display: flex; align-items: center; gap: 6px; padding: 6px 14px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); list-style: none; cursor: pointer; }
+.agent-team__finished > summary::-webkit-details-marker { display: none; }
+.agent-team__finished > summary:hover { color: var(--deck-text-secondary); }
+.agent-team__chevron { width: 11px; height: 11px; transition: transform var(--deck-motion-fast) ease; }
+.agent-team__finished[open] .agent-team__chevron { transform: rotate(90deg); }
+.agent-team__note { display: block; padding: 4px 14px 8px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+
+/* Agent detail replaces the roster inside the same overlay. */
+.agent-team__detail { display: grid; gap: 10px; padding: 6px 14px 12px; }
+.agent-team__back { width: fit-content; height: 24px; display: inline-flex; align-items: center; gap: 4px; margin-left: -6px; padding: 0 6px; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-muted); background: transparent; font: var(--deck-text-xs)/1 var(--font-ui); cursor: pointer; }
+.agent-team__back:hover { color: var(--deck-text-primary); background: rgba(255, 255, 255, .05); }
+.agent-team__back .deck-icon { width: 12px; height: 12px; }
+.agent-team__summary { display: grid; gap: 6px; }
+.agent-team__summary h2 { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--deck-text-primary); font: 600 var(--deck-text-lg)/1.3 var(--font-ui); }
+.agent-team__summary h2 > small { color: var(--deck-text-muted); font: 400 var(--deck-text-xs)/1 var(--font-ui); }
+.agent-team__summary p { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-team__now { display: flex; align-items: baseline; gap: 8px; color: var(--deck-text-primary); }
+.agent-team__now > span { color: var(--deck-live); font: 600 var(--deck-text-xs)/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+.agent-team__assignment { color: var(--deck-text-secondary); line-height: 1.55; }
+.agent-team__facts-fold > summary { width: fit-content; color: var(--deck-text-faint); font-size: var(--deck-text-xs); cursor: pointer; }
+.agent-team__facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; margin: 8px 0 0; }
+.agent-team__facts dt { color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.agent-team__facts dd { margin: 2px 0 0; color: var(--deck-text-secondary); font-size: var(--deck-text-xs); overflow-wrap: anywhere; }
+.agent-team__facts code { font: var(--deck-text-xs) var(--font-mono); }
+.agent-team__trace-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-top: 8px; border-top: 1px solid var(--deck-line-soft); }
+.agent-team__trace-heading h3 { margin: 0; color: var(--deck-text-primary); font: 600 var(--deck-text-sm)/1.3 var(--font-ui); }
+.agent-team__trace-heading button { width: 24px; height: 24px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--deck-radius-md); color: var(--deck-text-faint); background: transparent; cursor: pointer; }
+.agent-team__trace-heading button:hover:not(:disabled) { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.agent-team__trace-heading .deck-icon { width: 13px; height: 13px; }
+.agent-team__trace { display: grid; margin: 0; padding: 0; list-style: none; }
+.agent-team__trace li { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: 10px; row-gap: 1px; padding: 6px 0; }
+.agent-team__trace li + li { border-top: 1px solid var(--deck-line-soft); }
+.agent-team__trace li > .activity-mark { grid-row: span 4; margin-top: 2px; }
+.agent-team__trace li > div { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.agent-team__trace strong { color: var(--deck-text-primary); font-weight: 500; overflow-wrap: anywhere; }
+.agent-team__trace li > div > span, .agent-team__trace :is(time, small, code) { color: var(--deck-text-faint); font-size: var(--deck-text-xs); overflow-wrap: anywhere; }
+.agent-team__trace code { font-family: var(--font-mono); }
+.agent-team__provenance, .agent-team__empty { margin: 0; color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.agent-team__report { padding-top: 8px; border-top: 1px solid var(--deck-line-soft); }
+.agent-team__report h3 { margin: 0 0 4px; color: var(--deck-text-primary); font: 600 var(--deck-text-sm)/1.3 var(--font-ui); }
+.agent-team__report p { margin: 0; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.agent-team__skeleton { display: grid; gap: 8px; }
+.agent-team__skeleton i { height: 10px; border-radius: var(--deck-radius-sm); background: linear-gradient(90deg, var(--deck-surface-subtle) 0%, var(--deck-surface-raised) 50%, var(--deck-surface-subtle) 100%); background-size: 200% 100%; animation: skeleton-shimmer 1200ms linear infinite; }
+.agent-team__skeleton i:nth-child(1) { width: 72%; }
+.agent-team__skeleton i:nth-child(2) { width: 54%; }
+.agent-team__skeleton i:nth-child(3) { width: 63%; }
+@keyframes skeleton-shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
+
+/* Queued messages: text first, quiet actions trailing. */
+.activity-overlay .composer-input-queue > p { margin: 4px 14px 8px; color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+.activity-overlay .composer-input-queue__item { align-items: center; gap: 12px; padding: 8px 14px; border-top: 0; }
+.activity-overlay .composer-input-queue__item + .composer-input-queue__item { border-top: 1px solid var(--deck-line-soft); }
+.activity-overlay .composer-input-queue__text { gap: 2px; }
+.activity-overlay .composer-input-queue__text > span { display: -webkit-box; max-height: none; overflow: hidden; color: var(--deck-text-primary); -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.activity-overlay .composer-input-queue__text > small { color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.activity-overlay .composer-input-queue__actions { gap: 4px; }
+
+/* Goal: title, step progress, then details and controls. */
+.composer-goal p.composer-goal__title { margin: 8px 14px 6px; color: var(--deck-text-primary); font: 600 var(--deck-text-md)/1.35 var(--font-ui); overflow-wrap: anywhere; }
+.composer-goal__progress { display: flex; gap: 3px; margin: 0 14px 10px; }
+.composer-goal__progress > i { height: 3px; flex: 1; border-radius: 2px; background: var(--deck-line-strong); transition: background-color var(--deck-motion-panel) ease; }
+.composer-goal__progress > i[data-step-state="done"] { background: var(--deck-text-muted); }
+.composer-goal__progress > i[data-step-state="running"] { background: color-mix(in srgb, var(--deck-live) 40%, var(--deck-surface-raised)); }
+.composer-goal__progress > i[data-step-state="failed"] { background: var(--deck-danger); }
+.activity-overlay .composer-goal > :not(header, .composer-goal__title, .composer-goal__progress) { margin-inline: 14px; }
+.activity-overlay .composer-goal details { margin-top: 4px; }
+.activity-overlay .composer-goal details > summary { color: var(--deck-text-muted); font-size: var(--deck-text-xs); cursor: pointer; }
+.activity-overlay .composer-goal p:not(.composer-goal__title) { margin: 6px 0; color: var(--deck-text-muted); font-size: var(--deck-text-sm); }
+.activity-overlay .composer-goal ol { display: grid; gap: 2px; margin: 8px 0; padding: 0; list-style: none; }
+.activity-overlay .composer-goal li { display: flex; align-items: baseline; gap: 8px; margin: 0; font-size: var(--deck-text-sm); }
+.activity-overlay .composer-goal li::before { width: 5px; height: 5px; flex: none; align-self: center; border-radius: 50%; background: var(--deck-line-strong); content: ""; }
+.activity-overlay .composer-goal li[data-step-state="done"]::before { background: var(--deck-text-muted); }
+.activity-overlay .composer-goal li[data-step-state="running"]::before { background: var(--deck-live); }
+.activity-overlay .composer-goal li[data-step-state="failed"]::before { background: var(--deck-danger); }
+.activity-overlay .composer-goal li small { margin-left: auto; color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.activity-overlay .composer-goal code { color: var(--deck-text-faint); font: var(--deck-text-xs) var(--font-mono); }
+.activity-overlay .composer-goal__facts { padding: 6px 0 2px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.activity-overlay .composer-goal__facts strong { color: var(--deck-text-secondary); font-weight: 500; }
+.activity-overlay .composer-goal__controls { gap: 4px; margin: 12px 14px 14px; }
+.activity-overlay .composer-goal__controls small { color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.activity-overlay .composer-goal__guidance textarea { border-color: var(--deck-line); background: var(--deck-canvas); font-size: var(--deck-text-sm); }
+
+/* Background processes: rows open their output in place. */
+.background-processes ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.background-processes__row { width: 100%; display: grid; grid-template-columns: 14px minmax(0, 1fr) 12px; align-items: center; gap: 10px; padding: 7px 14px; border: 0; color: var(--deck-text-secondary); background: transparent; font: inherit; text-align: left; cursor: pointer; }
+.background-processes__row:hover { background: rgba(255, 255, 255, .035); }
+.background-processes__main { min-width: 0; display: grid; gap: 1px; }
+.background-processes__main code { overflow: hidden; color: var(--deck-text-primary); font: var(--deck-text-sm)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.background-processes__main small { color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.background-processes__go { width: 11px; height: 11px; color: var(--deck-text-faint); }
+.background-processes__detail { min-height: 100%; display: flex; flex-direction: column; gap: 8px; padding: 6px 14px 12px; }
+.background-processes__detail header { min-width: 0; display: flex; align-items: center; gap: 8px; }
+.background-processes__detail header code { min-width: 0; overflow: hidden; color: var(--deck-text-primary); font: var(--deck-text-sm)/1.4 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.background-processes__detail header small { flex: 1; color: var(--deck-text-faint); font-size: var(--deck-text-xs); white-space: nowrap; }
+.background-processes__detail pre { min-height: 160px; flex: 1; margin: 0; padding: 10px 12px; overflow: auto; border-radius: var(--deck-radius-md); color: var(--deck-text-secondary); background: var(--deck-canvas); font: var(--deck-text-sm)/1.55 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }

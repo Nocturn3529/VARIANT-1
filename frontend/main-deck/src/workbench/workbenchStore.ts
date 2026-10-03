@@ -293,7 +293,7 @@ export function detachWorkbenchPane(paneId: string): void {
   if (window.variant1Deck?.supportsNativeWindows) {
     closeCompactPane();
     if (groupValue.minimized) replace({layout: setGroupMinimized(store.getState().layout, groupValue.id, false)});
-    const title = paneId === PANE.history ? "Chats" : element?.querySelector(".workbench-tab.is-active span")?.textContent
+    const title = paneId === PANE.history ? "Agent sessions" : element?.querySelector(".workbench-tab.is-active span")?.textContent
       || ((paneId.startsWith("owned:") ? paneId.split(":")[1] : paneId).replace(/^./, letter => letter.toUpperCase()));
     const browserSizes = getPreviewState().tabs.filter(tab => tab.target.kind === "url" && groupValue!.panes.includes(`preview:${tab.id}`))
       .map(tab => browserWindowSize(tab.viewport || DEFAULT_BROWSER_VIEWPORT));
@@ -349,6 +349,11 @@ export function isWorkbenchPaneVisible(
   paneId=chatPaneId(paneId);
   const groupValue = findGroupOfPane(state.layout, paneId);
   if (groupValue && hasNativeWindow(nativePaneKey(groupValue.id))) return !state.hidden[paneId] && groupValue.active === paneId;
+  // The right-panel toggle hides a chat's panes as a set without changing
+  // their own flags. Such a pane is off screen, so its button must reveal it
+  // on the first press rather than "hide" it.
+  const owner = paneOwner(paneId) || (paneId.startsWith("preview:") ? getPreviewState().tabs.find(tab => `preview:${tab.id}` === paneId)?.ownerChatId || "" : "");
+  if (owner && state.hidden[`right:${owner}`]) return false;
   if (state.compact && isSidePane(paneId)) return state.overlayPaneId === paneId && !state.hidden[paneId];
   if (!groupValue || state.hidden[paneId] || groupValue.minimized) return false;
   const visible = groupValue.panes.filter(id => !state.hidden[id] && !(state.compact && isSidePane(id)));

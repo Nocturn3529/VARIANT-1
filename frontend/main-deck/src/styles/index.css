@@ -12,6 +12,8 @@
 @import url("./refinement.css");
 @import url("./composer.css");
 @import url("./composer-motion.css");
+@import url("./activity.css");
+@import url("./motion.css");
 /* Apply reduced motion to all component durations, including legacy literals.
    A single iteration settles enter/exit states without an endless fast loop. */
 :root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after {
@@ -39,6 +41,10 @@
   outline: 2px solid var(--deck-text-primary);
   outline-offset: 2px;
 }
+/* Rings are for keyboard navigation only: a key pressed after a click (Shift,
+   Win, a screenshot shortcut) must not ring the last clicked control. Text
+   fields keep their own focus treatment. */
+:root[data-input="pointer"] :focus-visible:not(input, textarea, select, [contenteditable="true"]) { outline: none !important; }
 .app-shell :is(.history-search, .composer, .core-fact-add, .archive-search):focus-within {
   border-color: var(--deck-line-strong);
   box-shadow: 0 0 0 1px var(--deck-focus);

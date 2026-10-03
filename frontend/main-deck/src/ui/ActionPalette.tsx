@@ -41,7 +41,7 @@ function PaletteDialog({mode}: {mode: "all" | "windows"}) {
     if (mode === "windows") return items;
     items.push(
       {id: "new", label: "New chat", group: "Chat", icon: "plus", run: () => { if (requestNewSession()) focusMainComposer(); }},
-      {id: "chats", label: "Show chats", group: "Panels", icon: "history", run: revealHistory},
+      {id: "chats", label: "Show agent sessions", group: "Panels", icon: "history", run: revealHistory},
       {id: "files", label: "Focus Files", group: "Panels", icon: "folder", run: () => revealPane(PANE.files, "right")},
       {id: "review", label: "Focus Review", group: "Panels", icon: "review", run: () => revealPane(PANE.review, "right")},
       {id: "terminal", label: "Focus Terminal", group: "Panels", icon: "terminal", run: () => revealPane(PANE.terminal, "bottom")},
@@ -49,7 +49,7 @@ function PaletteDialog({mode}: {mode: "all" | "windows"}) {
         const tab = [...getPreviewState().tabs].reverse().find(item => item.target.kind === "url" && (item.ownerChatId || "") === (getSessionState().displayedSessionId || ""));
         if (tab) revealPane(`preview:${tab.id}`, "right"); else openBrowser();
       }},
-      {id: "runtime", label: "Python runtime", group: "Utilities", icon: "kernel", run: () => navigateTo("runtime")},
+      {id: "runtime", label: "Python runtime", detail: "Overview › Python", group: "Utilities", icon: "kernel", run: () => navigateTo("runtime")},
       {id: "overview", label: "Overview", group: "Utilities", icon: "overview", run: () => navigateTo("overview")},
       {id: "automations", label: "Automations", group: "Utilities", icon: "clock", run: () => navigateTo("automations")},
       {id: "logs", label: "Log monitor", group: "Utilities", icon: "terminal", run: () => window.variant1Deck?.openMonitor?.()},

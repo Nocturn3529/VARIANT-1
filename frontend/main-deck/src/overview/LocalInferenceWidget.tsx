@@ -83,17 +83,26 @@ function compactModel(value: unknown): string {
   return model?.replace(/\.gguf$/i, "") || "Local model";
 }
 
-function linePath(
-  points: InferencePoint[],
-  accessor: (point: InferencePoint) => number,
-  top: number,
-  height: number,
-  max: number,
-): string {
-  return points.map((point, index) => {
-    const x = index / (points.length - 1) * CHART_WIDTH;
-    const y = top + height - clamp(accessor(point) / max, 0, 1) * height;
-    return `${index ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`;
+
+// Pulse geometry (viewBox 1120 x 360): decode stream on top, prefill bursts below.
+const DECODE_TOP = 50;
+const DECODE_HEIGHT = 190;
+const PREFILL_TOP = 272;
+const PREFILL_HEIGHT = 70;
+
+/** A smooth (Catmull-Rom) curve through every sample. */
+function smoothPath(values: number[], top: number, height: number, max: number): string {
+  const step = CHART_WIDTH / (values.length - 1);
+  const y = (value: number) => top + height - clamp(value / max, 0, 1) * height;
+  const pts = values.map((value, index) => [index * step, y(value)] as const);
+  return pts.map(([x, py], index) => {
+    if (!index) return `M${x.toFixed(1)} ${py.toFixed(1)}`;
+    const [x0, y0] = pts[index - 2] || pts[index - 1];
+    const [x1, y1] = pts[index - 1];
+    const [x3, y3] = pts[index + 1] || [x, py];
+    const c1x = x1 + (x - x0) / 6, c1y = y1 + (py - y0) / 6;
+    const c2x = x - (x3 - x1) / 6, c2y = py - (y3 - y1) / 6;
+    return `C${c1x.toFixed(1)} ${c1y.toFixed(1)} ${c2x.toFixed(1)} ${c2y.toFixed(1)} ${x.toFixed(1)} ${py.toFixed(1)}`;
   }).join(" ");
 }
 
@@ -138,7 +147,7 @@ function LatencyMetric({label, value, detail}: {
   value: string;
   detail: string;
 }) {
-  return <article className="deck-data-cell">
+  return <article className="deck-data-cell" title={detail}>
     <span className="deck-data-cell__label">{label}</span>
     <strong className="deck-data-cell__value">{value}</strong>
     <small className="deck-data-cell__detail">{detail}</small>
@@ -165,6 +174,7 @@ export function LocalInferenceWidget({
     Array.from({length: POINT_COUNT}, emptyPoint)
   ));
   const [tooltip, setTooltip] = useState<ChartTooltip | null>(null);
+  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     pausedRef.current = paused;
@@ -198,6 +208,7 @@ export function LocalInferenceWidget({
         lastTelemetryStamp.current = stamp;
       }
       setPoints(current => [...current.slice(1), point]);
+      setTick(current => current + 1);
     }, 900);
     return () => window.clearInterval(timer);
   }, []);
@@ -281,15 +292,26 @@ export function LocalInferenceWidget({
       100,
       Math.ceil(Math.max(...points.map(point => point.prefill)) / 100) * 100,
     );
-    const decodeLine = linePath(points, point => point.decode, 20, 150, decodeMax);
-    const prefillLine = linePath(points, point => point.prefill, 205, 135, prefillMax);
+    const step = CHART_WIDTH / (points.length - 1);
+    const decodeLine = smoothPath(points.map(point => point.decode), DECODE_TOP, DECODE_HEIGHT, decodeMax);
+    const base = DECODE_TOP + DECODE_HEIGHT;
+    const barWidth = step * .58;
+    const prefillBars = points.map((point, index) => {
+      const height = clamp(point.prefill / prefillMax, 0, 1) * PREFILL_HEIGHT;
+      if (height <= 0) return "";
+      const x = index * step - barWidth / 2;
+      return `M${x.toFixed(1)} ${PREFILL_TOP + PREFILL_HEIGHT}v-${height.toFixed(1)}h${barWidth.toFixed(1)}v${height.toFixed(1)}Z`;
+    }).join("");
+    const last = points[points.length - 1] || emptyPoint();
     return {
       decodeMax,
       prefillMax,
+      step,
       decodeLine,
-      prefillLine,
-      decodeArea: `${decodeLine} L1120 170 L0 170 Z`,
-      prefillArea: `${prefillLine} L1120 340 L0 340 Z`,
+      decodeArea: `${decodeLine} L${CHART_WIDTH} ${base} L0 ${base} Z`,
+      prefillBars,
+      headY: base - clamp(last.decode / decodeMax, 0, 1) * DECODE_HEIGHT,
+      headValue: last.decode,
     };
   }, [points]);
 
@@ -402,6 +424,9 @@ export function LocalInferenceWidget({
           <div className="local-inference-lane-label is-decode">
             <span>Decode</span><strong>{formatK(chart.decodeMax)} tok/s</strong>
           </div>
+          <div className="local-inference-chart-now" aria-live="off">
+            <span>Now</span><strong>{chart.headValue > 0 ? chart.headValue.toFixed(1) : "—"}</strong><small>tok/s</small>
+          </div>
           <div className="local-inference-lane-label is-prefill">
             <span>Prefill</span><strong>{formatK(chart.prefillMax)} tok/s</strong>
           </div>
@@ -416,29 +441,32 @@ export function LocalInferenceWidget({
           >
             <defs>
               <linearGradient id="local-decode-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="var(--deck-signal-cyan)" stopOpacity=".28" />
-                <stop offset="1" stopColor="var(--deck-signal-cyan)" stopOpacity="0" />
+                <stop offset="0" stopColor="var(--deck-chart-blue)" stopOpacity=".34" />
+                <stop offset="1" stopColor="var(--deck-chart-blue)" stopOpacity="0" />
               </linearGradient>
               <linearGradient id="local-prefill-fill" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0" stopColor="var(--deck-signal-indigo)" stopOpacity=".24" />
-                <stop offset="1" stopColor="var(--deck-signal-indigo)" stopOpacity="0" />
+                <stop offset="0" stopColor="var(--deck-chart-violet)" stopOpacity=".95" />
+                <stop offset="1" stopColor="var(--deck-chart-violet)" stopOpacity=".35" />
               </linearGradient>
             </defs>
             <g className="local-inference-chart-grid" aria-hidden="true">
-              <path d="M0 20H1120 M0 70H1120 M0 120H1120 M0 170H1120 M0 205H1120 M0 250H1120 M0 295H1120 M0 340H1120" />
-              <path d="M0 0V350 M140 0V350 M280 0V350 M420 0V350 M560 0V350 M700 0V350 M840 0V350 M980 0V350 M1120 0V350" />
+              <path d="M0 50H1120 M0 113H1120 M0 177H1120" className="is-guide" />
+              <path d="M0 240H1120 M0 342H1120" />
             </g>
-            <path className="local-inference-trace-area is-decode" d={chart.decodeArea} />
-            <path className="local-inference-trace-line is-decode" d={chart.decodeLine} />
-            <path className="local-inference-trace-area is-prefill" d={chart.prefillArea} />
-            <path className="local-inference-trace-line is-prefill" d={chart.prefillLine} />
-            <g className="local-inference-request-markers">
-              {points.map((point, index) => point.request ? <circle
-                key={index}
-                cx={(index / (points.length - 1) * CHART_WIDTH).toFixed(1)}
-                cy="349"
-                r="4"
-              /> : null)}
+            <g key={tick} className="local-inference-stream" style={{"--stream-step": `${chart.step}px`} as CSSProperties}>
+              <path className="local-inference-trace-area is-decode" d={chart.decodeArea} />
+              <path className="local-inference-trace-line is-decode" d={chart.decodeLine} />
+              <path className="local-inference-prefill-bars" d={chart.prefillBars} />
+              <g className="local-inference-request-markers">
+                {points.map((point, index) => point.request ? <path
+                  key={index}
+                  d={`M${(index * chart.step).toFixed(1)} 256h.01`}
+                /> : null)}
+              </g>
+            </g>
+            <g className="local-inference-head" style={{transform: `translateY(${chart.headY.toFixed(1)}px)`}} aria-hidden="true">
+              <path className="local-inference-head__halo" d="M1114 0h.01" />
+              <path className="local-inference-head__dot" d="M1114 0h.01" />
             </g>
             {tooltip && <line
               className="local-inference-chart-crosshair"

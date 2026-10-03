@@ -57,6 +57,8 @@ export type SessionContextState = Readonly<{
   modelProviders: ComposerModelProvider[];
   settingsPending: Readonly<{requestId:string;operation:"mode:set"|"reasoning:effort:set";label:string;checking:boolean}> | null;
   settingsError: string;
+  /** What the rejected change tried to apply, e.g. a model label. */
+  settingsErrorLabel: string;
 }>;
 
 const CATEGORY_ORDER = [
@@ -122,6 +124,7 @@ function emptyState(sessionId: string): SessionContextState {
     modelProviders: [],
     settingsPending: null,
     settingsError: "",
+    settingsErrorLabel: "",
   };
 }
 
@@ -175,6 +178,7 @@ function parseSnapshot(message: Record<string, unknown>): SessionContextState | 
     modelProviders: existing.modelProviders,
     settingsPending: existing.settingsPending,
     settingsError: existing.settingsError,
+    settingsErrorLabel: existing.settingsErrorLabel,
   };
 }
 
@@ -258,14 +262,19 @@ function checkSessionSettings(id:string) {
   settingsTimers.set(id,setTimeout(()=>checkSessionSettings(id),5000));
 }
 
+/** The user has read a rejected change; the model button already shows what stayed in effect. */
+export function dismissSettingsError(id:string):void {
+  if(getContextForSession(id).settingsError) updateSettingsState(id,{settingsError:"",settingsErrorLabel:""});
+}
+
 /** A setting remains pending until its scoped ack or authoritative status read. */
 export function changeSessionSettings(id:string,command:WsCommand & {type:"mode:set"|"reasoning:effort:set"},label:string):boolean {
   const current=getContextForSession(id);
   if(!id || current.settingsPending || store.getContext()?.isOpen?.()===false) return false;
   const requestId="composer-setting-"+globalThis.crypto.randomUUID();
-  updateSettingsState(id,{settingsPending:{requestId,operation:command.type,label,checking:false},settingsError:""});
+  updateSettingsState(id,{settingsPending:{requestId,operation:command.type,label,checking:false},settingsError:"",settingsErrorLabel:""});
   if(!store.send({...command,id,request_id:requestId})) {
-    updateSettingsState(id,{settingsPending:null,settingsError:"Could not send this change. Reconnect and try again."});return false;
+    updateSettingsState(id,{settingsPending:null,settingsError:"Could not send this change. Reconnect and try again.",settingsErrorLabel:label});return false;
   }
   settingsTimers.set(id,setTimeout(()=>checkSessionSettings(id),15000));
   return true;
@@ -352,7 +361,8 @@ export function ingestSessionContext(message: Record<string, unknown>): void {
       if(message.pending!==false) {clearSettingsTimer(id);settingsTimers.set(id,setTimeout(()=>checkSessionSettings(id),1000));return;}
     }
     clearSettingsTimer(id);settingsChecks.delete(id);
-    updateSettingsState(id,{...settingRoute(message.route,state),settingsPending:null,settingsError:String(message.error || (message.status==="rejected" ? "This change could not be applied." : ""))});
+    const error=String(message.error || (message.status==="rejected" ? "This change could not be applied." : ""));
+    updateSettingsState(id,{...settingRoute(message.route,state),settingsPending:null,settingsError:error,settingsErrorLabel:error ? pending.label : ""});
     store.send({type:"chat:runtime:get",id});
     requestSessionContext(id,store.getState().sessionId===id);return;
   }

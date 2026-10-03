@@ -30,10 +30,10 @@ const SAMPLE_COUNT = 60;
 const CHART_WIDTH = 960;
 const ZERO_SAMPLES = Array.from({length: SAMPLE_COUNT}, () => ({total: 0, variant1: 0}));
 const GPU_COLORS = [
-  "var(--deck-signal-magenta)",
-  "var(--deck-signal-orange)",
-  "var(--deck-signal-cyan)",
-  "var(--deck-signal-lime)",
+  "var(--deck-chart-teal)",
+  "var(--deck-chart-rose)",
+  "var(--deck-chart-blue)",
+  "var(--deck-chart-violet)",
 ];
 
 function useReducedMotion(): boolean {
@@ -121,7 +121,7 @@ function buildResources(
       index: "01",
       name: "CPU",
       hardware: string(cpu.name, "Processor"),
-      color: "var(--deck-signal-cyan)",
+      color: "var(--deck-chart-blue)",
       scale: "100%",
       sample: {
         total: clamp(cpu.utilization_pct),
@@ -139,7 +139,7 @@ function buildResources(
       index: "02",
       name: "Memory",
       hardware: `${gb(totalMemory)} usable`,
-      color: "var(--deck-signal-indigo)",
+      color: "var(--deck-chart-violet)",
       scale: gb(totalMemory),
       sample: {
         total: clamp(memory.utilization_pct),
@@ -157,7 +157,7 @@ function buildResources(
       index: "03",
       name: string(disk.name, "Disk"),
       hardware: "System storage · Live I/O",
-      color: "var(--deck-signal-lime)",
+      color: "var(--deck-chart-amber)",
       scale: "100%",
       sample: {
         total: clamp(disk.utilization_pct),
@@ -194,7 +194,7 @@ function buildResources(
       },
       metrics: active ? [
         metric("Utilization", percent(row.utilization_pct), "All GPU engines"),
-        metric("VRAM", `${gb(row.vram_used_mb)} / ${gb(row.vram_total_mb)}`, "Dedicated memory"),
+        metric("VRAM", `${(numeric(row.vram_used_mb) / 1024).toFixed(1)} / ${gb(row.vram_total_mb)}`, "Dedicated memory"),
         metric("Temperature", valueOrDash(row.temperature_c, value => `${value.toFixed(0)} °C`), "GPU sensor"),
         metric("Power", valueOrDash(row.power_draw_w, value => `${value.toFixed(1)} W`), powerLimit === null ? "Board draw" : `${powerLimit.toFixed(0)} W board limit`),
       ] : [
@@ -282,14 +282,14 @@ function PerformancePanel({
         <h3 className="deck-section-band__title" id={`performance-${resource.key}-title`}>{resource.name}</h3>
       </div>
       <div className="live-performance-legend" aria-label={`${resource.name} chart legend`}>
-        <span className="is-total"><i />Total usage</span>
-        <span className="is-variant1"><i />VARIANT-1 usage</span>
+        <span className="is-total"><i />Total<b> usage</b></span>
+        <span className="is-variant1"><i />VARIANT-1<b> usage</b></span>
       </div>
       <strong className={`live-performance-hardware${live ? " is-live" : ""}`}>{resource.hardware}</strong>
     </header>
     <PerformanceChart resource={resource} samples={samples} />
     <div className="live-performance-metrics deck-metric-rail">
-      {resource.metrics.map(item => <article className="deck-metric" key={item.label}>
+      {resource.metrics.map(item => <article className="deck-metric" key={item.label} title={`${item.label}: ${item.value} · ${item.detail}`}>
         <span className="deck-metric__label">{item.label}</span>
         <strong className="deck-metric__value">{item.value}</strong>
         <small className="deck-metric__detail">{item.detail}</small>

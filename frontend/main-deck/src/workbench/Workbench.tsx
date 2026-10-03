@@ -535,7 +535,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
 
   const descriptors = useMemo(() => {
     const rows = new Map<string, PaneDescriptor>();
-    rows.set(PANE.history, {id: PANE.history, label: "Chats", icon: "history", close: "hide", tabless: true, render: () => <div className="history-panel"><HistoryRail/></div>});
+    rows.set(PANE.history, {id: PANE.history, label: "Agent sessions", icon: "history", close: "hide", tabless: true, render: () => <div className="history-panel"><HistoryRail/></div>});
     rows.set(PANE.workspace, {id: PANE.workspace, label: sessions.items.find(s=>s.id===chatId)?.title || "Chat", icon: "kernel", close: "never", tabless: !chatViews.length, keepAlive: true, render: () => <main className="chat-workspace"><ChatDestination/></main>});
     for(const view of chatViews) {
       const title=sessions.items.find(s=>s.id===view.id)?.title || view.title;

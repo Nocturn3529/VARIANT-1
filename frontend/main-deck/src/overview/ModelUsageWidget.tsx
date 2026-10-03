@@ -93,12 +93,12 @@ type ActivityTooltip = {
 };
 
 const MODEL_COLORS = [
-  "var(--deck-signal-cyan)",
-  "var(--deck-signal-indigo)",
-  "var(--deck-signal-lime)",
-  "var(--deck-signal-magenta)",
-  "var(--deck-signal-orange)",
-  "var(--deck-signal-warm)",
+  "var(--deck-chart-blue)",
+  "var(--deck-chart-violet)",
+  "var(--deck-chart-amber)",
+  "var(--deck-chart-teal)",
+  "var(--deck-chart-rose)",
+  "var(--deck-text-faint)",
 ];
 
 function numeric(value: unknown): number {

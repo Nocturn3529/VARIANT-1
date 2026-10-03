@@ -3,6 +3,7 @@ import {closeCompactPane, hidePane, PANE, revealPane} from "../workbench/workben
 import {getDeckRuntime} from "../runtime/runtimeBridge";
 import {createExternalStore} from "./createModuleStore";
 import {focusNativeWindow, nativeUtilityKey} from "../workbench/nativeWindowStore";
+import {selectOverviewTab} from "../overview/overviewTabStore";
 
 export type PrimaryView =
   | "chat"
@@ -46,13 +47,17 @@ export function isPrimaryView(value: string): value is PrimaryView {
 const requestedInitialView = validViews.has(initialView as PrimaryView)
   ? initialView as PrimaryView
   : "chat";
+// Retired deep links open where navigateTo routes them: runtime is Overview › Python.
+if (requestedInitialView === "runtime") selectOverviewTab("python");
 const store = createExternalStore<AppState>({
-  view: requestedInitialView === "memory" ? "settings" : requestedInitialView,
+  view: requestedInitialView === "memory" ? "settings" : requestedInitialView === "runtime" ? "overview" : requestedInitialView,
   settingsReturnView: "chat",
   settingsCategory: requestedInitialView === "memory" ? "session-context" : "general",
 });
 
 export function navigateTo(view: PrimaryView): void {
+  // The Python runtime lives in Overview › Python.
+  if (view === "runtime") { selectOverviewTab("python"); view = "overview"; }
   if (["runtime", "overview", "automations"].includes(view) && focusNativeWindow(nativeUtilityKey(view))) return;
   // Route the public Memory deep link to its current Settings page.
   if (view === "memory") {

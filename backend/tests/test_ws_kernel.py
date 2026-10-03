@@ -129,6 +129,50 @@ async def test_direct_kernel_interrupt_is_terminal_stop_intent():
     assert manager.calls == [("interrupt", "chat-a", "stop")]
 
 
+@pytest.mark.asyncio
+async def test_kernel_history_interrupt_restart_accept_explicit_chat_with_detached_guard():
+    server, session, manager = _stack()
+    tails = []
+
+    def history(chat_id, *, after_sequence=0, limit=100, tail=None, labels=False):
+        tails.append((chat_id, tail, labels))
+        return {"items": [], "next_sequence": 0}
+
+    manager.execution_history = history
+    websocket = _WebSocket()
+    await ws_dispatch.HANDLERS["kernel:history"](
+        server, websocket, session,
+        {"type": "kernel:history", "request_id": "h", "chat_id": "other", "tail": 5},
+    )
+    await ws_dispatch.HANDLERS["kernel:interrupt"](
+        server, websocket, session,
+        {"type": "kernel:interrupt", "request_id": "i", "chat_id": "other"},
+    )
+    await ws_dispatch.HANDLERS["kernel:restart"](
+        server, websocket, session,
+        {"type": "kernel:restart", "request_id": "r", "chat_id": "other"},
+    )
+    assert tails == [("other", 5, True)]
+    assert manager.calls == [
+        ("interrupt", "other", "stop"), ("restart", "other", "operator_restart"),
+    ]
+
+    detached = SimpleNamespace(active=None, viewed_session_id="chat-a",
+                               view_role="detached_chat")
+    manager.calls.clear()
+    await ws_dispatch.HANDLERS["kernel:interrupt"](
+        server, websocket, detached,
+        {"type": "kernel:interrupt", "request_id": "x", "chat_id": "other"},
+    )
+    assert websocket.messages[-1]["type"] == "kernel:rejected"
+    assert manager.calls == []
+    with pytest.raises(ValueError, match="tail"):
+        await ws_dispatch.HANDLERS["kernel:history"](
+            server, websocket, session,
+            {"type": "kernel:history", "request_id": "bad", "tail": 99},
+        )
+
+
 def test_kernel_websocket_family_is_registered():
     expected = {
         "kernel:get",

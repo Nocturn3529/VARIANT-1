@@ -145,10 +145,10 @@ export function AutomationsDestination() {
         </div>
         <div className="automations-console__actions">
           <div className="automations-console__signals">
-            <span className="automations-console__connection" data-state={state.connected ? "online" : "offline"}>
+            <span className="automations-console__connection deck-status" data-state={state.connected ? "online" : "offline"} data-tone={state.connected ? "positive" : undefined}>
               {state.connected ? "Connected" : "Offline"}
             </span>
-            <span className="automations-console__state deck-status" data-state={active ? "live" : "idle"}>
+            <span className="automations-console__state deck-status" data-state={active ? "live" : "idle"} data-tone={active ? "live" : undefined}>
               {active ? `${active} active` : "No active tasks"}
             </span>
           </div>

@@ -92,7 +92,7 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
         width, height, x, y, useContentSize: false, minWidth: 300, minHeight: 240,
         frame: false, modal: false, resizable: true, movable: true, minimizable: true,
         maximizable: true, fullscreenable: false, skipTaskbar: false, alwaysOnTop: options.pin === 'true',
-        backgroundColor: '#0e0e0e', autoHideMenuBar: true, show: false,
+        backgroundColor: '#090a0a', autoHideMenuBar: true, show: false,
         webPreferences: {
           preload: path.join(appRoot, 'popout-preload.js'), contextIsolation: true,
           nodeIntegration: false, sandbox: true, webSecurity: true, webviewTag: true,

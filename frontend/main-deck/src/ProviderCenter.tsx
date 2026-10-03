@@ -128,7 +128,7 @@ function ProviderAccountRow({
   return <article className="provider-account-row">
     <button className="provider-account-row__main" type="button" onClick={onSelect}>
       <span className="provider-account-row__copy">
-        <span className="provider-account-row__title"><strong>{provider.display_name}</strong>{connected ? <em>✓ Connected</em> : null}</span>
+        <span className="provider-account-row__title"><strong>{provider.display_name}</strong>{connected ? <em className="deck-status" data-tone="positive">Connected</em> : null}</span>
         <small>{provider.description || (external ? "Uses an already authenticated desktop service." : "Connect your account in the browser.")}</small>
       </span>
       <span className="provider-account-row__trail" aria-hidden="true">{external ? "↗" : "›"}</span>
@@ -386,7 +386,7 @@ export function CustomEndpointsPanel() {
             setPersistedId(endpoint.id);
             edit(endpointForm(endpoint));
           }} disabled={!!pending}>
-            <span className="custom-endpoint-row__title"><strong>{endpoint.name}</strong>{endpoint.is_current ? <em>✓ Active</em> : null}</span>
+            <span className="custom-endpoint-row__title"><strong>{endpoint.name}</strong>{endpoint.is_current ? <em className="deck-status" data-tone="positive">Active</em> : null}</span>
             <code>{endpoint.base_url}</code>
             <small>{endpoint.model}{endpoint.has_api_key ? " · API key set" : ""}</small>
           </button>
