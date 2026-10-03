@@ -137,7 +137,16 @@ class LLMRouter:
         self._inference_sink = None
         self._inference_last_emit = 0.0
         # Post-adapter request receipts (observer bus — not on the hot path).
-        self._manifest_bus = ModelRequestManifestBus()
+        usage_ledger = None
+        ledger_failed = False
+        if data_dir is not None:
+            try:
+                from model_runtime.usage_ledger import ModelUsageLedger
+                usage_ledger = ModelUsageLedger(os.path.join(self.data_dir, "data", "model-usage.sqlite3"))
+            except Exception:
+                ledger_failed = True
+        self._manifest_bus = ModelRequestManifestBus(usage_ledger=usage_ledger)
+        self._manifest_bus.ledger_failures += int(ledger_failed)
         self._support_matrix = SupportMatrix.from_config(self.cfg)
         self._model_secret_resolvers = []
         self._secret_egress_firewall = SecretEgressFirewall(

@@ -288,6 +288,11 @@ def test_provider_response_identity_is_strictly_allowlisted():
     assert SECRET_RESULT not in json.dumps(result)
 
 
+def test_response_identity_retains_only_known_top_level_generation_ids():
+    assert provider_response_identity({"id": "gen-123"}) == {"provider_generation_id": "gen-123"}
+    assert provider_response_identity({"id": SECRET, "output": {"id": "gen-nested"}}) == {}
+
+
 def test_gemini_manifest_exposes_protocol_and_image_projection_loss():
     image = _png_b64()
     payload = {

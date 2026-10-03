@@ -16,7 +16,7 @@ from collections import deque
 class ModelRequestManifestBus:
     """Bounded in-memory receipt window + non-blocking publish queue."""
 
-    def __init__(self, *, maxlen: int = 32, queue_maxsize: int = 64):
+    def __init__(self, *, maxlen: int = 32, queue_maxsize: int = 64, usage_ledger=None):
         self._items: deque = deque(maxlen=maxlen)
         self._queue_maxsize = queue_maxsize
         self._sink = None
@@ -24,6 +24,8 @@ class ModelRequestManifestBus:
         self._task: asyncio.Task | None = None
         self.dropped_events = 0
         self.publish_failures = 0
+        self.usage_ledger = usage_ledger
+        self.ledger_failures = 0
         # The receipt window is intentionally small, but usage is cumulative
         # for the lifetime of this router. Keeping totals separately prevents a
         # long agent run from losing its early Responses cache/reasoning usage
@@ -72,6 +74,8 @@ class ModelRequestManifestBus:
             "usage_totals": usage,
             "dropped_events": self.dropped_events,
             "publish_failures": self.publish_failures,
+            "usage_ledger_available": self.usage_ledger is not None,
+            "usage_ledger_failures": self.ledger_failures,
             "filter_manifest_id": wanted or None,
         }
 
@@ -80,6 +84,11 @@ class ModelRequestManifestBus:
         if not isinstance(manifest, dict):
             return
         stored = copy.deepcopy(manifest)
+        if self.usage_ledger is not None:
+            try:
+                await asyncio.to_thread(self.usage_ledger.record, stored)
+            except Exception:
+                self.ledger_failures += 1
         self._items.append(stored)
         route = stored.get("route") or {}
         messages = (stored.get("messages") or {}).get("rendered") or {}
@@ -146,6 +155,13 @@ class ModelRequestManifestBus:
         manifest_id = self.manifest_id_from_ref(manifest_ref)
         if not manifest_id or not isinstance(normalized_usage, dict):
             return
+        durable = None
+        if self.usage_ledger is not None:
+            try:
+                self.usage_ledger.patch_usage(manifest_id, normalized_usage)
+                durable = self.usage_ledger.get(manifest_id)
+            except Exception:
+                self.ledger_failures += 1
         if manifest_id not in self._usage_manifest_ids:
             if (
                 self._usage_manifest_order.maxlen
@@ -199,6 +215,20 @@ class ModelRequestManifestBus:
                 pass
             self.enqueue(updated)
             return
+        if durable is not None:
+            # The durable identity outlives the intentionally small UI window.
+            # A long request must still emit its attributed usage on completion.
+            metadata = durable["metadata"]
+            try:
+                from observability.trace_events import record_model_usage
+                record_model_usage({"manifest_id": manifest_id,
+                    "logical_call_id": durable["logical_call_id"],
+                    "run": {"session_id": durable["session_id"], "run_id": durable["run_id"],
+                        "thread_id": metadata["thread_id"], "source": metadata["source"]},
+                    "route": {"provider": durable["provider"], "model": durable["model"]},
+                    "usage": copy.deepcopy(normalized_usage)})
+            except Exception:
+                pass
 
     def patch_response_metadata(self, manifest_ref, metadata: dict) -> None:
         """Patch allowlisted provider-returned identity fields, fail-open.
@@ -211,12 +241,18 @@ class ModelRequestManifestBus:
         manifest_id = self.manifest_id_from_ref(manifest_ref)
         if not manifest_id or not isinstance(metadata, dict):
             return
+        if self.usage_ledger is not None:
+            try:
+                self.usage_ledger.patch_response(manifest_id, metadata)
+            except Exception:
+                self.ledger_failures += 1
         allowed = {
             key: str(metadata.get(key) or "").strip()[:300]
             for key in (
                 "provider_returned_model_id",
                 "model_revision",
                 "system_fingerprint",
+                "provider_generation_id",
             )
             if str(metadata.get(key) or "").strip()
         }

@@ -168,6 +168,11 @@ def normalize_manifest_usage(
         "measurement": measurement,
         "provider_reported": provider_reported,
         "estimated": fallback_used or not provider_reported,
+        "reported_fields": [key for key, present in (
+            ("input_tokens", input_reported), ("output_tokens", output_reported),
+            ("total_tokens", total_reported), ("cached_input_tokens", cached_reported),
+            ("reasoning_tokens", reasoning_reported), ("cache_write_input_tokens", cache_write_reported),
+            ("tool_prompt_tokens", tool_prompt_reported)) if present],
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": reported_total,

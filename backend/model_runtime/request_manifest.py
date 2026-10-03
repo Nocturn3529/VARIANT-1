@@ -65,12 +65,16 @@ def provider_response_identity(*objects: Any) -> dict[str, str]:
 
     Callers pass already-parsed top-level response/chunk objects.  The helper
     intentionally does not recurse through arbitrary response data and never
-    retains text, IDs, errors, or usage fields.
+    retains text, user identifiers, errors, or usage fields. Opaque generation
+    IDs with known provider prefixes support later usage reconciliation.
     """
     result: dict[str, str] = {}
     for value in objects:
         if not isinstance(value, dict):
             continue
+        generation_id = value.get("id")
+        if isinstance(generation_id, str) and generation_id.startswith(("gen-", "chatcmpl-", "resp_")):
+            result["provider_generation_id"] = generation_id[:160]
         model_id = str(value.get("model") or "").strip()
         if model_id:
             result["provider_returned_model_id"] = model_id[:300]
