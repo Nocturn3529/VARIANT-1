@@ -90,6 +90,21 @@ def test_agent_engine_sources_have_no_removed_framework_imports():
         assert not any(fragment in source for fragment in forbidden_import_fragments), path
 
 
+def test_every_checked_in_lock_keeps_the_dependency_contract():
+    """Platform and build locks obey the same removals as requirements.lock."""
+
+    forbidden = set(REMOVED_AGENT_FRAMEWORK_PACKAGES) | {
+        "ipython", "ipykernel", "jupyter-client", "jupyter-core", "pyzmq",
+        "debugpy",
+    }
+    locks = sorted(BACKEND.glob("requirements*.lock"))
+    assert BACKEND / "requirements.lock" in locks
+    for lock in locks:
+        pins = _declared_distributions(lock)
+        assert pins, lock
+        assert pins.isdisjoint(forbidden), lock
+
+
 def test_astb_repl_has_no_jupyter_or_debugger_dependency_contract():
     pins = _locked_versions()
     requirements = (BACKEND / "requirements.txt").read_text(encoding="utf-8")

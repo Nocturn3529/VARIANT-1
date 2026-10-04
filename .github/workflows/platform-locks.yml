@@ -1,0 +1,88 @@
+name: Platform locks
+
+# Generates and validates a pinned backend dependency lock on a clean runner,
+# then uploads it for review. Commit the reviewed lock by hand; this workflow
+# never pushes. Run it manually, or push a branch named locks/<anything>.
+on:
+  workflow_dispatch:
+  push:
+    branches: ["locks/**"]
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-latest  # Apple silicon (arm64) runner
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash  # -eo pipefail, so a failure piped through tee fails the step
+    env:
+      LOCK: backend/requirements-macos-arm64.lock
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Record the environment
+        run: |
+          set -eu
+          test "$(uname -m)" = arm64
+          mkdir -p lock-report
+          {
+            echo "commit: $GITHUB_SHA"
+            uname -a
+            sw_vers
+            python3 -c "import platform, sys; print(sys.version); print(platform.platform(), platform.machine())"
+            echo "node $(node --version)"
+          } | tee lock-report/environment.txt
+      - name: Resolve requirements.txt in a clean environment and generate the lock
+        run: |
+          set -eu
+          python3 -m venv "$RUNNER_TEMP/resolve"
+          "$RUNNER_TEMP/resolve/bin/python" -m pip install --upgrade pip
+          "$RUNNER_TEMP/resolve/bin/python" -m pip install -r backend/requirements.txt 2>&1 | tee lock-report/resolve-install.txt
+          "$RUNNER_TEMP/resolve/bin/python" -m pip check | tee lock-report/resolve-pip-check.txt
+          "$RUNNER_TEMP/resolve/bin/python" scripts/generate_backend_lock.py --output "$LOCK" | tee lock-report/generate.txt
+          cp "$LOCK" lock-report/
+      - name: Wheel coverage of every pin (informational)
+        continue-on-error: true
+        run: |
+          set -eu
+          "$RUNNER_TEMP/resolve/bin/python" -m pip download --only-binary=:all: --no-deps \
+            -r "$LOCK" -d "$RUNNER_TEMP/wheels" 2>&1 | tee lock-report/wheel-coverage.txt
+      - name: Reinstall the lock alone into a fresh environment
+        run: |
+          set -eu
+          python3 -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          # --no-deps proves the lock is a complete closure on its own.
+          backend/.venv/bin/python -m pip install --no-deps -r "$LOCK" 2>&1 | tee lock-report/install-no-deps.txt
+          backend/.venv/bin/python -m pip check | tee lock-report/validate-pip-check.txt
+          backend/.venv/bin/python -m pip freeze --all > lock-report/freeze.txt
+          backend/.venv/bin/python scripts/validate_backend_lock.py --lock "$LOCK" | tee lock-report/validate.txt
+      - name: Lock, kernel runtime, and tool-call tests on the locked environment
+        working-directory: backend
+        run: |
+          node ../scripts/test-python.js \
+            tests/test_backend_lock_generator.py \
+            tests/test_validate_backend_lock.py \
+            tests/test_native_dependency_lock.py \
+            tests/test_kernel_runtime.py \
+            tests/test_capsule_capture_streaming.py \
+            tests/test_proxy_argument_parity.py \
+            tests/test_mutation_proxy_order.py \
+            tests/test_mutation_model_freedom.py \
+            -q 2>&1 | tee ../lock-report/tests.txt
+      - name: Upload the validated lock and its evidence
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-arm64-lock
+          path: lock-report/
+          if-no-files-found: error
+          retention-days: 14
