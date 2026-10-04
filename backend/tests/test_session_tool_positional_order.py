@@ -10,11 +10,8 @@ import sqlite3
 
 import pytest
 
-from session_catalog.mutation import (
-    MutationManager,
-    _ordered_params,
-    _wrapped_helper_order,
-)
+from session_catalog.mutation import MutationManager
+from session_catalog.mutation_schema import ordered_params, wrapped_helper_order
 from test_mutation import _enable_mutation, mutable_stack  # noqa: F401
 
 
@@ -26,13 +23,13 @@ def test_order_comes_from_the_promoted_helper_only():
         "def run(arguments):\n"
         "    return write_note(**arguments)\n"
     )
-    assert _wrapped_helper_order(promoted) == ["text", "path", "mode"]
+    assert wrapped_helper_order(promoted) == ["text", "path", "mode"]
     explicit = "def run(arguments):\n    return arguments['path']\n"
-    assert _wrapped_helper_order(explicit) == []
+    assert wrapped_helper_order(explicit) == []
     params = {"path": {"type": "string"}, "text": {"type": "string"}}
-    assert list(_ordered_params(params, ["text", "path"])) == ["text", "path"]
+    assert list(ordered_params(params, ["text", "path"])) == ["text", "path"]
     # Drafts stored before the order was recorded keep their sorted contract.
-    assert list(_ordered_params(params, [])) == ["path", "text"]
+    assert list(ordered_params(params, [])) == ["path", "text"]
 
 
 def test_existing_draft_tables_gain_the_order_column(tmp_path):
