@@ -209,6 +209,84 @@ def _selected_slot_reference(record: Any, reference: Any) -> str:
     return f"{selected}/{int(raw)}"
 
 
+def _wrapped_helper_order(source: str) -> list[str]:
+    """Parameter order of the helper a promoted ``run(arguments)`` forwards to.
+
+    Promotion packages ``def helper(...)`` plus ``run(arguments)`` returning
+    ``helper(**arguments)``. Contracts travel as sorted JSON, so the helper's
+    own signature is the only record of its declared positional order.
+    """
+
+    try:
+        tree = ast.parse(str(source), filename="<session-mutation>", mode="exec")
+    except SyntaxError:
+        return []
+    functions = {
+        node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+    }
+    run = functions.get("run")
+    if run is None or len(run.body) != 1 or not isinstance(run.body[0], ast.Return):
+        return []
+    call = run.body[0].value
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and not call.args
+        and len(call.keywords) == 1
+        and call.keywords[0].arg is None
+        and isinstance(call.keywords[0].value, ast.Name)
+        and call.keywords[0].value.id == "arguments"
+    ):
+        return []
+    helper = functions.get(call.func.id)
+    if helper is None or helper is run:
+        return []
+    arguments = helper.args
+    return [
+        item.arg
+        for item in arguments.posonlyargs + arguments.args + arguments.kwonlyargs
+    ]
+
+
+def _slot_parameter_order(slot: Mapping[str, Any], alias: str, kind: str) -> list[str]:
+    """Declared order of the seed or method contract a mutation replaces."""
+
+    rows = [
+        dict(item) for item in (
+            slot.get("methods") if kind == "method" else slot.get("bindings")
+        ) or ()
+        if isinstance(item, Mapping)
+        and (kind != "method" or str(item.get("alias") or "") == alias)
+    ]
+    if not rows:
+        return []
+    return declared_parameter_order(
+        dict(rows[0].get("params") or {}), str(rows[0].get("signature") or "")
+    )
+
+
+def _parameter_order(params: Mapping[str, Any], declared: Sequence[str]) -> list[str]:
+    known = list(dict.fromkeys(str(name) for name in declared if str(name) in params))
+    return known + sorted(str(name) for name in params if str(name) not in known)
+
+
+def _ordered_params(params: Mapping[str, Any], declared: Any) -> dict[str, Any]:
+    """Params in declared order; stored rows without an order stay as they are."""
+
+    order = declared if isinstance(declared, (list, tuple)) else ()
+    if not order:
+        return dict(params)
+    return {name: params[name] for name in _parameter_order(params, order)}
+
+
+def _stored_order(value: Any) -> list[str]:
+    try:
+        decoded = json.loads(value) if value else []
+    except (TypeError, ValueError):
+        return []
+    return [str(item) for item in decoded] if isinstance(decoded, list) else []
+
+
 class MutationManager:
     """SQLite-authoritative draft/version/activation lifecycle."""
 
@@ -274,6 +352,7 @@ class MutationManager:
                     source_ref TEXT NOT NULL,
                     source_sha256 TEXT NOT NULL,
                     proposal_fingerprint TEXT NOT NULL DEFAULT '',
+                    parameter_order_json TEXT NOT NULL DEFAULT '',
                     dependencies_json TEXT NOT NULL,
                     tests_json TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -375,6 +454,11 @@ class MutationManager:
                 conn.execute(
                     "ALTER TABLE mutation_draft ADD COLUMN "
                     "proposal_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
+            if "parameter_order_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE mutation_draft ADD COLUMN "
+                    "parameter_order_json TEXT NOT NULL DEFAULT ''"
                 )
             if "dependencies_json" not in columns and "capabilities_json" in columns:
                 conn.execute(
@@ -610,6 +694,7 @@ class MutationManager:
         for key in (
             "schema_json", "params_json", "dependencies_json",
             "tests_json", "validation_json", "host_test_json",
+            "parameter_order_json",
         ):
             result[key[:-5] if key.endswith("_json") else key] = (
                 json.loads(result[key]) if result[key] else None
@@ -1130,6 +1215,17 @@ class MutationManager:
         if not clean_purpose or len(clean_purpose) > 2000:
             raise MutationError("invalid_purpose", "mutation purpose must be 1..2000 characters")
         normalized_schema, params = _public_schema(schema)
+        # Positional calls follow the helper's own order, else the contract
+        # it replaces or revises; explicit run(arguments) sources keep sorted.
+        declared_order = _wrapped_helper_order(clean_source)
+        if not declared_order and declared_kind in {"mutate", "method"}:
+            declared_order = _slot_parameter_order(base_slot, clean_alias, declared_kind)
+        if not declared_order and declared_kind == "revise":
+            parent_draft = self._active_slot_draft(chat_id, slot_id) or {}
+            declared_order = list(parent_draft.get("parameter_order") or ())
+        parameter_order = (
+            _parameter_order(params, declared_order) if declared_order else []
+        )
         clean_tests = list(tests or ())
         if len(clean_tests) > 20 or len(canonical_bytes(clean_tests)) > 64 * 1024:
             raise MutationError("test_quota", "mutation tests exceed the session draft quota")
@@ -1184,15 +1280,16 @@ class MutationManager:
                 "INSERT INTO mutation_draft(draft_id, chat_id, catalog_release_id, "
                 "category_id, position, slot_id, declared_kind, parent_slot_id, alias, "
                 "purpose, schema_json, params_json, source_ref, source_sha256, "
-                "proposal_fingerprint, dependencies_json, tests_json, "
-                "status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "proposal_fingerprint, parameter_order_json, dependencies_json, "
+                "tests_json, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                 "'draft', ?, ?)",
                 (
                     draft_id, str(chat_id), loaded.release_id, category_id, position,
                     slot_id, declared_kind, parent_slot_id, clean_alias, clean_purpose,
                     _stable(normalized_schema), _stable(params), source_artifact.ref,
                     source_artifact.sha256, proposal_fingerprint,
+                    json.dumps(parameter_order) if parameter_order else "",
                     _stable(dependencies), _stable(clean_tests), now, now,
                 ),
             )
@@ -1791,7 +1888,9 @@ class MutationManager:
             if str(base.get("projection") or "seeds") == "object":
                 namespace = str(base.get("bundle") or "tools")
         alias = str(draft.get("alias") or "")
-        signature = binding_signature(alias, dict(draft.get("params") or {}))
+        signature = binding_signature(alias, _ordered_params(
+            dict(draft.get("params") or {}), draft.get("parameter_order")
+        ))
         qualified_name = (
             f"tools.{alias}" if namespace == "tools"
             else f"{namespace}.{alias}"
@@ -2659,7 +2758,10 @@ class MutationManager:
         for row in rows:
             if str(row["catalog_release_id"]) != loaded.release_id:
                 continue
-            params = json.loads(row["params_json"])
+            params = _ordered_params(
+                json.loads(row["params_json"]),
+                _stored_order(row["parameter_order_json"]),
+            )
             version = int(row["version"])
             ref = self.broker.ref_for_name(
                 MUTATION_HANDLER,
@@ -2764,7 +2866,10 @@ class MutationManager:
                     if prior_kind == "mutate":
                         methods.clear()
                     prior_alias = str(prior.get("alias") or "")
-                    prior_params = json.loads(str(prior.get("params_json") or "{}"))
+                    prior_params = _ordered_params(
+                        json.loads(str(prior.get("params_json") or "{}")),
+                        _stored_order(prior.get("parameter_order_json")),
+                    )
                     dependencies = json.loads(
                         str(prior.get("dependencies_json") or "[]")
                     )
