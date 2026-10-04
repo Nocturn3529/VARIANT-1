@@ -87,7 +87,6 @@ npm start
 After launch, configure a supported provider or local runtime in the app.
 Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
-The Live2D cat and its floating overlay have been removed.
 
 ## Execution and data
 

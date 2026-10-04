@@ -8,15 +8,6 @@ together. For Windows source installation, see [Setup](SETUP.md).
 
 ## One model-facing execution path
 
-Disposable mutation workers retain process-tree ownership until all descendants
-have exited, before deleting their workspace. Retirement is protected against
-repeated cancellation and has a separate bounded cleanup allowance. Candidate
-errors remain candidate errors when cleanup also fails; cleanup failures have
-their own diagnostic category. Persistent CPython cell policy is unchanged.
-Windows persistent and mutation workers start suspended, enter their Job Object,
-and then resume. This also owns the real interpreter created by a venv launcher;
-a Python-level gate alone cannot prevent that earlier launcher fork.
-
 Models use the historical `ipython(category, code)` action. Despite the name,
 it runs a custom CPython REPL with top-level await, not Jupyter or IPython.
 
@@ -100,10 +91,10 @@ offsets always address the returned source text.
 Cell expansion accepts `part='source'`, `'result'`, or `'output'`; output-event
 evidence retains its own omissions and artifact references.
 
-The added base/children methods change the catalog contract. Previously pinned
-chats retain the existing explicit structural-rebase requirement; rebase requires
-an idle runtime and fences its Python generation. Existing mutation tools are
-handled by that rebase contract rather than being silently overwritten at startup.
+Catalog contract changes, such as the base/children methods, do not rewrite
+pinned chats: they keep the explicit structural-rebase requirement, which needs
+an idle runtime and fences its Python generation. Existing session tools follow
+that rebase contract rather than being silently overwritten at startup.
 
 The session-context SQLite index is derived data, not a new transcript owner.
 Immutable source descriptors and text are shared across frozen views. Views
@@ -145,8 +136,8 @@ staging and preserves an existing destination. Existing files require explicit
 overwrite authorization; export creates no model call.
 
 Canonical ancestry queries drive the recursive frontier before looking up each
-parent edge. This retains the same private ancestry and ordering while avoiding
-a planner choice that scans all conversation edges at every recursion step.
+parent edge, so SQLite does not scan every conversation edge at each recursion
+step.
 
 Kernel storage ownership is acquired before scratch cleanup or interrupted-cell
 reconciliation. Lifetime OS locks cover the canonical scratch and ledger paths;
@@ -221,7 +212,6 @@ An explicitly chosen auxiliary effort overrides that profile's lightweight
 reasoning default for the selected call. Without that choice, existing internal
 profile defaults remain. Auxiliary calls never promote the main run's route.
 
-
 The activity trace is a bounded display projection, not a complete output log.
 Live and saved ordinary traces keep the newest 48 events and record earlier
 omissions; provider summaries retain their separate storage bound. Tool failure,
@@ -284,13 +274,23 @@ Mutation means changing executable tool methods, not training model weights.
 Authoring is off for new chats. When enabled, a model can register its own
 Python helper as a chat-local tool (`toolbelt.synthesize`) or replace a mounted
 callable, for example one that just failed (`toolbelt.mutate`). Registration
-checks the source's syntax and `run(arguments)` contract; example cases are
+checks the source's syntax and `run(arguments)` contract, and that the tool's
+alias and parameter names can be mounted in Python; example cases are
 optional and their outcomes are only reported. A registered tool stays until the
 model or user revises it, rolls it back, or resets it: failed calls are recorded
 but never remove it, and there is no lifetime limit on attempts. Older inactive
 versions are retired to bound storage. Each call runs in a fresh worker that does
 not share the chat's live namespace; registrations persist across kernel restarts.
 Turning authoring off does not silently remove an already-active tool overlay.
+
+Disposable mutation workers retain process-tree ownership until all descendants
+have exited, before deleting their workspace. Retirement is protected against
+repeated cancellation and has a separate bounded cleanup allowance. Candidate
+errors remain candidate errors when cleanup also fails; cleanup failures have
+their own diagnostic category. Windows persistent and mutation workers start
+suspended, enter their Job Object, and then resume. This also owns the real
+interpreter created by a venv launcher; a Python-level gate alone cannot prevent
+that earlier launcher fork.
 
 ## Authority and intervention
 
