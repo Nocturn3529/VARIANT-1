@@ -2,6 +2,8 @@
 # Reproducible installs: use this platform's pinned lock, which
 # `npm run setup:backend` selects: requirements.lock (Windows x64),
 # requirements-linux-x86_64.lock, or requirements-macos-arm64.lock.
+# Platform locks keep requirements.lock's versions for shared packages, so
+# regenerate requirements.lock first, then the platform locks.
 # Install once into a venv:  npm run setup:backend
 fastapi>=0.110,<1.0
 uvicorn[standard]>=0.27,<1.0

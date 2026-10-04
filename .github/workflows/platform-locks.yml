@@ -40,12 +40,17 @@ jobs:
             python3 -c "import platform, sys; print(sys.version); print(platform.platform(), platform.machine())"
             echo "node $(node --version)"
           } | tee lock-report/environment.txt
-      - name: Resolve requirements.txt in a clean environment and generate the lock
+      - name: Resolve requirements.txt at the Windows lock's versions and generate the lock
         run: |
           set -eu
+          # Packages shared with Windows keep requirements.lock's versions, so
+          # every platform runs the same tested set; platform-only packages
+          # resolve freely. pip constraints cannot carry extras.
+          sed -E 's/\[[^]]*\]//' backend/requirements.lock > "$RUNNER_TEMP/constraints.txt"
           python3 -m venv "$RUNNER_TEMP/resolve"
           "$RUNNER_TEMP/resolve/bin/python" -m pip install --upgrade pip
-          "$RUNNER_TEMP/resolve/bin/python" -m pip install -r backend/requirements.txt 2>&1 | tee lock-report/resolve-install.txt
+          "$RUNNER_TEMP/resolve/bin/python" -m pip install -r backend/requirements.txt \
+            -c "$RUNNER_TEMP/constraints.txt" 2>&1 | tee lock-report/resolve-install.txt
           "$RUNNER_TEMP/resolve/bin/python" -m pip check | tee lock-report/resolve-pip-check.txt
           "$RUNNER_TEMP/resolve/bin/python" scripts/generate_backend_lock.py --output "$LOCK" | tee lock-report/generate.txt
           cp "$LOCK" lock-report/
