@@ -281,8 +281,15 @@ Native browser moves retain their live pages rather than reloading them.
 ## Mutation
 
 Mutation means changing executable tool methods, not training model weights.
-Authoring is off for new chats. When enabled, a model can propose and activate
-chat-local tool changes with validation, invocation records, and rollback support.
+Authoring is off for new chats. When enabled, a model can register its own
+Python helper as a chat-local tool (`toolbelt.synthesize`) or replace a mounted
+callable, for example one that just failed (`toolbelt.mutate`). Registration
+checks the source's syntax and `run(arguments)` contract; example cases are
+optional and their outcomes are only reported. A registered tool stays until the
+model or user revises it, rolls it back, or resets it: failed calls are recorded
+but never remove it, and there is no lifetime limit on attempts. Older inactive
+versions are retired to bound storage. Each call runs in a fresh worker that does
+not share the chat's live namespace; registrations persist across kernel restarts.
 Turning authoring off does not silently remove an already-active tool overlay.
 
 ## Authority and intervention
