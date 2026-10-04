@@ -152,6 +152,12 @@ do not certify days of uptime or every browser/desktop stack.
 `reconcile` optionally refreshes missing native usage and cost measurements from
 OpenRouter generation metadata. It does not retrieve stored prompts or completions.
 
+New unattended phases select managed headless Chromium in the isolated lab and
+check that it can render before admitting agents. `admit --browser-check` adds a
+local-page rendering and screenshot gate. Browser waits requiring user recovery
+are recorded and stop the unattended phase; a working dashboard alone does not
+prove that its coordinating agent remained active.
+
 Original VARIANT-1 code is available under the [MIT License](LICENSE).
 Third-party components retain their own licenses; see
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

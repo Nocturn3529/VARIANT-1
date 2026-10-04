@@ -9,7 +9,7 @@ CANARY = Path(__file__).resolve().parents[2]/'experiments'/'live-canary'
 sys.path.insert(0,str(CANARY))
 from endurance_state import EnduranceJournal, export_usage, observer_lease
 from endurance_mission import grade, mission, publish_feed
-from run_endurance import AdoptedBackendProcess, EnduranceBackend, ObserverClient, free_model_preflight, initialize, parse_route, require_credentials, peer_summary, prepare_sessions
+from run_endurance import AdoptedBackendProcess, EnduranceBackend, ObserverClient, free_model_preflight, initialize, parse_route, require_credentials, peer_summary, prepare_sessions, configure_browser, browser_waits, browser_screenshot_evidence
 from model_runtime.usage_ledger import ModelUsageLedger
 from tests.test_model_usage_ledger import request
 from endurance_reconcile import generation_usage, reconcile_usage
@@ -29,6 +29,7 @@ def test_lab_initialization_is_once_only_and_does_not_reset_retained_state(tmp_p
     assert plan['routes'][2]['provider']=='hermes'
     assert plan['routes'][2]['model']=='meituan/longcat-2.5-preview:free'
     assert 'reasoning_effort' not in plan['routes'][2]
+    assert plan['browser_selection']=={'mode':'managed','headed':False}
     assert EnduranceJournal(root/'observer.sqlite3').events()[0]['payload']=={'step':1}
 
 
@@ -238,3 +239,107 @@ async def test_plain_host_error_is_not_a_successful_observer_command(tmp_path):
         assert 'private body' not in json.dumps(journal.events())
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_headless_phase_selects_managed_browser_once_and_rejects_resume_change(tmp_path):
+    journal=EnduranceJournal(tmp_path/'observer.sqlite3')
+    calls=[]
+    chosen={'mode':'embedded'}
+    class Client:
+        async def command(self,message):
+            nonlocal chosen
+            calls.append(message)
+            if message['type']=='browser:settings:get':
+                return {'default':{'selection':chosen,'revision':0}}
+            chosen=dict(message['selection'])
+            return {'ok':True}
+    client=Client()
+    plan={'browser_selection':{'mode':'managed','headed':False}}
+    await configure_browser(client,journal,plan)
+    assert calls[-1]['scope']=='default' and calls[-1]['expected_revision']==0
+    await configure_browser(client,journal,plan)
+    assert len([row for row in calls if row['type']=='browser:selection:set'])==1
+    chosen={'mode':'embedded'}
+    with pytest.raises(ValueError,match='Retained browser selection changed'):
+        await configure_browser(client,journal,plan)
+
+
+def test_observer_surfaces_scoped_browser_user_wait_without_private_details(tmp_path):
+    from browser_fabric.store import BrowserFabricStore
+    store=BrowserFabricStore(str(tmp_path/'data/browser/browser-fabric.sqlite3'))
+    state={'state':'connection_failed','pending_operation_id':'wait-a','message':'private signed URL',
+           'actions':['select_profile','retry','cancel','private-action']}
+    store.update_browser_preference('a',state=state)
+    store.update_browser_preference('other',state=state)
+    result=browser_waits(tmp_path,[{'id':'a'}])
+    assert result['available'] and [row['chat_id'] for row in result['waiting']]==['a']
+    assert result['waiting'][0]['actions']==['select_profile','retry','cancel']
+    assert 'private' not in json.dumps(result)
+
+
+def test_browser_gate_requires_recent_scoped_verified_png(tmp_path):
+    import sqlite3,hashlib
+    root=tmp_path/'data/browser';root.mkdir(parents=True)
+    data=b'\x89PNG\r\n\x1a\nfixture'
+    digest=hashlib.sha256(data).hexdigest()
+    path=tmp_path/'data/astb/artifacts'/digest[:2]/digest[2:4]/digest
+    path.parent.mkdir(parents=True);path.write_bytes(data)
+    with sqlite3.connect(root/'browser-fabric.sqlite3') as conn:
+        conn.executescript('CREATE TABLE browser_session(session_id TEXT,scope_json TEXT);'
+            'CREATE TABLE browser_observation(session_id TEXT,url TEXT,text_excerpt TEXT,screenshot_artifact_ref TEXT,created_at REAL);')
+        conn.execute('INSERT INTO browser_session VALUES(?,?)',('session',json.dumps({'chat_id':'a'})))
+        conn.execute('INSERT INTO browser_observation VALUES(?,?,?,?,?)',('session','http://127.0.0.1:8765/',
+            'Endurance browser proof 2870','artifact://sha256/'+digest,10))
+    assert browser_screenshot_evidence(tmp_path,'a',since=9)
+    assert not browser_screenshot_evidence(tmp_path,'a',since=11)
+    assert not browser_screenshot_evidence(tmp_path,'other',since=9)
+    path.write_bytes(b'corrupt')
+    assert not browser_screenshot_evidence(tmp_path,'a',since=9)
+
+
+@pytest.mark.asyncio
+async def test_unattended_browser_wait_stops_before_observation_deadline_without_continuation(tmp_path,monkeypatch):
+    import run_endurance as runner
+    from types import SimpleNamespace
+    plan=initialize(tmp_path/'lab',duration=7200)
+    calls=[]
+    class Client:
+        def __init__(self,*_):pass
+        async def command(self,message,*_,**__):
+            calls.append(message)
+            kind=message['type']
+            if kind=='browser:settings:get':return {'default':{'selection':{'mode':'embedded'},'revision':0}}
+            if kind=='goal:submit':return {'result':{'goal':{'goal_id':'goal-a'}}}
+            if kind=='goal:status:get':return {'result':{'goal':{'status':'waiting_external','version':1}}}
+            if kind=='goal:cancel':return {'result':{'goal':{'status':'cancelled'}}}
+            return {'ok':True}
+        async def close(self):pass
+    class Connection:
+        async def __aenter__(self):return object()
+        async def __aexit__(self,*_):pass
+    class Backend:
+        def __init__(self,root,*_):
+            self.data_dir=Path(root)/'runtime-data'
+            self.process=SimpleNamespace(pid=1,wait=lambda *_:None)
+        def ensure_started(self,*_):return {'pid':1,'port':1,'token':'fixture-loopback'}
+        def stop(self):calls.append({'type':'backend:stop'})
+    async def sessions(*_):return [{'id':'a','peer_id':'chat:a'}]
+    monkeypatch.setattr(runner,'require_clean_source',lambda:None)
+    monkeypatch.setattr(runner,'require_credentials',lambda *_:None)
+    monkeypatch.setattr(runner,'free_model_preflight',lambda *_:[])
+    monkeypatch.setattr(runner,'browser_preflight',lambda:{'chromium_checked':True})
+    monkeypatch.setattr(runner,'EnduranceBackend',Backend)
+    monkeypatch.setattr(runner,'ObserverClient',Client)
+    monkeypatch.setattr(runner,'prepare_sessions',sessions)
+    monkeypatch.setattr(runner.websockets,'connect',lambda *_args,**_kw:Connection())
+    monkeypatch.setattr(runner.urllib.request,'urlopen',lambda *_args,**_kw:object())
+    monkeypatch.setattr(runner,'resource_sample',lambda *_:{'backend_alive':True})
+    monkeypatch.setattr(runner,'browser_waits',lambda *_:{'available':True,'waiting':[{'chat_id':'a','state':'connection_failed'}]})
+    monkeypatch.setattr(runner,'grade',lambda *_args,**_kw:{'checks':{},'passed':True})
+    assert await runner.run_owned(tmp_path/'lab')==1
+    report=json.loads((tmp_path/'lab/report.json').read_text())
+    assert report['requires_human_action'] and report['end_reason']=='browser_user_recovery_wait'
+    assert report['goal_status']=='cancelled'
+    assert 'goal:continue' not in [row['type'] for row in calls]
+    assert 'backend:stop' in [row['type'] for row in calls]

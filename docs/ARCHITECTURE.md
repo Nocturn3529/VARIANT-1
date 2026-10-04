@@ -134,6 +134,14 @@ have a time bound so diagnostics cannot stall the observer as history grows.
 JSONL/CSV exports use a consistent database snapshot and bounded batches. Artifact
 grades, continuous-operation evidence and recovery interventions remain distinct;
 the controller does not claim full mission qualification from file checks alone.
+Headless phase initialization pins a managed browser selection in the lab's own
+Browser Fabric settings. Chromium provisioning and a local render check precede
+Goal admission. Optional browser admission verifies a recent chat-scoped observation
+and its content-addressed PNG, rather than trusting an agent's screenshot claim.
+The observer exposes pending browser user-recovery operations without exporting
+profile paths, URLs or error bodies; such waits end an unattended phase and retain
+its cancellation evidence. Desktop browser selection and kernel deadline policy
+remain separate from this test configuration.
 The former fact/profile memory store, automatic recall, extraction, proposals,
 approvals, and consolidation have been retired. Startup removes only those
 memory tables from the shared ASTB database. Goal records and their controls

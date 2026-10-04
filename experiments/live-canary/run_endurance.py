@@ -17,6 +17,8 @@ import sys
 import time
 import urllib.request
 import uuid
+import hashlib
+from urllib.parse import urlparse
 
 import websockets
 
@@ -92,6 +94,7 @@ def initialize(root, *, models=DEFAULT_MODELS, duration=7200, interval=900, proj
     plan = {'schema':'variant1.endurance-plan.v2','run_id':uuid.uuid4().hex,
             'commit':source_commit(),'project':str(project),'duration_s':float(duration),'feed_interval_s':float(interval),
             'routes':routes,
+            'browser_selection':{'mode':'managed','headed':False},
             'reasoning_policy':'OpenRouter requests maximum effort. LongCat uses its advertised default reasoning without inventing an effort scale. Wire receipts and reported counters are qualification evidence, not a guarantee of model-internal effort.'}
     journal.set('plan',plan)
     publish_feed(project,0)
@@ -169,7 +172,6 @@ class EnduranceBackend(BackendProcess):
             self.log_path.rename(self.run_root/f'backend-{time.time_ns()}.log')
         self.port_file.unlink(missing_ok=True)
         return super().start()
-
     def ensure_started(self, journal):
         """Adopt a surviving exact lab backend after an observer crash."""
         import psutil
@@ -198,6 +200,47 @@ class EnduranceBackend(BackendProcess):
         connection=self.start()
         journal.set('backend_owner',{'pid':self.process.pid,'created_at':psutil.Process(self.process.pid).create_time()})
         return connection
+
+
+async def configure_browser(client, journal, plan):
+    """Select the isolated lab's actual browser; never change desktop-user settings."""
+    expected=plan.get('browser_selection')
+    if not expected:
+        return  # Older pinned phases retain their original selection evidence.
+    settings=await client.command({'type':'browser:settings:get'})
+    if settings.get('error'):
+        raise RuntimeError('Could not read the lab browser selection')
+    current=settings.get('default') or {}
+    actual=current.get('selection') or {}
+    if journal.get('browser_configured'):
+        if any(actual.get(key)!=value for key,value in expected.items()):
+            raise ValueError('Retained browser selection changed; record a new phase')
+        return
+    await client.command({'type':'browser:selection:set','scope':'default','selection':expected,
+        'expected_revision':current.get('revision',0)})
+    journal.set('browser_configured',True)
+    journal.append('browser_configuration',expected)
+
+
+def browser_preflight():
+    """Provision and check real headless Chromium before admitting a Goal."""
+    if str(BACKEND) not in sys.path:sys.path.insert(0,str(BACKEND))
+    from browser_fabric.provisioning import ensure_chromium_runtime
+    async def check():
+        from playwright.async_api import async_playwright
+        cache=await ensure_chromium_runtime(str(Path.home()/'.variant1-endurance'/'playwright'))
+        async with async_playwright() as runtime:
+            browser=await runtime.chromium.launch(headless=True)
+            try:
+                page=await browser.new_page()
+                await page.set_content('<title>Endurance browser preflight</title><h1>Ready</h1>')
+                screenshot=await page.screenshot(timeout=15000)
+                if await page.title()!='Endurance browser preflight' or not screenshot.startswith(b'\x89PNG'):
+                    raise ValueError('Managed Chromium did not render the preflight page')
+            finally:
+                await browser.close()
+        return {'mode':'managed','headed':False,'chromium_checked':True,'runtime_cache':str(cache)}
+    return asyncio.run(check())
 
 
 class AdoptedBackendProcess:
@@ -380,12 +423,56 @@ def peer_summary(data_dir, sessions):
         return {'available':False,'measurement_complete':False,'exchanges':[], 'limitations':'Peer evidence unavailable or exceeded its bounded observation time.'}
 
 
+def browser_waits(data_dir, sessions):
+    """Expose real user-recovery waits without retaining URLs, profile paths or error bodies."""
+    database=Path(data_dir)/'data'/'browser'/'browser-fabric.sqlite3'
+    if not database.is_file():return {'available':False,'waiting':[]}
+    ids=[session['id'] for session in sessions]
+    try:
+        with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True,timeout=5) as conn:
+            rows=conn.execute('SELECT owner_id,state_json FROM browser_preference WHERE owner_id IN ('+','.join('?' for _ in ids)+')',ids).fetchall()
+        waiting=[]
+        for chat_id,raw in rows:
+            state=json.loads(raw)
+            if not isinstance(state,dict):return {'available':False,'waiting':[]}
+            if state.get('pending_operation_id'):
+                waiting.append({'chat_id':chat_id,'state':state.get('state'),'pending_operation_id':state['pending_operation_id'],
+                                'actions':[action for action in state.get('actions',[]) if action in {'select_profile','retry','cancel'}]})
+        return {'available':True,'waiting':waiting}
+    except (sqlite3.Error,ValueError):return {'available':False,'waiting':[]}
+
+
+def browser_screenshot_evidence(data_dir, chat_id, *, since=0):
+    """Check actual scoped browser observations and their content-addressed PNG."""
+    root=Path(data_dir)
+    database=root/'data'/'browser'/'browser-fabric.sqlite3'
+    if not database.is_file():return False
+    try:
+        with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True,timeout=5) as conn:
+            rows=conn.execute('''SELECT o.url,o.text_excerpt,o.screenshot_artifact_ref FROM browser_observation o
+                JOIN browser_session s ON s.session_id=o.session_id
+                WHERE json_extract(s.scope_json,'$.chat_id')=? AND o.created_at>=?
+                AND o.screenshot_artifact_ref!='' ORDER BY o.created_at DESC LIMIT 20''',(chat_id,since)).fetchall()
+        for url,text,ref in rows:
+            parsed=urlparse(url)
+            if parsed.scheme!='http' or parsed.hostname not in {'127.0.0.1','localhost','::1'}:continue
+            if 'Endurance browser proof' not in text or '2870' not in text:continue
+            digest=ref.removeprefix('artifact://sha256/')
+            if len(digest)!=64 or any(char not in '0123456789abcdef' for char in digest):continue
+            path=root/'data'/'astb'/'artifacts'/digest[:2]/digest[2:4]/digest
+            if not path.is_file() or path.stat().st_size > 16*1024*1024:continue
+            data=path.read_bytes()
+            if data.startswith(b'\x89PNG\r\n\x1a\n') and hashlib.sha256(data).hexdigest()==digest:return True
+        return False
+    except (sqlite3.Error,OSError,ValueError):return False
+
+
 async def run(root, *, tick=30, final_grace=300):
     with observer_lease(Path(root).resolve()):
         return await run_owned(root,tick=tick,final_grace=final_grace)
 
 
-async def admit(root, *, timeout=600, only=None, retry_blocked=False):
+async def admit(root, *, timeout=600, only=None, retry_blocked=False, browser_check=False):
     """Short real-provider route/Goal gate; this is not a swarm endurance grade."""
     root=Path(root).resolve()
     with observer_lease(root):
@@ -400,10 +487,13 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
         require_credentials(plan['routes'])
         catalog=await asyncio.to_thread(free_model_preflight,plan['routes'])
         plan = {**plan,'catalog':catalog}
+        if plan.get('browser_selection'):
+            journal.append('browser_preflight',await asyncio.to_thread(browser_preflight))
         backend=EnduranceBackend(root,plan)
         connection,client,ledger=None,None,None
         report={'schema':'variant1.endurance-admission.v1','commit':plan['commit'],'catalog':catalog,
-                'cases':[],'limitations':'Short individual Goal qualification. No swarm collaboration, browser/desktop coverage, or long-duration claim.'}
+                'cases':[],'qualification_kind':'browser' if browser_check else 'arithmetic',
+                'limitations':'Short individual Goal qualification; optional browser check covers a single local rendered page. No swarm, desktop or endurance certification.'}
         previous=root/'admission.json'
         if previous.exists():
             archived=root/f'admission-{time.time_ns()}.json'
@@ -416,6 +506,7 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
             url=f'ws://127.0.0.1:{connection["port"]}/ws?token={connection["token"]}'
             async with websockets.connect(url,open_timeout=20,max_size=8*1024*1024) as ws:
                 client=ObserverClient(ws,journal)
+                await configure_browser(client,journal,plan)
                 sessions=await prepare_sessions(client,journal,plan)
                 ledger=ModelUsageLedger(backend.data_dir/'data'/'model-usage.sqlite3')
                 for index,session in enumerate(sessions):
@@ -424,11 +515,15 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
                     workspace=Path(plan['project'])/f'admission-{index}'
                     workspace.mkdir(parents=True,exist_ok=True)
                     await client.command({'type':'chat:project:set','chat_id':session['id'],'root':str(workspace)})
-                    request_id=f'endurance:{plan["run_id"]}:admission:{index}'
+                    request_id=f'endurance:{plan["run_id"]}:admission:{index}'+(':browser' if browser_check else '')
+                    submitted_at=time.time()
+                    objective='Work only in this project. Create a small program that sums squares of the integers 1 through 20. '
+                    objective += ('Build a small local web page showing the computed result and a heading "Endurance browser proof". '
+                        'Inspect the rendered page in a browser and capture its screenshot as evidence. ' if browser_check else '')
+                    objective += 'Write its computed result to proof.json with an integer value field and a verified boolean field. '
+                    objective += 'Verify the calculation and inspect the saved file. Complete only after the deliverable is verified.'
                     accepted=await client.command({'type':'goal:submit','session_id':session['id'],'request_id':request_id,
-                        'objective':'Work only in this project. Create a small program that sums squares of the integers 1 through 20. '
-                            'Write its computed result to proof.json with an integer value field and a verified boolean field. '
-                            'Verify the calculation and inspect the saved file. Complete only after the deliverable is verified.'},timeout=90)
+                        'objective':objective},timeout=90)
                     goal_id=accepted['result']['goal']['goal_id']
                     if accepted['result']['goal']['status']=='blocked' and retry_blocked:
                         await client.command({'type':'goal:continue','session_id':session['id'],'goal_id':goal_id,
@@ -456,6 +551,8 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
                     checks={'goal_completed':status=='succeeded','artifact_verified':artifact_ok,'physical_requests_observed':bool(requests),
                             'pinned_model':bool(requests) and all(row['provider']==session['route']['provider'] and row['model']==session['route']['model'] for row in requests),
                             'reasoning_policy_on_wire':bool(requests) and all(row['metadata']['reasoning_effort']==session['route'].get('reasoning_effort','') for row in requests)}
+                    if browser_check:
+                        checks['browser_screenshot_evidence']=browser_screenshot_evidence(backend.data_dir,session['id'],since=submitted_at)
                     case={'provider':session['route']['provider'],'model':session['route']['model'],'goal_id':goal_id,'status':status,'checks':checks,
                           'reasoning_policy':'maximum_requested' if session['route'].get('reasoning_effort') else 'provider_default_no_declared_effort_scale',
                           'passed':all(checks.values()),'seconds':time.monotonic()-started,'usage':ledger.totals(goal_id=goal_id)}
@@ -492,6 +589,8 @@ async def run_owned(root, *, tick=30, final_grace=300):
     catalog = await asyncio.to_thread(free_model_preflight,plan['routes'])
     journal.append('preflight',catalog)
     plan = {**plan,'catalog':catalog}
+    if plan.get('browser_selection'):
+        journal.append('browser_preflight',await asyncio.to_thread(browser_preflight))
     backend = EnduranceBackend(root,plan)
     connection, client, ledger, report = None, None, None, {}
     sys.path.insert(0,str(BACKEND))
@@ -502,6 +601,7 @@ async def run_owned(root, *, tick=30, final_grace=300):
         url = f'ws://127.0.0.1:{connection["port"]}/ws?token={connection["token"]}'
         async with websockets.connect(url,open_timeout=20,max_size=8*1024*1024) as ws:
             client = ObserverClient(ws,journal)
+            await configure_browser(client,journal,plan)
             sessions = await prepare_sessions(client,journal,plan)
             goal_id,deadline = await submit_goal(client,journal,plan,sessions)
             ledger = ModelUsageLedger(backend.data_dir/'data'/'model-usage.sqlite3')
@@ -524,6 +624,7 @@ async def run_owned(root, *, tick=30, final_grace=300):
                 sample['goal_status_latency_s']=status_latency
                 sample['runtime']=goal['result'].get('runtime')
                 sample['accounting']=goal['result'].get('accounting')
+                sample['browser']=await asyncio.to_thread(browser_waits,backend.data_dir,sessions)
                 journal.append('sample',sample)
                 artifact_grade = await asyncio.to_thread(grade,plan['project'],expected,now=now,deadline=deadline)
                 report = {'schema':'variant1.endurance-status.v1','run_id':plan['run_id'],'commit':plan['commit'],
@@ -537,6 +638,11 @@ async def run_owned(root, *, tick=30, final_grace=300):
                 if state != prior_state:
                     print(json.dumps({'goal_status':state,'elapsed_s':round(report['elapsed_s']),'artifact_checks':artifact_grade['checks']}),flush=True)
                     prior_state = state
+                if sample['browser']['waiting']:
+                    report['requires_human_action']=True
+                    report['end_reason']='browser_user_recovery_wait'
+                    journal.append('observer_intervention',{'action':'browser_prerequisite_cancel'})
+                    break
                 control = journal.get('control')
                 if control:
                     if control['action'] in {'pause','resume','cancel','continue'}:
@@ -553,10 +659,13 @@ async def run_owned(root, *, tick=30, final_grace=300):
                 await asyncio.sleep(max(1,tick))
             if state not in {'succeeded','failed','cancelled','archived'}:
                 goal = await client.command({'type':'goal:status:get','session_id':sessions[0]['id'],'goal_id':goal_id})
-                await client.command({'type':'goal:cancel','session_id':sessions[0]['id'],'goal_id':goal_id,
-                    'expected_version':goal['result']['goal']['version'],'reason':'Observation window ended'})
+                reason='Browser requires user recovery in an unattended phase' if report.get('requires_human_action') else 'Observation window ended'
+                cancelled=await client.command({'type':'goal:cancel','session_id':sessions[0]['id'],'goal_id':goal_id,
+                    'expected_version':goal['result']['goal']['version'],'reason':reason})
+                report['goal_status_at_stop']=state
+                report['goal_status']=(cancelled.get('result',{}).get('goal',{}).get('status') or state)
                 journal.append('observer_intervention',{'action':'deadline_cancel'})
-            report['end_reason'] = state if state in {'succeeded','failed','cancelled','archived'} else 'observation_deadline'
+            report.setdefault('end_reason',state if state in {'succeeded','failed','cancelled','archived'} else 'observation_deadline')
             return 0 if state == 'succeeded' and artifact_grade['passed'] else 1
     except BaseException as exc:
         journal.append('observer_failure',{'type':type(exc).__name__})
@@ -597,6 +706,7 @@ def main():
     parser.add_argument('--timeout',type=float,default=600)
     parser.add_argument('--only',nargs='+',help='Admit only these models from the existing lab plan')
     parser.add_argument('--retry-blocked',action='store_true',help='Explicitly continue a blocked admission Goal; record the operator intervention')
+    parser.add_argument('--browser-check',action='store_true',help='Admission also requires real rendered-page screenshot evidence')
     args = parser.parse_args()
     root = Path(args.root).resolve()
     if args.operation=='init':
@@ -609,7 +719,7 @@ def main():
     if args.operation=='run':
         return asyncio.run(run(root,tick=args.tick))
     if args.operation=='admit':
-        return asyncio.run(admit(root,timeout=args.timeout,only=args.only,retry_blocked=args.retry_blocked))
+        return asyncio.run(admit(root,timeout=args.timeout,only=args.only,retry_blocked=args.retry_blocked,browser_check=args.browser_check))
     if args.operation=='preflight':
         print(json.dumps(free_model_preflight(plan['routes']),indent=2))
     elif args.operation in {'pause','resume','continue','stop'}:
