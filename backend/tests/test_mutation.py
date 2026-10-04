@@ -762,7 +762,8 @@ async def test_toolbelt_and_session_are_immutable_base_objects(mutable_stack):
     )
     try:
         assert result.ok, result.to_dict()
-        assert "propose_activate" in result.output.text()
+        assert "synthesize" in result.output.text()
+        assert "propose_activate" not in result.output.text()
         assert chat_id in result.output.text()
     finally:
         await manager.shutdown()
@@ -805,7 +806,7 @@ async def test_activation_rejects_cross_slot_projected_alias_collision(mutable_s
 
 
 @pytest.mark.asyncio
-async def test_oversized_activated_result_is_accounted_and_rolled_back(
+async def test_oversized_activated_result_is_accounted_and_tool_kept(
     mutable_stack,
 ):
     runtimes, _broker, service, manager = mutable_stack
@@ -839,15 +840,24 @@ async def test_oversized_activated_result_is_accounted_and_rolled_back(
         run_id="oversized-run",
         outer_tool_call_id="oversized-outer",
     )
+    small = await manager.execute(
+        chat_id=chat_id,
+        code="print(tools.oversized_result(large=False))",
+        run_id="oversized-run",
+        outer_tool_call_id="oversized-small",
+    )
     try:
         status = service.mutation.status(chat_id)
         assert not result.ok
-        assert status["active"] == []
+        # The failure is recorded; the tool stays the model's to revise.
+        assert status["active"][0]["version"] == 1
+        assert status["probation"][0]["mechanical_errors"] == 1
         assert any(
             row["stage"] == "invocation"
             and row["code"] == "worker_frame_quota"
             for row in status["failures"]
         )
+        assert small.ok and small.output.text().strip() == "x"
     finally:
         await manager.shutdown()
 
@@ -1131,8 +1141,7 @@ async def test_validate_commit_is_fenced_by_authority_revision(
         source="def run(arguments):\n    return arguments['value']\n",
     )
 
-    async def revoke_during_worker(_request, *, proxy_call):
-        del proxy_call
+    async def revoke_during_check(_source):
         runtimes.set_mutation_write_enabled(
             chat_id,
             False,
@@ -1141,7 +1150,7 @@ async def test_validate_commit_is_fenced_by_authority_revision(
         )
         return {"ok": True}
 
-    monkeypatch.setattr(service.mutation.worker, "run", revoke_during_worker)
+    monkeypatch.setattr(service.mutation, "_check_source", revoke_during_check)
     with pytest.raises(MutationError) as caught:
         await service.mutation.validate(chat_id, proposed["draft_id"])
     try:
@@ -1156,47 +1165,49 @@ async def test_validate_commit_is_fenced_by_authority_revision(
 
 
 @pytest.mark.asyncio
-async def test_probation_rollback_failure_is_visible(mutable_stack, monkeypatch):
+async def test_probation_failures_never_roll_back_the_tool(mutable_stack, monkeypatch):
     runtimes, _broker, service, _manager = mutable_stack
-    _enable_mutation(runtimes, "mutable-rollback-failure")
-    service.select("mutable-rollback-failure", "build")
+    chat_id = "mutable-no-auto-rollback"
+    _enable_mutation(runtimes, chat_id)
+    service.select(chat_id, "build")
     proposed = service.mutation.propose(
-        "mutable-rollback-failure",
+        chat_id,
         kind="mutate",
         slot="build/4",
         parent="apply_patch",
         alias="apply_patch",
-        purpose="Candidate whose probation rollback is exercised.",
+        purpose="Tool whose failures stay the model's to handle.",
         schema={
             "type": "object",
             "required": ["value"],
             "properties": {"value": {"type": "string"}},
         },
         source="def run(arguments):\n    return {'ok': True}\n",
-        tests=[{"arguments": {"value": "test"}, "expected": {"ok": True}}],
     )
     activated = await service.mutation.activate(
-        "mutable-rollback-failure",
-        proposed["draft_id"],
-        expected_mount_revision=1,
+        chat_id, proposed["draft_id"], expected_mount_revision=1,
     )
 
-    def fail_rollback(*_args, **_kwargs):
-        raise RuntimeError("simulated transition failure")
+    def no_automatic_rollback(*_args, **_kwargs):
+        raise AssertionError("probation must not roll back the model's tool")
 
-    monkeypatch.setattr(service.mutation, "rollback", fail_rollback)
-    with pytest.raises(MutationError, match="could not be rolled back") as caught:
+    monkeypatch.setattr(service.mutation, "rollback", no_automatic_rollback)
+    for mechanical in (True, True, False, False, True, False, True):
         await service.mutation._probation_result(
-            "mutable-rollback-failure",
-            activated["slot_id"],
-            activated["slot_version"],
-            ok=False,
-            mechanical=True,
+            chat_id, activated["slot_id"], activated["slot_version"],
+            ok=False, mechanical=mechanical,
         )
-
-    assert caught.value.code == "probation_rollback_failed"
-    status = service.mutation.status("mutable-rollback-failure")
-    assert status["probation"][0]["status"] == "rollback_failed"
+    status = service.mutation.status(chat_id)
+    assert status["active"][0]["version"] == activated["slot_version"]
+    probation = status["probation"][0]
+    assert probation["status"] == "probation"
+    assert (probation["calls"], probation["mechanical_errors"], probation["semantic_errors"]) == (7, 4, 3)
+    for _ in range(2):
+        await service.mutation._probation_result(
+            chat_id, activated["slot_id"], activated["slot_version"],
+            ok=True, mechanical=False,
+        )
+    assert service.mutation.status(chat_id)["probation"][0]["status"] == "passed"
 
 
 @pytest.mark.asyncio
@@ -1601,31 +1612,32 @@ async def test_callable_revises_active_synthesized_tool_in_workspace_lineage(
 
 
 @pytest.mark.asyncio
-async def test_activation_executes_and_blocks_failing_candidate_tests(mutable_stack):
+async def test_failing_examples_are_reported_without_blocking_activation(mutable_stack):
     runtimes, _broker, service, manager = mutable_stack
-    _enable_mutation(runtimes, "candidate-gate")
-    service.select("candidate-gate", "build")
+    _enable_mutation(runtimes, "candidate-examples")
+    service.select("candidate-examples", "build")
     proposal = service.mutation.propose(
-        "candidate-gate",
+        "candidate-examples",
         kind="mutate", slot="build/4", parent="apply_patch",
-        alias="apply_patch", purpose="Candidate must satisfy its declared oracle.",
+        alias="apply_patch", purpose="The model chooses whether a failed example matters.",
         schema={
             "type": "object", "required": ["value"],
             "properties": {"value": {"type": "string"}},
         },
         source="def run(arguments):\n    return arguments['value'].upper()\n",
-        tests=[{"arguments": {"value": "alpha"}, "expected": "WRONG"}],
+        tests=[
+            {"arguments": {"value": "alpha"}, "expected": "WRONG"},
+            {"arguments": {"value": "beta"}, "expected": "BETA"},
+        ],
     )
-
-    with pytest.raises(MutationError) as caught:
-        await service.mutation.activate(
-            "candidate-gate", proposal["draft_id"], expected_mount_revision=1
-        )
+    activated = await service.mutation.activate(
+        "candidate-examples", proposal["draft_id"], expected_mount_revision=1
+    )
     try:
-        assert caught.value.code == "candidate_tests_failed"
-        assert "expected_mismatch" in str(caught.value)
-        assert service.mutation.status("candidate-gate")["active"] == []
-        assert runtimes.ensure_runtime("candidate-gate").identity.mount_revision == 1
+        assert activated["examples"]["cases"] == 2
+        assert activated["examples"]["passed"] == 1
+        assert "expected_mismatch" in activated["examples"]["failures"][0]
+        assert service.mutation.status("candidate-examples")["active"][0]["version"] == 1
     finally:
         await manager.shutdown()
 
@@ -1746,7 +1758,7 @@ async def test_validate_cas_does_not_overwrite_a_newer_draft_state(
         await release.wait()
         return {"ok": True}
 
-    monkeypatch.setattr(service.mutation.worker, "run", paused_validation)
+    monkeypatch.setattr(service.mutation, "_check_source", paused_validation)
     task = asyncio.create_task(service.mutation.validate(
         "validate-cas", proposal["draft_id"]
     ))
@@ -1926,31 +1938,37 @@ async def test_foundry_failed_replay_cannot_authorize_e4(mutable_stack):
 
 
 @pytest.mark.asyncio
-async def test_identical_validation_failures_trip_session_breaker(mutable_stack):
+async def test_repeated_failed_proposals_are_never_locked_out(mutable_stack):
     runtimes, _broker, service, manager = mutable_stack
-    _enable_mutation(runtimes, "breaker-a")
-    service.select("breaker-a", "build")
+    _enable_mutation(runtimes, "no-lockout")
+    service.select("no-lockout", "build")
     kwargs = dict(
         kind="mutate", slot="build/4", parent="apply_patch",
-        alias="apply_patch", purpose="Invalid callable contract must stay closed.",
+        alias="apply_patch", purpose="The model may retry as often as it wants.",
         schema={
             "type": "object", "required": ["value"],
             "properties": {"value": {"type": "string"}},
         },
-        source="def helper(arguments):\n    return arguments\n",
     )
-    for _ in range(2):
-        proposal = service.mutation.propose("breaker-a", **kwargs)
-        with pytest.raises(MutationError, match="validation did not pass"):
-            await service.mutation.activate(
-                "breaker-a", proposal["draft_id"], expected_mount_revision=1
-            )
-    with pytest.raises(MutationError) as caught:
-        service.mutation.propose("breaker-a", **kwargs)
     try:
-        assert caught.value.code == "identical_failure_breaker"
-        status = service.mutation.status("breaker-a")
-        assert len(status["failures"]) >= 3
+        # More identical failures than the old breaker (3) and activation
+        # quota (8) allowed; validation still reports each one.
+        for _ in range(10):
+            proposal = service.mutation.propose(
+                "no-lockout", source="def helper(arguments):\n    return arguments\n", **kwargs,
+            )
+            with pytest.raises(MutationError, match="validation did not pass"):
+                await service.mutation.activate(
+                    "no-lockout", proposal["draft_id"], expected_mount_revision=1
+                )
+        assert len(service.mutation.status("no-lockout", limit=100)["failures"]) >= 10
+        fixed = service.mutation.propose(
+            "no-lockout", source="def run(arguments):\n    return arguments['value']\n", **kwargs,
+        )
+        activated = await service.mutation.activate(
+            "no-lockout", fixed["draft_id"], expected_mount_revision=1
+        )
+        assert activated["slot_version"] == 1
     finally:
         await manager.shutdown()
 
@@ -2084,7 +2102,7 @@ async def test_last_failure_can_be_mutated_and_invoked_in_one_call(mutable_stack
 
 
 @pytest.mark.asyncio
-async def test_atomic_create_requires_tests_and_activates_one_vacancy(mutable_stack):
+async def test_atomic_create_activates_one_vacancy_with_optional_examples(mutable_stack):
     runtimes, _broker, service, manager = mutable_stack
     chat_id = "atomic-create"
     _enable_mutation(runtimes, chat_id)
@@ -2094,18 +2112,11 @@ async def test_atomic_create_requires_tests_and_activates_one_vacancy(mutable_st
         "type": "object", "required": ["value"],
         "properties": {"value": {"type": "string"}},
     }
-    with pytest.raises(MutationError) as missing:
-        await service.mutation.synthesize(
-            chat_id, slot="build/8", alias="uppercase", purpose="Uppercase text.",
-            schema=schema, source=source, tests=[],
-        )
-    assert missing.value.code == "tests_required"
-
     activated = await service.mutation.synthesize(
         chat_id, slot="build/8", alias="uppercase", purpose="Uppercase text.",
         schema=schema, source=source,
-        tests=[{"arguments": {"value": "ok"}, "expected": "OK"}],
     )
+    assert activated["examples"] == {"cases": 0, "passed": 0, "failures": []}
     result = await manager.execute(
         chat_id=chat_id, code="print(tools.uppercase(value='ready'))",
         run_id="atomic-create-run", outer_tool_call_id="atomic-create-outer",
@@ -2128,6 +2139,7 @@ async def test_atomic_create_requires_tests_and_activates_one_vacancy(mutable_st
         assert activated["slot_version"] == 1
         assert result.ok and "READY" in result.output.text()
         assert revised["slot_version"] == 2
+        assert revised["examples"]["passed"] == 1
         assert revised_result.ok and "ready" in revised_result.output.text()
         assert service.mutation.status(chat_id)["drafts"][0][
             "declared_kind"

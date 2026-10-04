@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from dataclasses import replace
 import hashlib
 import json
@@ -41,6 +42,10 @@ from .mutation_contracts import (
     utc_timestamp as _now,
 )
 from .mutation_worker_client import MutationWorkerClient
+from kernel_runtime.candidate_contract import (
+    CandidateContractError,
+    validate_source,
+)
 from kernel_runtime.proxy_arguments import (
     binding_param_specs,
     declared_parameter_order,
@@ -57,9 +62,9 @@ _EFFECT_RANK = {
     "external_side_effect": 3,
     "interactive": 4,
 }
-MAX_FAILED_ACTIVATIONS = 8
-IDENTICAL_FAILURE_BREAKER = 3
-MAX_PROBATION_CALLS = 6
+# Inactive versions beyond this many per slot are retired when a new
+# version is registered; the active version and its rollback references stay.
+RETAINED_SLOT_VERSIONS = 8
 
 
 def _effective_workspace_roots(explicit: Sequence[str] = ()) -> list[str]:
@@ -207,6 +212,21 @@ def _selected_slot_reference(record: Any, reference: Any) -> str:
             f"numeric mutation slot {raw!r} requires a selected category",
         )
     return f"{selected}/{int(raw)}"
+
+
+def _source_check_report(source: str) -> dict[str, Any]:
+    """Check syntax and the ``run(arguments)`` contract without running it."""
+
+    try:
+        _tree, digest = validate_source(source)
+    except CandidateContractError as exc:
+        raise MutationWorkerError("candidate_contract_error", str(exc)) from exc
+    return {
+        "ok": True,
+        "source_sha256": digest,
+        "language_policy": "full-python.same-user.v1",
+        "execution_mode": "same_user",
+    }
 
 
 def _wrapped_helper_order(source: str) -> list[str]:
@@ -668,18 +688,6 @@ class MutationManager:
                     "mfail_" + uuid.uuid4().hex, str(chat_id), str(draft_id),
                     str(stage), fingerprint, str(code), _stable(details or {}), _now(),
                 ),
-            )
-
-    def _assert_activation_allowed(self, chat_id: str) -> None:
-        with self._lock, self._connect() as conn:
-            failed = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_failure WHERE chat_id=? "
-                "AND stage='activation'", (str(chat_id),)
-            ).fetchone()[0])
-        if failed >= MAX_FAILED_ACTIVATIONS:
-            raise MutationError(
-                "failed_activation_quota",
-                f"session reached the failed activation quota ({MAX_FAILED_ACTIVATIONS})",
             )
 
     def _draft(self, chat_id: str, draft_id: str) -> dict[str, Any]:
@@ -1248,28 +1256,10 @@ class MutationManager:
             "schema": normalized_schema,
             "dependencies": dependencies,
         })
-        with self._lock, self._connect() as conn:
-            repeated = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_failure WHERE chat_id=? "
-                "AND proposal_fingerprint=?",
-                (str(chat_id), proposal_fingerprint),
-            ).fetchone()[0])
-        if repeated >= IDENTICAL_FAILURE_BREAKER:
-            raise MutationError(
-                "identical_failure_breaker",
-                "this exact failed mutation proposal is circuit-broken for the session",
-            )
         source_artifact = self.artifact_store.put_text(
             clean_source, kind="mutation_source", scope=str(chat_id)
         )
         with self._lock, self._connect() as conn:
-            active = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_draft WHERE chat_id=? "
-                "AND status IN ('draft','validated','tested','probation')",
-                (str(chat_id),),
-            ).fetchone()[0])
-            if active >= 8:
-                raise MutationError("draft_quota", "session has eight active mutation drafts")
             draft_id = "draft_" + uuid.uuid4().hex
             now = _now()
             conn.execute("BEGIN IMMEDIATE")
@@ -1328,10 +1318,17 @@ class MutationManager:
     ) -> dict[str, Any]:
         del arguments, request_id
         fallback_name = name.split(".", 1)[-1]
-        result = mocks.get(
-            name,
-            mocks.get(fallback_name, {"mock_proxy": name}),
-        )
+        if name not in mocks and fallback_name not in mocks:
+            # Optional examples report a missing mock instead of manufacturing
+            # a successful placeholder result.
+            return {
+                "ok": False,
+                "error": {
+                    "code": "unmocked_proxy",
+                    "message": f"example calls {name} without a mocked result",
+                },
+            }
+        result = mocks.get(name, mocks.get(fallback_name))
         if (
             isinstance(result, Mapping)
             and set(result) == {"$sequence"}
@@ -1424,17 +1421,9 @@ class MutationManager:
             exclude_slot_id=str(draft.get("slot_id") or ""),
             exclude_proxy=self._draft_target_proxy(loaded, draft),
         )
+        del contracts  # validation never runs candidate code or calls proxies
         try:
-            report = await self.worker.run(
-                {
-                    "mode": "validate",
-                    "source": source,
-                    "proxy_contracts": self._worker_proxy_contracts(contracts),
-                },
-                proxy_call=lambda name, args, rid: self._mock_call(
-                    {}, name, args, rid
-                ),
-            )
+            report = await self._check_source(source)
             status = "validated"
         except MutationWorkerError as exc:
             report = {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
@@ -1477,6 +1466,11 @@ class MutationManager:
                 details={"message": str(failure)},
             )
         return receipt
+
+    async def _check_source(self, source: str) -> dict[str, Any]:
+        """Syntax and ``run(arguments)`` contract check, off the event loop."""
+
+        return await asyncio.to_thread(_source_check_report, source)
 
     async def test(
         self, chat_id: str, draft_id: str, cases: list[Any] | None = None,
@@ -1573,7 +1567,7 @@ class MutationManager:
                     "WHERE chat_id=? AND draft_id=? "
                     "AND status IN ('draft','validated','tested')",
                     (
-                        "tested" if ok else "rejected",
+                        "tested",
                         _stable(receipt) if authority == "host" else draft.get("host_test_json") or "",
                         _now(), str(chat_id), str(draft_id),
                     ),
@@ -1597,57 +1591,6 @@ class MutationManager:
                 chat_id, draft_id, stage="host_test", code="case_failure",
                 details={"cases_sha256": payload["cases_sha256"]},
             )
-        return receipt
-
-    async def _host_contract_gate(
-        self,
-        chat_id: str,
-        draft_id: str,
-        *,
-        expected_authority_revision: int,
-    ) -> dict[str, Any]:
-        """Verify the isolated worker contract independently of candidate tests."""
-        _record, _loaded, authority = self._require_write_authority(
-            chat_id, expected_revision=expected_authority_revision
-        )
-        full_python = (
-            "import os\n"
-            "from pathlib import Path\n"
-            "def run(arguments):\n"
-            "    return {'cwd': os.getcwd(), 'path_type': Path('.').name}\n"
-        )
-        invalid = "def helper(arguments):\n    return arguments\n"
-        full_report = await self.worker.run(
-            {"mode": "validate", "source": full_python},
-            proxy_call=lambda n, a, r: self._mock_call({}, n, a, r),
-        )
-        invalid_blocked = False
-        try:
-            await self.worker.run(
-                {"mode": "validate", "source": invalid},
-                proxy_call=lambda n, a, r: self._mock_call({}, n, a, r),
-            )
-        except MutationWorkerError as exc:
-            invalid_blocked = exc.code == "candidate_contract_error"
-        if not full_report.get("ok") or not invalid_blocked:
-            raise MutationError(
-                "host_contract_gate_failed", "private worker contract cases failed"
-            )
-        payload = {
-            "draft_id": draft_id, "ok": True,
-            "evaluator_version": "variant1.astb.worker-contract.v2",
-            "full_python_load": True, "invalid_contract_blocked": True,
-            "oracle_exposed": False,
-        }
-        with self._lock, self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            self._assert_write_authority_in_conn(
-                conn, chat_id, expected_revision=authority.revision
-            )
-            receipt = self._receipt_in_conn(
-                conn, chat_id, draft_id, "worker_contract_tested", payload
-            )
-            conn.commit()
         return receipt
 
     async def _activate_once(
@@ -1684,16 +1627,8 @@ class MutationManager:
             )
         if validation.get("ok") is not True:
             raise MutationError("validation_failed", "draft validation did not pass")
-        worker_contract = await self._host_contract_gate(
-            chat_id,
-            draft_id,
-            expected_authority_revision=authority.revision,
-        )
-        draft = self._draft(chat_id, draft_id)
-        # Declared examples improve validation but are not an authoring gate.
-        # With the chat toggle on, syntax/contract validation followed by live
-        # probation is sufficient. This keeps repair and thin-tool creation a
-        # one-call model choice instead of forcing mocked-test ceremony.
+        # Examples are optional and only run when the model supplied them. Their
+        # outcomes are reported with the activation; they never block it.
         host_test = await self.test(
             chat_id,
             draft_id,
@@ -1701,27 +1636,27 @@ class MutationManager:
             persist_status=True,
             expected_authority_revision=authority.revision,
         )
-        if host_test.get("ok") is not True:
-            diagnostics: list[str] = []
-            for row in host_test.get("results") or ():
-                if not isinstance(row, Mapping) or row.get("ok") is True:
-                    continue
-                index = int(row.get("index") or 0)
-                error = row.get("error")
-                if isinstance(error, Mapping):
-                    code = str(error.get("code") or "candidate_error")
-                    message = str(error.get("message") or "")[:300]
-                else:
-                    code = "expected_mismatch"
-                    message = "candidate return value did not equal expected"
-                diagnostics.append(f"case {index}: {code}: {message}".rstrip(": "))
-            detail = "; ".join(diagnostics[:5])
-            raise MutationError(
-                "candidate_tests_failed",
-                "draft candidate tests did not pass"
-                + (f" ({detail})" if detail else ""),
-                diagnostics=diagnostics[:5],
-            )
+        diagnostics: list[str] = []
+        for row in host_test.get("results") or ():
+            if not isinstance(row, Mapping) or row.get("ok") is True:
+                continue
+            index = int(row.get("index") or 0)
+            error = row.get("error")
+            if isinstance(error, Mapping):
+                code = str(error.get("code") or "candidate_error")
+                message = str(error.get("message") or "")[:300]
+            else:
+                code = "expected_mismatch"
+                message = "candidate return value did not equal expected"
+            diagnostics.append(f"case {index}: {code}: {message}".rstrip(": "))
+        examples = {
+            "cases": int(host_test.get("case_count") or 0),
+            "passed": sum(
+                1 for row in host_test.get("results") or ()
+                if isinstance(row, Mapping) and row.get("ok") is True
+            ),
+            "failures": diagnostics[:5],
+        }
         draft = self._draft(chat_id, draft_id)
         now = _now()
         with self._lock, self._connect() as conn:
@@ -1773,13 +1708,9 @@ class MutationManager:
                 (str(chat_id), draft["slot_id"], draft_id),
             ).fetchone()
             if existing is None:
-                count = int(conn.execute(
-                    "SELECT COUNT(*) FROM astb_slot_version WHERE chat_id=? AND slot_id=? "
-                    "AND status<>'garbage_collected'",
-                    (str(chat_id), draft["slot_id"]),
-                ).fetchone()[0])
-                if count >= 8:
-                    raise MutationError("version_quota", "slot has eight retained versions")
+                self._retire_inactive_versions_in_conn(
+                    conn, chat_id, str(draft["slot_id"]), keep={previous_version},
+                )
                 version = int(conn.execute(
                     "SELECT COALESCE(MAX(version),0)+1 FROM astb_slot_version "
                     "WHERE chat_id=? AND slot_id=?",
@@ -1806,6 +1737,7 @@ class MutationManager:
                     "slot_id": draft["slot_id"], "slot_version": version,
                     "mount_revision": current_mount,
                     "invocation": invocation,
+                    "examples": examples,
                 }
             next_mount = current_mount + 1
             overlay = int(runtime["overlay_revision"] or 0) + 1
@@ -1815,7 +1747,6 @@ class MutationManager:
                 "from_mount_revision": current_mount, "to_mount_revision": next_mount,
                 "validation_receipt_digest": validation["receipt_digest"],
                 "host_test_receipt_digest": host_test["receipt_digest"],
-                "worker_contract_receipt_digest": worker_contract["receipt_digest"],
             }
             receipt = self._receipt_in_conn(conn, chat_id, draft_id, "activated", transition)
             conn.execute(
@@ -1870,7 +1801,50 @@ class MutationManager:
             "mount_revision": next_mount, "overlay_revision": overlay,
             "probation": True, "receipt": receipt,
             "invocation": invocation,
+            "examples": examples,
         }
+
+    @staticmethod
+    def _retire_inactive_versions_in_conn(
+        conn: sqlite3.Connection,
+        chat_id: str,
+        slot_id: str,
+        *,
+        keep: set[int],
+    ) -> None:
+        """Make room for one more version by retiring the oldest inactive ones.
+
+        Rows stay as provenance with their invocation evidence; a retired
+        version is only no longer selectable by explicit rollback. The active
+        version and its probation rollback references are never retired.
+        """
+
+        protected = {int(item) for item in keep if int(item or 0) > 0}
+        probation = conn.execute(
+            "SELECT version, previous_version, lkg_version FROM mutation_probation "
+            "WHERE chat_id=? AND slot_id=?",
+            (str(chat_id), str(slot_id)),
+        ).fetchone()
+        if probation is not None:
+            protected.update(
+                int(probation[key] or 0)
+                for key in ("version", "previous_version", "lkg_version")
+            )
+        rows = conn.execute(
+            "SELECT version FROM astb_slot_version WHERE chat_id=? AND slot_id=? "
+            "AND status<>'garbage_collected' ORDER BY version",
+            (str(chat_id), str(slot_id)),
+        ).fetchall()
+        retained = [int(row["version"]) for row in rows]
+        candidates = [version for version in retained if version not in protected]
+        while len(retained) >= RETAINED_SLOT_VERSIONS and candidates:
+            oldest = candidates.pop(0)
+            conn.execute(
+                "UPDATE astb_slot_version SET status='garbage_collected' "
+                "WHERE chat_id=? AND slot_id=? AND version=?",
+                (str(chat_id), str(slot_id), oldest),
+            )
+            retained.remove(oldest)
 
     @staticmethod
     def _activation_invocation(
@@ -1913,7 +1887,6 @@ class MutationManager:
         expected_mount_revision: int | None = None,
         expected_authority_revision: int | None = None,
     ) -> dict[str, Any]:
-        self._assert_activation_allowed(chat_id)
         try:
             result = await self._activate_once(
                 chat_id,
@@ -2052,15 +2025,15 @@ class MutationManager:
         *,
         slot: str,
         source: str,
-        tests: list[Any],
+        tests: list[Any] | None = None,
         purpose: str = "",
     ) -> dict[str, Any]:
-        """Atomically mutate one occupied direct seed with its exact contract."""
+        """Atomically mutate one occupied direct seed with its exact contract.
 
-        if not isinstance(tests, list) or not tests:
-            raise MutationError(
-                "tests_required", "mutate requires at least one test case"
-            )
+        Example cases are optional; when supplied they run and are reported.
+        """
+
+        tests = list(tests or ())
         record, loaded, _authority = self._require_write_authority(chat_id)
         slot_reference = _selected_slot_reference(record, slot)
         _category, _position, base = _slot(loaded, slot_reference)
@@ -2124,14 +2097,13 @@ class MutationManager:
         purpose: str,
         schema: Any,
         source: str,
-        tests: list[Any],
+        tests: list[Any] | None = None,
     ) -> dict[str, Any]:
-        """Atomically create one tested tool in an explicit vacant slot."""
+        """Atomically register one session tool in an explicit vacant slot.
 
-        if not isinstance(tests, list) or not tests:
-            raise MutationError(
-                "tests_required", "synthesize requires at least one test case"
-            )
+        Example cases are optional; when supplied they run and are reported.
+        """
+
         return await self.propose_activate(
             chat_id,
             kind="create",
@@ -2140,7 +2112,7 @@ class MutationManager:
             purpose=str(purpose),
             schema=schema,
             source=str(source),
-            tests=list(tests),
+            tests=list(tests or ()),
             parent=None,
         )
 
@@ -2361,10 +2333,10 @@ class MutationManager:
     async def _probation_result(
         self, chat_id: str, slot_id: str, version: int, *, ok: bool, mechanical: bool
     ) -> None:
-        # Invocation evidence is persisted by ``invoke`` before this hook. Off
-        # and operator-frozen chats keep serving already activated overlays,
-        # but their probation state machine must not advance until write
-        # authority is effective again.
+        # Invocation evidence is persisted by ``invoke`` before this hook.
+        # Probation only observes: a session tool stays active until the model
+        # or user explicitly rolls it back or resets it. Off and operator-frozen
+        # chats keep serving already activated overlays without advancing it.
         try:
             _record, _loaded, authority = self._require_write_authority(chat_id)
         except MutationError as exc:
@@ -2375,11 +2347,6 @@ class MutationManager:
             }:
                 return
             raise
-        pending_rollback = {
-            "mechanical_failure",
-            "probation_call_quota_failed",
-            "rollback_failed",
-        }
         previous_status = ""
         status = ""
         with self._lock, self._connect() as conn:
@@ -2414,111 +2381,39 @@ class MutationManager:
                 # Rollback remains an explicit recovery operation.
                 conn.rollback()
                 return
-            if str(row["status"]) in pending_rollback:
-                # A prior rollback was paused by Off/freeze or failed visibly.
-                # Re-attempt it below without treating this invocation as new
-                # probation evidence.
-                should_rollback = True
-                conn.rollback()
-            else:
-                calls = int(row["calls"]) + 1
-                successes = int(row["successful_calls"]) + (1 if ok else 0)
-                semantic = int(row["semantic_errors"]) + (1 if not ok and not mechanical else 0)
-                mechanics = int(row["mechanical_errors"]) + (1 if mechanical else 0)
-                should_rollback = False
-                if ok and successes >= 2:
-                    status = "passed"
-                    conn.execute(
-                        "UPDATE astb_slot_version SET status='lkg' WHERE chat_id=? "
-                        "AND slot_id=? AND version=?", (str(chat_id), str(slot_id), int(version)),
-                    )
-                    conn.execute(
-                        "UPDATE mutation_draft SET status='active' WHERE draft_id=?",
-                        (str(row["draft_id"]),),
-                    )
-                elif mechanical:
-                    status = "mechanical_failure"
-                    should_rollback = True
-                elif not ok:
-                    status = "semantic_failure_visible"
-                if status != "passed" and calls >= MAX_PROBATION_CALLS:
-                    status = "probation_call_quota_failed"
-                    should_rollback = True
+            calls = int(row["calls"]) + 1
+            successes = int(row["successful_calls"]) + (1 if ok else 0)
+            semantic = int(row["semantic_errors"]) + (1 if not ok and not mechanical else 0)
+            mechanics = int(row["mechanical_errors"]) + (1 if mechanical else 0)
+            # Statuses from older releases (failure/rollback states) settle back
+            # into ordinary observation.
+            status = "probation"
+            if ok and successes >= 2:
+                status = "passed"
                 conn.execute(
-                    "UPDATE mutation_probation SET status=?, calls=?, successful_calls=?, "
-                    "semantic_errors=?, mechanical_errors=?, updated_at=? WHERE chat_id=? AND slot_id=?",
-                    (status, calls, successes, semantic, mechanics, _now(), str(chat_id), str(slot_id)),
+                    "UPDATE astb_slot_version SET status='lkg' WHERE chat_id=? "
+                    "AND slot_id=? AND version=?", (str(chat_id), str(slot_id), int(version)),
                 )
-                conn.commit()
+                conn.execute(
+                    "UPDATE mutation_draft SET status='active' WHERE draft_id=?",
+                    (str(row["draft_id"]),),
+                )
+            conn.execute(
+                "UPDATE mutation_probation SET status=?, calls=?, successful_calls=?, "
+                "semantic_errors=?, mechanical_errors=?, updated_at=? WHERE chat_id=? AND slot_id=?",
+                (status, calls, successes, semantic, mechanics, _now(), str(chat_id), str(slot_id)),
+            )
+            conn.commit()
         if status != previous_status:
             operational_log(
                 "mutation",
                 "probation_transition",
-                level=(
-                    "info" if status == "passed"
-                    else "error" if status in {
-                        "mechanical_failure", "probation_call_quota_failed",
-                        "rollback_failed",
-                    }
-                    else "warn"
-                ),
+                level="info",
                 chat_id=str(chat_id),
                 slot_id=str(slot_id),
                 slot_version=int(version),
                 status=status,
             )
-        if should_rollback:
-            try:
-                self.rollback(
-                    chat_id,
-                    slot_id,
-                    to_version=int(row["previous_version"]),
-                    expected_authority_revision=authority.revision,
-                )
-            except Exception as exc:
-                if isinstance(exc, MutationError) and exc.code in {
-                    "mutation_write_disabled",
-                    "mutation_authority_changed",
-                    "mutation_frozen",
-                }:
-                    return
-                # A concurrent transition may already have removed the failing
-                # overlay.  Otherwise the rollback failure is safety-critical:
-                # keep it visible instead of reporting a completed probation
-                # transition while the bad version remains mounted.
-                with self._lock, self._connect() as conn:
-                    active = conn.execute(
-                        "SELECT version FROM astb_activation WHERE chat_id=? "
-                        "AND slot_id=? AND active=1",
-                        (str(chat_id), str(slot_id)),
-                    ).fetchone()
-                    failed_version_still_active = (
-                        active is not None and int(active["version"]) == int(version)
-                    )
-                    if failed_version_still_active:
-                        conn.execute(
-                            "UPDATE mutation_probation SET status='rollback_failed', "
-                            "updated_at=? WHERE chat_id=? AND slot_id=? AND version=?",
-                            (_now(), str(chat_id), str(slot_id), int(version)),
-                        )
-                        conn.commit()
-                if not failed_version_still_active:
-                    return
-                self._record_failure(
-                    chat_id, str(row["draft_id"]), stage="probation_rollback",
-                    code="probation_rollback_failed",
-                    details={"slot_id": str(slot_id), "version": int(version)},
-                )
-                operational_log(
-                    "mutation", "probation_rollback_failed", level="error",
-                    chat_id=str(chat_id), slot_id=str(slot_id),
-                    slot_version=int(version), error_type=type(exc).__name__,
-                )
-                raise MutationError(
-                    "probation_rollback_failed",
-                    "candidate probation failed and its overlay could not be rolled back",
-                    slot_id=str(slot_id), version=int(version),
-                ) from exc
 
     def _transition(
         self, chat_id: str, slot_reference: str, target_version: int,
@@ -3040,11 +2935,7 @@ class MutationManager:
                 {**dict(row), "details": json.loads(row["details_json"])}
                 for row in failures
             ],
-            "quotas": {
-                "failed_activations": MAX_FAILED_ACTIVATIONS,
-                "identical_failure_breaker": IDENTICAL_FAILURE_BREAKER,
-                "probation_calls": MAX_PROBATION_CALLS,
-            },
+            "retention": {"slot_versions": RETAINED_SLOT_VERSIONS},
             **self.worker.execution_status(),
         }
 

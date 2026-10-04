@@ -2912,6 +2912,37 @@ def _promoted_helper_contract(
     return helper.__name__, schema, candidate_source
 
 
+# Host operations the ergonomic mutate/synthesize path uses internally. They
+# stay callable for compatibility but are not part of the model-facing API.
+_STAGED_CONTROL_METHODS = frozenset({
+    "propose", "validate", "test", "activate", "propose_activate",
+})
+
+
+def _kernel_assertion_count(tests: Any) -> int:
+    """How many zero-argument assertion callables a tests value contains."""
+
+    if tests is None or isinstance(tests, (Mapping, str)):
+        return 0
+    if callable(tests):
+        return 1
+    try:
+        return sum(1 for item in tests if callable(item))
+    except TypeError:
+        return 0
+
+
+def _with_assertion_report(result: Any, count: int) -> Any:
+    """Say which checks ran in this kernel versus as examples in the worker."""
+
+    if isinstance(result, dict):
+        try:
+            result["kernel_assertions"] = int(count)
+        except Exception:
+            pass
+    return result
+
+
 class ToolbeltNamespace:
     """Local, non-authoritative discovery view over the pinned catalog."""
 
@@ -2934,7 +2965,7 @@ class ToolbeltNamespace:
             for name in names:
                 method = getattr(control, name)
                 self._control_callables[name] = method
-                if name in {"mutate", "synthesize"}:
+                if name in {"mutate", "synthesize"} or name in _STAGED_CONTROL_METHODS:
                     continue
                 if hasattr(self, name):
                     raise ValueError(f"toolbelt control method conflicts: {name}")
@@ -2965,9 +2996,10 @@ class ToolbeltNamespace:
                     "Replace one mounted callable for this durable chat. Pass the "
                     "callable itself, such as computer.click, or its qualified name. "
                     "Define the replacement as an ordinary synchronous helper with "
-                    "named parameters. VARIANT-1 infers its slot, schema, source, and "
-                    "activation lifecycle. Optional tests may be declarative case "
-                    "objects or zero-argument assertion functions."
+                    "named parameters. VARIANT-1 infers its slot, schema and source "
+                    "and registers it. Optional tests are never required: declarative "
+                    "case objects run as examples in the tool worker and are reported; "
+                    "zero-argument assertion functions run immediately in this kernel."
                 ),
                 "effect_class": "write",
             }
@@ -2980,10 +3012,12 @@ class ToolbeltNamespace:
                     "purpose=None, invoke=None)"
                 ),
                 "description": (
-                    "Turn an ordinary synchronous Python helper with named parameters "
-                    "into a bounded session tool. The first vacancy in the current "
-                    "category is used when slot is omitted. Optional tests may be "
-                    "declarative case objects or zero-argument assertion functions."
+                    "Register an ordinary synchronous Python helper with named "
+                    "parameters as a session tool. The first vacancy in the current "
+                    "category is used when slot is omitted. Optional tests are never "
+                    "required: declarative case objects run as examples in the tool "
+                    "worker and are reported; zero-argument assertion functions run "
+                    "immediately in this kernel."
                 ),
                 "effect_class": "write",
             }
@@ -2996,9 +3030,9 @@ class ToolbeltNamespace:
                     "purpose=None, invoke=None)"
                 ),
                 "description": (
-                    "Turn a successful Python function into a tested "
-                    "session-local tool. The current category's first available "
-                    "vacancy is used when slot is omitted."
+                    "Register a working Python function as a session tool. The "
+                    "current category's first available vacancy is used when slot "
+                    "is omitted."
                 ),
                 "effect_class": "write",
             }
@@ -3011,7 +3045,10 @@ class ToolbeltNamespace:
         result = self._control_object.documentation(method)
         if method is None:
             result = dict(result)
-            methods = dict(result.get("methods") or {})
+            methods = {
+                name: row for name, row in dict(result.get("methods") or {}).items()
+                if name not in _STAGED_CONTROL_METHODS
+            }
             local_names = ["last_failure"]
             if "synthesize" in self._control_methods:
                 local_names.extend(("mutate", "synthesize", "promote_helper"))
@@ -3026,7 +3063,10 @@ class ToolbeltNamespace:
         return result
 
     def methods(self) -> list[str]:
-        names = list(self._control_methods)
+        names = [
+            name for name in self._control_methods
+            if name not in _STAGED_CONTROL_METHODS
+        ]
         if self._bridge is not None:
             names.append("last_failure")
         if "synthesize" in self._control_methods:
@@ -3192,8 +3232,9 @@ class ToolbeltNamespace:
             payload["tests"] = normalized_tests
         if invoke is not None:
             payload["invoke"] = dict(invoke)
-        return self._control("propose_activate")(
-            **payload,
+        return _with_assertion_report(
+            self._control("propose_activate")(**payload),
+            _kernel_assertion_count(tests),
         )
 
     def synthesize(
@@ -3257,8 +3298,11 @@ class ToolbeltNamespace:
         if invoke is not None:
             payload["invoke"] = dict(invoke)
         if "propose_activate" in self._control_methods:
-            return self._control("propose_activate")(
-                kind="create", parent=None, **payload
+            return _with_assertion_report(
+                self._control("propose_activate")(
+                    kind="create", parent=None, **payload
+                ),
+                _kernel_assertion_count(tests),
             )
         return self._control("synthesize")(**payload)
 
@@ -3357,7 +3401,7 @@ class ToolbeltNamespace:
             f"catalog={state['catalog_release_id']} "
             f"category={state['selected_category_id'] or '-'} "
             f"mount={state['mount_revision']} "
-            f"methods={','.join(self._control_methods) or '-'}>"
+            f"methods={','.join(name for name in self._control_methods if name not in _STAGED_CONTROL_METHODS) or '-'}>"
         )
 
 

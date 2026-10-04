@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 from contextlib import suppress
-import hashlib
 import json
 import math
 import os
@@ -26,6 +25,11 @@ if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 
 from core_invariants import canonical_digest
+from kernel_runtime.candidate_contract import (
+    MAX_SOURCE_BYTES,
+    CandidateContractError,
+    validate_source,
+)
 from kernel_runtime.worker_bridge import (
     Variant1RemoteHandle,
     REMOTE_HANDLE_DISPATCH_SCHEMA,
@@ -36,52 +40,10 @@ from kernel_runtime.proxy_arguments import normalize_call_arguments, proxy_signa
 from session_catalog.mutation_contracts import MUTATION_REMOTE_HANDLE_ROLE
 
 PROTOCOL = "variant1.astb.mutation-worker.v2"
-MAX_SOURCE_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 32 * 1024
-
-
-class CandidateContractError(ValueError):
-    pass
-
-
-def validate_source(source: str) -> tuple[ast.Module, str]:
-    """Validate only the mutation callable contract, not Python capability."""
-    raw = str(source or "")
-    if not raw.strip():
-        raise CandidateContractError("candidate source is empty")
-    if len(raw.encode("utf-8")) > MAX_SOURCE_BYTES:
-        raise CandidateContractError(
-            f"candidate source exceeds {MAX_SOURCE_BYTES} bytes"
-        )
-    try:
-        tree = ast.parse(raw, filename="<session-mutation>", mode="exec")
-    except SyntaxError as exc:
-        raise CandidateContractError(
-            f"candidate syntax error at line {exc.lineno}: {exc.msg}"
-        ) from exc
-    run_nodes = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "run"
-    ]
-    if len(run_nodes) != 1 or isinstance(run_nodes[0], ast.AsyncFunctionDef):
-        raise CandidateContractError(
-            "candidate must define exactly one synchronous run(arguments)"
-        )
-    run_node = run_nodes[0]
-    positional = list(run_node.args.posonlyargs) + list(run_node.args.args)
-    if [node.arg for node in positional] != ["arguments"]:
-        raise CandidateContractError("run must have the exact signature run(arguments)")
-    if (
-        run_node.args.vararg is not None
-        or run_node.args.kwarg is not None
-        or run_node.args.kwonlyargs
-        or run_node.args.defaults
-    ):
-        raise CandidateContractError("run must have the exact signature run(arguments)")
-    compile(tree, "<session-mutation>", "exec")
-    return tree, hashlib.sha256(raw.encode("utf-8")).hexdigest()
+# The source contract lives in kernel_runtime.candidate_contract so host
+# registration and worker execution check exactly the same rules.
+__all__ = ["CandidateContractError", "MAX_SOURCE_BYTES", "validate_source", "main"]
 
 
 def _safe_json(value: Any, *, depth: int = 0) -> Any:
