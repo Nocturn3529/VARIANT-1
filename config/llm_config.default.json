@@ -72,7 +72,7 @@
     "xai_model": "grok-4.3",
     "ollama_model": "gemma4:31b-cloud",
     "opencode-zen_model": "x-preview-f-free",
-    "hermes_model": "upstage/solar-pro4:free",
+    "hermes_model": "meituan/longcat-2.5-preview:free",
     "nvidia_model": "nvidia/nemotron-3-ultra-550b-a55b",
     "gemini_model": "gemini-1.5-pro",
     "keys": {},
@@ -83,7 +83,8 @@
       "openai-codex/gpt-5.3-codex-spark": 128000,
       "openai-codex/gpt-5.6-luna": 272000,
       "opencode-zen/x-preview-f-free": 1048576,
-      "hermes/upstage/solar-pro4:free": 524288
+      "hermes/upstage/solar-pro4:free": 524288,
+      "hermes/meituan/longcat-2.5-preview:free": 1048576
     },
     "fallback_chain": []
   },
@@ -150,6 +151,14 @@
         "adapter": "openai.*",
         "status": "qualified",
         "evidence": "Phase 12 source sequence passed 17/17 required provider/static/control stages on 2026-08-23"
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "hermes",
+        "model": "meituan/longcat-2.5-preview:free",
+        "adapter": "openai.*",
+        "status": "developer",
+        "evidence": "Explicit Nous proxy route with Python-tool protocol fixtures; model task benchmark qualification remains pending."
       }
     ]
   },

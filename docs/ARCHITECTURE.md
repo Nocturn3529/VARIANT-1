@@ -36,6 +36,20 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+Provider configuration and live connection evidence are separate. Settings checks
+refresh native OAuth when needed and verify model listings; recent checks expire
+after five minutes. Ollama's local helper and cloud tags do not prove cloud account
+access. Individual model availability still depends on inference requests.
+Nous Portal uses Hermes's fixed loopback inference proxy. Settings starts its
+device authorization inside Hermes's installed Python environment, forwarding only
+the verification link, user code and completion receipt. Hermes owns token storage
+and refresh. The helper waits for an owned commit acknowledgment before replacing
+credentials and uses the shared process-tree owner for cancellation. Explicit
+sign-out operates on the shared Hermes account; it does not copy its credentials
+into VARIANT-1. LongCat's exact free route has developer protocol support, an
+advertised 1M context window and no declared effort-level scale; broader task
+qualification is separate.
+
 `session_catalog.service` publishes categories, mounts, and disclosure; its
 mutation manager delegates disposable execution to the mutation worker client.
 `kernel_runtime.lease` owns one worker generation, while `continuity` coordinates

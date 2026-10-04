@@ -142,9 +142,11 @@ def project_reasoning_policy(
     A missing/nonzero override preserves the established chat effort policy.
     """
     minimum = reasoning_budget == 0
-    rule = _reasoning_rule(profile, model) if minimum else {}
+    rule = _reasoning_rule(profile, model)
     field = (effort_field if effort_field is not None else
              str(getattr(profile, "reasoning_effort_field", "") or ""))
+    if "effort_field" in rule:
+        field = str(rule["effort_field"] or "")
     if minimum:
         efforts = tuple(rule.get("efforts", getattr(profile, "reasoning_efforts", ())) or ())
         effort = next((level for level in _EFFORT_ORDER if level in efforts), "")

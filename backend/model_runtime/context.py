@@ -68,6 +68,8 @@ def _known_cloud_limit(provider: str, model: str) -> int:
     name = str(model or "").strip().lower()
     if not name:
         return 0
+    if provider == "hermes" and name == "meituan/longcat-2.5-preview:free":
+        return 1_048_576
     if str(provider or "").strip().lower() == "openai-codex":
         # The ChatGPT subscription catalog advertises a smaller effective
         # window than the public API model pages. The live Spark entry is
@@ -104,6 +106,9 @@ def _reasoning_route_fields(
     profile_for = getattr(router, "provider_profile", None)
     profile = profile_for(provider) if callable(profile_for) else None
     declared = tuple(getattr(profile, "reasoning_efforts", ()) or ())
+    resolver = getattr(router, "reasoning_efforts", None)
+    if callable(resolver):
+        declared = resolver(provider, model)
     efforts = tuple(
         value for value in _REASONING_EFFORT_ORDER if value in declared
     )

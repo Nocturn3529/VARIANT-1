@@ -24,6 +24,8 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-platform": [
     "hello", "config", "engine", "tools", "messaging:gateway", "messaging:error",
     "cloud:usage",
+    "cloud:provider:checked",
+    "cloud:oauth:disconnect:error",
     "cloud:oauth:pending", "cloud:oauth:complete", "cloud:oauth:error",
     "cloud:oauth:busy",
     "cloud:oauth:cancelled", "cloud:oauth:disconnected",

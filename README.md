@@ -87,6 +87,10 @@ npm start
 ```
 
 After launch, configure a supported provider or local runtime in the app.
+Provider Settings distinguishes saved accounts from recently checked connections.
+Use **Check** to refresh a service's status; model listing access does not certify
+every model's inference availability. Nous Portal can be reconnected in Settings
+through the installed Hermes account. Its sign-out control also signs Hermes out.
 Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
 The Live2D cat and its floating overlay have been removed.

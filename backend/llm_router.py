@@ -817,6 +817,7 @@ class LLMRouter:
         return base
 
     def list_provider_info(self) -> list[dict]:
+        from model_runtime.provider_accounts import account_snapshot
         items = []
         for profile in self.provider_registry.list():
             name = profile.name
@@ -829,7 +830,7 @@ class LLMRouter:
                 configured=configured, credential_count=len(records),
                 model=self.get_cloud_model(name), base_url=self.provider_base_url(name))
             auth_methods = []
-            if name in _NATIVE_OAUTH_PROVIDERS:
+            if name in _NATIVE_OAUTH_PROVIDERS or name == "hermes":
                 auth_methods.append("oauth")
             if profile.env_vars:
                 auth_methods.append("api_key")
@@ -842,6 +843,7 @@ class LLMRouter:
             ):
                 auth_methods.append("external")
             item.update({
+                "connection": account_snapshot(self, name),
                 "auth_methods": auth_methods,
                 "api_key_configured": api_key_configured,
                 "credential_env_vars": list(profile.env_vars),
@@ -1305,6 +1307,10 @@ class LLMRouter:
         """Non-secret status for the UI/CLI: connected? which client? when it
         expires? Never returns token material."""
         import time
+        if self._kn(provider) == "hermes":
+            checked = getattr(self, "_provider_account_checks", {}).get("hermes", {})
+            return {"provider": "hermes", "connected": checked.get("state") == "ready" and time.time() - checked.get("checked_at", 0) < 300,
+                    "managed_external": True, "source": "hermes", "refresh_managed_by": "Hermes"}
         rec = self._oauth_rec(provider)
         name = self._kn(provider)
         if (
@@ -1490,6 +1496,8 @@ class LLMRouter:
         profile = self.provider_profile(name)
         efforts = tuple(getattr(profile, "reasoning_efforts", ()) or ())
         selected = str(model or self.get_cloud_model(name) or "").lower()
+        if name == "hermes" and selected == "meituan/longcat-2.5-preview:free":
+            return ()  # Catalog advertises reasoning, but no effort-level scale.
         if name == "openai-codex" and not selected.startswith("gpt-5.6"):
             efforts = tuple(value for value in efforts if value != "max")
         return efforts

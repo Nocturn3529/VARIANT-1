@@ -14,13 +14,16 @@ from pathlib import Path
 import shutil
 import subprocess
 from typing import Any
+import json
+from urllib.parse import urlparse
 
 import httpx
+from process_tree import CREATE_SUSPENDED, resume_owned_process_and_reap, dispose_process_tree
 
 
 HERMES_PROXY_ENDPOINT = "http://127.0.0.1:8645"
 HERMES_PROXY_OPENAI_BASE = HERMES_PROXY_ENDPOINT + "/v1"
-DEFAULT_HERMES_MODEL = "upstage/solar-pro4:free"
+DEFAULT_HERMES_MODEL = "meituan/longcat-2.5-preview:free"
 
 
 class HermesProxyError(RuntimeError):
@@ -174,6 +177,60 @@ async def available_models(*, start_if_needed: bool = True) -> list[str]:
     if not names:
         raise HermesProxyError("Hermes returned no Nous Portal models")
     return sorted(names, key=str.casefold)
+
+
+async def manage_account(*, logout: bool = False, on_verification=None, can_commit=lambda: True) -> None:
+    """Use Hermes's environment/store; never import a bearer into VARIANT-1."""
+    executable = hermes_executable_path()
+    python = executable.with_name("python.exe" if os.name == "nt" else "python")
+    if not python.is_file():
+        raise HermesProxyError("Hermes Python is unavailable. Reconnect from Hermes instead.")
+    worker = Path(__file__).with_name("hermes_auth_worker.py")
+    if not worker.is_file():
+        raise HermesProxyError("The Nous account helper is missing from this build.")
+    # Windows installation: <root>/venv/Scripts/hermes.exe. The helper imports
+    # Hermes packages explicitly from its root, with the installed venv runtime.
+    root = executable.parent.parent.parent if os.name == "nt" else executable.parent.parent
+    env = dict(os.environ, PYTHONPATH=str(root), PYTHONUNBUFFERED="1")
+    process = await asyncio.create_subprocess_exec(
+        str(python), str(worker), "logout" if logout else "login", cwd=str(root), env=env,
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=os.name != "nt",
+        **({"creationflags": subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED} if os.name == "nt" else {}),
+    )
+    completed = False
+    owner = None
+    try:
+        owner = await resume_owned_process_and_reap(process, None)
+        async with asyncio.timeout(900):
+            while line := await process.stdout.readline():
+                row = json.loads(line)
+                if row.get("event") == "pending":
+                    url = str(row.get("verification_url") or "")
+                    parsed = urlparse(url)
+                    if parsed.scheme != "https" or parsed.hostname != "portal.nousresearch.com" or parsed.username or parsed.password:
+                        raise HermesProxyError("Hermes returned an unexpected verification address.")
+                    if on_verification:
+                        await on_verification(url, str(row.get("user_code") or ""))
+                elif row.get("event") == "ready":
+                    if not can_commit():
+                        raise asyncio.CancelledError()
+                    process.stdin.write(b"commit\n")
+                    await process.stdin.drain()
+                elif row.get("event") == "complete":
+                    completed = True
+                elif row.get("event") == "error":
+                    raise HermesProxyError("Nous sign-in failed in Hermes. Retry or check the Hermes installation.")
+            code = await process.wait()
+            if code or not completed:
+                raise HermesProxyError("Hermes did not finish the account operation.")
+    finally:
+        if owner is not None:
+            dispose_process_tree(owner, terminate=True)
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
 
 
 __all__ = [

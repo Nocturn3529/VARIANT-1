@@ -1,4 +1,5 @@
 export type ProviderInfo = {
+  connection?: {state: "unchecked" | "saved" | "refresh_needed" | "ready" | "service_ready" | "unavailable"; checked_at: number; detail: string};
   name: string;
   display_name: string;
   description: string;
