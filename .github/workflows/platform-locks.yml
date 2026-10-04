@@ -61,6 +61,7 @@ jobs:
           "$RUNNER_TEMP/resolve/bin/python" -m pip download --only-binary=:all: --no-deps \
             -r "$LOCK" -d "$RUNNER_TEMP/wheels" 2>&1 | tee lock-report/wheel-coverage.txt
       - name: Reinstall the lock alone into a fresh environment
+        id: install
         run: |
           set -eu
           python3 -m venv backend/.venv
@@ -83,6 +84,19 @@ jobs:
             tests/test_mutation_proxy_order.py \
             tests/test_mutation_model_freedom.py \
             -q 2>&1 | tee ../lock-report/tests.txt
+      - name: Freeze the backend and kernel from the locked environment
+        id: freeze
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node scripts/build-backend.js 2>&1 | tee lock-report/build-backend.txt
+      - name: Frozen backend smoke
+        if: ${{ !cancelled() && steps.freeze.outcome == 'success' }}
+        run: node scripts/test-frozen-backend-smoke.js 2>&1 | tee lock-report/frozen-backend-smoke.txt
+      - name: Frozen kernel smoke and ASTB board
+        if: ${{ !cancelled() && steps.freeze.outcome == 'success' }}
+        run: |
+          set -eu
+          node scripts/test-frozen-kernel-smoke.js 2>&1 | tee lock-report/frozen-kernel-smoke.txt
+          node scripts/test-frozen-kernel-smoke.js --astb 2>&1 | tee lock-report/frozen-astb-board.txt
       - name: Upload the validated lock and its evidence
         if: always()
         uses: actions/upload-artifact@v6
