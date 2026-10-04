@@ -666,7 +666,14 @@ class MutationManager:
                 loaded,
                 mount_revision=int(record.identity.mount_revision or 0),
             )
-        except Exception:
+        except Exception as exc:
+            # Authoring stays available without composing session tools, but a
+            # candidate that calls one then fails with unknown_proxy; keep why.
+            operational_log(
+                "mutation", "session_tools_unprojected", level="warn",
+                chat_id=str(chat_id), error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
             overlays = []
         hidden_dispatch = self.registry.get("remote_handle_dispatch")
         return build_proxy_contracts(

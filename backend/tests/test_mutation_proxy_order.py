@@ -68,6 +68,22 @@ def test_mutation_contracts_carry_declared_parameter_order():
     assert contracts["tools.read_file"]["parameters"] == ["path", "limit"]
 
 
+def test_unprojectable_session_tools_are_logged_not_dropped_silently(monkeypatch):
+    import session_catalog.mutation as mutation_module
+
+    events = []
+    monkeypatch.setattr(
+        mutation_module, "operational_log",
+        lambda source, event, **fields: events.append((source, event, fields)),
+    )
+    contracts = _contracts(_canonical_binding())  # the fake runtime lookup raises
+    assert "tools.read_file" in contracts
+    assert [(source, event) for source, event, _ in events] == [
+        ("mutation", "session_tools_unprojected"),
+    ]
+    assert events[0][2]["error_type"] == "LookupError"
+
+
 def _method(alias: str) -> dict:
     """A canonical object/API method declared as ``alias(zeta, alpha, limit=None)``."""
 
