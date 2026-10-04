@@ -153,8 +153,8 @@ async def ensure_proxy(model: str = DEFAULT_HERMES_MODEL) -> dict[str, Any]:
     }
 
 
-async def available_models(*, start_if_needed: bool = True) -> list[str]:
-    """Return model IDs advertised by the authenticated Nous proxy."""
+async def available_model_catalog(*, start_if_needed: bool = True) -> list[dict[str, Any]]:
+    """Return non-secret model capabilities through the credential-owned proxy."""
 
     health = await _health()
     if health is None:
@@ -169,14 +169,17 @@ async def available_models(*, start_if_needed: bool = True) -> list[str]:
         payload = await _request_json("v1/models", timeout=20.0)
     except Exception as exc:
         raise HermesProxyError(f"Could not list Hermes models: {exc}") from exc
-    names = {
-        str(row.get("id") or "").strip()
-        for row in payload.get("data") or ()
-        if isinstance(row, dict) and str(row.get("id") or "").strip()
-    }
-    if not names:
+    rows = [row for row in payload.get("data") or ()
+            if isinstance(row, dict) and str(row.get("id") or "").strip()]
+    if not rows:
         raise HermesProxyError("Hermes returned no Nous Portal models")
-    return sorted(names, key=str.casefold)
+    return rows
+
+
+async def available_models(*, start_if_needed: bool = True) -> list[str]:
+    """Return model IDs advertised by the authenticated Nous proxy."""
+    rows = await available_model_catalog(start_if_needed=start_if_needed)
+    return sorted({str(row['id']).strip() for row in rows}, key=str.casefold)
 
 
 async def manage_account(*, logout: bool = False, on_verification=None, can_commit=lambda: True) -> None:

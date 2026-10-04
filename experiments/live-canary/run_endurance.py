@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import time
 import urllib.request
@@ -23,7 +24,32 @@ from run_canary import BACKEND, ROOT, BackendProcess, write_json
 from endurance_mission import grade, mission, publish_feed
 from endurance_state import EnduranceJournal, export_usage, observer_lease
 
-DEFAULT_MODELS = ('stealth/space-bunny-alpha','qwen/qwen3.8-27b:free','inclusionai/ling-3.1-flash')
+DEFAULT_MODELS = ('stealth/space-bunny-alpha','qwen/qwen3.8-27b:free','hermes::meituan/longcat-2.5-preview:free')
+
+
+def parse_route(value):
+    """Explicit mixed routes; unqualified model strings retain the v1 OpenRouter meaning."""
+    if isinstance(value, dict):
+        provider, model = value.get('provider', 'openrouter'), value.get('model', '')
+    else:
+        parts = str(value).split('::', 1)
+        provider, model = parts if len(parts) == 2 else ('openrouter', parts[0])
+    provider, model = str(provider).strip().lower(), str(model).strip()
+    if provider not in {'openrouter', 'hermes'} or not model:
+        raise ValueError('Use openrouter::MODEL or hermes::MODEL for Nous OAuth')
+    route = {'mode':'cloud', 'provider':provider, 'model':model}
+    if provider == 'openrouter':
+        route['reasoning_effort'] = 'max'
+    elif model != 'meituan/longcat-2.5-preview:free':
+        raise ValueError('Only the explicitly qualified LongCat Nous route is admitted in this observer')
+    return route
+
+
+def require_credentials(routes):
+    if any(route.get('provider','openrouter') == 'openrouter' for route in routes):
+        load_disposable_credential()
+        if not os.environ.get('OPENROUTER_API_KEY','').strip():
+            raise ValueError('A disposable OpenRouter credential is required for OpenRouter routes')
 
 
 def load_disposable_credential():
@@ -51,7 +77,8 @@ def require_clean_source():
 
 def initialize(root, *, models=DEFAULT_MODELS, duration=7200, interval=900, project=None):
     root = Path(root).resolve()
-    if duration <= 0 or interval <= 0 or len(models) < 2 or len(models) > 4 or len(set(models)) != len(models):
+    routes = [parse_route(model) for model in models]
+    if duration <= 0 or interval <= 0 or len(routes) < 2 or len(routes) > 4 or len({route['model'] for route in routes}) != len(routes):
         raise ValueError('Use 2–4 distinct models and positive observation/feed intervals')
     journal = EnduranceJournal(root/'observer.sqlite3')
     if journal.get('plan') is not None:
@@ -62,10 +89,10 @@ def initialize(root, *, models=DEFAULT_MODELS, duration=7200, interval=900, proj
     if project == ROOT or ROOT in project.parents or project in ROOT.parents:
         raise ValueError('The disposable project must be outside the VARIANT-1 checkout')
     project.mkdir(parents=True,exist_ok=True)
-    plan = {'schema':'variant1.endurance-plan.v1','run_id':uuid.uuid4().hex,
+    plan = {'schema':'variant1.endurance-plan.v2','run_id':uuid.uuid4().hex,
             'commit':source_commit(),'project':str(project),'duration_s':float(duration),'feed_interval_s':float(interval),
-            'routes':[{'mode':'cloud','provider':'openrouter','model':model,'reasoning_effort':'max'} for model in models],
-            'reasoning_policy':'Requested maximum; actual wire and provider usage remain qualification evidence, not a guarantee of model-internal effort.'}
+            'routes':routes,
+            'reasoning_policy':'OpenRouter requests maximum effort. LongCat uses its advertised default reasoning without inventing an effort scale. Wire receipts and reported counters are qualification evidence, not a guarantee of model-internal effort.'}
     journal.set('plan',plan)
     publish_feed(project,0)
     write_json(root/'plan.json',plan)
@@ -73,12 +100,21 @@ def initialize(root, *, models=DEFAULT_MODELS, duration=7200, interval=900, proj
 
 
 def free_model_preflight(routes):
-    with urllib.request.urlopen('https://openrouter.ai/api/v1/models',timeout=20) as response:
-        catalog = json.load(response)['data']
-    models = {row['id']:row for row in catalog}
+    catalogs = {}
+    providers = {route.get('provider','openrouter') for route in routes}
+    if providers - {'openrouter','hermes'}:
+        raise ValueError('Unsupported endurance provider')
+    if 'openrouter' in providers:
+        with urllib.request.urlopen('https://openrouter.ai/api/v1/models',timeout=20) as response:
+            catalogs['openrouter'] = json.load(response)['data']
+    if 'hermes' in providers:
+        if str(BACKEND) not in sys.path: sys.path.insert(0,str(BACKEND))
+        from model_runtime.hermes_proxy import available_model_catalog
+        catalogs['hermes'] = asyncio.run(available_model_catalog())
     result = []
     for route in routes:
-        row = models.get(route['model'])
+        provider = route.get('provider','openrouter')
+        row = next((item for item in catalogs[provider] if item.get('id') == route['model']),None)
         if row is None:
             raise ValueError('Requested model is no longer listed: '+route['model'])
         pricing = row.get('pricing') or {}
@@ -87,12 +123,12 @@ def free_model_preflight(routes):
         supported = row.get('supported_parameters') or []
         if 'tools' not in supported or not any(key in supported for key in ('reasoning','reasoning_effort')):
             raise ValueError('Route lacks declared tools/reasoning: '+route['model'])
-        result.append({'model':route['model'],'pricing':{key:pricing.get(key) for key in ('prompt','completion')},
+        result.append({'provider':provider,'model':route['model'],'pricing':{key:pricing.get(key) for key in ('prompt','completion')},
             'context_length':row.get('context_length'),'supported_parameters':supported,
             'input_modalities':(row.get('architecture') or {}).get('input_modalities',[]),
             'qualification':'catalog_only','checked_at':time.time()})
-    if 'image' not in result[0]['input_modalities']:
-        raise ValueError('Coordinator route must provide image input for the explicit free vision auxiliary route')
+    if not any('image' in row['input_modalities'] for row in result):
+        raise ValueError('At least one selected free route must provide image input for vision auxiliary calls')
     return result
 
 
@@ -107,12 +143,20 @@ class EnduranceBackend(BackendProcess):
         routes = self.plan['routes']
         write_json(self.config_path.parent/'plugins'/'model-providers'/'endurance-openrouter'/'provider.json',
             {'name':'openrouter','request_defaults':{'provider':{'max_price':{'prompt':0,'completion':0},'require_parameters':True}}})
+        cloud = {'provider':routes[0]['provider'],'fallback_chain':[]}
+        for route in routes:
+            cloud.setdefault(route['provider']+'_model',route['model'])
+        catalog = self.plan.get('catalog') or []
+        cloud['context_windows'] = {row.get('provider','openrouter')+'/'+row['model']:row['context_length']
+            for row in catalog if type(row.get('context_length')) is int and row['context_length'] > 0}
+        vision = next((route for route in routes if any(row.get('provider','openrouter') == route['provider']
+            and row['model'] == route['model'] and 'image' in row.get('input_modalities',[]) for row in catalog)),routes[0])
         write_json(self.config_path,{'mode':'cloud','reasoning':True,'subagent_enabled':True,
-            'sampling':{'max_tokens':16384},'cloud':{'provider':'openrouter','openrouter_model':routes[0]['model'],'fallback_chain':[]},
+            'sampling':{'max_tokens':16384},'cloud':cloud,
             'local':{'autostart':False,'prewarm':False},
             'provider_recovery':{'enabled':True,'max_attempts':4,'max_wait_seconds':60,'fallback_routes':[],
-                                 'auxiliary_routes':{'vision':[routes[0]]}},
-            'action_surface':{'support_matrix':[{'profile':'trusted-local.v1','provider':'openrouter','model':route['model'],
+                                 'auxiliary_routes':{'vision':[vision]}},
+            'action_surface':{'support_matrix':[{'profile':'trusted-local.v1','provider':route['provider'],'model':route['model'],
                 'adapter':'openai.*','status':'canary','evidence':'Disposable endurance qualification; not a general support claim.'} for route in routes]}})
 
     def _prepare_tools_config(self):
@@ -225,7 +269,7 @@ class ObserverClient:
         try:
             await self.ws.send(json.dumps(message))
             row = await asyncio.wait_for(future,timeout)
-            if str(row.get('type','')).endswith(':rejected') or row.get('ok') is False:
+            if row.get('type') == 'error' or str(row.get('type','')).endswith(':rejected') or row.get('ok') is False:
                 raise RuntimeError('Host rejected '+message['type'])
             return row
         finally:
@@ -243,6 +287,14 @@ async def prepare_sessions(client, journal, plan):
     sessions = journal.get('sessions',[])
     for index,route in enumerate(plan['routes']):
         if index < len(sessions):
+            saved=sessions[index]
+            snapshot=await client.command({'type':'session:settings:get','session_id':saved['id']})
+            actual=snapshot.get('route') or {}
+            if any(actual.get(key)!=route.get(key) for key in ('mode','provider','model')):
+                raise ValueError('Retained session route changed; record a new phase instead of silently switching it')
+            if (actual.get('reasoning_effort') or '') != (route.get('reasoning_effort') or ''):
+                raise ValueError('Retained session reasoning policy changed')
+            await client.command({'type':'chat:project:set','chat_id':saved['id'],'root':plan['project']})
             continue
         request_id = f'endurance:{plan["run_id"]}:session:{index}'
         result = await client.command({'type':'chat:session:new','request_id':request_id},
@@ -250,8 +302,10 @@ async def prepare_sessions(client, journal, plan):
         chat_id = result['session']['id']
         # The durable session creation request can be repeated after a lost reply.
         await client.command({'type':'chat:project:set','chat_id':chat_id,'root':plan['project']})
-        await client.command({'type':'mode:set','scope':'session','id':chat_id,**route},
-            lambda row:row.get('type') in {'chat:context','error'},timeout=90)
+        selected=await client.command({'type':'mode:set','scope':'session','id':chat_id,**route},
+            lambda row:row.get('type')=='error' or (row.get('type')=='chat:context' and row.get('session_id')==chat_id),timeout=90)
+        if any(selected.get(key)!=route.get(key) for key in ('provider','model')):
+            raise ValueError('Host did not acknowledge the pinned provider/model')
         name = 'Endurance coordinator' if index == 0 else f'Endurance collaborator {index}'
         await client.ws.send(json.dumps({'type':'chat:session:rename','id':chat_id,'title':name}))
         sessions.append({'id':chat_id,'peer_id':'chat:'+chat_id,'role':'coordinator' if index==0 else 'collaborator','route':route})
@@ -302,6 +356,30 @@ def resource_sample(backend, project):
     return sample
 
 
+def peer_summary(data_dir, sessions):
+    """Count real request/result links without exporting agent-message content."""
+    database = Path(data_dir)/'data'/'astb'/'astb.sqlite3'
+    if not database.is_file():
+        return {'available':False, 'exchanges':[], 'limitations':'Peer evidence not available yet.'}
+    ids = [session['peer_id'] for session in sessions]
+    placeholders = ','.join('?' for _ in ids)
+    try:
+        with sqlite3.connect(database.as_uri()+'?mode=ro',uri=True,timeout=5) as conn:
+            conn.row_factory = sqlite3.Row
+            deadline = time.monotonic()+1
+            conn.set_progress_handler(lambda: int(time.monotonic() >= deadline),10000)
+            rows = conn.execute(f'''SELECT m.sender_peer_id,m.target_peer_id,m.message_kind,m.state,count(*) AS messages,
+                sum(EXISTS(SELECT 1 FROM peer_message r WHERE r.in_reply_to=m.message_id
+                    AND r.message_kind='result' AND r.sender_peer_id=m.target_peer_id
+                    AND r.target_peer_id=m.sender_peer_id)) AS correlated_results
+                FROM peer_message m WHERE m.sender_peer_id IN ({placeholders}) AND m.target_peer_id IN ({placeholders})
+                GROUP BY m.sender_peer_id,m.target_peer_id,m.message_kind,m.state''',(*ids,*ids)).fetchall()
+        return {'available':True,'measurement_complete':True,'exchanges':[dict(row) for row in rows],
+            'limitations':'Metadata-only message delivery and correlated-result evidence. It does not certify contribution quality.'}
+    except sqlite3.Error:
+        return {'available':False,'measurement_complete':False,'exchanges':[], 'limitations':'Peer evidence unavailable or exceeded its bounded observation time.'}
+
+
 async def run(root, *, tick=30, final_grace=300):
     with observer_lease(Path(root).resolve()):
         return await run_owned(root,tick=tick,final_grace=final_grace)
@@ -319,10 +397,9 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
         if not selected or selected-set(route['model'] for route in plan['routes']):
             raise ValueError('Admission selection must use models pinned in this lab')
         require_clean_source()
-        load_disposable_credential()
-        if not os.environ.get('OPENROUTER_API_KEY','').strip():
-            raise ValueError('A disposable OpenRouter credential is required')
+        require_credentials(plan['routes'])
         catalog=await asyncio.to_thread(free_model_preflight,plan['routes'])
+        plan = {**plan,'catalog':catalog}
         backend=EnduranceBackend(root,plan)
         connection,client,ledger=None,None,None
         report={'schema':'variant1.endurance-admission.v1','commit':plan['commit'],'catalog':catalog,
@@ -377,9 +454,10 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False):
                         artifact_ok=False
                     requests=ledger.read(goal_id=goal_id,limit=500)['items']
                     checks={'goal_completed':status=='succeeded','artifact_verified':artifact_ok,'physical_requests_observed':bool(requests),
-                            'pinned_model':bool(requests) and all(row['provider']=='openrouter' and row['model']==session['route']['model'] for row in requests),
-                            'requested_max_on_wire':bool(requests) and all(row['metadata']['reasoning_effort']=='max' for row in requests)}
-                    case={'model':session['route']['model'],'goal_id':goal_id,'status':status,'checks':checks,
+                            'pinned_model':bool(requests) and all(row['provider']==session['route']['provider'] and row['model']==session['route']['model'] for row in requests),
+                            'reasoning_policy_on_wire':bool(requests) and all(row['metadata']['reasoning_effort']==session['route'].get('reasoning_effort','') for row in requests)}
+                    case={'provider':session['route']['provider'],'model':session['route']['model'],'goal_id':goal_id,'status':status,'checks':checks,
+                          'reasoning_policy':'maximum_requested' if session['route'].get('reasoning_effort') else 'provider_default_no_declared_effort_scale',
                           'passed':all(checks.values()),'seconds':time.monotonic()-started,'usage':ledger.totals(goal_id=goal_id)}
                     report['cases'].append(case)
                     write_json(root/'admission.json',report)
@@ -410,10 +488,10 @@ async def run_owned(root, *, tick=30, final_grace=300):
     if source_commit() != plan['commit']:
         raise ValueError('Source commit changed; use the pinned checkout or initialize a new phase')
     require_clean_source()
-    load_disposable_credential()
-    if not os.environ.get('OPENROUTER_API_KEY','').strip():
-        raise ValueError('Set the disposable OPENROUTER_API_KEY in the process environment')
-    journal.append('preflight',await asyncio.to_thread(free_model_preflight,plan['routes']))
+    require_credentials(plan['routes'])
+    catalog = await asyncio.to_thread(free_model_preflight,plan['routes'])
+    journal.append('preflight',catalog)
+    plan = {**plan,'catalog':catalog}
     backend = EnduranceBackend(root,plan)
     connection, client, ledger, report = None, None, None, {}
     sys.path.insert(0,str(BACKEND))
@@ -452,6 +530,7 @@ async def run_owned(root, *, tick=30, final_grace=300):
                     'goal_id':goal_id,'goal_status':state,'elapsed_s':now-journal.get('started_at'),'deadline':deadline,
                     'usage':ledger.totals(),'artifact_grade':artifact_grade,
                     'latest_sample':sample,
+                    'collaboration':await asyncio.to_thread(peer_summary,backend.data_dir,sessions),
                     'full_mission_qualified':False,'review_required':['citations','test quality','browser/desktop coverage','operating records','peer collaboration'],
                     'capability_availability':{'native_browser':'requires an attached browser host','desktop':'environment dependent; not certified by controller'}}
                 write_json(root/'status.json',report)
@@ -509,7 +588,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('operation',choices=['init','preflight','admit','run','status','pause','resume','continue','stop','export','reconcile'])
     parser.add_argument('--root',required=True)
-    parser.add_argument('--models',nargs='+',default=list(DEFAULT_MODELS))
+    parser.add_argument('--models','--routes',nargs='+',default=list(DEFAULT_MODELS),help='MODEL (OpenRouter), openrouter::MODEL, or hermes::MODEL (Nous OAuth)')
     parser.add_argument('--duration',type=float,default=7200)
     parser.add_argument('--feed-interval',type=float,default=900)
     parser.add_argument('--tick',type=float,default=30)

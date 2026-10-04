@@ -138,8 +138,13 @@ backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py run --
 ```
 
 Commit the tested source before initializing a pinned live phase. The controller
-requires a disposable `OPENROUTER_API_KEY`, or a platform-encrypted credential file
-selected by `VARIANT1_ENDURANCE_CREDENTIAL_FILE`. `status`, `pause`, `resume`,
+requires a disposable `OPENROUTER_API_KEY` for OpenRouter routes, or a platform-encrypted
+credential file selected by `VARIANT1_ENDURANCE_CREDENTIAL_FILE`. The default lineup
+uses Space Bunny and Qwen through OpenRouter and LongCat through Hermes's signed-in
+Nous proxy. `--routes` accepts `openrouter::MODEL` and `hermes::MODEL`; existing bare
+model IDs retain their OpenRouter meaning. OAuth tokens are not copied into the lab.
+Catalog checks verify zero prompt/completion prices for both providers. LongCat
+uses default reasoning without an invented effort scale. `status`, `pause`, `resume`,
 `continue`, `stop`, and `export` use the same `--root`; `continue` is an explicit
 operator action for blocked work. Reports distinguish artifact checks from full
 mission qualification, which still needs review. Catalog checks and short runs

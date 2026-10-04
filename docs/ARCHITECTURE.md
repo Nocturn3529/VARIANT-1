@@ -125,6 +125,12 @@ metadata samples. Agents receive an outcome-level mission and evolving resources
 the observer does not assign team work or synthesize continuation prompts. A local
 lease prevents concurrent observers from owning one lab. Source commits and model
 routes are pinned per phase; catalog checks reject unavailable or non-free routes.
+Mixed phases use OpenRouter credentials only for OpenRouter, and Hermes's existing
+OAuth proxy for Nous. The lab records advertised context limits and separate
+reasoning policies; a model without an effort scale keeps its default reasoning.
+Retained session routes are verified before continuation. Read-only peer summaries
+count real request/result correlations without exporting message content; queries
+have a time bound so diagnostics cannot stall the observer as history grows.
 JSONL/CSV exports use a consistent database snapshot and bounded batches. Artifact
 grades, continuous-operation evidence and recovery interventions remain distinct;
 the controller does not claim full mission qualification from file checks alone.

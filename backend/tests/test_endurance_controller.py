@@ -9,7 +9,7 @@ CANARY = Path(__file__).resolve().parents[2]/'experiments'/'live-canary'
 sys.path.insert(0,str(CANARY))
 from endurance_state import EnduranceJournal, export_usage, observer_lease
 from endurance_mission import grade, mission, publish_feed
-from run_endurance import AdoptedBackendProcess, EnduranceBackend, ObserverClient, free_model_preflight, initialize
+from run_endurance import AdoptedBackendProcess, EnduranceBackend, ObserverClient, free_model_preflight, initialize, parse_route, require_credentials, peer_summary, prepare_sessions
 from model_runtime.usage_ledger import ModelUsageLedger
 from tests.test_model_usage_ledger import request
 from endurance_reconcile import generation_usage, reconcile_usage
@@ -26,6 +26,9 @@ def test_lab_initialization_is_once_only_and_does_not_reset_retained_state(tmp_p
         initialize(root)
     assert EnduranceJournal(root/'observer.sqlite3').get('sessions') == [{'id':'retained'}]
     assert plan['routes'][0]['model']=='stealth/space-bunny-alpha'
+    assert plan['routes'][2]['provider']=='hermes'
+    assert plan['routes'][2]['model']=='meituan/longcat-2.5-preview:free'
+    assert 'reasoning_effort' not in plan['routes'][2]
     assert EnduranceJournal(root/'observer.sqlite3').events()[0]['payload']=={'step':1}
 
 
@@ -35,10 +38,25 @@ def test_resume_configuration_preserves_routes_and_user_changes(tmp_path):
     backend._prepare_config()
     price_policy=json.loads((backend.config_path.parent/'plugins'/'model-providers'/'endurance-openrouter'/'provider.json').read_text(encoding='utf-8'))
     assert price_policy['request_defaults']['provider']['max_price']=={'prompt':0,'completion':0}
+    cfg=json.loads(backend.config_path.read_text(encoding='utf-8'))
+    assert cfg['cloud']['hermes_model']=='meituan/longcat-2.5-preview:free'
+    assert 'oauth' not in cfg['cloud']
+    assert {row['provider'] for row in cfg['action_surface']['support_matrix']}=={'hermes','openrouter'}
     custom={'operator_setting':True}
     backend.config_path.write_text(json.dumps(custom),encoding='utf-8')
     backend._prepare_config()
     assert json.loads(backend.config_path.read_text(encoding='utf-8'))==custom
+
+
+def test_mixed_config_uses_advertised_windows_and_selected_free_vision(tmp_path):
+    plan=initialize(tmp_path/'lab',models=['nvidia/nemotron-3-ultra-550b-a55b:free','hermes::meituan/longcat-2.5-preview:free'])
+    plan['catalog']=[{'provider':'openrouter','model':plan['routes'][0]['model'],'context_length':262144,'input_modalities':['text']},
+                     {'provider':'hermes','model':plan['routes'][1]['model'],'context_length':1048576,'input_modalities':['text','image']}]
+    backend=EnduranceBackend(tmp_path/'lab',plan)
+    backend._prepare_config()
+    cfg=json.loads(backend.config_path.read_text())
+    assert cfg['cloud']['context_windows']['hermes/meituan/longcat-2.5-preview:free']==1048576
+    assert cfg['provider_recovery']['auxiliary_routes']['vision']==[plan['routes'][1]]
 
 
 def test_one_observer_owns_the_lab_and_crash_style_close_releases_lease(tmp_path):
@@ -131,6 +149,44 @@ def test_preflight_rejects_paid_missing_or_non_tool_models(tmp_path,monkeypatch)
         free_model_preflight([{'model':'missing'}])
 
 
+def test_mixed_preflight_uses_credential_owned_nous_catalog_and_rejects_paid_route(monkeypatch):
+    import run_endurance
+    from model_runtime import hermes_proxy
+    row={'id':'meituan/longcat-2.5-preview:free','pricing':{'prompt':'0','completion':'0'},
+         'supported_parameters':['tools','reasoning'],'architecture':{'input_modalities':['text','image']}}
+    async def catalog(): return [row]
+    monkeypatch.setattr(hermes_proxy,'available_model_catalog',catalog)
+    monkeypatch.setattr(run_endurance.urllib.request,'urlopen',lambda *_args,**_kwargs:pytest.fail('Nous must not query OpenRouter or receive its key'))
+    route=parse_route('hermes::'+row['id'])
+    assert free_model_preflight([route])[0]['provider']=='hermes'
+    row['pricing']['prompt']='0.1'
+    with pytest.raises(ValueError,match='no longer free'):
+        free_model_preflight([route])
+
+
+def test_route_parser_keeps_legacy_model_strings_and_rejects_unsupported_providers(monkeypatch):
+    assert parse_route('legacy-model')=={'mode':'cloud','provider':'openrouter','model':'legacy-model','reasoning_effort':'max'}
+    with pytest.raises(ValueError): parse_route('nous::some-model')
+    with pytest.raises(ValueError): parse_route('hermes::unqualified')
+    monkeypatch.delenv('OPENROUTER_API_KEY',raising=False)
+    require_credentials([parse_route('hermes::meituan/longcat-2.5-preview:free')])
+
+
+def test_peer_summary_counts_real_correlated_results_without_content(tmp_path):
+    from peers import PeerRepository
+    database=tmp_path/'data'/'astb'/'astb.sqlite3'
+    PeerRepository(str(database))
+    import sqlite3
+    with sqlite3.connect(database) as conn:
+        for identity,sender,target,kind,reply in [('request','chat:a','chat:b','request',''),('result','chat:b','chat:a','result','request')]:
+            conn.execute('''INSERT INTO peer_message(message_id,exchange_id,sender_peer_id,target_peer_id,
+                in_reply_to,content,delivery,state,message_kind,revision,created_at,updated_at)
+                VALUES(?,?,?,?,?,'private agent work','follow_up','replied',?,1,1,1)''',(identity,'exchange',sender,target,reply,kind))
+    summary=peer_summary(tmp_path,[{'peer_id':'chat:a'},{'peer_id':'chat:b'}])
+    assert summary['available'] and summary['exchanges'][0]['correlated_results']==1
+    assert 'private agent work' not in json.dumps(summary)
+
+
 @pytest.mark.asyncio
 async def test_observer_commands_handle_concurrent_events_without_recording_prompt_or_secrets(tmp_path):
     queue=asyncio.Queue()
@@ -147,5 +203,38 @@ async def test_observer_commands_handle_concurrent_events_without_recording_prom
         result=await client.command({'type':'goal:submit'})
         assert result['result']['goal']['status']=='running'
         assert 'secret' not in json.dumps(journal.events())
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_resume_rejects_operator_model_change_without_rewriting_it(tmp_path):
+    journal=EnduranceJournal(tmp_path/'observer.sqlite3')
+    journal.set('sessions',[{'id':'retained','peer_id':'chat:retained'}])
+    commands=[]
+    class Client:
+        async def command(self,message):
+            commands.append(message)
+            return {'route':{'mode':'cloud','provider':'openrouter','model':'changed'}}
+    with pytest.raises(ValueError,match='Retained session route changed'):
+        await prepare_sessions(Client(),journal,{'routes':[parse_route('original')],'project':str(tmp_path)})
+    assert [row['type'] for row in commands]==['session:settings:get']
+
+
+@pytest.mark.asyncio
+async def test_plain_host_error_is_not_a_successful_observer_command(tmp_path):
+    queue=asyncio.Queue()
+    class Socket:
+        def __aiter__(self):return self
+        async def __anext__(self):return await queue.get()
+        async def send(self,raw):
+            message=json.loads(raw)
+            await queue.put(json.dumps({'type':'error','request_id':message['request_id'],'error':'private body'}))
+    journal=EnduranceJournal(tmp_path/'observer.sqlite3')
+    client=ObserverClient(Socket(),journal)
+    try:
+        with pytest.raises(RuntimeError,match='Host rejected mode:set'):
+            await client.command({'type':'mode:set'})
+        assert 'private body' not in json.dumps(journal.events())
     finally:
         await client.close()
