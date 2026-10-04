@@ -245,7 +245,7 @@ export function ProviderAccounts() {
           connected={false}
           stateLabel={statusLabel(provider)}
           onCheck={() => check(provider)}
-          onRemove={providerMethods(provider).includes("oauth") && (provider.name === "hermes" || !!providerOAuthStatus(provider, config)?.connected)
+          onRemove={providerMethods(provider).includes("oauth") && (provider.name === "hermes" || !!providerOAuthStatus(provider, config)?.connected || !!providerOAuthStatus(provider, config)?.stored)
             ? () => remove(provider) : undefined}
           external={providerMethods(provider).includes("external")}
           onSelect={() => select(provider)}

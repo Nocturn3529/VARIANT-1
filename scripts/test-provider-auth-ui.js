@@ -60,6 +60,8 @@ dom.window.confirm = text => {confirmations.push(text); return true;};
 React.act(() => document.querySelector('[aria-label="Remove Hermes Agent (Nous OAuth)"]').click());
 assert.equal(sent.at(-1).type, "cloud:oauth:disconnect");
 assert.match(confirmations[0], /also signs Hermes out/);
+React.act(() => api.ingest({type: "config", providers: [{name: "xai", display_name: "xAI", auth_methods: ["oauth"]}], oauth_by_provider: {xai: {connected: false, stored: true}}}));
+assert.ok(document.querySelector('[aria-label="Remove xAI"]'), "expired stored grants can still be removed");
 React.act(() => {
   api.dismissOAuthFlow();
   api.ingest({type: "config", providers: [{name: "fixture", display_name: "Fixture", auth_methods: ["api_key"]}], credentials_by_provider: {fixture: []}, credential_revision_by_provider: {fixture: 0}});

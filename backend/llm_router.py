@@ -1337,6 +1337,7 @@ class LLMRouter:
         expired = bool(exp and exp <= now)
         return {
             "provider": name,
+            "stored": bool(has_access or has_refresh),
             "connected": bool(has_refresh or (has_access and not expired)),
             "usable": bool(has_access and not expired),
             "needs_refresh": bool(has_refresh and (not has_access or expired)),

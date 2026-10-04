@@ -10,8 +10,8 @@ def account_snapshot(router, provider: str) -> dict:
     if cached and time.time() - cached["checked_at"] < 300:
         return dict(cached)
     oauth = router.oauth_status(provider)
-    if oauth.get("connected"):
-        state = "refresh_needed" if oauth.get("needs_refresh") else "saved"
+    if oauth.get("connected") or oauth.get("stored"):
+        state = "refresh_needed" if oauth.get("needs_refresh") or not oauth.get("connected") else "saved"
     else:
         state = "unchecked"
     return {"state": state, "checked_at": 0, "detail": "Check the connection to verify current access."}

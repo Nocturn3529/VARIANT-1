@@ -38,6 +38,7 @@ export type CredentialInfo = {
 export type OAuthStatus = {
   provider?: string;
   connected?: boolean;
+  stored?: boolean;
   auth_flow?: string;
   managed_external?: boolean;
   source?: string;

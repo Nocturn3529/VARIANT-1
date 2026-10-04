@@ -72,3 +72,11 @@ def test_stale_checks_expire(monkeypatch):
     r = router()
     r._provider_account_checks = {"hermes": {"state": "ready", "checked_at": 1, "detail": "old"}}
     assert account_snapshot(r, "hermes")["state"] == "unchecked"
+
+
+def test_expired_stored_grant_remains_removable_and_requires_reauthorization():
+    r = router()
+    r.cfg["cloud"]["oauth"] = {"xai": {"access_token": "fixture-only", "expires_at": 1}}
+    assert r.oauth_status("xai")["stored"] is True
+    assert r.oauth_status("xai")["connected"] is False
+    assert account_snapshot(r, "xai")["state"] == "refresh_needed"
