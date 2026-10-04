@@ -41,7 +41,10 @@ from .mutation_contracts import (
     utc_timestamp as _now,
 )
 from .mutation_worker_client import MutationWorkerClient
-from kernel_runtime.proxy_arguments import declared_parameter_order
+from kernel_runtime.proxy_arguments import (
+    binding_param_specs,
+    declared_parameter_order,
+)
 
 
 MUTATION_SCHEMA = "variant1.astb.session-mutation.v2"
@@ -812,6 +815,7 @@ class MutationManager:
                     contract_params,
                     str(signature or binding.get("signature") or ""),
                 ),
+                "param_specs": binding_param_specs(contract_params),
                 "fixed_arguments": dict(fixed_arguments or {}),
                 "argument_envelope": bool(argument_envelope),
             }
@@ -982,6 +986,7 @@ class MutationManager:
         return {
             str(name): {
                 "parameters": list(dict(contract).get("parameters") or ()),
+                "param_specs": dict(dict(contract).get("param_specs") or {}),
                 **(
                     {"internal_role": str(dict(contract).get("internal_role"))}
                     if dict(contract).get("internal_role")

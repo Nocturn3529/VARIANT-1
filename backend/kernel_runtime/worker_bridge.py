@@ -37,7 +37,11 @@ from .bridge_protocol import (
     write_async_frame,
     write_sync_frame,
 )
-from .proxy_arguments import declared_parameter_order
+from .proxy_arguments import (
+    declared_parameter_order,
+    normalize_call_arguments,
+    proxy_signature,
+)
 from .wire_values import unpack_value
 
 
@@ -2288,7 +2292,6 @@ class CapabilityProxy:
             + ("\n\n" if description else "")
             + f"Awaitable form: await {self.__qualname__}.async_(..., _deadline_ms=None)"
         )
-        params = []
         raw_params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
         specs = {
             _identifier(str(name)): spec if isinstance(spec, dict) else {}
@@ -2304,105 +2307,14 @@ class CapabilityProxy:
         ]
         self._ordered_names = [name for name, _ in ordered]
         self._param_specs = {name: dict(spec) for name, spec in ordered}
-        for name, spec in ordered:
-            annotation = {
-                "string": str,
-                "integer": int,
-                "number": float,
-                "boolean": bool,
-                "array": list,
-                "object": dict,
-            }.get(str(spec.get("type") or "").lower(), inspect.Parameter.empty)
-            params.append(inspect.Parameter(
-                name,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=(inspect.Parameter.empty if spec.get("required") else spec.get("default")),
-                annotation=annotation,
-            ))
-        self.__signature__ = inspect.Signature(params)
+        self.__signature__ = proxy_signature(ordered)
         self.async_ = _AsyncCapabilityCall(self)
 
     def _arguments(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
-        if len(args) > len(self._ordered_names):
-            raise TypeError(
-                f"Invalid call to {self.__qualname__}{self.__signature__}: "
-                f"received {len(args)} positional arguments, accepts at most "
-                f"{len(self._ordered_names)}. Inspect "
-                f"{self.__qualname__}.documentation() for the exact contract."
-            )
-        values = dict(kwargs)
-        positional = list(args)
-        if (
-            len(positional) == 1
-            and isinstance(positional[0], list)
-            and "argv" in self._ordered_names
-            and "command" in self._ordered_names
-            and "argv" not in values
-            and "command" not in values
-            and all(isinstance(item, str) for item in positional[0])
-        ):
-            # ``run_command([program, arg, ...], cwd=...)`` is the natural
-            # Python spelling of an exact argv invocation.  Do not bind that
-            # list to the neighboring ``command`` string parameter.
-            values["argv"] = list(positional[0])
-            positional = []
-        elif len(positional) == 1 and not kwargs and isinstance(positional[0], dict):
-            candidate = dict(positional[0])
-            if set(candidate).issubset(set(self._ordered_names)):
-                # Accept the conventional provider-style argument envelope in
-                # addition to normal Python keyword arguments.
-                values = candidate
-                positional = []
-            elif len(self._ordered_names) == 1:
-                name = self._ordered_names[0]
-                spec = self._param_specs.get(name) or {}
-                items = spec.get("items") if isinstance(spec.get("items"), dict) else {}
-                if str(spec.get("type") or "").lower() == "array" and str(
-                    items.get("type") or ""
-                ).lower() == "object":
-                    # A single object is an unambiguous one-item array for
-                    # batch-shaped capabilities such as apply_patch.
-                    values = {name: [candidate]}
-                    positional = []
-        elif len(positional) == 1 and not kwargs:
-            candidate = positional[0]
-            if (
-                "selection" in self._ordered_names
-                and isinstance(candidate, list)
-                and len(candidate) == 1
-                and isinstance(candidate[0], dict)
-            ):
-                # Discovery APIs return ranked lists. Passing an unambiguous
-                # one-item result directly into a selection-shaped capability
-                # should compose without forcing list ceremony on small models.
-                values = {"selection": dict(candidate[0])}
-                positional = []
-            elif (
-                "selection" in self._ordered_names
-                and "tool_name" in self._ordered_names
-                and isinstance(candidate, str)
-            ):
-                # A lone name is the natural unique-tool shorthand; the host
-                # still rejects ambiguity before any connector call.
-                values = {"tool_name": candidate}
-                positional = []
-        for index, value in enumerate(positional):
-            name = self._ordered_names[index]
-            if name in values:
-                raise TypeError(f"{self.__qualname__} got multiple values for {name!r}")
-            values[name] = value
-        try:
-            bound = self.__signature__.bind(**values)
-        except TypeError as exc:
-            raise TypeError(
-                f"Invalid call to {self.__qualname__}{self.__signature__}: {exc}. "
-                f"Inspect {self.__qualname__}.documentation() for the exact contract."
-            ) from None
-        clean = {
-            key: value
-            for key, value in bound.arguments.items()
-            if value is not None
-        }
+        # Shared with mutation workers so a promoted helper binds identically.
+        clean = normalize_call_arguments(
+            self.__qualname__, self.__signature__, self._param_specs, args, kwargs,
+        )
         fixed_arguments = self._descriptor.get("fixed_arguments")
         if isinstance(fixed_arguments, dict):
             # Dispatcher method identity always wins over caller kwargs so a

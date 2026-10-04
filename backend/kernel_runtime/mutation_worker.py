@@ -32,6 +32,7 @@ from kernel_runtime.worker_bridge import (
     _decode_host_result,
     _encode_host_argument,
 )
+from kernel_runtime.proxy_arguments import normalize_call_arguments, proxy_signature
 from session_catalog.mutation_contracts import MUTATION_REMOTE_HANDLE_ROLE
 
 PROTOCOL = "variant1.astb.mutation-worker.v2"
@@ -164,28 +165,28 @@ class _ProxyMethod:
         parameters: list[str],
         observed: list[dict[str, Any]],
         remote_handles: _MutationRemoteHandleBridge,
+        param_specs: dict[str, Any] | None = None,
     ):
         self.reader = reader
         self.writer = writer
         self.qualified_name = str(qualified_name)
         self.parameters = [str(item) for item in parameters]
+        specs = dict(param_specs or {})
+        self.param_specs = {
+            name: dict(specs.get(name) or {}) for name in self.parameters
+        }
+        self.signature = proxy_signature(
+            [(name, self.param_specs[name]) for name in self.parameters]
+        )
         self.observed = observed
         self.remote_handles = remote_handles
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if len(args) > len(self.parameters):
-            raise TypeError(
-                f"{self.qualified_name} accepts at most {len(self.parameters)} "
-                "positional arguments"
-            )
-        arguments = dict(kwargs)
-        for index, value in enumerate(args):
-            name = self.parameters[index]
-            if name in arguments:
-                raise TypeError(
-                    f"{self.qualified_name} got multiple values for {name!r}"
-                )
-            arguments[name] = value
+        # The same rules as the kernel proxy, so a promoted helper calls
+        # mounted capabilities exactly as it did in the persistent kernel.
+        arguments = normalize_call_arguments(
+            self.qualified_name, self.signature, self.param_specs, args, kwargs,
+        )
         payload = {
             "schema": PROTOCOL,
             "type": "proxy_call",
@@ -337,6 +338,7 @@ def _execute(request: dict[str, Any], reader: Any, writer: Any) -> dict[str, Any
             parameters,
             observed_calls,
             remote_handles,
+            param_specs=dict(spec.get("param_specs") or {}),
         )
         if str(spec.get("internal_role") or "") == MUTATION_REMOTE_HANDLE_ROLE:
             remote_handles.bind(proxy)
