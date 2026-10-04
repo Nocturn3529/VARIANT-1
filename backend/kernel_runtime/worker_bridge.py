@@ -37,7 +37,9 @@ from .bridge_protocol import (
     write_async_frame,
     write_sync_frame,
 )
+from .candidate_contract import MAX_PURPOSE_CHARS
 from .proxy_arguments import (
+    TOOLS_RESERVED_NAMES,
     declared_parameter_order,
     normalize_call_arguments,
     proxy_signature,
@@ -2397,7 +2399,7 @@ class _AsyncCapabilityCall:
 
 
 class ReadOnlyTools:
-    _RESERVED = frozenset({"aliases", "methods", "describe", "documentation"})
+    _RESERVED = TOOLS_RESERVED_NAMES
 
     def __init__(
         self,
@@ -2714,7 +2716,7 @@ def _normalized_promotion_tests(
             if outcome is False:
                 raise AssertionError(f"tests[{index}] returned False")
             # The assertion has already run in the same trusted Python session.
-            # Host validation and probation still gate activation.
+            # Host registration still checks the candidate's source contract.
             continue
         if isinstance(value, str):
             try:
@@ -2930,6 +2932,15 @@ def _kernel_assertion_count(tests: Any) -> int:
         return sum(1 for item in tests if callable(item))
     except TypeError:
         return 0
+
+
+def _registration_purpose(explicit: Any, helper: Any, fallback: str) -> str:
+    """The model's purpose as given; a docstring-derived one fits the host bound."""
+
+    if explicit:
+        return str(explicit).strip()
+    derived = str(inspect.getdoc(helper) or "").strip() or fallback
+    return derived[:MAX_PURPOSE_CHARS].rstrip()
 
 
 def _with_assertion_report(result: Any, count: int) -> Any:
@@ -3220,11 +3231,9 @@ class ToolbeltNamespace:
             "slot": short_slot,
             "parent": short_slot,
             "alias": alias,
-            "purpose": str(
-                purpose
-                or inspect.getdoc(using)
-                or f"Session replacement for {namespace}.{alias}"
-            ).strip(),
+            "purpose": _registration_purpose(
+                purpose, using, f"Session replacement for {namespace}.{alias}"
+            ),
             "schema": schema,
             "source": candidate_source,
         }
@@ -3280,11 +3289,9 @@ class ToolbeltNamespace:
             schema_override=schema,
         )
         clean_alias = _identifier(str(alias or helper_name))
-        clean_purpose = str(
-            purpose
-            or inspect.getdoc(helper)
-            or f"Synthesized session helper {clean_alias}"
-        ).strip()
+        clean_purpose = _registration_purpose(
+            purpose, helper, f"Synthesized session helper {clean_alias}"
+        )
         selected_slot = self._promotion_slot(slot)
         payload = {
             "slot": selected_slot,
@@ -3316,7 +3323,7 @@ class ToolbeltNamespace:
         purpose: str | None = None,
         invoke: dict[str, Any] | None = None,
     ) -> Any:
-        """Promote ordinary working Python through the tested atomic create path."""
+        """Promote ordinary working Python through the atomic create path."""
 
         return self.synthesize(
             helper,

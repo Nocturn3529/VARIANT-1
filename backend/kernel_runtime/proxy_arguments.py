@@ -10,8 +10,18 @@ from __future__ import annotations
 
 import ast
 import inspect
+import keyword
 from typing import Any, Mapping, Sequence
 
+
+# Mounted aliases and parameters become Python attributes and inspect.Parameter
+# names. Registration applies this rule, so an active session tool is always
+# one the kernel can mount.
+MAX_PROXY_NAME_LENGTH = 64
+# ``tools`` keeps these for its own discovery API.
+TOOLS_RESERVED_NAMES = frozenset({"aliases", "methods", "describe", "documentation"})
+# ``<proxy>.async_(...)`` adds this keyword to every capability signature.
+RESERVED_PARAMETER_NAMES = frozenset({"_deadline_ms"})
 
 _ANNOTATIONS = {
     "string": str,
@@ -21,6 +31,25 @@ _ANNOTATIONS = {
     "array": list,
     "object": dict,
 }
+
+
+def proxy_name_problem(name: str, reserved: frozenset[str] = frozenset()) -> str:
+    """Why ``name`` cannot be a mounted alias or parameter name; ``""`` if it can."""
+
+    if not (
+        name.isascii()
+        and name.isidentifier()
+        and len(name) <= MAX_PROXY_NAME_LENGTH
+    ):
+        return (
+            "must be an ASCII Python identifier of at most "
+            f"{MAX_PROXY_NAME_LENGTH} characters"
+        )
+    if keyword.iskeyword(name):
+        return "is a Python keyword"
+    if name in reserved:
+        return "is reserved by the mounted namespace"
+    return ""
 
 
 def declared_parameter_order(params: Mapping[str, Any], signature: str = "") -> list[str]:
@@ -191,8 +220,12 @@ def normalize_call_arguments(
 
 
 __all__ = [
+    "MAX_PROXY_NAME_LENGTH",
+    "RESERVED_PARAMETER_NAMES",
+    "TOOLS_RESERVED_NAMES",
     "binding_param_specs",
     "declared_parameter_order",
     "normalize_call_arguments",
+    "proxy_name_problem",
     "proxy_signature",
 ]

@@ -10,6 +10,11 @@ import ast
 import hashlib
 
 MAX_SOURCE_BYTES = 64 * 1024
+# Registration bounds the host enforces and the kernel's helper promotion
+# respects when it derives values for the model.
+MAX_PURPOSE_CHARS = 2000
+MAX_EXAMPLE_CASES = 20
+MAX_EXAMPLE_BYTES = 64 * 1024
 
 
 class CandidateContractError(ValueError):
@@ -56,4 +61,11 @@ def validate_source(source: str) -> tuple[ast.Module, str]:
     return tree, hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-__all__ = ["CandidateContractError", "MAX_SOURCE_BYTES", "validate_source"]
+__all__ = [
+    "CandidateContractError",
+    "MAX_EXAMPLE_BYTES",
+    "MAX_EXAMPLE_CASES",
+    "MAX_PURPOSE_CHARS",
+    "MAX_SOURCE_BYTES",
+    "validate_source",
+]

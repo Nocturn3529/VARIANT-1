@@ -43,18 +43,24 @@ from .mutation_contracts import (
 )
 from .mutation_worker_client import MutationWorkerClient
 from kernel_runtime.candidate_contract import (
+    MAX_EXAMPLE_BYTES,
+    MAX_EXAMPLE_CASES,
+    MAX_PURPOSE_CHARS,
+    MAX_SOURCE_BYTES,
     CandidateContractError,
     validate_source,
 )
 from kernel_runtime.proxy_arguments import (
+    RESERVED_PARAMETER_NAMES,
+    TOOLS_RESERVED_NAMES,
     binding_param_specs,
     declared_parameter_order,
+    proxy_name_problem,
 )
 
 
 MUTATION_SCHEMA = "variant1.astb.session-mutation.v2"
 MUTATION_HANDLER = "mutation_invoke"
-_ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _EFFECT_RANK = {
     "pure": 0,
     "read": 1,
@@ -107,8 +113,11 @@ def _public_schema(schema: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     params: dict[str, Any] = {}
     for name, value in properties.items():
         clean = str(name)
-        if not _ALIAS.fullmatch(clean):
-            raise MutationError("invalid_schema", f"invalid parameter name: {clean!r}")
+        problem = proxy_name_problem(clean, RESERVED_PARAMETER_NAMES)
+        if problem:
+            raise MutationError(
+                "invalid_schema", f"parameter name {clean!r} {problem}"
+            )
         spec = dict(value) if isinstance(value, dict) else {}
         if str(spec.get("type") or "") not in supported:
             raise MutationError(
@@ -816,7 +825,10 @@ class MutationManager:
                 for namespace, alias in dict.fromkeys(
                     item for item in projections if item[0] and item[1]
                 ):
-                    if not _ALIAS.fullmatch(namespace) or not _ALIAS.fullmatch(alias):
+                    if proxy_name_problem(namespace) or proxy_name_problem(
+                        alias,
+                        TOOLS_RESERVED_NAMES if namespace == "tools" else frozenset(),
+                    ):
                         raise MutationError(
                             "invalid_projected_alias",
                             f"projected name is invalid: {namespace}.{alias}",
@@ -1138,8 +1150,16 @@ class MutationManager:
         occupied = str(base_slot.get("status") or "") == "seed"
         vacant = str(base_slot.get("status") or "") == "vacant"
         clean_alias = str(alias or "").strip()
-        if not _ALIAS.fullmatch(clean_alias):
-            raise MutationError("invalid_alias", "mutation alias must be a Python identifier")
+        # Synthesized tools mount in ``tools``; seeds and methods keep their
+        # catalog names. A name the kernel cannot mount would stop it booting.
+        problem = proxy_name_problem(
+            clean_alias,
+            TOOLS_RESERVED_NAMES if declared_kind in {"create", "revise"} else frozenset(),
+        )
+        if problem:
+            raise MutationError(
+                "invalid_alias", f"mutation alias {clean_alias!r} {problem}"
+            )
         parent_slot_id = ""
         if declared_kind in {"mutate", "method"}:
             if not occupied:
@@ -1217,11 +1237,19 @@ class MutationManager:
                     f"{base_slot.get('bundle')}.{clean_alias} is not a mounted method",
                 )
         clean_source = str(source or "")
-        if not clean_source.strip() or len(clean_source.encode("utf-8")) > 64 * 1024:
-            raise MutationError("source_quota", "mutation source must be 1..65536 bytes")
+        if (
+            not clean_source.strip()
+            or len(clean_source.encode("utf-8")) > MAX_SOURCE_BYTES
+        ):
+            raise MutationError(
+                "source_quota", f"mutation source must be 1..{MAX_SOURCE_BYTES} bytes"
+            )
         clean_purpose = str(purpose or "").strip()
-        if not clean_purpose or len(clean_purpose) > 2000:
-            raise MutationError("invalid_purpose", "mutation purpose must be 1..2000 characters")
+        if not clean_purpose or len(clean_purpose) > MAX_PURPOSE_CHARS:
+            raise MutationError(
+                "invalid_purpose",
+                f"mutation purpose must be 1..{MAX_PURPOSE_CHARS} characters",
+            )
         normalized_schema, params = _public_schema(schema)
         # Positional calls follow the helper's own order, else the contract
         # it replaces or revises; explicit run(arguments) sources keep sorted.
@@ -1235,8 +1263,15 @@ class MutationManager:
             _parameter_order(params, declared_order) if declared_order else []
         )
         clean_tests = list(tests or ())
-        if len(clean_tests) > 20 or len(canonical_bytes(clean_tests)) > 64 * 1024:
-            raise MutationError("test_quota", "mutation tests exceed the session draft quota")
+        if (
+            len(clean_tests) > MAX_EXAMPLE_CASES
+            or len(canonical_bytes(clean_tests)) > MAX_EXAMPLE_BYTES
+        ):
+            raise MutationError(
+                "test_quota",
+                f"examples are limited to {MAX_EXAMPLE_CASES} cases and "
+                f"{MAX_EXAMPLE_BYTES} bytes per registration",
+            )
         proxy_contracts = self._proxy_contracts(
             loaded,
             str(chat_id),
@@ -2067,8 +2102,9 @@ class MutationManager:
                 )
             raise MutationError(
                 "atomic_contract_unavailable",
-                "mutate requires an occupied direct seed or active synthesized "
-                "direct tool; use staged authoring for a coherent object",
+                "mutate(slot=..., source=...) replaces a direct seed or revises "
+                "a synthesized tool; replace an object method with "
+                "toolbelt.mutate(<object>.<method>, using=helper)",
             )
         binding = dict(bindings[0])
         alias = str(base.get("primary_alias") or binding.get("alias") or "")
