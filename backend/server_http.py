@@ -7,6 +7,7 @@ through the ``srv`` module (or AppHost-synced server module) passed in.
 from __future__ import annotations
 
 import asyncio
+import anyio
 import json
 import secrets
 import time
@@ -17,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from security import secretstore
 import ws_dispatch
+from ws_transport import transport_disconnected
 
 class _NullWebSocket:
     """Best-effort fallback transport after the owning socket has gone away."""
@@ -307,6 +309,21 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
     session = session_factory()
     session.view_role = view_role
     session_runtimes = srv.require_runtime().session_runtimes
+    queue = asyncio.Queue(maxsize=128)
+    dispatcher = None
+    receiver = None
+
+    async def dispatch_messages():
+        while True:
+            message = await queue.get()
+            try:
+                handled = await ws_dispatch.dispatch(srv, logged, session, message)
+                if not handled:
+                    mtype = message.get("type") if isinstance(message, dict) else None
+                    await logged.send_json({"type": "error", "error": f"unknown_type:{mtype}"})
+            finally:
+                queue.task_done()
+
     try:
         session_runtimes.attach(
             initial_chat_id,
@@ -330,8 +347,18 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
         if orphan and view_role != "detached_chat":
             await logged.send_json({"type": "orphaned_task", **orphan})
         await logged.send_json(srv.require_runtime().tool_settings.state())
+        dispatcher = asyncio.create_task(dispatch_messages(), name="websocket-dispatch")
         while True:
-            raw = await websocket.receive_text()
+            # Ordinary commands keep FIFO ordering, but may await a response
+            # from this very socket. Keep receiving browser acknowledgements
+            # (and disconnects) independently of that ordered command worker.
+            receiver = asyncio.create_task(websocket.receive_text())
+            ready, _ = await asyncio.wait((receiver, dispatcher), return_when=asyncio.FIRST_COMPLETED)
+            if dispatcher in ready:
+                dispatcher.result()
+                break
+            raw = receiver.result()
+            receiver = None
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
@@ -362,57 +389,67 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
                     msg.get("result"),
                 )
                 continue
-            handled = await ws_dispatch.dispatch(srv, logged, session, msg)
-            if not handled:
-                mtype = msg.get("type") if isinstance(msg, dict) else None
-                print(f"[ws] in type={mtype!s} error=unknown_type", flush=True)
-                await logged.send_json({
-                    "type": "error",
-                    "error": f"unknown_type:{mtype}",
-                })
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if view_role != "detached_chat":
             try:
-                from browser_fabric.interactive import unregister_host
-                unregister_host(logged)
-            except Exception:
-                pass
-        srv.hub.remove(websocket)
-        disconnected_chat_id = str(
-            getattr(session.active, "runtime_chat_id", "")
-            or getattr(session, "viewed_session_id", "")
-            or ""
-        )
-        if view_role == "detached_chat":
-            detached_tasks = session_runtimes.detach(
-                getattr(session, "attachment_id", ""),
-                cancel_unobserved_foreground=False,
+                queue.put_nowait(msg)
+            except asyncio.QueueFull:
+                # Never block the acknowledgement reader on ordinary traffic.
+                # This rejected envelope has not executed any domain action.
+                await logged.send_json({"type": "error", "error": "request_queue_full",
+                    "request_id": str(msg.get("request_id") or "")[:512] if isinstance(msg, dict) else ""})
+    except asyncio.CancelledError:
+        # ASGI scopes may cancel the endpoint as soon as the peer closes.
+        # This ends the transport, not the durable run's ownership policy.
+        pass
+    except Exception as exc:
+        if not transport_disconnected(exc):
+            raise
+    finally:
+        # Finish detachment even when the ASGI parent scope has already been
+        # cancelled; awaiting our workers must not abandon ownership cleanup.
+        with anyio.CancelScope(shield=True):
+            tasks = [task for task in (receiver, dispatcher) if task is not None]
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if view_role != "detached_chat":
+                try:
+                    from browser_fabric.interactive import unregister_host
+                    unregister_host(logged)
+                except Exception:
+                    pass
+            srv.hub.remove(websocket)
+            disconnected_chat_id = str(
+                getattr(session.active, "runtime_chat_id", "")
+                or getattr(session, "viewed_session_id", "")
+                or ""
             )
-        else:
-            detached_tasks = session_runtimes.detach(
-                getattr(session, "attachment_id", "")
+            if view_role == "detached_chat":
+                detached_tasks = session_runtimes.detach(
+                    getattr(session, "attachment_id", ""),
+                    cancel_unobserved_foreground=False,
+                )
+            else:
+                detached_tasks = session_runtimes.detach(
+                    getattr(session, "attachment_id", "")
+                )
+            if detached_tasks:
+                await asyncio.gather(*detached_tasks, return_exceptions=True)
+            # Only the last attachment owns disconnect cancellation.
+            attachment_count = getattr(session_runtimes, "attachment_count", None)
+            remaining_attachments = (
+                int(attachment_count(disconnected_chat_id) or 0)
+                if callable(attachment_count)
+                else 0
             )
-        if detached_tasks:
-            await asyncio.gather(*detached_tasks, return_exceptions=True)
-        # Only the last attachment owns disconnect cancellation. A remaining
-        # Deck keeps the durable chat observable and can stop its admitted run.
-        attachment_count = getattr(session_runtimes, "attachment_count", None)
-        remaining_attachments = (
-            int(attachment_count(disconnected_chat_id) or 0)
-            if callable(attachment_count)
-            else 0
-        )
-        if remaining_attachments == 0 and view_role != "detached_chat":
-            await cancel_session_work(
-                session,
-                host=srv,
-                websocket=logged,
-                runtime_registry=session_runtimes,
-            )
-        clients = len(getattr(srv.hub, "active", ()) or ())
-        print(f"[ws] close clients={clients}", flush=True)
+            if remaining_attachments == 0 and view_role != "detached_chat":
+                await cancel_session_work(
+                    session, host=srv, websocket=logged,
+                    runtime_registry=session_runtimes,
+                )
+            clients = len(getattr(srv.hub, "active", ()) or ())
+            print(f"[ws] close clients={clients}", flush=True)
 
 
 async def activity_websocket_endpoint(

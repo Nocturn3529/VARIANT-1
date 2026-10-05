@@ -257,10 +257,10 @@ async def test_child_partial_failure_is_not_persisted_as_completed(
     )
 
     async def fake_run(*_args, **_kwargs):
-        return (
+        return child_worker.ChildWorkerResult(
             "[child FAILED] native output ended at its limit before completion; "
-            "partial output: useful intermediate evidence"
-        )
+            "partial output: useful intermediate evidence", status='failed',
+            terminal_reason='model_output_limit', error='native output limit reached')
 
     monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
     admitted = await manager.spawn("parent-a", task="long child task")
@@ -268,6 +268,10 @@ async def test_child_partial_failure_is_not_persisted_as_completed(
 
     assert terminal["status"] == "failed"
     assert "partial output: useful intermediate evidence" in terminal["result_text"]
+    assert terminal['error'] == 'native output limit reached'
+    assert terminal['terminal_reason'] == 'model_output_limit'
+    detail = manager.inspection_snapshot('parent-a', child_id=admitted['child_id'])['children'][0]
+    assert detail['terminal_reason'] == 'model_output_limit' and detail['error']
 
 
 @pytest.mark.asyncio

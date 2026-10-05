@@ -781,6 +781,14 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                     receipt_tool_result_observations_truncated
                 ),
             )
+            if runtime_registry is not None and receipt_session_id and run_id:
+                try:
+                    summary = runtime_registry.repository.outer_tool_summary(receipt_session_id, run_id)
+                    if summary['tool_calls']:
+                        receipt.update({key: value for key, value in summary.items() if key != 'calls'})
+                        receipt_tool_names = list(summary['tool_sequence'])
+                except Exception:
+                    _LOG.exception("durable tool receipt reconciliation failed")
             if receipt_session_id:
                 if runtime_registry is not None:
                     try:
@@ -853,7 +861,7 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
             print(
                 f"[turn] end run_id={run_id or '-'} status={turn_status} "
                 f"ms={wall_ms} llm_calls={len(usage_events)} "
-                f"tool_calls={len(receipt_tool_names)} tools={sequence_text}",
+                f"tool_calls={receipt['tool_calls']} tools={sequence_text}",
                 flush=True,
             )
             if usage_events:
@@ -924,6 +932,7 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                     "type": "run:settled",
                     "schema": "variant1.run-settled.v1",
                     "run_id": run_id,
+                    "admission_id": admission_id,
                     "session_id": receipt_session_id or bound_sid,
                     "status": turn_status,
                     "stop_reason": terminal_stop_reason,

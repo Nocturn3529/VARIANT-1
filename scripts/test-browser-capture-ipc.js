@@ -11,13 +11,13 @@ let handler, captures = 0, deadline;
 const exported = {exports:{}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron-browser-capture.js'),'utf8'), {
   module:exported, require:()=>({ipcMain:{handle:(_name,fn)=>{handler=fn}}, webContents:{fromId:id=>id===7?guest:undefined}}),
-  setTimeout:fn=>{deadline=fn;return 1}, clearTimeout:()=>{},
+  setTimeout:(fn,ms)=>{if(ms===6000){deadline=fn;return 1}return setTimeout(fn,ms)}, clearTimeout:id=>{if(id!==1)clearTimeout(id)},
 });
 exported.exports.registerBrowserCapture({getDeckWindow:()=>({webContents:owner}),isTrustedIpcSender:event=>event.trusted===true,isNativeHost:host=>host===native});
 const png = Buffer.alloc(24);
 png.writeUInt32BE(1280, 16); png.writeUInt32BE(720, 20);
 const image = {isEmpty:()=>false,toPNG:()=>png};
-guest.capturePage=async rect=>{assert.deepEqual({...rect},{x:0,y:0,width:1280,height:720});captures++;return image};
+guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,width:1280,height:720});assert.equal(options.stayHidden,true);captures++;return image};
 (async()=>{
   assert.equal((await handler({trusted:false},7)).ok,false);
   assert.equal((await handler({trusted:true},'7')).ok,false);
@@ -28,6 +28,19 @@ guest.capturePage=async rect=>{assert.deepEqual({...rect},{x:0,y:0,width:1280,he
   const captured = await handler({trusted:true},7);
   assert.equal(captured.image,png.toString('base64'));
   assert.equal(captured.image_width,1280); assert.equal(captured.image_height,720);
+  const originalViewport=guest.executeJavaScript;
+  guest.executeJavaScript=async expression=>vm.runInNewContext(expression,{
+    innerWidth:1280,innerHeight:720,devicePixelRatio:1,
+    requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{},clearTimeout:()=>{},
+    setTimeout:(callback,ms)=>{assert.equal(ms,200);queueMicrotask(callback);return 1},
+  });
+  assert.equal((await handler({trusted:true},7)).ok,true,'an occluded guest whose animation frames never fire is still capturable');
+  guest.executeJavaScript=originalViewport;
+  const originalCapture=guest.capturePage;let surfaceAttempts=0;
+  guest.capturePage=async (...args)=>{if(++surfaceAttempts<3)throw new Error('Current display surface not available for capture');return originalCapture(...args)};
+  assert.equal((await handler({trusted:true},7)).ok,true,'fresh compositor surfaces may settle under the existing deadline');
+  assert.equal(surfaceAttempts,3);
+  guest.capturePage=originalCapture;
   guest.hostWebContents=native; assert.equal((await handler({trusted:true},7)).ok,true);
   const clippedPng=Buffer.from(png);clippedPng.writeUInt32BE(444,16);
   guest.capturePage=async()=>({isEmpty:()=>false,toPNG:()=>clippedPng});

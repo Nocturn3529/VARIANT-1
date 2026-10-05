@@ -85,7 +85,14 @@ def annotate_provider_error(error, payload) -> None:
     error.provider_error_code = str(body.get("code") or "")[:100]
     # OpenRouter's shared upstream capacity is not this API key's quota.
     # BYOK and unclassified throttling retain conservative credential scope.
-    error.model_specific_rate_limit = (
+    provider = str(getattr(error, 'provider', '')).casefold()
+    message = str(body.get('message') or '').casefold()
+    nous_capacity = (
+        provider == 'hermes' and getattr(error, 'status_code', 0) == 429
+        and message.startswith('the requested model is temporarily at capacity upstream.')
+        and "this is not your api key's rate limit" in message
+    )
+    error.model_specific_rate_limit = nous_capacity or (
         str(getattr(error,'provider','')).casefold() == 'openrouter'
         and str(body.get('code') or getattr(error,'status_code',0)) == '429'
         and str(body.get('message') or '').casefold() == 'provider returned error'

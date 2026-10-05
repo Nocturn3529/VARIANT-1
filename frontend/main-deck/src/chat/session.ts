@@ -172,6 +172,11 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
   }
 
   let nextMessages = messages;
+  const recoveredRun=turnApi().snapshot().runId;
+  if(!sessionChanged && !turnApi().isActive() && state.turnSteps.length && recoveredRun) {
+    nextMessages=nextMessages.map(message=>message.role==="assistant" && message.runId===recoveredRun
+      && !message.steps?.some(step=>!step.peerMessage) ? {...message,steps:state.turnSteps} : message);
+  }
   if (!sessionChanged) {
     nextMessages = mergeMessageEnrichment(nextMessages, state.messages);
   }
@@ -189,6 +194,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     streamText: "",
     queuedFollowUps: 0,
     activeTurnId: null,
+    turnSteps: [],
     pendingActiveInputs: [],
     mutationTogglePending: sessionChanged || mutationSettledBySnapshot
       ? null

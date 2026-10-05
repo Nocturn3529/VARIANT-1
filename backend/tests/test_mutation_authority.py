@@ -123,7 +123,7 @@ def test_pending_off_checkpoint_blocks_authority_elevation(tmp_path, monkeypatch
     monkeypatch.setattr(
         agent_engine,
         "mutation_elevation_blocked_by_threads",
-        lambda thread_ids, checkpointer=None: (
+        lambda thread_ids, checkpointer=None, **kwargs: (
             True,
             "pending tool call was saved with mutation writes off",
         ),

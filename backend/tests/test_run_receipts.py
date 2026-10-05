@@ -430,3 +430,37 @@ def test_chat_task_receipt_tracks_usage_and_terminal_status(tmp_path):
         assert resource_calls[0].kwargs["receipt"]["status"] == "failed"
 
     asyncio.run(scenario())
+
+
+def test_failed_chat_receipt_recovers_completed_calls_without_live_metrics(tmp_path):
+    from run_context import current_run_context
+    from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
+    async def scenario():
+        store = open_sessions(tmp_path / 'sessions')
+        sid = store.create_session()
+        repository = SessionRuntimeRepository(str(tmp_path / 'runtime.sqlite3'))
+        runtimes = SessionRuntimeRegistry(repository)
+        async def handle_chat(*_args, **_kwargs):
+            run_id = current_run_context().run_id
+            for i in range(8):
+                token = dict(chat_id=sid, run_id=run_id, call_id=f'call-{i}',
+                             request_fingerprint=f'fingerprint-{i}')
+                repository.reserve_outer_tool_call(tool_name='ipython', **token)
+                repository.finish_outer_tool_call(**token, state='succeeded' if i < 7 else 'failed',
+                    outcome={'status': 'ok' if i < 7 else 'error', 'error_code': '' if i < 7 else 'python_exception',
+                             'source_result': 'private tool result never projected'})
+            raise RuntimeError('transport-like failure after eight completed calls')
+        ports = SimpleNamespace(io=SimpleNamespace(sessions=store,emit=AsyncMock(),runtime_registry=runtimes),
+            session=SimpleNamespace(make_run_context=_make_chat_context,handle_chat=handle_chat))
+        socket = SimpleNamespace(send_json=AsyncMock())
+        session = ConnectionSession(viewed_session_id=sid)
+        seq = session.reserve_turn()
+        session.active.turn_session_id = sid
+        await chat_task(ports,socket,'exercise failure',session,turn_seq=seq)
+        receipt = store.get_last_run_receipt(sid)
+        assert receipt['tool_calls'] == 8 and receipt['tool_calls_by_name'] == {'ipython':8}
+        assert receipt['tool_results_by_status'] == {'ok':7,'error':1}
+        assert receipt['tool_error_codes'] == {'python_exception':1}
+        assert 'private tool result' not in json.dumps(receipt)
+        assert receipt['settled'] is True and not runtimes.is_busy(sid)
+    asyncio.run(scenario())

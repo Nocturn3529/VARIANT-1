@@ -121,6 +121,33 @@ async def test_task_stream_sends_live_tokens_only_to_the_owner_socket():
 
 
 @pytest.mark.asyncio
+async def test_detached_turn_uses_native_sink_after_owner_socket_closes():
+    owner = SimpleNamespace(send_json=AsyncMock(side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')))
+    session = ConnectionSession()
+    session.active.turn_session_id = 'detached-chat'
+    session.active.turn_client_id = 'origin'
+    host = _host_with_stream(['live', ' answer'])
+    host.require_runtime().session_runtimes.attached_transports = lambda _: []
+    turn = await build_task_turn_ports(host, owner, session).loop.stream([], 16, None)
+    assert turn.text == 'live answer'
+    frames = [call.args[0] for call in host.hub.broadcast.await_args_list]
+    assert [frame['token'] for frame in frames] == ['live', ' answer']
+    assert all(frame['session_id'] == 'detached-chat' for frame in frames)
+
+
+@pytest.mark.asyncio
+async def test_committed_command_is_not_rejected_when_publication_fails():
+    from ws_protocol import CorrelatedResponder
+    socket = SimpleNamespace(send_json=AsyncMock(side_effect=RuntimeError('Cannot call "send" once a close message has been sent.')))
+    action = AsyncMock(return_value={'committed': True})
+    with pytest.raises(RuntimeError, match='close message'):
+        await CorrelatedResponder('fixture', 'fixture.v1')(socket, {'request_id': 'request'}, 'save', action)
+    action.assert_awaited_once()
+    assert socket.send_json.await_count == 1
+    assert socket.send_json.await_args.args[0]['type'] == 'fixture:accepted'
+
+
+@pytest.mark.asyncio
 async def test_task_stream_propagates_owner_socket_delivery_failures():
     owner = SimpleNamespace(
         send_json=AsyncMock(side_effect=RuntimeError("owner disconnected"))

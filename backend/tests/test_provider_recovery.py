@@ -78,6 +78,18 @@ def test_shared_upstream_default_backoff_is_quiet_and_explicit_retry_after_wins(
     assert cloud._cloud_retry_delay(error,0)==12
 
 
+@pytest.mark.parametrize('provider,status,message,specific', [
+    ('hermes',429,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit — please retry shortly.",True),
+    ('hermes',429,'Your API key rate limit was exceeded',False),
+    ('hermes',401,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit",False),
+    ('other',429,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit",False),
+])
+def test_nous_explicit_model_capacity_keeps_account_scope(provider,status,message,specific):
+    error=ProviderRequestError(provider,message,status_code=status)
+    annotate_provider_error(error,{'status':status,'message':message})
+    assert classify_provider_error(error).model_specific is specific
+
+
 @pytest.mark.asyncio
 async def test_upstream_model_throttle_keeps_other_model_credential_usable_without_key_rotation(tmp_path,monkeypatch):
     result=router(tmp_path,monkeypatch,max_attempts=1,fallback_routes=[])

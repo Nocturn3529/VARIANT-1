@@ -38,6 +38,7 @@ import ws_goals
 import ws_children
 import ws_extensions_v2
 from ws_protocol import session_chat_id
+from ws_transport import transport_disconnected
 
 HANDLERS: Dict[str, Callable[..., Awaitable[None]]] = {}
 
@@ -90,6 +91,8 @@ async def dispatch(srv: Any, websocket, session, msg: Any) -> bool:
     try:
         await fn(srv, websocket, session, msg)
     except Exception as exc:
+        if transport_disconnected(exc):
+            raise
         # Keep implementation details in server-side diagnostics only. The
         # client contract is stable and must not expose paths, credentials, or
         # other exception text from a failed adapter.
@@ -115,6 +118,8 @@ async def dispatch(srv: Any, websocket, session, msg: Any) -> bool:
             await websocket.send_json({
                 "type": "error",
                 "error": f"handler_failed:{mtype}",
+                "request_id": str(msg.get("request_id") or "")[:512],
+                "session_id": str(msg.get("session_id") or msg.get("chat_id") or msg.get("id") or ""),
             })
         except Exception:
             pass

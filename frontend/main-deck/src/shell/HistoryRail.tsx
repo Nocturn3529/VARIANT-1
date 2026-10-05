@@ -15,6 +15,8 @@ import {
   setSessionPinned,
   setSessionSearchQuery,
   switchSession,
+  retrySessionNavigation,
+  returnToDisplayedSession,
   useSessionState,
   type SessionSummary,
 } from "../state/sessionStore";
@@ -240,7 +242,7 @@ export function HistoryRail() {
     const unbound:SessionSummary[]=[];
     for(const item of sessionState.items) {
       const project=projectState.projects[item.id] !== undefined ? projectState.projects[item.id] : item.project;
-      if(!project){unbound.push(item);continue;}
+      if(item.archived || !project){unbound.push(item);continue;}
       const group=projects.get(project.root) || {label:project.name,items:[]};group.items.push(item);projects.set(project.root,group);
     }
     return [...projects.entries()].map(([root,g])=>({...g,key:root})).concat(order.map(label=>({key:label,label,items:unbound.filter(item=>groupFor(item)===label)})).filter(g=>g.items.length));
@@ -302,6 +304,11 @@ export function HistoryRail() {
     </label>
 
     <div className="history-scroll" id="history-list" data-fixture-root="history">
+      {sessionState.navigationError ? <section role="alert" className="history-group">
+        <p>{sessionState.navigationError}</p>
+        <button type="button" className="history-utility-button" onClick={retrySessionNavigation}>Retry opening</button>
+        {sessionState.displayedSessionId ? <button type="button" className="history-utility-button" onClick={returnToDisplayedSession}>Return to visible chat</button> : null}
+      </section> : null}
       {sessionState.loading ? <EmptyState title="Loading conversations…" /> : null}
       {!sessionState.loading && sessionState.error
         ? <EmptyState title={sessionState.error} />

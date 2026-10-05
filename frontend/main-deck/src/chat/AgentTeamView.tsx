@@ -89,6 +89,11 @@ export function AgentTeamView({agents,total,activeCount,blockedCount,truncated,c
       <div className="agent-team__trace-heading"><h3>{selected.name} · execution trace</h3><button type="button" aria-label="Refresh trace" title="Refresh trace" disabled={!connected} onClick={()=>onSelect(selected.id)}><Icon name="refresh"/></button></div>
       {loadingDetail?<div className="agent-team__skeleton" role="status" aria-label="Loading this agent’s activity"><i/><i/><i/></div>:null}{detailError?<p role="alert">{detailError}</p>:null}
       {detail?.id===selected.id && detail.generation===selected.generation?<>
+        {detail.error || detail.terminalReason ? <section className="agent-team__report" role={detail.error ? "alert" : "status"}>
+          <h3>Execution outcome</h3>
+          {detail.terminalReason ? <p>{label(detail.terminalReason)}</p> : null}
+          {detail.error ? <p>{detail.error}</p> : null}
+        </section> : null}
         {detail.activities.length?<ol className="agent-team__trace">{detail.activities.map(activity=><li key={activity.id}>
           <ActivityMark state={activityMark(activity.status)}/>
           <div><strong>{activity.kind}</strong><span>{label(activity.status)}</span></div><time>{time(activity.createdAt)}</time>

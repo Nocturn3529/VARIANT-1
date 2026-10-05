@@ -118,7 +118,7 @@ def terminal_cause_class(terminal_reason: str) -> str:
     return (
         "provider" if terminal_reason == "provider_error"
         else "harness" if terminal_reason in {
-            "harness_error", "host_preflight_error", "cancellation_authority_failed"
+            "harness_error", "host_preflight_error", "cancellation_authority_failed", "transport_disconnected"
         }
         else "user" if terminal_reason == "user_cancelled"
         else "model" if terminal_reason in {

@@ -33,6 +33,29 @@ def _request_sessions(ws):
     return _drain_until(ws, "chat:sessions")
 
 
+def test_execution_reconciliation_is_correlated_and_scoped_to_requested_calls():
+    runtime = server.APP.require_runtime()
+    sid = runtime.sessions.create_session()
+    runtime.session_runtimes.ensure_runtime(sid)
+    repository = runtime.session_runtimes.repository
+    token = dict(chat_id=sid,run_id='audit-run',call_id='cell-call',request_fingerprint='hash')
+    repository.reserve_outer_tool_call(tool_name='ipython',**token)
+    repository.finish_outer_tool_call(**token,state='succeeded',outcome={'status':'ok','source_result':'private result'})
+    with TestClient(server.app).websocket_connect(f"/ws?token={server.AUTH_TOKEN}") as ws:
+        ws.send_json({'type':'chat:execution:get','session_id':sid,'request_id':'read-1',
+                      'run_id':'audit-run','admission_id':'observed-admission','call_ids':['cell-call','absent']})
+        response = _drain_until(ws,'chat:execution')
+        assert response['request_id'] == 'read-1' and response['session_id'] == sid
+        assert response['observed_admission_id'] == 'observed-admission'
+        assert response['observed_run_id'] == 'audit-run' and response['busy'] is False
+        assert [row['call_id'] for row in response['calls']] == ['cell-call']
+        assert response['calls'][0]['status'] == 'ok'
+        assert 'private result' not in str(response)
+        ws.send_json({'type':'chat:execution:get','session_id':sid,'request_id':'read-2',
+                      'run_id':'different-run','admission_id':'observed-admission','call_ids':['cell-call']})
+        assert _drain_until(ws,'chat:execution')['calls'] == []
+
+
 def test_trace_annotation_ack_is_correlated_and_cannot_target_a_later_run():
     sessions = server.APP.require_runtime().sessions
     sid = sessions.create_session()

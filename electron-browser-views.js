@@ -22,6 +22,7 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     catch (error) { log('[browser-view] event: ' + error.message); }
   }
   function park(row) {
+    if (alive(row.view.webContents)) row.view.webContents.setBackgroundThrottling(true);
     row.clip.setVisible(false); row.visible = false;
     if (alive(row.host)) row.host.contentView.removeChildView(row.clip);
     row.host = null;
@@ -50,7 +51,7 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
   function create(owner, tabId) {
     const view = new WebContentsView({webPreferences:{partition:'persist:variant1-preview',
       contextIsolation:true, nodeIntegration:false, sandbox:true, webSecurity:true,
-      allowRunningInsecureContent:false, backgroundThrottling:false}});
+      allowRunningInsecureContent:false}});
     const clip = new View();
     clip.addChildView(view); clip.setVisible(false);
     const row = {owner, tabId, view, clip, host:null, attachmentId:'', generation:++generation,
@@ -99,6 +100,10 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     row.bounds = bounds; row.viewport = viewport;
     row.visible = visible !== false && clipped.width > 0 && clipped.height > 0;
     row.clip.setVisible(row.visible);
+    // Change this after the native attachment/geometry is published. Static
+    // unthrottling during hidden guest creation can leave no capture surface.
+    // Parked/hidden pages retain their document with normal idle throttling.
+    row.view.webContents.setBackgroundThrottling(!row.visible);
   }
   async function call(row, method, args) {
     const wc = row.view.webContents;

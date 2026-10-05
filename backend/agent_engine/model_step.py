@@ -66,10 +66,26 @@ class ModelStepFailed:
     messages: list
     exception: Exception
     clean_replays: int = 0
+    stage: str = 'invoke'
 
     @property
     def detail(self) -> str:
         return f"{type(self.exception).__name__}: {self.exception}"
+
+    @property
+    def terminal_reason(self) -> str:
+        from ws_transport import transport_disconnected
+        from model_runtime.llama_server import LocalEngineError
+        explicit = str(getattr(self.exception, 'terminal_reason', '') or '')
+        if explicit:
+            return explicit
+        if transport_disconnected(self.exception):
+            return 'transport_disconnected'
+        if self.stage == 'prepare':
+            return 'host_preflight_error'
+        if self.stage == 'normalize':
+            return 'harness_error'
+        return 'provider_error' if isinstance(self.exception, LocalEngineError) else 'model_step_error'
 
 
 ModelStepExecution: TypeAlias = (
@@ -94,7 +110,7 @@ async def execute_model_step(
     try:
         working = await policy.prepare_messages(working)
     except Exception as exc:
-        return ModelStepFailed(working, exc)
+        return ModelStepFailed(working, exc, stage='prepare')
     if policy.should_stop():
         return ModelStepInterrupted(working)
     clean_replays = 0
@@ -102,8 +118,10 @@ async def execute_model_step(
         0, min(int(getattr(policy, "max_clean_replays", 0) or 0), 2)
     )
     while True:
+        stage = 'invoke'
         try:
             turn = await policy.invoke(working)
+            stage = 'normalize'
             step = normalize_model_step(
                 working,
                 turn,
@@ -120,7 +138,7 @@ async def execute_model_step(
                 or clean_replays >= max_clean_replays
                 or policy.should_stop()
             ):
-                return ModelStepFailed(working, exc, clean_replays)
+                return ModelStepFailed(working, exc, clean_replays, stage=stage)
             clean_replays += 1
             requested = getattr(exc, "retry_after_seconds", None)
             try:

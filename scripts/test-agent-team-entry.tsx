@@ -94,6 +94,10 @@ export async function run() {
     await ingest(snapshot(last("children:snapshot:get"),12,completed));
     await ingest({...detail(last("children:detail:get"),"Beta",12,13),child:{...completed[1],report:"Non-job change report"}});
     assert.equal(getChatState().agentTeam.detail?.report,"Non-job change report");
+    await act(async()=>selectTeamAgent("Beta"));
+    await ingest({...detail(last("children:detail:get"),"Beta",12,13),child:{...completed[1],status:"failed",report:"Partial evidence retained",terminal_reason:"model_output_limit",error:"Native output limit reached"}});
+    assert.match(host.textContent || "",/model output limit/);
+    assert.match(host.textContent || "",/Native output limit reached/);
     await act(async()=>selectTeamAgent("Gamma"));const deletingDetail=last("children:detail:get");
     await ingest(changed(13,"chat-Alpha","Gamma"));
     await ingest(snapshot(last("children:snapshot:get"),13,completed.filter(row=>row.child_id!=="Gamma")));

@@ -235,6 +235,11 @@ partial rosters are explicit, and full reports remain on child handles. A timeou
 does not cancel children. Parent Stop retains descendant ownership; no paid idle
 parent wake or model polling is needed for status updates.
 
+Native child results carry execution status, terminal reason and error separately
+from their text and self-reported objective outcome. Output-limit failures retain
+partial reports and the native run identity; inspection and the Agent team detail
+show those diagnostics. A restart clears the prior generation's terminal reason.
+
 Agent command/process modes use noninteractive editor, pager, Git prompt, and
 color defaults; explicit environment settings override them. Interactive
 terminal profiles keep their existing behavior. Windows PowerShell and
@@ -315,6 +320,25 @@ drafts, pending input/preparation, and unfinished settings or annotation request
 are protected, including unconfirmed trace evidence; settled admission fences
 survive idle view eviction.
 
+The WebSocket reader accepts embedded-browser acknowledgements independently
+of an ordered, bounded ordinary-command worker. Disconnect cleanup cancels that
+worker and releases the view attachment even when the ASGI scope is cancelled.
+Native and detached turns can publish through the host event sink after their
+original socket closes; foreground disconnect cancellation retains its existing
+ownership rules. Response delivery failure never changes a committed operation
+into a rejection.
+
+Lost navigation acknowledgements keep the composer fenced until a correlated
+retry, another selection, or a rebind to the visible chat succeeds. Active chat
+projections reconcile every five seconds using at most one outstanding read per
+chat. Those reads address only retained call IDs through the durable dispatch
+index, and carry observed admission/run identities; a late response cannot
+settle a newer admission. Terminal receipts also settle missed completion frames.
+Missing individual tool results remain interrupted/unobserved until exact evidence
+arrives. Final tool aggregates read durable dispatch/result records, so failed
+turns retain counts beyond the bounded live trace and do not count replayed call
+IDs as new dispatches.
+
 Review presents bounded unified patches in collapsible file cards with old/new
 gutters, safe code tokenization, and virtualized rendering. Its Changed files
 sidebar is hidden by default and opens on the right. Uncommitted, staged, and
@@ -347,6 +371,14 @@ actions retain sender, path, and recoverable-discard protections. Commit, push,
 and pull-request operations can be requested through the agent rather than a
 Review footer.
 Native browser moves retain their live pages rather than reloading them.
+Passive readiness updates do not change the browser-selection CAS revision;
+default adoption uses the observed selection epoch, including older state-only
+rows. Browser guests start with normal throttling and become unthrottled after
+their native attachment is visible; parked or hidden pages return to normal
+throttling without losing their document. This avoids a process-wide rendering
+override and the hidden-creation capture-surface race. Capture waits for paint under a bounded deadline and
+retries only an unavailable compositor surface; it does not reload a page or
+repeat page JavaScript. Electron 42.9.2 supplies the upstream hidden-view fix.
 
 ## Mutation
 

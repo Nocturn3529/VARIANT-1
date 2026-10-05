@@ -891,3 +891,24 @@ async def test_recoverable_tombstone_stops_live_owners_before_hiding_chat(tmp_pa
     assert observed == [doomed]
     assert store.get_session(doomed) is None
     assert registry.runtime(doomed).continuation_state == "owner_tombstoned"
+
+
+def test_outer_tool_summary_is_exact_bounded_and_replays_are_not_new_dispatches(tmp_path):
+    repository = SessionRuntimeRepository(str(tmp_path / 'runtime.sqlite3'))
+    registry = SessionRuntimeRegistry(repository)
+    registry.ensure_runtime('owner')
+    registry.ensure_runtime('other')
+    for i in range(300):
+        token = dict(chat_id='owner',run_id='run',call_id=f'call-{i:04}',request_fingerprint=f'hash-{i}')
+        repository.reserve_outer_tool_call(tool_name='ipython',**token)
+        repository.finish_outer_tool_call(**token,state='succeeded',outcome={'status':'ok','source_result':'do not disclose'})
+    _record,replayed = repository.reserve_outer_tool_call(chat_id='owner',run_id='run',call_id='call-0000',
+                                                         tool_name='ipython',request_fingerprint='hash-0')
+    assert replayed
+    repository.reserve_outer_tool_call(chat_id='other',run_id='run',call_id='foreign',tool_name='ipython',request_fingerprint='x')
+    summary = repository.outer_tool_summary('owner','run',call_ids=['call-0000','foreign'])
+    assert summary['tool_calls'] == summary['tool_result_count'] == 300
+    assert summary['tool_results_by_status'] == {'ok':300}
+    assert len(summary['tool_sequence']) == 64 and summary['tool_sequence_truncated']
+    assert [row['call_id'] for row in summary['calls']] == ['call-0000']
+    assert 'do not disclose' not in str(summary)

@@ -86,6 +86,7 @@ export type ChatWsCommand =
   | ChatSessionsListCommand
   | ChatSessionAnnotateCommand
   | ChatRuntimeGetCommand
+  | {type: "chat:execution:get"; session_id: string; request_id: string; run_id: string; admission_id: string; call_ids: string[]}
   | ChatRuntimeActionCommand
   | ChatRuntimeMutationSetCommand
   | ChatTtsPreviewCommand

@@ -118,7 +118,14 @@ async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
             except Exception:
                 continue
         if not delivered:
-            raise owner_error
+            from ws_transport import transport_disconnected
+            if not chat_id or not transport_disconnected(owner_error):
+                raise owner_error
+            # Disconnect ownership policy is enforced by the endpoint/runtime,
+            # not by token publication. Detached/native turns keep working and
+            # ordinary unobserved foreground turns still receive cancellation.
+            from host_chat_service import NativeChatEventTransport
+            await NativeChatEventTransport(h, chat_id).send_json(payload)
 
 
 def tool_runner_ports(h, websocket, session=None) -> ToolRunnerPorts:

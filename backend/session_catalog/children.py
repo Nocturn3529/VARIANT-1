@@ -280,6 +280,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "ALTER TABLE astb_child_handle ADD COLUMN "
                     "usage_rollup_error TEXT NOT NULL DEFAULT ''"
                 )
+            if "terminal_reason" not in columns:
+                conn.execute("ALTER TABLE astb_child_handle ADD COLUMN terminal_reason TEXT NOT NULL DEFAULT ''")
             if "child_chat_id" not in columns:
                 conn.execute(
                     "ALTER TABLE astb_child_handle ADD COLUMN "
@@ -735,6 +737,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         result_text: str = "",
         artifact_ref: str = "",
         error: str = "",
+        terminal_reason: str = "",
         parent_message: bool = False,
     ) -> bool:
         encoded_usage = json.dumps(
@@ -753,12 +756,12 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             )
             changed = conn.execute(
                 "UPDATE astb_child_handle SET status=?,result_text=?,"
-                "artifact_ref=?,error=?,usage_json=?,usage_rollup_state='pending',"
+                "artifact_ref=?,error=?,terminal_reason=?,usage_json=?,usage_rollup_state='pending',"
                 "usage_rollup_error='',completed_at=?,updated_at=? "
                 "WHERE child_id=? AND status='running'",
                 (
                     str(status), str(result_text), str(artifact_ref),
-                    str(error)[:2000], encoded_usage, completed, completed,
+                    str(error)[:2000], str(terminal_reason)[:80], encoded_usage, completed, completed,
                     str(child_id),
                 ),
             )
@@ -1231,6 +1234,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 else "completed" if "FAILED" not in raw[:100]
                 else "failed"
             )
+            status = getattr(result, 'status', status)
+            error = getattr(result, 'error', '') or (raw[:2000] if status == 'failed' else '')
             completed = time.time()
             finish_usage(completed)
             self._finish_child(
@@ -1240,6 +1245,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 completed=completed,
                 result_text=projected,
                 artifact_ref=artifact_ref,
+                error=error,
+                terminal_reason=getattr(result, 'terminal_reason', ''),
                 parent_message=(status == "completed"),
             )
         except asyncio.CancelledError:
@@ -1395,7 +1402,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     f"child admission-capacity limit reached ({maximum})"
                 )
             changed = conn.execute(
-                "UPDATE astb_child_handle SET status='queued', result_text='', "
+                "UPDATE astb_child_handle SET status='queued', result_text='', terminal_reason='', "
                 "artifact_ref='', error='', usage_json='{}', started_at=NULL, "
                 "completed_at=NULL,run_generation=run_generation+1,"
                 "usage_rollup_state='complete',usage_rollup_error='',work_job_id='',updated_at=? "

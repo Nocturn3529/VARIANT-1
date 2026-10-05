@@ -48,9 +48,11 @@ export type SessionState = Readonly<{
   openMenuId: string | null;
   error: string;
   pendingAction: PendingSessionAction;
+  navigationError: string;
 }>;
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let navigationTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingDispatch: "queued" | "sent" | null = null;
 let pendingNeedsRecovery = false;
 let expectedSessionChange: ExpectedSessionChange = null;
@@ -67,6 +69,7 @@ const initialState = (): SessionState => ({
   openMenuId: null,
   error: "",
   pendingAction: null,
+  navigationError: "",
 });
 const store = createModuleStore<SessionState>({initialState: initialState()});
 
@@ -115,6 +118,13 @@ function dispatchPendingAction(): boolean {
     ? send({type: "chat:session:switch", id: pending.id, request_id: pending.requestId})
     : send({type: "chat:session:new", request_id: pending.requestId});
   pendingDispatch = ok ? "sent" : "queued";
+  if (navigationTimer) clearTimeout(navigationTimer);
+  navigationTimer = setTimeout(() => {
+    if (store.getState().pendingAction?.requestId !== pending.requestId) return;
+    // A lost reply does not prove which chat this socket now owns. Keep input
+    // blocked until an explicit correlated rebind succeeds.
+    store.setState({navigationError: "The conversation did not finish opening. Retry, return to the visible chat, or choose another conversation."});
+  }, 15_000);
   if (!ok) notify("Backend offline — the chat change will retry after reconnecting");
   return ok;
 }
@@ -180,6 +190,7 @@ export function switchSession(id: string): boolean {
   const action = {type: "switch" as const, id: nextId, requestId: `switch-${globalThis.crypto.randomUUID()}`};
   store.setState({
     pendingAction: action,
+    navigationError: "",
     openMenuId: null,
   });
   pendingDispatch = "queued";
@@ -191,7 +202,7 @@ export function switchSession(id: string): boolean {
 export function requestNewSession(): boolean {
   if(detachedChatId())return false;
   const action = {type:"new" as const, requestId:`new-${globalThis.crypto.randomUUID()}`};
-  store.setState({pendingAction: action, openMenuId: null});
+  store.setState({pendingAction: action, openMenuId: null, navigationError: ""});
   pendingDispatch = "queued";
   pendingNeedsRecovery = false;
   expectedSessionChange = action;
@@ -230,12 +241,25 @@ export function acceptIncomingSession(id: string, currentId: string | null, navi
 }
 
 function finishNavigation(): void {
+  if (navigationTimer) clearTimeout(navigationTimer);
+  navigationTimer = null;
   expectedSessionChange = null;
   pendingDispatch = null;
   pendingNeedsRecovery = false;
   if (store.getState().pendingAction) {
-    store.setState({pendingAction: null});
+    store.setState({pendingAction: null, navigationError: ""});
   }
+}
+
+export function retrySessionNavigation(): boolean {
+  if (!store.getState().pendingAction) return false;
+  store.setState({navigationError: ""});
+  return dispatchPendingAction();
+}
+
+export function returnToDisplayedSession(): boolean {
+  const id = store.getState().displayedSessionId;
+  return !!id && switchSession(id);
 }
 
 export function noteDisplayedSession(id: string | null): void {
@@ -300,6 +324,11 @@ export function deleteSession(id: string): boolean {
 export function ingestSessions(message: Record<string, unknown>): void {
   const type = String(message.type || "");
   const state = store.getState();
+  if (type === "error" && state.pendingAction && message.request_id === state.pendingAction.requestId) {
+    // A dispatcher error can follow binding but precede snapshot publication.
+    store.setState({navigationError: String(message.error || "Could not confirm the conversation. Retry opening it.")});
+    return;
+  }
   if(type==="chat:session:deleted") {
     const id=String(message.session_id || message.id || "");if(!id)return;
     releaseDeletedChat(id);
@@ -384,6 +413,8 @@ export function useSessionState(): SessionState {
 }
 
 export function __resetSessionStoreForTests(): void {
+  if (navigationTimer) clearTimeout(navigationTimer);
+  navigationTimer = null;
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = null;
   store.setContext(null);

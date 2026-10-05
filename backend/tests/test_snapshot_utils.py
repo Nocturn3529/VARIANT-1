@@ -344,3 +344,20 @@ def test_mutation_elevation_preflight_fails_closed_on_snapshot_read_error():
     assert is_blocked is True
     assert "snapshot database unavailable" in reason
 
+
+@pytest.mark.parametrize("receipt,blocked", [
+    ({"run_id": "chat:stopped", "status": "cancelled", "settled": True}, False),
+    ({"run_id": "other-run", "status": "cancelled", "settled": True}, True),
+    ({"run_id": "chat:stopped", "status": "cancelled", "settled": False}, True),
+    ({"run_id": "chat:stopped", "status": "ok", "settled": True}, True),
+])
+def test_mutation_elevation_honors_only_exact_settled_stop(tmp_path, receipt, blocked):
+    store = _store(tmp_path)
+    state = _pending_ipython_state(surface="trusted-local.v1", mutation_enabled=False)
+    state["run_id"] = "chat:stopped"
+    _commit_snapshot(store, "chat:stopped", state)
+    result, _ = mutation_elevation_blocked_by_threads(
+        ["chat:stopped"], store, last_run_receipt=receipt,
+    )
+    assert result is blocked
+

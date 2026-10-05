@@ -120,6 +120,11 @@ Model routing Settings can configure ordered backup models and separate
 routes for internal JSON, summary, and vision calls. Recovery is disabled by
 default; saving routes does not change the selected main model.
 
+Chat navigation offers recovery when an opening acknowledgement is lost.
+Running indicators and retained tool rows reconcile with the native runtime;
+an unobserved tool result remains explicit rather than being shown as success.
+Archived project chats remain accessible in Archived.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [validation](docs/VALIDATION.md), and

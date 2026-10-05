@@ -262,12 +262,18 @@ def main_model_step_node(config: AgentRunConfig, runtime: MainTaskRuntime):
         if isinstance(execution, ModelStepFailed):
             messages = execution.messages
             exc = execution.exception
-            terminal_reason = str(getattr(exc, 'terminal_reason', '') or 'provider_error')
+            terminal_reason = execution.terminal_reason
             error = f"{type(exc).__name__}: {exc}"
+            failure_label = (
+                'Model error' if terminal_reason == 'provider_error' else
+                'Runtime error' if terminal_reason in {
+                    'transport_disconnected', 'harness_error', 'host_preflight_error'
+                } else 'Model step failed'
+            )
             failure_reply = (
                 str(exc)
                 if isinstance(exc, ContextWindowExceededError)
-                else f"Model error: {exc}"
+                else f"{failure_label}: {exc}"
             )
             fragments = "".join(
                 str(item)
@@ -737,7 +743,7 @@ def headless_worker_step_node(config: AgentRunConfig, runtime: HeadlessWorkerRun
         if isinstance(execution, ModelStepFailed):
             messages = execution.messages
             error = execution.exception
-            terminal_reason = str(getattr(error, 'terminal_reason', '') or 'provider_error')
+            terminal_reason = execution.terminal_reason
             fragments = "".join(
                 str(item)
                 for item in worker.get("reply_fragments") or ()

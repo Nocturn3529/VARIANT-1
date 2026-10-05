@@ -31,6 +31,7 @@ app.whenReady().then(async()=>{
   let answer=await command({action:'attach',attachmentId:'dock-1',windowId:'',url,...layout});
   const guestId=answer.state.guestId,generation=answer.state.generation;
   const guest=manager.getGuest(guestId).contents;
+  assert.equal(guest.getBackgroundThrottling(),false,'attached visible browser paints during agent use');
   await until(()=>guest.getURL()===url&&!guest.isLoading());
   await guest.loadURL(url+'?second');
   const identity=await guest.executeJavaScript('document.querySelector("#kept").value="preserved";window.retainedObject={value:42};window.loadIdentity');
@@ -55,11 +56,15 @@ app.whenReady().then(async()=>{
   result.checks.stale_detach_cannot_park_new_attachment=true;
   await command({action:'layout',attachmentId:'detached-1',...layout,scroll:{x:200,y:50},visible:false});
   assert.equal(clip.getVisible(),false);assert.equal(clip.children[0].getBounds().x,-200);
+  assert.equal(guest.getBackgroundThrottling(),true,'hidden retained page returns to idle throttling');
   await command({action:'layout',attachmentId:'detached-1',...layout});
   assert.equal(clip.getVisible(),true);
+  assert.equal(guest.getBackgroundThrottling(),false);
   result.checks.hide_overlay_and_scroll_offset_preserve_document=true;
   detached.close();await until(()=>detached.isDestroyed());
   assert.equal(guest.isDestroyed(),false);assert.equal(manager.getGuest(guestId).host,null);
+  assert.equal(guest.getBackgroundThrottling(),true,'parked guest keeps its document with normal throttling');
+  result.checks.throttling_follows_native_visibility_without_global_override=true;
   answer=await command({action:'attach',attachmentId:'dock-2',windowId:'',url,...layout});
   assert.equal(answer.state.guestId,guestId);assert.equal(await guest.executeJavaScript('loadIdentity'),identity);assert.equal(loads,beforeCalls);
   result.checks.popout_close_and_redock_preserve_guest=true;

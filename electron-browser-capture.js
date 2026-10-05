@@ -27,9 +27,19 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
     try {
       const image = await Promise.race([
         (async () => {
-          // dom-ready does not promise that a newly attached/resized guest has
-          // submitted a compositor frame. Wait in that guest before capture.
-          const viewport = await guest.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve({width: innerWidth, height: innerHeight, scale: devicePixelRatio}))))');
+          // Prefer a painted frame after attachment/resizing. Occluded windows
+          // can suspend animation frames despite backgroundThrottling:false;
+          // bound that wait and let Chromium's capture request drive rendering.
+          const viewport = await guest.executeJavaScript(`new Promise(resolve => {
+            let frame, settled = false;
+            const finish = () => {
+              if (settled) return;
+              settled = true; clearTimeout(timer); cancelAnimationFrame(frame);
+              resolve({width: innerWidth, height: innerHeight, scale: devicePixelRatio});
+            };
+            const timer = setTimeout(finish, 200);
+            frame = requestAnimationFrame(() => {frame = requestAnimationFrame(finish);});
+          })`);
           if (abandoned) throw new Error('browser_capture_cancelled');
           if (changed || guest.isDestroyed() || !sameAttachment()) throw new Error('browser_document_changed_during_capture');
           if (!viewport || !Number.isInteger(viewport.width) || !Number.isInteger(viewport.height)
@@ -37,7 +47,19 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
           // The default rectangle is the visible portion and can be cropped
           // at a detached window's screen edge. Capture the bounded guest view.
           capturedViewport = viewport;
-          return guest.capturePage({x:0,y:0,width:viewport.width,height:viewport.height});
+          while (!abandoned) {
+            if (changed || guest.isDestroyed() || !sameAttachment()) throw new Error('browser_document_changed_during_capture');
+            try {
+              return await guest.capturePage({x:0,y:0,width:viewport.width,height:viewport.height}, {stayHidden:true});
+            } catch (error) {
+              // A newly embedded surface can lag its DOM/viewport. Capture is
+              // a read; retry only this specific transient under the original
+              // deadline. Never reload, resize, or replay page JavaScript.
+              if (!/Current display surface not available for capture/.test(String(error?.message || error))) throw error;
+              await new Promise(resolve => setTimeout(resolve, 50));
+            }
+          }
+          throw new Error('browser_capture_cancelled');
         })(),
         new Promise((_, reject) => { timer = setTimeout(() => { abandoned = true; reject(new Error('browser_capture_timeout')); }, 6000); }),
       ]);

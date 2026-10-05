@@ -3,6 +3,7 @@ import asyncio
 import json
 
 import pytest
+import os
 
 from llm_router import LLMRouter
 from model_providers import ProviderRegistry
@@ -107,10 +108,10 @@ async def test_router_lists_models_through_the_proxy_without_credentials(monkeyp
 @pytest.mark.asyncio
 @pytest.mark.parametrize("url,allowed", [("https://portal.nousresearch.com/device?user_code=TEST", True), ("https://example.invalid/device", False)])
 async def test_managed_login_allowlists_verification_and_grant_commit(tmp_path, monkeypatch, url, allowed):
-    executable = tmp_path / "venv" / "Scripts" / "hermes.exe"
+    executable = tmp_path / "venv" / ("Scripts" if os.name == "nt" else "bin") / ("hermes.exe" if os.name == "nt" else "hermes")
     executable.parent.mkdir(parents=True)
     executable.touch()
-    executable.with_name("python.exe").touch()
+    executable.with_name("python.exe" if os.name == "nt" else "python").touch()
     monkeypatch.setattr(hermes_proxy, "hermes_executable_path", lambda: executable)
     reader = asyncio.StreamReader()
     for row in ({"event": "pending", "verification_url": url, "user_code": "TEST"}, {"event": "ready"}, {"event": "complete"}):

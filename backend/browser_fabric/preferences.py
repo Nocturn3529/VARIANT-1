@@ -192,9 +192,10 @@ class BrowserPreferences:
 
     def adopt(self, chat_id: str, session: Any) -> None:
         """Pin an explicitly opened legacy/profile handle without replacing it."""
-        if chat_id and self.store.browser_preference(chat_id)['selection'] is None:
+        row = self.store.browser_preference(chat_id) if chat_id else {}
+        if chat_id and not row['selection']:
             self.store.update_browser_preference(chat_id, selection={'mode': session.kind},
-                state={'state': 'connecting', 'browser_session_id': session.session_id, 'adopted_profile_id': session.profile_id}, expected_revision=0)
+                state={'state': 'connecting', 'browser_session_id': session.session_id, 'adopted_profile_id': session.profile_id}, expected_revision=row['revision'])
 
     def matches(self, session: Any, selection: dict, chat_id: str = '') -> bool:
         if selection['mode'] == 'embedded':
@@ -215,7 +216,7 @@ class BrowserPreferences:
             try:
                 row = self.effective(chat_id, fallback)
                 if row['selection_source'] == 'default':
-                    self.store.update_browser_preference(chat_id, selection=row['selection'], state={'state': 'idle'}, expected_revision=0)
+                    self.store.update_browser_preference(chat_id, selection=row['selection'], state={'state': 'idle'}, expected_revision=row['revision'])
                 while True:
                     selection = self.effective(chat_id, fallback)['selection']
                     try:

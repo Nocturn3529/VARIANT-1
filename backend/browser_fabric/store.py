@@ -425,7 +425,10 @@ class BrowserFabricStore:
                 raise BrowserConflict('Browser selection changed; refresh its state and retry.')
             chosen = dict(selection) if selection is not None else (_load(row['selection_json'], dict, 'selection') if row else {})
             status = dict(state) if state is not None else (_load(row['state_json'], dict, 'readiness') if row else {})
-            revision += 1
+            # Selection CAS must not conflict with passive readiness refreshes.
+            # Existing state-only rows retain their observed selection epoch.
+            if selection is not None:
+                revision += 1
             connection.execute('''INSERT INTO browser_preference(owner_id,selection_json,state_json,revision,updated_at)
                 VALUES(?,?,?,?,?) ON CONFLICT(owner_id) DO UPDATE SET selection_json=excluded.selection_json,
                 state_json=excluded.state_json,revision=excluded.revision,updated_at=excluded.updated_at''',
