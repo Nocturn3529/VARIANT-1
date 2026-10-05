@@ -60,8 +60,9 @@ export function ActivityDock() {
   const items = queue.snapshot?.items || [];
   if (items.length || queue.action || queue.error || queueAdmissionPending()) {
     const parked = items.filter(item => item.state === "parked").length;
-    chips.push({section: "queue", title: "Queued", mark: parked || queue.error ? "attention" : "queued",
-      text: `${items.length} queued`, label: `Queued messages: ${items.length}${parked ? `, ${parked} waiting for you` : ""}`});
+    chips.push({section: "queue", title: parked ? "Saved messages" : "Queued", mark: parked || queue.error ? "attention" : "queued",
+      text: parked === items.length && parked ? `${parked} waiting` : parked ? `${items.length} inputs` : `${items.length} queued`,
+      label: `Queued messages: ${items.length}${parked ? `, ${parked} waiting for you` : ""}`});
   }
   if (goal.snapshot || goal.pending || goal.error) {
     const record = goal.snapshot?.goal, steps = goal.snapshot?.steps || [];
