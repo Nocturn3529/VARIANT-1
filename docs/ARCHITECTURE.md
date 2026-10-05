@@ -328,6 +328,18 @@ original socket closes; foreground disconnect cancellation retains its existing
 ownership rules. Response delivery failure never changes a committed operation
 into a rejection.
 
+Admitted Goal and peer turns project into their owning chat's live transcript.
+Their original source remains in the event; the UI chat lane requires explicit
+session and admission identities. Start frames also carry the matching run
+identity. Fresh admissions may change ingress clients, while stale admissions
+and separate voice/subagent streams remain excluded.
+
+The Electron backend watchdog records health-probe failure reasons. After its
+normal grace period, recent structured work completions on the currently owned
+process pipe defer retirement for timeouts or connection failures. Ordinary
+output and request starts do not extend that interval; identity mismatches do
+not gain the exemption. Recovery remains bounded after completions stop.
+
 Lost navigation acknowledgements keep the composer fenced until a correlated
 retry, another selection, or a rebind to the visible chat succeeds. Active chat
 projections reconcile every five seconds using at most one outstanding read per

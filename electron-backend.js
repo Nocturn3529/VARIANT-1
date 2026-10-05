@@ -148,6 +148,8 @@ function createBackendManager(deps) {
   let portFile = null;
   let backendLastVerifiedAt = 0;
   let backendHealthMissStartedAt = 0;
+  let backendLastWorkAt = 0;
+  const backendWorkTails = new Map();
   let backendHealthProbe = null;
   let backendStartPromise = null;
   let restartTimer = null;
@@ -185,8 +187,9 @@ function createBackendManager(deps) {
 
   async function verifyCachedBackend(cached) {
     const record = readPortFile();
+    let reason = 'record_changed';
     const ok = infoMatchesRecord(cached, record)
-      && await pingHealth(record.port, timings.probeTimeoutMs, record);
+      && await pingHealth(record.port, timings.probeTimeoutMs, record, value => {reason = value;});
     if (backendInfo !== cached || backendStopping) return plainInfo(backendInfo);
     if (ok) {
       backendLastVerifiedAt = now();
@@ -198,12 +201,15 @@ function createBackendManager(deps) {
     if (processIsAlive(cached.pid)) {
       if (!backendHealthMissStartedAt) backendHealthMissStartedAt = missedAt;
       const missAge = missedAt - backendHealthMissStartedAt;
-      if (missAge < timings.unhealthyGraceMs) {
+      const completingWork = backendProc && backendLastWorkAt > 0
+        && missedAt - backendLastWorkAt < timings.unhealthyGraceMs
+        && (reason === 'timeout' || reason === 'connection_error');
+      if (missAge < timings.unhealthyGraceMs || completingWork) {
         // A busy asyncio loop is not evidence that the process died. Keep the
         // verified identity during a bounded grace interval and probe again
         // after the normal cache TTL instead of destroying active work.
         backendLastVerifiedAt = missedAt;
-        log(`[backend] health probe missed; process alive, kill deferred (${missAge}ms)`);
+        log(`[backend] health probe missed (${reason}); process alive, kill deferred (${missAge}ms${completingWork ? '; owned work still completing' : ''})`);
         return plainInfo(cached);
       }
     }
@@ -221,7 +227,7 @@ function createBackendManager(deps) {
     return null;
   }
 
-  function pingHealth(port, timeoutMs, record) {
+  function pingHealth(port, timeoutMs, record, failed = () => {}) {
     return new Promise((resolve) => {
       const req = http.get(
         {host: '127.0.0.1', port, path: '/health', timeout: timeoutMs},
@@ -231,20 +237,36 @@ function createBackendManager(deps) {
           res.on('end', () => {
             try {
               const j = JSON.parse(body);
+              if (res.statusCode !== 200) failed(`http_${res.statusCode}`);
+              else if (!backendIdentityMatches(record, j, expectedVersion)) failed('identity_mismatch');
               resolve(res.statusCode === 200
                 && backendIdentityMatches(record, j, expectedVersion));
             } catch (_) {
+              failed('invalid_response');
               resolve(false);
             }
           });
         },
       );
-      req.on('error', () => resolve(false));
+      req.on('error', () => {failed('connection_error');resolve(false);});
       req.on('timeout', () => {
+        failed('timeout');
         req.destroy();
         resolve(false);
       });
     });
+  }
+
+  function observeOwnedWork(chunk, stream) {
+    const lines = ((backendWorkTails.get(stream) || '') + String(chunk)).split(/\r?\n/);
+    backendWorkTails.set(stream, lines.pop().slice(-2048));
+    for (const line of lines) {
+      // Only completed framework work on the currently owned process's pipe
+      // counts. Ordinary output, request starts and repeated polling do not.
+      if (/^\[[^\]]+\] \[INFO\] \[(?:kernel|model|tool|run|capability)\] (?:kernel:execution_result|request_complete|tool:result|task:done|broker:result|run:settled)\b/.test(line)) {
+        backendLastWorkAt = now();
+      }
+    }
   }
 
   function plainInfo(info) {
@@ -662,16 +684,18 @@ function createBackendManager(deps) {
         ),
       });
       backendProc = child;
+      backendLastWorkAt = 0;
+      backendWorkTails.clear();
     } catch (err) {
       log('[backend] spawn threw: ' + err.message);
       return scheduleRestart();
     }
 
     if (child.stdout && typeof child.stdout.on === 'function') {
-      child.stdout.on('data', (d) => logStream('[backend] ', d));
+      child.stdout.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stdout');logStream('[backend] ', d);});
     }
     if (child.stderr && typeof child.stderr.on === 'function') {
-      child.stderr.on('data', (d) => logStream('[backend:err] ', d));
+      child.stderr.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stderr');logStream('[backend:err] ', d);});
     }
 
     let rejectProcessFailure;

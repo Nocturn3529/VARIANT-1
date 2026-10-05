@@ -65,6 +65,19 @@ export async function run() {
   incoming({type:"chat:execution",session_id:"A",request_id:final.request_id,observed_run_id:"run-one",observed_admission_id:"admission-one",busy:false,calls:[]});
   assert.equal(sharedTurnActive(),false,"idle reconciliation recovers a completely missed terminal event");
   assert.equal(sent.at(-1)?.type,"chat:session:get");
+  for(const source of ['goal','peer','peer:chat:lead']) {
+    reset();
+    incoming({type:'start',...route(),source,client_id:'native-client-one'});
+    incoming({type:'token',...route(),source,client_id:'native-client-one',token:'Visible native work'});
+    assert.equal(sharedTurnActive(),true);assert.equal(getChatState().streamText,'Visible native work');
+    incoming({type:'done',...route(),source,client_id:'native-client-one',text:'Native result'});
+    incoming({type:'start',...route('two'),source,client_id:'native-client-two'});
+    assert.equal(sharedTurnActive(),true,'fresh native admissions may have a different ingress client');
+    incoming({type:'token',...route(),source,client_id:'native-client-one',token:'stale'});
+    assert.equal(getChatState().streamText,'','old admission cannot write into the fresh native turn');
+  }
+  reset();incoming({type:'start',...route(),source:'subagent',client_id:'child'});
+  assert.equal(sharedTurnActive(),false,'child activity cannot claim the parent chat');
   reset();withCachedChatState("B",()=>turnController.begin({sessionId:"B",admissionId:"peer-admission",runId:"peer-run"}));
   incoming({type:"run:settled",session_id:"B",admission_id:"peer-admission",run_id:"peer-run",status:"error",receipt:{}});
   assert.equal(getChatState().sessionId,"A");assert.deepEqual(getSessionState().workingSessionIds,[],"background peers settle without switching the visible chat");

@@ -44,6 +44,14 @@ def stream_meta(session=None, *, client_id: str = "", source: str = "") -> dict:
     admission_id = str(getattr(active, "runtime_admission_id", "") or "")
     if admission_id:
         meta["admission_id"] = admission_id
+    if resolved_session:
+        from run_context import current_run_context
+        ctx = current_run_context()
+        owner = str(getattr(ctx, 'session_id', '') or
+                    getattr(getattr(ctx, 'work_scope', None), 'chat_id', '') or
+                    ((getattr(ctx, 'metadata', None) or {}).get('chat_id')) or '')
+        if ctx is not None and owner == str(resolved_session) and ctx.run_id:
+            meta['run_id'] = str(ctx.run_id)
     ticket_id = str(getattr(active, "turn_ticket_id", "") or "")
     if ticket_id:
         meta["ticket_id"] = ticket_id

@@ -117,7 +117,12 @@ function ingestOwnedChat(message: ChatWsMessage) {
   // Stream isolation: voice surfaces never feed the Chat transcript.
   if (CHAT_STREAM_TYPES.has(type)) {
     const original = message as import("../protocol/chatEvents").StreamRouting;
-    const routing = {...message,source:original.source==="queue_continue"?"chat":original.source};
+    // Goal and peer turns are ordinary admitted work in the owning chat.
+    // Only explicit chat/admission identities permit this UI-lane projection;
+    // voice and subagent provenance keep their separate routing boundaries.
+    const nativeChat=!!original.session_id && !!original.admission_id
+      && (original.source==="goal" || original.source==="peer" || original.source?.startsWith("peer:"));
+    const routing = {...message,source:original.source==="queue_continue" || nativeChat ? "chat":original.source};
     if (isForeignStream(routing)) return;
     if((message.type==="activity" || message.type==="tool:activity") && message.durable_replay) {
       if(!routing.source || routing.source==="chat")ingestActivityMessage(message);

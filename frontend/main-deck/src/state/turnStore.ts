@@ -84,7 +84,7 @@ export function turnMatchesEvent(message: {type?: unknown; client_id?: unknown; 
   if (!freshStart && admission && state.admissionId && admission !== state.admissionId) return false;
   if (!freshStart && run && state.runId && run !== state.runId) return false;
   const client = String(message.client_id || "");
-  if (client && state.clientId && client !== state.clientId && !(admission && admission === state.admissionId)) return false;
+  if (!freshStart && client && state.clientId && client !== state.clientId && !(admission && admission === state.admissionId)) return false;
   if (!client && !source && !eventChat) return state.active && state.source === "chat";
   return true;
 }
