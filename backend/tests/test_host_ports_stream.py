@@ -121,15 +121,16 @@ async def test_task_stream_sends_live_tokens_only_to_the_owner_socket():
 
 
 @pytest.mark.asyncio
-async def test_task_stream_propagates_owner_socket_delivery_failures():
+async def test_task_stream_survives_owner_socket_delivery_failures():
     owner = SimpleNamespace(
         send_json=AsyncMock(side_effect=RuntimeError("owner disconnected"))
     )
     session = ConnectionSession()
     host = _host_with_stream(["token"])
 
-    with pytest.raises(RuntimeError, match="owner disconnected"):
-        await build_task_turn_ports(host, owner, session).loop.stream([], 16, None)
+    # Display delivery never decides the run; the text still reaches the turn.
+    turn = await build_task_turn_ports(host, owner, session).loop.stream([], 16, None)
+    assert turn.text == "token"
 
 
 @pytest.mark.asyncio
