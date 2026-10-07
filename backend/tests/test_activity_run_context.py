@@ -143,8 +143,71 @@ async def test_hub_slow_socket_does_not_block_healthy_clients_or_caller():
     assert elapsed < 0.5
     assert fast.messages == [{"type": "test"}]
     assert fast in hub.active
-    assert slow not in hub.active
+    # Slowness alone never evicts a socket; it keeps its queue.
+    assert slow in hub.active
+    assert slow.cancelled is False
+    hub.remove(slow)
+    await asyncio.sleep(0)
     assert slow.cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_hub_socket_catches_up_in_order_after_one_slow_send():
+    class OnceSlowSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_json(self, message):
+            if not self.messages:
+                await asyncio.sleep(0.2)  # longer than the broadcast wait
+            self.messages.append(message)
+
+    hub = WSHub(send_timeout_s=0.05)
+    socket = OnceSlowSocket()
+    hub.add(socket)
+    for index in range(5):
+        await hub.broadcast({"type": "tool:activity", "n": index})
+    await asyncio.sleep(0.3)
+
+    assert socket in hub.active
+    assert [row["n"] for row in socket.messages] == [0, 1, 2, 3, 4]
+
+
+@pytest.mark.asyncio
+async def test_hub_drops_a_socket_only_when_its_send_fails():
+    class ClosedSocket:
+        async def send_json(self, _message):
+            raise RuntimeError('Cannot call "send" once a close message has been sent.')
+
+    hub = WSHub(send_timeout_s=0.05)
+    closed = ClosedSocket()
+    hub.add(closed)
+    await hub.broadcast({"type": "test"})
+    await asyncio.sleep(0)
+    assert closed not in hub.active
+
+
+@pytest.mark.asyncio
+async def test_hub_closes_a_socket_that_falls_too_far_behind():
+    class StuckSocket:
+        def __init__(self):
+            self.closed = False
+
+        async def send_json(self, _message):
+            await asyncio.Future()
+
+        async def close(self):
+            self.closed = True
+
+    hub = WSHub(send_timeout_s=0.01, max_queued=3)
+    stuck = StuckSocket()
+    hub.add(stuck)
+    for index in range(4):
+        await hub.broadcast({"type": "test", "n": index})
+    await asyncio.sleep(0)
+
+    assert stuck not in hub.active
+    assert stuck.closed is True
 
 
 @pytest.mark.asyncio

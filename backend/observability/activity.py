@@ -22,7 +22,7 @@ import json
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 
 from run_context import current_run_context
 
@@ -104,30 +104,92 @@ def presence_projection(message: dict) -> dict | None:
 
 
 class WSHub:
-    def __init__(self, *, send_timeout_s: float = 1.0):
+    """Fan out hub messages; each socket gets its own ordered send queue.
+
+    A slow socket never loses later messages because one send was slow: it is
+    removed only when a send fails, it is removed explicitly, or it falls
+    ``max_queued`` messages behind, in which case it is closed so the client
+    reconnects and resynchronizes.
+    """
+
+    def __init__(self, *, send_timeout_s: float = 1.0, max_queued: int = 2048):
         self.active = set()
         self.presence_subscribers = set()
+        # broadcast() waits at most this long for delivery; slower sockets
+        # keep their queue and catch up in order.
         self.send_timeout_s = max(0.01, float(send_timeout_s))
+        self.max_queued = max(1, int(max_queued))
+        self._outboxes: dict = {}
+        self._drainers: dict = {}
 
     def add(self, ws):
         self.active.add(ws)
 
     def remove(self, ws):
         self.active.discard(ws)
+        if ws not in self.presence_subscribers:
+            self._discard_outbox(ws)
 
     def add_presence_subscriber(self, ws):
         self.presence_subscribers.add(ws)
 
     def remove_presence_subscriber(self, ws):
         self.presence_subscribers.discard(ws)
+        if ws not in self.active:
+            self._discard_outbox(ws)
 
-    @staticmethod
-    def _consume_send_result(task: asyncio.Task) -> None:
-        """Retrieve a detached send result after timing it out/cancelling it."""
+    def _discard_outbox(self, ws) -> None:
+        for _payload, future in self._outboxes.pop(ws, ()):
+            if not future.done():
+                future.set_result(False)
+        drainer = self._drainers.pop(ws, None)
+        if drainer is not None and drainer is not asyncio.current_task():
+            drainer.cancel()
+
+    def _drop(self, ws, *, close: bool = False) -> None:
+        self.active.discard(ws)
+        self.presence_subscribers.discard(ws)
+        self._discard_outbox(ws)
+        closer = getattr(ws, "close", None) if close else None
+        if callable(closer):
+            async def _close():
+                try:
+                    await closer()
+                except Exception:
+                    pass  # The socket is already gone or closing.
+            asyncio.create_task(_close())
+
+    def _enqueue(self, ws, payload):
+        outbox = self._outboxes.setdefault(ws, deque())
+        if len(outbox) >= self.max_queued:
+            # Too far behind to catch up: close so the client resyncs on
+            # reconnect instead of silently missing messages.
+            self._drop(ws, close=True)
+            return None
+        future = asyncio.get_running_loop().create_future()
+        outbox.append((payload, future))
+        drainer = self._drainers.get(ws)
+        if drainer is None or drainer.done():
+            self._drainers[ws] = asyncio.create_task(self._drain(ws))
+        return future
+
+    async def _drain(self, ws) -> None:
+        outbox = self._outboxes.get(ws)
         try:
-            task.exception()
-        except (Exception, asyncio.CancelledError):
-            pass
+            while outbox:
+                payload, future = outbox[0]
+                await ws.send_json(payload)
+                outbox.popleft()
+                if not future.done():
+                    future.set_result(True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A failed send means the socket is closed or broken.
+            self._drop(ws)
+        finally:
+            if self._drainers.get(ws) is asyncio.current_task():
+                self._drainers.pop(ws, None)
 
     async def broadcast(self, message: dict):
         deliveries = [(ws, message) for ws in list(self.active)]
@@ -136,33 +198,14 @@ class WSHub:
             deliveries.extend(
                 (ws, projected) for ws in list(self.presence_subscribers)
             )
-        if not deliveries:
-            return
-        tasks = {
-            asyncio.create_task(ws.send_json(payload)): ws
-            for ws, payload in deliveries
-        }
-        try:
-            done, pending = await asyncio.wait(
-                tasks, timeout=self.send_timeout_s)
-        except asyncio.CancelledError:
-            for task in tasks:
-                task.cancel()
-                task.add_done_callback(self._consume_send_result)
-            raise
-
-        failed = set()
-        for task in done:
-            try:
-                task.result()
-            except (Exception, asyncio.CancelledError):
-                failed.add(tasks[task])
-        for task in pending:
-            failed.add(tasks[task])
-            task.cancel()
-            task.add_done_callback(self._consume_send_result)
-        self.active.difference_update(failed)
-        self.presence_subscribers.difference_update(failed)
+        futures = [
+            future for future in (
+                self._enqueue(ws, payload) for ws, payload in deliveries
+            )
+            if future is not None
+        ]
+        if futures:
+            await asyncio.wait(futures, timeout=self.send_timeout_s)
 
 
 HUB = WSHub()
