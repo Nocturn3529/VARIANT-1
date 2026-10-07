@@ -26,7 +26,10 @@ async def test_queue_snapshot_carries_the_peer_origin_of_a_waiting_message(tmp_p
             "peer_id": f"chat:{first}",
             "message_id": message["message_id"],
             "display_name": "First",
+            "content": "Review the parser",
         }]
+        # The same body transcript rows show as peer_display.content.
+        assert service.message_display(items[0]["origin"])["content"] == "Review the parser"
     finally:
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
