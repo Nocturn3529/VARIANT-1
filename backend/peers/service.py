@@ -586,10 +586,16 @@ class PeerCommunicationService:
         target_peer_id: str,
         text: str,
         in_reply_to: str = "",
-        delivery: str = "follow_up",
+        delivery: str = "",
         request_id: str = "",
         *, message_kind: str | None = None, _invocation: Any = None,
     ) -> dict[str, Any]:
+        """Persist and deliver one peer message.
+
+        A request reaches a busy native chat at its next step boundary
+        (``steer``) unless the sender asks for ``follow_up``, which waits for
+        the target's turn to end. Notices and results go to the inbox.
+        """
         sender = self.get_peer(sender_peer_id)
         target = self.get_peer(target_peer_id)
         if str(sender.get("peer_id") or sender_peer_id) == str(target.get("peer_id") or target_peer_id):
@@ -607,7 +613,9 @@ class PeerCommunicationService:
             if all(invocation.values()) and _native_peer_id(invocation["chat_id"]) == sender_peer_id:
                 evidence["sender_invocation"] = invocation
         clean_text = _bounded_text(text)
-        mode = str(delivery or "follow_up").strip().lower()
+        mode = str(
+            delivery or ("steer" if message_kind == "request" else "follow_up")
+        ).strip().lower()
         if mode not in {"follow_up", "steer"}:
             raise PeerError("peer_delivery_invalid", "delivery must be follow_up or steer")
         if message_kind != "request" and mode == "steer":

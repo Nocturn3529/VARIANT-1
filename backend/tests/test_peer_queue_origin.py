@@ -44,3 +44,35 @@ async def test_a_peer_cannot_send_a_message_to_itself(tmp_path):
         assert runtimes.queue_snapshot(first)["items"] == []
     finally:
         await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_a_request_reaches_a_busy_chat_at_its_next_step(tmp_path):
+    """Owner decision 2026-10-07: peers steer each other by default."""
+    service, runtimes, _sessions, _chat, first, second = _stack(tmp_path)
+    admission = runtimes.try_reserve_run(second, attachment_id="")
+    running = asyncio.create_task(asyncio.Event().wait())
+    runtimes.bind_admission_task(admission, running)
+    try:
+        steer = await service.send(
+            f"chat:{first}", f"chat:{second}", "Check the parser now", request_id="r-1",
+        )
+        later = await service.send(
+            f"chat:{first}", f"chat:{second}", "After your turn", request_id="r-2",
+            delivery="follow_up",
+        )
+        tickets = {
+            row["ticket_id"]: row["delivery"] for row in runtimes.queue_snapshot(second)["items"]
+        }
+        assert tickets == {
+            steer["delivery_ticket_id"]: "steer",
+            later["delivery_ticket_id"]: "follow_up",
+        }
+        # The running loop drains steer tickets at each step boundary.
+        claimed = runtimes.claim_input(second, "steer", run_id=admission)
+        assert claimed is not None and "Check the parser now" in claimed["text"]
+    finally:
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)
+        runtimes.finish_run(admission, status="test")
+        await _settle_service(service, runtimes)
