@@ -158,8 +158,29 @@ class InputTicket:
             "session_id": self.chat_id,
         }
 
-    def to_dict(self) -> dict[str, Any]:
+    def origin(self) -> dict[str, str] | None:
+        """Who sent a queued peer message, derived from the ticket's own fields."""
+
+        if not (self.source.startswith("peer:") and self.client_id.startswith("peer-message:")):
+            return None
+        peer_id = self.source[len("peer:"):]
+        display_name = peer_id
+        prefix, suffix = "Sender: ", f" ({peer_id})"
+        for line in self.text.splitlines()[:4]:
+            if line.startswith(prefix) and line.endswith(suffix):
+                display_name = line[len(prefix):-len(suffix)] or peer_id
+                break
         return {
+            "kind": "peer",
+            "peer_id": peer_id,
+            "message_id": self.client_id[len("peer-message:"):],
+            "display_name": display_name,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        origin = self.origin()
+        return {
+            **({"origin": origin} if origin else {}),
             "ticket_id": self.ticket_id,
             "chat_id": self.chat_id,
             "delivery": self.delivery,

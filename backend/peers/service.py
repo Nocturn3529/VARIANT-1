@@ -592,6 +592,8 @@ class PeerCommunicationService:
     ) -> dict[str, Any]:
         sender = self.get_peer(sender_peer_id)
         target = self.get_peer(target_peer_id)
+        if str(sender.get("peer_id") or sender_peer_id) == str(target.get("peer_id") or target_peer_id):
+            raise PeerError("peer_self_send", "a peer cannot send a message to itself")
         evidence = {
             "sender_display_name": str(sender.get("display_name") or sender_peer_id),
             "target_display_name": str(target.get("display_name") or target_peer_id),
