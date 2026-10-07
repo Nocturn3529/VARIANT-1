@@ -64,6 +64,18 @@ def test_missing_support_matrix_is_fail_closed():
         )
 
 
+def test_longcat_exact_route_addition_preserves_operator_revocation():
+    row = {"profile": ACTION_SURFACE, "provider": "hermes",
+           "model": "meituan/longcat-2.5-preview:free", "adapter": "openai.*", "status": "revoked"}
+    matrix = SupportMatrix.from_config({"astb": {"support_matrix": [dict(row, model="upstage/solar-pro4:free", status="qualified")]}})
+    assert matrix.validate(profile=ACTION_SURFACE, provider="hermes", model=row["model"], adapter="openai.chat_completions").status == "developer"
+    with pytest.raises(UnsupportedModelRoute):
+        matrix.validate(profile=ACTION_SURFACE, provider="hermes", model="unlisted-new-model", adapter="openai.chat_completions")
+    matrix = SupportMatrix.from_config({"astb": {"support_matrix": [row]}})
+    with pytest.raises(UnsupportedModelRoute, match="revoked"):
+        matrix.validate(profile=ACTION_SURFACE, provider="hermes", model=row["model"], adapter="openai.chat_completions")
+
+
 def test_support_matrix_keeps_one_profile_but_rejects_unqualified_models():
     matrix = _matrix()
     assert matrix.validate(

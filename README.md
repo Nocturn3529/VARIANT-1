@@ -59,6 +59,17 @@ Use the release notes for the behavior and qualification of a downloaded build.
   register its own helpers as tools or replace a failing tool method. What it
   registers stays until it or you roll it back. Authoring is off by default and
   does not train model weights.
+- **Run a Goal in its owning session.** The session agent retains its conversation,
+  model route, peer identity, and live Python state while working toward the
+  objective. It can explicitly delegate children or coordinate other sessions.
+  Goal completion records the agent's claim and the available evidence.
+  Admitted Goal and peer work appears live in that same chat, with session,
+  admission and run identities keeping separate executions isolated.
+  Addressed peer requests wake idle sessions or reach an active turn at its next
+  safe step. Request handles expose the recipient's settled answer and outcome.
+  Explicit Goal budgets pause at model/tool boundaries; defaults remain unlimited.
+  Unavailable peer work blocks an awaiting Goal for inspection. Provider usage
+  is durably recorded off the event loop before terminal budget reconciliation.
 
 ## Costs and model access
 
@@ -85,6 +96,10 @@ npm start
 ```
 
 After launch, configure a supported provider or local runtime in the app.
+Provider Settings distinguishes saved accounts from recently checked connections.
+Use **Check** to refresh a service's status; model listing access does not certify
+every model's inference availability. Nous Portal can be reconnected in Settings
+through the installed Hermes account. Its sign-out control also signs Hermes out.
 Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
 
@@ -113,11 +128,48 @@ Model routing Settings can configure ordered backup models and separate
 routes for internal JSON, summary, and vision calls. Recovery is disabled by
 default; saving routes does not change the selected main model.
 
+Chat navigation offers recovery when an opening acknowledgement is lost.
+Running indicators and retained tool rows reconcile with the native runtime;
+an unobserved tool result remains explicit rather than being shown as success.
+Archived project chats remain accessible in Archived.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [validation](docs/VALIDATION.md), and
 [release management](docs/RELEASING.md). Report ordinary bugs through Issues with
 redacted reproduction steps. For sensitive reports, use [SECURITY.md](SECURITY.md).
+
+The experimental endurance controller in `experiments/live-canary/run_endurance.py`
+creates a disposable lab with one Goal coordinator and independent cloud collaborators.
+Initialize once, then run the same lab to retain its sessions and evidence:
+
+```powershell
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py init --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab" --duration 7200
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py preflight --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py admit --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+backend\.venv\Scripts\python.exe experiments\live-canary\run_endurance.py run --root "$env:USERPROFILE\Desktop\VARIANT-1-Endurance-Lab"
+```
+
+Commit the tested source before initializing a pinned live phase. The controller
+requires a disposable `OPENROUTER_API_KEY` for OpenRouter routes, or a platform-encrypted
+credential file selected by `VARIANT1_ENDURANCE_CREDENTIAL_FILE`. The default lineup
+uses Space Bunny and Qwen through OpenRouter and LongCat through Hermes's signed-in
+Nous proxy. `--routes` accepts `openrouter::MODEL` and `hermes::MODEL`; existing bare
+model IDs retain their OpenRouter meaning. OAuth tokens are not copied into the lab.
+Catalog checks verify zero prompt/completion prices for both providers. LongCat
+uses default reasoning without an invented effort scale. `status`, `pause`, `resume`,
+`continue`, `stop`, and `export` use the same `--root`; `continue` is an explicit
+operator action for blocked work. Reports distinguish artifact checks from full
+mission qualification, which still needs review. Catalog checks and short runs
+do not certify days of uptime or every browser/desktop stack.
+`reconcile` optionally refreshes missing native usage and cost measurements from
+OpenRouter generation metadata. It does not retrieve stored prompts or completions.
+
+New unattended phases select managed headless Chromium in the isolated lab and
+check that it can render before admitting agents. `admit --browser-check` adds a
+local-page rendering and screenshot gate. Browser waits requiring user recovery
+are recorded and stop the unattended phase; a working dashboard alone does not
+prove that its coordinating agent remained active.
 
 Original VARIANT-1 code is available under the [MIT License](LICENSE).
 Third-party components retain their own licenses; see

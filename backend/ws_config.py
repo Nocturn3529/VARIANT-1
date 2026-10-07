@@ -855,7 +855,7 @@ def register(on):
     async def _cloud_oauth_start(srv, websocket, session, msg):
         provider = srv.router._kn(str(msg.get("provider") or ""))
         request_id = str(msg.get("request_id") or uuid.uuid4().hex).strip()[:128]
-        if provider not in {"openai-codex", "xai", "minimax-oauth", "minimax-oauth-cn", "google-antigravity"}:
+        if provider not in {"openai-codex", "xai", "minimax-oauth", "minimax-oauth-cn", "google-antigravity", "hermes"}:
             await websocket.send_json({
                 "type": "cloud:oauth:error",
                 "provider": provider,
@@ -879,7 +879,26 @@ def register(on):
 
         async def finish_login() -> None:
             try:
-                if provider == "openai-codex":
+                if provider == "hermes":
+                    from model_runtime.hermes_proxy import manage_account
+
+                    async def authorize_nous(url, code):
+                        if _oauth_owner(srv, provider, attempt_id):
+                            await websocket.send_json({"type": "cloud:oauth:pending",
+                                "provider": provider, "request_id": attempt_id,
+                                "verification_url": url, "user_code": code})
+                            if open_browser:
+                                import webbrowser
+                                await asyncio.to_thread(webbrowser.open, url)
+
+                    await manage_account(on_verification=authorize_nous,
+                        can_commit=lambda: _oauth_owner(srv, provider, attempt_id))
+                    if not _oauth_owner(srv, provider, attempt_id):
+                        return
+                    from model_runtime.provider_accounts import invalidate_account, check_account
+                    invalidate_account(srv.router, provider)
+                    await check_account(srv.router, provider)
+                elif provider == "openai-codex":
                     import openai_codex_oauth
 
                     grant = await openai_codex_oauth.request_device_code()
@@ -1007,6 +1026,9 @@ def register(on):
                         managed_external=False,
                         replace=True,
                     )
+                from model_runtime.provider_accounts import invalidate_account
+                if provider != "hermes":
+                    invalidate_account(srv.router, provider)
                 try:
                     await websocket.send_json({
                         "type": "cloud:oauth:complete",
@@ -1054,7 +1076,7 @@ def register(on):
     async def _cloud_oauth_disconnect(srv, websocket, session, msg):
         provider = srv.router._kn(str(msg.get("provider") or ""))
         request_id = str(msg.get("request_id") or "").strip()[:128]
-        if provider not in {"openai-codex", "xai", "minimax-oauth", "minimax-oauth-cn"}:
+        if provider not in {"openai-codex", "xai", "minimax-oauth", "minimax-oauth-cn", "google-antigravity", "hermes"}:
             await websocket.send_json({
                 "type": "cloud:oauth:error",
                 "provider": provider,
@@ -1063,13 +1085,36 @@ def register(on):
             })
             return
         await _cancel_oauth_attempt(srv, provider)
-        srv.router.clear_oauth(provider)
+        from model_runtime.provider_accounts import invalidate_account
+        invalidate_account(srv.router, provider)
+        try:
+            if provider == "hermes":
+                from model_runtime.hermes_proxy import manage_account
+                await manage_account(logout=True)
+            else:
+                srv.router.clear_oauth(provider)
+        except Exception:
+            await websocket.send_json({"type": "cloud:oauth:disconnect:error", "provider": provider,
+                "request_id": request_id, "error": "Account could not be removed. Retry or manage it in its owning app."})
+            return
         await websocket.send_json({
             "type": "cloud:oauth:disconnected", "provider": provider,
             "request_id": request_id,
             "status": srv.router.oauth_status(provider),
         })
         await _broadcast_config(srv)
+
+    @on("cloud:provider:check")
+    async def _cloud_provider_check(srv, websocket, session, msg):
+        from model_runtime.provider_accounts import check_account
+        provider = srv.router._kn(str(msg.get("provider") or ""))
+        request_id = str(msg.get("request_id") or "")[:128]
+        async def check():
+            result = await check_account(srv.router, provider)
+            await websocket.send_json({"type": "cloud:provider:checked", "provider": provider,
+                "request_id": request_id, "connection": result})
+            await _broadcast_config(srv)
+        background_tasks.spawn(check(), name=f"{provider}-account-check")
 
     @on("cloud:credential:set")
     async def _cloud_credential_set(srv, websocket, session, msg):

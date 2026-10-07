@@ -3,6 +3,7 @@ import {notifyToast} from "./state/toastStore";
 import {selectSettingsCategory} from "./state/appStore";
 import {
   beginOAuthFlow,
+  checkProviderConnection,
   clearCustomEndpointFeedback,
   cancelOAuthFlow,
   send,
@@ -118,22 +119,28 @@ function ProviderAccountRow({
   external,
   onSelect,
   onRemove,
+  onCheck,
+  stateLabel,
 }: {
   provider: ProviderInfo;
   connected: boolean;
   external: boolean;
   onSelect: () => void;
   onRemove?: () => void;
+  onCheck: () => void;
+  stateLabel: string;
 }) {
   return <article className="provider-account-row">
-    <button className="provider-account-row__main" type="button" onClick={onSelect}>
+    <button className="provider-account-row__main" type="button" onClick={onSelect}
+      aria-label={`${providerMethods(provider).includes("oauth") ? "Connect or reconnect" : "Manage"} ${provider.display_name}`}>
       <span className="provider-account-row__copy">
-        <span className="provider-account-row__title"><strong>{provider.display_name}</strong>{connected ? <em className="deck-status" data-tone="positive">Connected</em> : null}</span>
-        <small>{provider.description || (external ? "Uses an already authenticated desktop service." : "Connect your account in the browser.")}</small>
+        <span className="provider-account-row__title"><strong>{provider.display_name}</strong><em className="deck-status" data-tone={connected ? "positive" : "neutral"}>{stateLabel}</em></span>
+        <small>{provider.description || (external ? "Managed by its desktop service." : "Connect your account in the browser.")}</small>
       </span>
       <span className="provider-account-row__trail" aria-hidden="true">{external ? "↗" : "›"}</span>
     </button>
-    {connected && onRemove ? <button
+    <button className="provider-inline-link" type="button" onClick={onCheck} aria-label={`Check ${provider.display_name} connection`} title={provider.connection?.detail}>Check</button>
+    {onRemove ? <button
       className="provider-account-row__remove"
       type="button"
       title={`Remove ${provider.display_name}`}
@@ -147,6 +154,11 @@ function ProviderAccountRow({
 export function ProviderAccounts() {
   const {config} = usePlatformState();
   const [showAll, setShowAll] = useState(false);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
+    return () => window.clearInterval(timer);
+  }, []);
   const providers = config.providers || [];
   const priority: Record<string, number> = {"openai-codex": 0, xai: 1, nous: 2, hermes: 3, ollama: 4, lmstudio: 5};
   const accountProviders = providers.filter(provider => (
@@ -155,28 +167,50 @@ export function ProviderAccounts() {
   const connected = accountProviders.filter(provider => {
     const methods = providerMethods(provider);
     if (methods.includes("oauth")) {
-      return !!providerOAuthStatus(provider, config)?.connected;
+      return provider.connection?.state === "ready" && now - provider.connection.checked_at < 300;
     }
-    return methods.includes("external") && provider.configured;
+    return methods.includes("external") && provider.connection?.state === "ready" && now - provider.connection.checked_at < 300;
   });
   const others = accountProviders.filter(provider => !connected.includes(provider));
   const showOthers = others.length > 0 && (showAll || !connected.length);
   const collapsible = connected.length > 0 && others.length > 0;
 
   function select(provider: ProviderInfo) {
+    if (providerMethods(provider).includes("oauth")) {
+      beginOAuthFlow(provider.name);
+      return;
+    }
     const external = providerMethods(provider).includes("external");
     if (external) {
-      notifyToast(`${provider.display_name} is managed by its desktop service. Choose its model in the chat composer.`);
+      notifyToast(`${provider.display_name} is managed in its desktop app. Sign in there, then use Check to refresh its status here.`);
       return;
     }
     beginOAuthFlow(provider.name);
   }
 
   function remove(provider: ProviderInfo) {
-    if (!window.confirm(`Remove the stored ${provider.display_name} account from VARIANT-1?`)) return;
+    const confirmation = provider.name === "hermes"
+      ? "Sign out of Nous Portal in the installed Hermes account? This also signs Hermes out; you can reconnect here afterward."
+      : `Remove the stored ${provider.display_name} account from VARIANT-1?`;
+    if (!window.confirm(confirmation)) return;
     if (!send({type: "cloud:oauth:disconnect", provider: provider.name})) {
       notifyToast("Could not remove the account — backend offline");
     }
+  }
+
+  function statusLabel(provider: ProviderInfo) {
+    const state = provider.connection?.checked_at && now - provider.connection.checked_at >= 300
+      ? "unchecked" : provider.connection?.state;
+    if (state === "ready" && now - (provider.connection?.checked_at || 0) < 300) return "Connection checked";
+    if (state === "service_ready" && now - (provider.connection?.checked_at || 0) < 300) return "Service available";
+    if (state === "unavailable") return "Unavailable";
+    if (state === "refresh_needed") return "Refresh needed";
+    if (state === "saved" || providerOAuthStatus(provider, config)?.connected) return "Account saved";
+    return "Not checked";
+  }
+
+  function check(provider: ProviderInfo) {
+    if (!checkProviderConnection(provider.name)) notifyToast("Check already running or backend offline");
   }
 
   return <section className="provider-simple-page">
@@ -190,11 +224,13 @@ export function ProviderAccounts() {
         <span className="provider-account-row__copy"><span className="provider-account-row__title"><strong>Local models</strong></span><small>Run a GGUF model supplied on this device.</small></span>
         <span className="provider-account-row__trail" aria-hidden="true">›</span>
       </button>
-      {connected.length ? <p className="provider-group-label">Connected</p> : null}
+      {connected.length ? <p className="provider-group-label">Checked</p> : null}
       {connected.map(provider => <ProviderAccountRow
         key={provider.name}
         provider={provider}
         connected
+        stateLabel={statusLabel(provider)}
+        onCheck={() => check(provider)}
         external={providerMethods(provider).includes("external")}
         onSelect={() => select(provider)}
         onRemove={providerMethods(provider).includes("oauth")
@@ -207,6 +243,10 @@ export function ProviderAccounts() {
           key={provider.name}
           provider={provider}
           connected={false}
+          stateLabel={statusLabel(provider)}
+          onCheck={() => check(provider)}
+          onRemove={providerMethods(provider).includes("oauth") && (provider.name === "hermes" || !!providerOAuthStatus(provider, config)?.connected || !!providerOAuthStatus(provider, config)?.stored)
+            ? () => remove(provider) : undefined}
           external={providerMethods(provider).includes("external")}
           onSelect={() => select(provider)}
         />)}

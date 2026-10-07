@@ -19,8 +19,9 @@ const SCREEN_TOOLS = new Set([
 ]);
 const FOLDER_HINT = /[/\\]$|[/\\](?:src|lib|app|dist|docs|frontend|backend|scripts)$/i;
 const JSON_FIELD = /"(path|file|filename|filepath|file_path|url|href|link|uri|query|q|pattern|command|cmd|cwd|directory|dir|target|root)"\s*:\s*"((?:\\.|[^"\\])*)/gi;
-const URL_RE = /https?:\/\/[^\s<>"'`)\]},]+/gi;
-const WIN_PATH_RE = /[A-Za-z]:[\\/][^\s"'<>|*?]{1,220}/g;
+const URL_RE = /(?:https?|file):\/\/[^\s<>"'`)\]},]+/gi;
+// A URL's s:/ or /C:/ path segment is not a Windows drive reference.
+const WIN_PATH_RE = /(?<![A-Za-z0-9_:\\/])[A-Za-z]:[\\/][^\s"'<>|*?]{1,220}/g;
 const UNIX_PATH_RE = /(?:^|[\s`'"(])((?:\.{1,2}\/|\/)(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,8})/g;
 const PATCH_FILE_RE = /\*\*\*\s+(?:Add|Update|Delete) File:\s+(\S+)/g;
 const KV_RE = /(\w+)=([^\s]+)/g;

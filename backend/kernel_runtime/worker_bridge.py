@@ -1615,11 +1615,12 @@ class Variant1SessionContextResult(dict):
     def __repr__(self) -> str:
         items = self.get("items")
         count = len(items) if isinstance(items, list) else None
+        inspect = ', '.join(f"['{key}']" for key in ('items', 'counts', 'text') if key in self)
         return (f"<SessionContextResult view={self.get('view_id')!r} "
                 f"items={count!r} has_more={self.get('has_more', False)!r} "
                 f"next_cursor={self.get('next_cursor')!r} "
                 f"next_offset={self.get('next_offset')!r}; "
-                "inspect ['items'], ['counts'] or ['text'] explicitly>")
+                f"inspect {inspect or 'mapping keys'} explicitly>")
 
     __str__ = __repr__
 

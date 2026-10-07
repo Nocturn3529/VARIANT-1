@@ -16,6 +16,22 @@ def stack(tmp_path):
     return create_goal_service(work,handlers={'agent':agent})
 
 
+def test_goal_snapshot_limits_history_previews_without_losing_durable_effects(tmp_path):
+    service=stack(tmp_path)
+    goal=service.create(title='Long goal',objective='Retain evidence',owner_chat_id='owner')
+    goal=service.plan(goal.goal_id,[{'step_id':'step','kind':'agent'}],expected_version=goal.version)
+    for index in range(105):
+        goal=service.get(goal.goal_id)
+        service.repository.record_effect(goal.goal_id,'step',expected_version=goal.version,
+            kind='parent.turn',idempotency_key=str(index),request={'index':index},status='planned')
+    snapshot=service.snapshot(goal.goal_id)
+    assert len(snapshot['effects'])==100
+    assert snapshot['effects'][0]['request']['index']==5
+    assert snapshot['history_coverage']['complete'] is False
+    assert snapshot['history_coverage']['counts']['effects']==105
+    assert len(service.repository.list_effects(goal.goal_id))==105
+
+
 @pytest.mark.asyncio
 async def test_submission_is_durable_idempotent_and_owner_scoped(tmp_path):
     service=stack(tmp_path)
@@ -24,7 +40,7 @@ async def test_submission_is_durable_idempotent_and_owner_scoped(tmp_path):
     assert a['goal']['goal_id']==b['goal']['goal_id']
     assert len(service.list(owner_chat_id='chat-a'))==1
     assert len(a['steps'])==1 and a['steps'][0]['kind']=='agent'
-    assert a['completion_basis']=='structured_child_report' and a['capabilities']['pause_active_work'] is False
+    assert a['completion_basis']=='structured_parent_report' and a['capabilities']['pause_active_work'] is False
     assert service.composer.current('chat-b','r1') is None
     assert service.composer.current('chat-a','r1')['goal']['goal_id']==a['goal']['goal_id']
     with pytest.raises(GoalConflict):await service.composer.submit('chat-a','r1','Different objective')

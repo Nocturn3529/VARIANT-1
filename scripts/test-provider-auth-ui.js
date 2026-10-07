@@ -19,7 +19,7 @@ let parentClosed = 0;
 const mount = createRoot(document.getElementById("root"));
 React.act(() => mount.render(React.createElement(api.Overlay, {onClose: () => parentClosed++, labelledBy: "settings"}, React.createElement(api.ProviderAccounts))));
 assert.match(document.body.textContent, /MiniMax China/);
-assert.match([...document.querySelectorAll('.provider-account-row__title')].find(row => row.textContent.includes('MiniMax China')).textContent, /Connected/);
+assert.match([...document.querySelectorAll('.provider-account-row__title')].find(row => row.textContent.includes('MiniMax China')).textContent, /Account saved/);
 React.act(() => api.beginOAuthFlow("minimax-oauth"));
 const old = sent.at(-1); assert.ok(old.request_id);
 React.act(() => api.ingest({type: "cloud:oauth:pending", provider: old.provider, request_id: old.request_id, verification_url: "https://example.com/verify", user_code: "OLD-CODE"}));
@@ -39,6 +39,29 @@ React.act(() => api.ingest({type: "cloud:oauth:complete", provider: fresh.provid
 assert.equal(api.getPlatformState().config.oauth_by_provider["minimax-oauth"].connected, true);
 React.act(() => api.ingest({type: "cloud:oauth:pending", provider: fresh.provider, request_id: fresh.request_id, user_code: "LATE"}));
 assert.equal(api.getPlatformState().oauthFlow.phase, "complete", "settled flows cannot regress to pending");
+React.act(() => {
+  api.dismissOAuthFlow();
+  api.setPlatformConnection("connected");
+  api.ingest({type: "config", providers: [{name: "hermes", display_name: "Hermes Agent (Nous OAuth)", auth_methods: ["oauth", "external"], configured: true}, {name: "lmstudio", display_name: "LM Studio", auth_methods: ["external"], configured: true}], oauth_by_provider: {hermes: {connected: false}}});
+});
+assert.equal([...document.querySelectorAll('.provider-account-row:not(.provider-account-row--local) .provider-account-row__title')].every(row => row.textContent.includes('Not checked')), true, "optional authentication does not imply a connection");
+React.act(() => document.querySelector('[aria-label="Check Hermes Agent (Nous OAuth) connection"]').click());
+const check = sent.at(-1);
+assert.equal(check.type, "cloud:provider:check");
+React.act(() => api.ingest({type: "cloud:provider:checked", provider: "hermes", request_id: "stale", connection: {state: "ready"}}));
+assert.equal(api.getPlatformState().config.providers[0].connection, undefined);
+React.act(() => api.ingest({type: "cloud:provider:checked", provider: "hermes", request_id: check.request_id, connection: {state: "unavailable", checked_at: Date.now()/1000, detail: "Reconnect account"}}));
+assert.match(document.body.textContent, /Unavailable/);
+React.act(() => [...document.querySelectorAll('.provider-account-row__main')].find(row => row.textContent.includes('Hermes')).click());
+assert.equal(sent.at(-1).type, "cloud:oauth:start", "external Hermes can reconnect from Settings");
+assert.equal(sent.at(-1).provider, "hermes");
+const confirmations = [];
+dom.window.confirm = text => {confirmations.push(text); return true;};
+React.act(() => document.querySelector('[aria-label="Remove Hermes Agent (Nous OAuth)"]').click());
+assert.equal(sent.at(-1).type, "cloud:oauth:disconnect");
+assert.match(confirmations[0], /also signs Hermes out/);
+React.act(() => api.ingest({type: "config", providers: [{name: "xai", display_name: "xAI", auth_methods: ["oauth"]}], oauth_by_provider: {xai: {connected: false, stored: true}}}));
+assert.ok(document.querySelector('[aria-label="Remove xAI"]'), "expired stored grants can still be removed");
 React.act(() => {
   api.dismissOAuthFlow();
   api.ingest({type: "config", providers: [{name: "fixture", display_name: "Fixture", auth_methods: ["api_key"]}], credentials_by_provider: {fixture: []}, credential_revision_by_provider: {fixture: 0}});

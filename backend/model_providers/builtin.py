@@ -309,10 +309,13 @@ def builtin_profiles() -> list[ProviderProfile]:
            "Hermes-4-405B", aliases=("nous-portal", "nousresearch")),
         _o(
             "hermes", "Hermes Agent (Nous OAuth)", "http://127.0.0.1:8645/v1",
-            (), "upstage/solar-pro4:free", aliases=("hermes-agent", "hermes-nous"),
+            (), "meituan/longcat-2.5-preview:free", aliases=("hermes-agent", "hermes-nous"),
             auth="optional", reasoning=True, vision=True,
             reasoning_efforts=("minimal", "low", "medium", "high", "xhigh", "max"),
             reasoning_effort_field="reasoning_effort",
+            reasoning_model_rules=({"patterns": ("meituan/longcat-2.5-preview:free",),
+                "effort_field": "", "efforts": (),
+                "minimum_fields": {"reasoning_effort": None, "reasoning.enabled": False}},),
             description=(
                 "Signed-in Nous Portal inference through Hermes Agent's fixed "
                 "loopback OAuth proxy; VARIANT-1 never receives the OAuth bearer."

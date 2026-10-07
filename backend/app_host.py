@@ -60,6 +60,7 @@ class AppHost:
     startup_ready: bool = False
     startup_error: str = ""
     startup_failures: list[dict] = field(default_factory=list)
+    event_loop_timing: dict[str, float | int] = field(default_factory=dict)
     _local_model_switching: bool = False
     _local_model_switch_generation: int = 0
     _local_model_switch_target: str = ""

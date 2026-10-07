@@ -56,6 +56,22 @@ async def open_chat(fabric, chat_id):
     return await fabric.preferences.session(chat_id, scope=WorkScope(chat_id=chat_id), metadata={'owner_kind': 'chat', 'owner_id': chat_id}, fallback='managed')
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_epoch', [0, 74])
+async def test_first_default_open_after_passive_refresh(stack, legacy_epoch):
+    fabric, owner, _ = stack
+    try:
+        await fabric.preferences.set_selection('default', '', {'mode': 'managed'}, 0)
+        fabric.store.update_browser_preference('chat-new', state={'state': 'idle'})
+        with fabric.store._write() as conn:
+            conn.execute("UPDATE browser_preference SET revision=? WHERE owner_id='chat-new'", (legacy_epoch,))
+        opened = await open_chat(fabric, 'chat-new')
+        assert opened.kind == 'managed' and owner.launches == 1
+        assert fabric.store.browser_preference('chat-new')['revision'] == legacy_epoch + 1
+    finally:
+        await fabric.shutdown()
+
+
 async def waiting(fabric, chat_id):
     for _ in range(100):
         state = fabric.preferences.state(chat_id)

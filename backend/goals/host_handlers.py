@@ -42,8 +42,29 @@ class GoalHostHandlers:
         """Settle exact goal resources, including terminal child descendants."""
         from .resource_cleanup import GoalChildRoot, cleanup_goal_descendant_resources
         runtime=self._runtime()
+        if self.goals.parent_session is not None and goal.completion_policy.get('execution_owner') == 'parent':
+            await self.goals.parent_session.cancel(goal)
         manager=getattr(runtime.catalog,'children',None)
         roots=[];issues=[];direct_processes=[]
+        direct_terminals=[]
+        if goal.completion_policy.get('execution_owner') == 'parent':
+            if manager is not None:
+                roots.extend(GoalChildRoot(**row) for row in manager.goal_roots(goal.goal_id, goal.owner_chat_id))
+            terminals, processes = runtime.execution.repository.live_ids_for_goal(goal.goal_id)
+            for process_id in processes:
+                try:
+                    record = await runtime.execution.stop_process(process_id, force=True)
+                    if record.live: raise RuntimeError('Goal process remains live after Stop')
+                    direct_processes.append(process_id)
+                except Exception as exc:
+                    issues.append({'phase':'parent_process','resource_id':process_id,'error':str(exc),'retryable':True})
+            for terminal_id in terminals:
+                try:
+                    record = await asyncio.to_thread(runtime.execution.terminals.close, terminal_id, force=True)
+                    if record.live: raise RuntimeError('Goal terminal remains live after Stop')
+                    direct_terminals.append(terminal_id)
+                except Exception as exc:
+                    issues.append({'phase':'parent_terminal','resource_id':terminal_id,'error':str(exc),'retryable':True})
         for effect in self.goals.repository.list_effects(goal.goal_id):
             response=dict(effect.response or {});request=dict(effect.request or {})
             try:
@@ -87,6 +108,7 @@ class GoalHostHandlers:
             child_manager=manager,execution=runtime.execution,kernel=runtime.kernel)
         payload=result.to_dict()
         payload['stopped_process_ids']=list(dict.fromkeys(payload['stopped_process_ids']+direct_processes))
+        payload['closed_terminal_ids']=list(dict.fromkeys(payload['closed_terminal_ids']+direct_terminals))
         payload['issues']+=issues
         payload['complete']=payload['complete'] and not issues
         return payload
@@ -438,6 +460,10 @@ class GoalHostHandlers:
         )
 
     async def agent(self, context: StepExecutionContext) -> StepExecutionResult:
+        if context.goal.completion_policy.get('execution_owner') == 'parent':
+            if self.goals.parent_session is None:
+                return StepExecutionResult(status='blocked', error='Parent session Goal adapter is unavailable')
+            return await self.goals.parent_session.execute(context)
         return await self._spawn_child(context, source="agent")
 
     async def child(self, context: StepExecutionContext) -> StepExecutionResult:

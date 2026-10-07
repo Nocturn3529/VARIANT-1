@@ -25,6 +25,17 @@ class ChildWorkerPorts:
     bind_execution_run: Callable[[str],None] | None = None
 
 
+class ChildWorkerResult(str):
+    """Text-compatible result with the native terminal facts alongside it."""
+
+    def __new__(cls, text, *, status, terminal_reason='', error=''):
+        result = super().__new__(cls, text)
+        result.status = status
+        result.terminal_reason = str(terminal_reason)[:80]
+        result.error = str(error)[:2000]
+        return result
+
+
 def _status(reply: str) -> tuple[str, str]:
     value = str(reply or "").strip()
     for tag, status in (
@@ -218,6 +229,8 @@ async def run_child_worker(
     completion_status = str(
         output.get("completion_status") or ""
     ).strip().lower()
+    terminal_reason = str(output.get('terminal_reason') or
+                          (run_state.get('worker') or {}).get('terminal_reason') or '')
     native_cancelled = (
         native_status in {"cancelled", "canceled"}
         or completion_status in {"cancelled", "canceled"}
@@ -227,9 +240,10 @@ async def run_child_worker(
     if native_cancelled:
         await ports.emit("task:done", status="cancelled", text="interrupted")
         progress = _clip(reply.strip(), 300)
-        return "[child INTERRUPTED] stopped before finishing" + (
+        return ChildWorkerResult("[child INTERRUPTED] stopped before finishing" + (
             f"; progress so far: {progress}" if progress else "."
-        )
+        ), status='cancelled', terminal_reason=terminal_reason or 'user_cancelled',
+            error='native worker cancelled before completion')
 
     native_truncated = (
         native_status == "truncated" or completion_status == "truncated"
@@ -245,7 +259,8 @@ async def run_child_worker(
         # not a fourth partial terminal state. Keep the partial output explicit
         # while using the existing failed marker so it cannot be persisted as
         # completed or injected into the parent as a successful child result.
-        return f"[child FAILED] {detail}"
+        return ChildWorkerResult(f"[child FAILED] {detail}", status='failed',
+                                 terminal_reason=terminal_reason or 'model_output_limit', error=detail)
 
     native_failed = (
         native_status in {"error", "failed"}
@@ -260,7 +275,8 @@ async def run_child_worker(
             200,
         )
         await ports.emit("task:done", status="error", text=error)
-        return f"[child FAILED] hit a model error: {error}"
+        return ChildWorkerResult(f"[child FAILED] hit a model error: {error}", status='failed',
+                                 terminal_reason=terminal_reason or 'model_error', error=error)
 
     status, body = _status(reply)
     await ports.emit(
@@ -269,12 +285,14 @@ async def run_child_worker(
         text=_clip(body or status, 300),
     )
     if not body:
-        return "[child FINISHED] produced no summary; treat the outcome as uncertain."
+        return ChildWorkerResult("[child FINISHED] produced no summary; treat the outcome as uncertain.",
+                                 status='completed', terminal_reason=terminal_reason)
     label = status.upper() if status != "unknown" else "FINISHED"
-    return (
+    return ChildWorkerResult(
         f"[child {label}] {body}\n"
         "(Self-reported by the child; verify critical results.)"
-    )
+    , status='failed' if status == 'failed' else 'completed',
+        terminal_reason=terminal_reason, error=body if status == 'failed' else '')
 
 
 __all__ = ["ChildWorkerPorts", "run_child_worker"]

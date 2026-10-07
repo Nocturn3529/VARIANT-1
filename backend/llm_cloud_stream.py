@@ -29,6 +29,7 @@ from model_runtime.message_graph import (
     render_openai_chat,
 )
 from model_runtime.request_manifest import (
+    observe_provider_chunk,
     model_request_event_hooks,
     patch_provider_response_identity,
     provider_response_identity,
@@ -235,6 +236,8 @@ def _cloud_retry_delay(
         if not math.isfinite(requested) or requested > bound:
             return None
         return requested
+    if getattr(exc,'model_specific_rate_limit',False):
+        return 30.0  # Shared free upstream capacity gets a deliberate quiet interval.
     delay = CLOUD_RETRY_BASE_SECONDS * (2 ** max(0, int(failed_attempt)))
     return delay * random.uniform(.75, 1.25) if jitter else delay
 
@@ -535,6 +538,7 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     if event.done:
                         break
                     obj = event.payload or {}
+                    observe_provider_chunk(router, event_hooks.request_ref, obj)
                     stream_error = _provider_stream_error(label, obj)
                     if stream_error is not None:
                         raise stream_error
@@ -1030,7 +1034,7 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                     if yielded:
                         if isinstance(exc, ProviderRequestError):
                             exc.model_output_observed = True
-                        if failure.kind in {"authentication", "quota", "rate_limit", "transient"}:
+                        if failure.kind in {"authentication", "quota", "rate_limit", "transient"} and not failure.model_specific:
                             router.credential_pools.mark_failure(
                                 lease, status_code=getattr(exc, "status_code", 0),
                                 detail=_credential_failure_detail(exc),
@@ -1068,6 +1072,10 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
                         )
                         await asyncio.sleep(retry_delay)
                         continue
+                    if failure.model_specific:
+                        # Another API key cannot fix shared upstream capacity.
+                        # Preserve same-route backoff and explicit route recovery.
+                        raise
                     if failure.kind != "upstream":
                         router.credential_pools.mark_failure(
                             lease, status_code=getattr(exc, "status_code", 0),

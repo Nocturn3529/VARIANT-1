@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -104,6 +105,25 @@ def _manager(database_path, host, artifact_store):
 
 def _runtimes(host):
     return host.require_runtime().session_runtimes
+
+
+@pytest.mark.asyncio
+async def test_explicit_child_keeps_parent_goal_scope_across_queued_dispatch(tmp_path,monkeypatch):
+    from run_context import bind_run_context
+    from work_fabric.scope import WorkScope
+    host=_Host(tmp_path/'children.sqlite3')
+    manager=_manager(str(tmp_path/'children.sqlite3'),host,ContentAddressedArtifactStore(str(tmp_path/'artifacts')))
+    monkeypatch.setattr(manager,'_enqueue',AsyncMock(return_value='held'))
+    context=Variant1RunContext.create(source='chat',session_id='parent',
+        work_scope=WorkScope(chat_id='parent',goal_id='goal-attribution',step_id='goal-step'))
+    with bind_run_context(context):
+        child=await manager.spawn('parent',task='Explicitly delegated work')
+    assert child['work_scope']['goal_id']=='goal-attribution'
+    assert child['work_scope']['chat_id']==child['child_chat_id']
+    assert manager.goal_roots('goal-attribution','parent')[0]['child_id']==child['child_id']
+    assert manager.goal_roots('another-goal','parent')==[]
+    job_id=manager._admit_job(child['child_id'])
+    assert manager.work.jobs.get(job_id).scope.goal_id=='goal-attribution'
 
 
 @pytest.mark.asyncio
@@ -237,10 +257,10 @@ async def test_child_partial_failure_is_not_persisted_as_completed(
     )
 
     async def fake_run(*_args, **_kwargs):
-        return (
+        return child_worker.ChildWorkerResult(
             "[child FAILED] native output ended at its limit before completion; "
-            "partial output: useful intermediate evidence"
-        )
+            "partial output: useful intermediate evidence", status='failed',
+            terminal_reason='model_output_limit', error='native output limit reached')
 
     monkeypatch.setattr(child_worker, "run_child_worker", fake_run)
     admitted = await manager.spawn("parent-a", task="long child task")
@@ -248,6 +268,10 @@ async def test_child_partial_failure_is_not_persisted_as_completed(
 
     assert terminal["status"] == "failed"
     assert "partial output: useful intermediate evidence" in terminal["result_text"]
+    assert terminal['error'] == 'native output limit reached'
+    assert terminal['terminal_reason'] == 'model_output_limit'
+    detail = manager.inspection_snapshot('parent-a', child_id=admitted['child_id'])['children'][0]
+    assert detail['terminal_reason'] == 'model_output_limit' and detail['error']
 
 
 @pytest.mark.asyncio

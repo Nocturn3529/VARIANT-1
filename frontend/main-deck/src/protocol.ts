@@ -24,6 +24,8 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-platform": [
     "hello", "config", "engine", "tools", "messaging:gateway", "messaging:error",
     "cloud:usage",
+    "cloud:provider:checked",
+    "cloud:oauth:disconnect:error",
     "cloud:oauth:pending", "cloud:oauth:complete", "cloud:oauth:error",
     "cloud:oauth:busy",
     "cloud:oauth:cancelled", "cloud:oauth:disconnected",
@@ -59,14 +61,14 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-chat": [
     "children:snapshot", "children:detail", "children:rejected", "children:changed",
     "goal:accepted", "goal:rejected", "goal:current", "work:event",
-    "hello", "orphaned_task", "config", "engine", "chat:session", "chat:runtime", "chat:appended", "chat:transcript_failed",
+    "hello", "orphaned_task", "config", "engine", "chat:session", "chat:runtime", "chat:execution", "chat:appended", "chat:transcript_failed",
     "chat:session:error", "chat:session:annotated", "chat:queued", "chat:queue_rejected", "chat:queue_progress", "chat:queue_settled", "chat:rejected",
     "chat:runtime:mutation:set:done", "chat:runtime:mutation:set:rejected", "chat:pause_state", "chat:queue_snapshot", "chat:queue_result",
     "start", "token", "thinking", "tool:activity",
     "activity", "done", "run:settled", "cancelling", "error", "speak", "tts:preview",
   ],
   "react-runtime-sessions": [
-    "chat:project:result",
+    "chat:project:result", "error",
     "chat:sessions", "chat:session:deleted", "chat:search:results", "chat:session:error", "chat:switch:result", "chat:new:result",
   ],
   "react-runtime-session-context": [

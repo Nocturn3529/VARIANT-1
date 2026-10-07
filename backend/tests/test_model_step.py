@@ -142,3 +142,12 @@ async def test_policy_engine_replays_one_clean_retryable_provider_turn(monkeypat
         {"role": "assistant", "content": "recovered"},
     ]
     assert delays == [2.0]
+
+
+def test_model_step_failure_attribution_preserves_transport_and_stage():
+    closed = ModelStepFailed([], RuntimeError('Cannot call "send" once a close message has been sent.'))
+    assert closed.terminal_reason == 'transport_disconnected'
+    assert ModelStepFailed([], ValueError('bad preparation'), stage='prepare').terminal_reason == 'host_preflight_error'
+    assert ModelStepFailed([], TypeError('invalid AssistantTurn'), stage='normalize').terminal_reason == 'harness_error'
+    assert ModelStepFailed([], ProviderRequestError('hermes','unavailable',status_code=503)).terminal_reason == 'provider_error'
+    assert ModelStepFailed([], RuntimeError('unclassified call failure')).terminal_reason == 'model_step_error'

@@ -60,6 +60,61 @@ def test_structured_failures_preserve_cause(status, code, expected):
     if expected in {"content_policy","quota","context","authentication"}: assert not classify_provider_error(error).retryable
 
 
+@pytest.mark.parametrize('byok,model_specific',[(False,True),(True,False),(None,False)])
+def test_shared_openrouter_upstream_throttle_is_distinct_from_account_limits(byok,model_specific):
+    error=ProviderRequestError('openrouter','Provider returned error',status_code=429)
+    annotate_provider_error(error,{'error':{'message':'Provider returned error','code':429,
+        'metadata':{'provider_name':'ModelRun','is_byok':byok,'raw':'unretained upstream error'}}})
+    failure=classify_provider_error(error)
+    assert failure.kind=='rate_limit' and failure.model_specific is model_specific
+    assert not hasattr(error,'raw')
+
+
+def test_shared_upstream_default_backoff_is_quiet_and_explicit_retry_after_wins():
+    error=ProviderRequestError('openrouter','upstream throttle',status_code=429)
+    error.model_specific_rate_limit=True
+    assert cloud._cloud_retry_delay(error,0)==30
+    error.retry_after_seconds=12
+    assert cloud._cloud_retry_delay(error,0)==12
+
+
+@pytest.mark.parametrize('provider,status,message,specific', [
+    ('hermes',429,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit — please retry shortly.",True),
+    ('hermes',429,'Your API key rate limit was exceeded',False),
+    ('hermes',401,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit",False),
+    ('other',429,"The requested model is temporarily at capacity upstream. This is not your API key's rate limit",False),
+])
+def test_nous_explicit_model_capacity_keeps_account_scope(provider,status,message,specific):
+    error=ProviderRequestError(provider,message,status_code=status)
+    annotate_provider_error(error,{'status':status,'message':message})
+    assert classify_provider_error(error).model_specific is specific
+
+
+@pytest.mark.asyncio
+async def test_upstream_model_throttle_keeps_other_model_credential_usable_without_key_rotation(tmp_path,monkeypatch):
+    result=router(tmp_path,monkeypatch,max_attempts=1,fallback_routes=[])
+    marked=[]
+    result._credential_leases=lambda provider:[CredentialLease(provider,'one','First','synthetic',source='environment'),
+                                             CredentialLease(provider,'two','Second','synthetic',source='environment')]
+    monkeypatch.setattr(result.credential_pools,'mark_failure',lambda *args,**kwargs:marked.append(kwargs))
+    calls=[]
+    async def attempt(r,profile,lease,model,incoming,sampling,*args,**kwargs):
+        calls.append((model,lease.credential_id))
+        if model=='limited':
+            error=ProviderRequestError('openrouter','upstream rate limit',status_code=429)
+            annotate_provider_error(error,{'error':{'message':'Provider returned error','code':429,
+                'metadata':{'provider_name':'ModelRun','is_byok':False}}})
+            raise error
+        kwargs['stream_diagnostics'].note_finish_reason('stop')
+        yield 'available'
+    monkeypatch.setattr(cloud,'call_cloud_once',attempt)
+    with result.bind_model_route({**BACKUP,'model':'limited'}):
+        with pytest.raises(ProviderRequestError):await consume(result)
+    with result.bind_model_route({**BACKUP,'model':'other'}):
+        assert await consume(result)==['available']
+    assert calls==[('limited','one'),('other','one')] and marked==[]
+
+
 @pytest.mark.asyncio
 async def test_fallback_is_scoped_actual_route_and_portable_error_evidence(tmp_path, monkeypatch):
     result = router(tmp_path, monkeypatch)

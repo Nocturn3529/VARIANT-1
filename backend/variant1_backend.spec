@@ -26,6 +26,7 @@ from PyInstaller.utils.hooks import (
 )
 
 datas = []
+datas += [("model_runtime/hermes_auth_worker.py", "model_runtime")]
 binaries = []
 hiddenimports = []
 

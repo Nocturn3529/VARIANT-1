@@ -627,6 +627,8 @@ def latest_run_state_for_thread(store: Any, thread_id: str) -> RunState | None:
 def mutation_elevation_blocked_by_threads(
     thread_ids: Any,
     snapshot_store: Any = None,
+    *,
+    last_run_receipt: dict | None = None,
 ) -> tuple[bool, str]:
     """Fail-closed Off→On preflight for a chat's durable checkpoint threads.
 
@@ -661,6 +663,11 @@ def mutation_elevation_blocked_by_threads(
                 f"{thread_id}: {exc}"
             )
         if state is None or not is_incomplete_run_state(state):
+            continue
+        # Explicitly settled stops cannot resume through the canonical chat
+        # entrypoint. Carrying their evidence into a fresh turn never executes
+        # the saved call, so it must not prevent a later authority change.
+        if _settled_stop(state, last_run_receipt):
             continue
         try:
             pending = pending_tool_loop_from_run_state(state)

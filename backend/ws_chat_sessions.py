@@ -461,6 +461,36 @@ def register(on):
             "runtime": payload.get("runtime") or {},
         })
 
+    @on("chat:execution:get")
+    async def _chat_execution_get(srv, websocket, session, msg):
+        """Read-only liveness/result reconciliation without transcript hydration."""
+        sid = str(msg.get('session_id') or '')
+        request_id = str(msg.get('request_id') or '')[:512]
+        if not sid or not request_id or not _sessions(srv).has_session(sid):
+            await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
+                                       'request_id': request_id, 'error': 'unknown_session'})
+            return
+        runtimes = srv.require_runtime().session_runtimes
+        observed_run = str(msg.get('run_id') or '')[:512]
+        observed_admission = str(msg.get('admission_id') or '')[:512]
+        call_ids = msg.get('call_ids') if isinstance(msg.get('call_ids'), list) else []
+        calls = runtimes.repository.outer_tool_results(sid, observed_run, call_ids)
+        runtime = runtimes.snapshot(sid)
+        settlement = (runtimes.repository.get_run_settlement(sid, run_id=observed_run,
+                                                            admission_id=observed_admission)
+                      if observed_run and observed_admission else None)
+        if not runtime:
+            await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
+                                       'request_id': request_id, 'error': 'runtime_unavailable'})
+            return
+        await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
+            'request_id': request_id, 'observed_run_id': observed_run,
+            'observed_admission_id': observed_admission,
+            'busy': runtime.get('busy', False),
+            'active_run_id': runtime.get('active_run_id', ''),
+            'active_admission_id': runtime.get('active_admission_id', ''),
+            'queue': runtimes.queue_snapshot(sid), 'calls': calls, 'settlement': settlement})
+
     @on("chat:runtime:action")
     async def _chat_runtime_action(srv, websocket, session, msg):
         sid = str(msg.get("id") or "") or _chat_runtime(srv).viewed_session_id(session)

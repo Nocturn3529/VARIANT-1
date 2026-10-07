@@ -12,6 +12,27 @@ import server_lifespan
 
 
 @pytest.mark.asyncio
+async def test_loop_timing_records_stalls_without_unbounded_history_or_log_flood(monkeypatch, caplog):
+    host = SimpleNamespace()
+    clock = [0.0]
+    samples = [0]
+    monkeypatch.setattr(server_lifespan.asyncio, 'get_running_loop', lambda: SimpleNamespace(time=lambda: clock[0]))
+
+    async def stalled_sleep(interval):
+        assert interval == 1.0
+        samples[0] += 1
+        if samples[0] == 4:
+            raise asyncio.CancelledError()
+        clock[0] += 1.5
+
+    monkeypatch.setattr(server_lifespan.asyncio, 'sleep', stalled_sleep)
+    with pytest.raises(asyncio.CancelledError):
+        await server_lifespan.observe_event_loop(host)
+    assert host.event_loop_timing == {'samples': 3, 'last_lag_ms': 500.0, 'max_lag_ms': 500.0}
+    assert caplog.text.count('health:event_loop_lag') == 1
+
+
+@pytest.mark.asyncio
 async def test_critical_startup_failure_prevents_readiness_and_removes_handshake(
     tmp_path,
 ):

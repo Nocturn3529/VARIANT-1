@@ -294,6 +294,7 @@ export type ChatWsMessage =
   | ChatEngineMessage
   | ChatSessionMessage
   | ChatRuntimeMessage
+  | Readonly<RawWsEnvelope & {type: "chat:execution"}>
   | ChatPauseStateMessage
   | ChatSessionErrorMessage
   | ChatRuntimeMutationSetDoneMessage
@@ -414,6 +415,8 @@ export function parseChatWsMessage(
         : {};
       return {type: "chat:session", session, navigation: parseNavigation(raw.navigation)};
     }
+    case "chat:execution":
+      return {...row, type: "chat:execution"};
     case "chat:runtime":
       return {
         type: "chat:runtime",

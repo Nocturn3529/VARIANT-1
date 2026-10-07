@@ -84,6 +84,24 @@ def _with_reports(srv, snapshot):
 
 
 def register(on):
+    @on('goal:status:get')
+    async def goal_status(srv,websocket,session,msg):
+        async def action():
+            service = _runtime(srv,session,msg)
+            if service.parent_session is not None:
+                await asyncio.to_thread(service.parent_session.refresh_budget, str(msg.get('goal_id') or ''))
+            goal = await asyncio.to_thread(service.get,str(msg.get('goal_id') or ''))
+            runtimes = getattr(srv.require_runtime(),'session_runtimes',None)
+            runtime = await asyncio.to_thread(runtimes.snapshot,goal.owner_chat_id) if runtimes else {}
+            bus = getattr(getattr(srv,'router',None),'_manifest_bus',None)
+            return {'goal':goal.to_dict(),
+                'runtime':{key:runtime.get(key) for key in ('busy','queued_inputs','pause_state','configuration_pending')},
+                'accounting':{'available':getattr(bus,'usage_ledger',None) is not None,
+                              'failures':getattr(bus,'ledger_failures',None)}}
+        # Here mutation=False means no mandatory request_id, not a ban on
+        # reconciling derived accounting. The status read starts no Goal work.
+        await _respond(websocket,msg,'status',action,mutation=False)
+
     @on('goal:finish')
     async def goal_finish(srv,websocket,session,msg):
         async def action():

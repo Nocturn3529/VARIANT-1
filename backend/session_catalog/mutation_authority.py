@@ -92,8 +92,13 @@ class MutationAuthorityController:
         if not enabled and not blockers:
             from agent_engine import mutation_elevation_blocked_by_threads
 
+            sessions = getattr(self.host.require_runtime(), "sessions", None)
+            receipt_reader = getattr(sessions, "get_last_run_receipt", None)
+            receipt = receipt_reader(str(chat_id)) if callable(receipt_reader) else None
             blocked, blocked_reason = mutation_elevation_blocked_by_threads(
-                self.runtimes.repository.thread_refs(str(chat_id))
+                self.runtimes.repository.thread_refs(str(chat_id)),
+                getattr(self.runtimes, "snapshot_store", None),
+                last_run_receipt=receipt,
             )
             if blocked:
                 blockers.append({

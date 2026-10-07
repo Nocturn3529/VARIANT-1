@@ -12,6 +12,19 @@ import {notifyToast} from "./state/toastStore";
 const oauthRequestId = createRequestIdFactory("oauth-flow");
 const credentialRequestId = createRequestIdFactory("credential-list");
 const credentialRequests = new Map<string, {id: string; timer: ReturnType<typeof setTimeout>}>();
+const providerChecks = new Map<string, {id: string; timer: ReturnType<typeof setTimeout>}>();
+const providerCheckId = createRequestIdFactory("provider-check");
+
+export function checkProviderConnection(provider: string) {
+  if (!store.getState().connected || providerChecks.has(provider)) return false;
+  const id = providerCheckId(provider);
+  const timer = setTimeout(() => providerChecks.delete(provider), 45000);
+  providerChecks.set(provider, {id, timer});
+  if (!send({type: "cloud:provider:check", provider, request_id: id})) {
+    clearTimeout(timer); providerChecks.delete(provider); return false;
+  }
+  return true;
+}
 function forgetCredentialRequest(provider: string) {
   clearTimeout(credentialRequests.get(provider)?.timer); credentialRequests.delete(provider);
 }
@@ -53,6 +66,8 @@ export function setPlatformConnection(status: string) {
   if (store.getState().connected === open) return;
   store.setConnected(open);
   if (!open) {
+    for (const check of providerChecks.values()) clearTimeout(check.timer);
+    providerChecks.clear();
     for (const provider of credentialRequests.keys()) forgetCredentialRequest(provider);
     store.setState({config: {...store.getState().config, credential_revision_by_provider: {}}});
   }
@@ -185,6 +200,16 @@ export function ingest(message: Record<string, unknown>) {
   } else if (type === "cloud:usage") {
     const usage = (message.cloud_usage || message) as PlatformState["config"]["cloud_usage"];
     store.setState({config: {...state.config, cloud_usage: usage}});
+  } else if (type === "cloud:provider:checked") {
+    const provider = String(message.provider || ""), pending = providerChecks.get(provider);
+    if (!pending || pending.id !== message.request_id) return;
+    clearTimeout(pending.timer); providerChecks.delete(provider);
+    const connection = message.connection as NonNullable<PlatformState["config"]["providers"]>[number]["connection"];
+    if (!connection) return;
+    store.setState({config: {...state.config, providers: state.config.providers?.map(item => item.name === provider ? {...item, connection} : item)}});
+    notifyToast(connection.detail);
+  } else if (type === "cloud:oauth:disconnect:error") {
+    notifyToast(String(message.error || "Account could not be removed"));
   } else if (type === "cloud:oauth:disconnected") {
     store.setState({config: mergeOAuthStatus(state.config, String(message.provider || ""), message.status, false)});
   } else if (["cloud:oauth:pending", "cloud:oauth:complete", "cloud:oauth:error", "cloud:oauth:busy", "cloud:oauth:cancelled"].includes(type)) {

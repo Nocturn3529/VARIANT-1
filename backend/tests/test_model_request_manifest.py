@@ -288,6 +288,11 @@ def test_provider_response_identity_is_strictly_allowlisted():
     assert SECRET_RESULT not in json.dumps(result)
 
 
+def test_response_identity_retains_only_known_top_level_generation_ids():
+    assert provider_response_identity({"id": "gen-123"}) == {"provider_generation_id": "gen-123"}
+    assert provider_response_identity({"id": SECRET, "output": {"id": "gen-nested"}}) == {}
+
+
 def test_gemini_manifest_exposes_protocol_and_image_projection_loss():
     image = _png_b64()
     payload = {
@@ -737,6 +742,9 @@ def test_run_identity_includes_the_interactive_chat_session():
         "run_id": "run-chat",
         "source": "chat",
         "session_id": "chat-7",
+        "thread_id": "run-chat",
+        "parent_run_id": "",
+        "work_scope": {},
     }
 
 
@@ -760,6 +768,9 @@ def test_headless_manifest_includes_durable_runtime_and_harness_revisions():
         "run_id": "run-worker",
         "source": "automation",
         "session_id": "worker:automation:manifest-canary",
+        "thread_id": "run-worker",
+        "parent_run_id": "",
+        "work_scope": {},
     }
     assert manifest["surface"] == {
         "action_surface": "trusted-local.v1",

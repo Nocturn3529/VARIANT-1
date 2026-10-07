@@ -2188,6 +2188,12 @@ class CatalogService:
         if self.registry.get("session") is None:
             async def report_outcome(args):
                 context = current_capability_invocation()
+                if context is not None and context.work_scope.goal_id and self.host is not None:
+                    goals = self.host.require_runtime().goals
+                    goal = goals.get(context.work_scope.goal_id)
+                    if (goal is not None and goal.owner_chat_id == context.chat_id
+                            and goal.completion_policy.get('execution_owner') == 'parent'):
+                        return goals.parent_session.report(context, **args)
                 if context is None or self.children is None:
                     raise ToolError('session.report_outcome requires an admitted child cell')
                 return self.children.report_outcome(context.chat_id, context.run_id, **args)
@@ -2230,8 +2236,8 @@ class CatalogService:
                 methods=session_methods,
                 handler=session,
                 category="session_infrastructure",
-                schema_revision="variant1.session.v4",
-                handler_revision="variant1.session-handler.v5",
+                schema_revision="variant1.session.v5",
+                handler_revision="variant1.session-handler.v6",
                 may_return_secrets=True,
             )
 

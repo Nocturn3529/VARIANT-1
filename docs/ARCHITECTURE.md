@@ -27,6 +27,20 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+Provider configuration and live connection evidence are separate. Settings checks
+refresh native OAuth when needed and verify model listings; recent checks expire
+after five minutes. Ollama's local helper and cloud tags do not prove cloud account
+access. Individual model availability still depends on inference requests.
+Nous Portal uses Hermes's fixed loopback inference proxy. Settings starts its
+device authorization inside Hermes's installed Python environment, forwarding only
+the verification link, user code and completion receipt. Hermes owns token storage
+and refresh. The helper waits for an owned commit acknowledgment before replacing
+credentials and uses the shared process-tree owner for cancellation. Explicit
+sign-out operates on the shared Hermes account; it does not copy its credentials
+into VARIANT-1. LongCat's exact free route has developer protocol support, an
+advertised 1M context window and no declared effort-level scale; broader task
+qualification is separate.
+
 `session_catalog.service` publishes categories, mounts, and disclosure; its
 mutation manager delegates disposable execution to the mutation worker client.
 `kernel_runtime.lease` owns one worker generation, while `continuity` coordinates
@@ -63,6 +77,81 @@ checkpointing and restoration are optional and disabled by default.
 
 Chat history, model continuation records, artifacts, reusable
 tool source, and live Python objects have different persistence contracts.
+
+New composer Goals execute ordinary admitted turns in their visible owning chat.
+The durable session writer, pinned model route, canonical history and Python
+generation remain the same. Optional children are explicitly delegated; existing
+Goal records with a child execution contract retain that contract. A structured
+`session.report_outcome()` claim distinguishes completed, blocked and continuing
+work. A continuing owner may name its outgoing peer requests in
+`wait_for_message_ids`; correlated result messages or exact native turn settlements
+wake the Goal when all named requests settle.
+Notices and unrelated results do not create new Goal turns.
+
+Parent-turn waits release the Work execution slot and use terminal/idle events
+instead of half-second successor jobs. Idle admission gives queued inputs and
+configuration changes priority. Exact admission/run identities fence reports and
+cancellation. Restart recovery reconciles once and blocks an uncertain parent
+turn rather than replaying its effects. Pausing scheduling lets an admitted turn
+settle; cancellation stops Goal-attributed managed processes and delegated roots
+while retaining the parent session. Goal usage reads and settlements reconcile
+the durable physical-request ledger, including cancelled Goals. Explicit
+token/provider-call/cost/time budgets are checked at model/tool boundaries and
+before another turn. A boundary pause retains the live task and Python state;
+an in-flight step can finish. Missing measurements or lost ledger records pause
+explicit accounting caps rather than treating unknown cost/tokens as zero.
+Accounting faults pause capped work visibly rather than failing as provider
+errors; unlimited turns continue. Unavailable named peer requests wake and
+block their waiting Goal without a fabricated result or automatic retry.
+Unlimited defaults remain unchanged.
+
+Native peer requests default to `steer`: a busy recipient consumes them at a safe
+step, while an idle or ended session starts its own normal admitted turn without
+requiring an open chat view. Explicit `follow_up` waits for idle. Busy wake tasks
+wait for an idle event. Notices and results do not start unsolicited turns.
+`peers.self()` identifies the caller; incoming request framing also names the
+recipient. Request-handle inspection/waits expose a committed native answer and
+terminal status by exact recipient run/admission identity. This observation
+creates no synthetic reply or prompt and is not independent task verification.
+Explicit replies remain supported and take precedence in message waits.
+
+The metadata-only `data/model-usage.sqlite3` ledger retains physical requests
+independently of the bounded model inspector. It records session/Goal/run lineage,
+provider/model, retries, available token fields and their reported coverage,
+generation identifiers and terminal outcomes. Incremental rollups retain totals
+per session, Goal, model and UTC day without rescanning request history on each
+turn. Reasoning counters are not added again to provider totals. Missing counters
+remain null; superseded attempt durations remain unknown. OpenAI-compatible streams
+retain observed identity and reported partial usage before interruption. Observation
+failures remain visible and do not fail inference.
+Optional observer reconciliation reads OpenRouter generation usage metadata for
+already recorded generation IDs. It retains native-token counters and reported
+costs, excludes normalized router counts with different token units, and never
+requests stored generation content.
+
+The experimental endurance observer runs outside the isolated backend. Its SQLite
+journal retains session identities, feed revisions, interventions and bounded
+metadata samples. Agents receive an outcome-level mission and evolving resources;
+the observer does not assign team work or synthesize continuation prompts. A local
+lease prevents concurrent observers from owning one lab. Source commits and model
+routes are pinned per phase; catalog checks reject unavailable or non-free routes.
+Mixed phases use OpenRouter credentials only for OpenRouter, and Hermes's existing
+OAuth proxy for Nous. The lab records advertised context limits and separate
+reasoning policies; a model without an effort scale keeps its default reasoning.
+Retained session routes are verified before continuation. Read-only peer summaries
+count real request/result correlations without exporting message content; queries
+have a time bound so diagnostics cannot stall the observer as history grows.
+JSONL/CSV exports use a consistent database snapshot and bounded batches. Artifact
+grades, continuous-operation evidence and recovery interventions remain distinct;
+the controller does not claim full mission qualification from file checks alone.
+Headless phase initialization pins a managed browser selection in the lab's own
+Browser Fabric settings. Chromium provisioning and a local render check precede
+Goal admission. Optional browser admission verifies a recent chat-scoped observation
+and its content-addressed PNG, rather than trusting an agent's screenshot claim.
+The observer exposes pending browser user-recovery operations without exporting
+profile paths, URLs or error bodies; such waits end an unattended phase and retain
+its cancellation evidence. Desktop browser selection and kernel deadline policy
+remain separate from this test configuration.
 The former fact/profile memory store, automatic recall, extraction, proposals,
 approvals, and consolidation have been retired. Startup removes only those
 memory tables from the shared ASTB database. Goal records and their controls
@@ -156,6 +245,11 @@ partial rosters are explicit, and full reports remain on child handles. A timeou
 does not cancel children. Parent Stop retains descendant ownership; no paid idle
 parent wake or model polling is needed for status updates.
 
+Native child results carry execution status, terminal reason and error separately
+from their text and self-reported objective outcome. Output-limit failures retain
+partial reports and the native run identity; inspection and the Agent team detail
+show those diagnostics. A restart clears the prior generation's terminal reason.
+
 Agent command/process modes use noninteractive editor, pager, Git prompt, and
 color defaults; explicit environment settings override them. Interactive
 terminal profiles keep their existing behavior. Windows PowerShell and
@@ -174,6 +268,11 @@ and reports omissions. Oversized complete metadata is retained in a scoped
 artifact for later recovery. An edit-call path alone does not prove a successful
 change. The existing protected tail supplies recent assistant context, so no
 extra assistant anchor is injected.
+An internal recap starts with a 1,900-token output budget. A confirmed length
+stop enlarges a later scheduled retry to at most 7,600 tokens, under the existing
+backoff and per-projection attempt limits. Success resets that budget. Recap
+section/sentinel validation and native tool lineage remain required; rejected
+summaries retain the full canonical history and do not change the selected route.
 
 Provider recovery stays inside the canonical router. The optional
 `provider_recovery` configuration defaults to disabled and names explicit
@@ -235,6 +334,69 @@ drafts, pending input/preparation, and unfinished settings or annotation request
 are protected, including unconfirmed trace evidence; settled admission fences
 survive idle view eviction.
 
+The WebSocket reader accepts embedded-browser acknowledgements independently
+of an ordered, bounded ordinary-command worker. Disconnect cleanup discards
+unstarted commands and gives the active command up to ten seconds to finish,
+then releases the view attachment. ASGI cancellation is preserved after cleanup.
+Native and detached turns can publish through the host event sink after their
+original socket closes; foreground disconnect cancellation retains its existing
+ownership rules. Response delivery failure never changes a committed operation
+into a rejection.
+
+Hub fan-out uses a bounded ordered outbox per socket. A slow observer can catch
+up; a socket that falls beyond its queue budget closes for reconnect and
+resynchronization. Tokens first target the owner, then surviving chat views or
+the native event sink. A failed display send does not abort canonical execution.
+Native token/thinking publication enqueues without waiting for a slow Deck;
+terminal frames retain the same ordered outbox.
+
+Admitted Goal and peer turns project into their owning chat's live transcript.
+Their original source remains in the event; the UI chat lane requires explicit
+session and admission identities. Start frames also carry the matching run
+identity. Fresh admissions may change ingress clients, while stale admissions
+and separate voice/subagent streams remain excluded.
+
+The chat timeline retains per-call narration beside public summaries, tools and
+peer messages. Consecutive tools fold into a run. Mid-run snapshots carry exact
+admission identity, structural revision and model segment. Equal revisions may
+contain a longer live-text buffer; recovery keeps newer/later observed text,
+rejects stale admission/revision snapshots and prevents text regressing to an
+earlier segment. Completed narration clears its live buffer. Recovered terminal
+tool traces use the same run-correlated annotation retries as ordinary completion.
+Peer rows render synchronously; the Review panel loads on demand with a visible
+loading state within the existing startup bundle budget.
+
+Physical-request accounting retains SQLite WAL with FULL durability. Repeated
+provider identity chunks are coalesced per manifest in a bounded cache. Patches
+use a bounded serial writer off the event loop; terminal request boundaries await
+an ordered write fence, independent of future requests from other sessions.
+Writer failures/overflow remain visible to explicit Goal accounting caps.
+
+The Electron backend watchdog records health-probe failure reasons and elapsed
+time. A constant-space, once-per-second backend sampler exposes last/maximum
+event-loop lag through `/health`; sustained stalls produce rate-limited logs.
+These measurements do not change retirement decisions. After its
+normal grace period, recent structured work completions on the currently owned
+process pipe defer retirement for timeouts or connection failures. Ordinary
+output and request starts do not extend that interval; identity mismatches do
+not gain the exemption. Recovery remains bounded after completions stop.
+
+Lost navigation acknowledgements keep the composer fenced until a correlated
+retry, another selection, or a rebind to the visible chat succeeds. Active chat
+projections reconcile every five seconds using at most one outstanding read per
+chat. Those reads address only retained call IDs through the durable dispatch
+index, and carry observed admission/run identities; a late response cannot
+settle a newer admission. Terminal receipts also settle missed completion frames.
+An immutable `astb_run_settlement` row retains each exact admission's receipt
+separately from conversation append status and recoverable checkpoints. Indexed
+lookup repairs missed terminal status; cursor reads are bounded to 200 rows.
+Its answer preview is bounded to 16,000 characters with an explicit truncation
+flag. Older runs without a settlement are not inferred successful or backfilled.
+Missing individual tool results remain interrupted/unobserved until exact evidence
+arrives. Final tool aggregates read durable dispatch/result records, so failed
+turns retain counts beyond the bounded live trace and do not count replayed call
+IDs as new dispatches.
+
 Review presents bounded unified patches in collapsible file cards with old/new
 gutters, safe code tokenization, and virtualized rendering. Its Changed files
 sidebar is hidden by default and opens on the right. Uncommitted, staged, and
@@ -267,6 +429,14 @@ actions retain sender, path, and recoverable-discard protections. Commit, push,
 and pull-request operations can be requested through the agent rather than a
 Review footer.
 Native browser moves retain their live pages rather than reloading them.
+Passive readiness updates do not change the browser-selection CAS revision;
+default adoption uses the observed selection epoch, including older state-only
+rows. Browser guests start with normal throttling and become unthrottled after
+their native attachment is visible; parked or hidden pages return to normal
+throttling without losing their document. This avoids a process-wide rendering
+override and the hidden-creation capture-surface race. Capture waits for paint under a bounded deadline and
+retries only an unavailable compositor surface; it does not reload a page or
+repeat page JavaScript. Electron 42.9.2 supplies the upstream hidden-view fix.
 
 ## Mutation
 

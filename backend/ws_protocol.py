@@ -83,7 +83,6 @@ class CorrelatedResponder:
             }
             if owner_chat_id:
                 response["chat_id"] = owner_chat_id
-            await websocket.send_json(response)
         except Exception as exc:
             response = {
                 "type": f"{self.family}:rejected",
@@ -97,7 +96,9 @@ class CorrelatedResponder:
             }
             if owner_chat_id:
                 response["chat_id"] = owner_chat_id
-            await websocket.send_json(response)
+        # Delivery is a separate boundary. A committed action cannot become
+        # rejected merely because its observer disconnected before the reply.
+        await websocket.send_json(response)
 
 
 __all__ = [

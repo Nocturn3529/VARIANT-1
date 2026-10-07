@@ -485,7 +485,7 @@ async def test_kernel_continuity_is_absorbed_by_immutable_session_control(
         "principal_actor_id": "model",
         "run_id": "run-kernel-continuity",
     }
-    assert registry.get("session").schema_revision == "variant1.session.v4"
+    assert registry.get("session").schema_revision == "variant1.session.v5"
     assert registry.get("kernel") is None
     assert not any(
         registry.get(name) is not None

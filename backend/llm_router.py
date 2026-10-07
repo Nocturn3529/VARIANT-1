@@ -137,7 +137,16 @@ class LLMRouter:
         self._inference_sink = None
         self._inference_last_emit = 0.0
         # Post-adapter request receipts (observer bus — not on the hot path).
-        self._manifest_bus = ModelRequestManifestBus()
+        usage_ledger = None
+        ledger_failed = False
+        if data_dir is not None:
+            try:
+                from model_runtime.usage_ledger import ModelUsageLedger
+                usage_ledger = ModelUsageLedger(os.path.join(self.data_dir, "data", "model-usage.sqlite3"))
+            except Exception:
+                ledger_failed = True
+        self._manifest_bus = ModelRequestManifestBus(usage_ledger=usage_ledger)
+        self._manifest_bus.ledger_failures += int(ledger_failed)
         self._support_matrix = SupportMatrix.from_config(self.cfg)
         self._model_secret_resolvers = []
         self._secret_egress_firewall = SecretEgressFirewall(
@@ -440,7 +449,7 @@ class LLMRouter:
         return self._manifest_bus.snapshot(manifest_id=manifest_id)
 
     async def _record_model_request_manifest(self, manifest: dict) -> None:
-        """Store and enqueue one receipt without delaying the provider request."""
+        """Durably record the request before I/O and enqueue its display receipt."""
         await self._manifest_bus.record(manifest)
 
     def _patch_model_request_manifest_usage(
@@ -448,6 +457,22 @@ class LLMRouter:
     ) -> None:
         """Patch and republish the exact bounded request receipt, fail-open."""
         self._manifest_bus.patch_usage(manifest_ref, normalized_usage)
+
+    def _patch_model_request_manifest_terminal(self, manifest_ref, *, outcome, duration_s=None):
+        identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
+        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_terminal(
+            identity, outcome=outcome, duration_s=duration_s))
+
+    def _patch_model_request_manifest_partial_usage(self, manifest_ref, raw_usage):
+        normalized = normalize_manifest_usage('openrouter', raw_usage=raw_usage)
+        for field in ('input_tokens', 'output_tokens', 'total_tokens', 'prompt_token_volume', 'uncached_input_tokens', 'token_volume'):
+            basis = {'prompt_token_volume': 'input_tokens', 'uncached_input_tokens': 'input_tokens', 'token_volume': 'total_tokens'}.get(field, field)
+            if basis not in normalized['reported_fields']:
+                normalized[field] = None
+        # Incomplete observations must not preempt the final UI/CloudUsage count.
+        identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
+        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
+            identity, normalized, partial=True))
 
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,
@@ -785,6 +810,7 @@ class LLMRouter:
         return base
 
     def list_provider_info(self) -> list[dict]:
+        from model_runtime.provider_accounts import account_snapshot
         items = []
         for profile in self.provider_registry.list():
             name = profile.name
@@ -797,7 +823,7 @@ class LLMRouter:
                 configured=configured, credential_count=len(records),
                 model=self.get_cloud_model(name), base_url=self.provider_base_url(name))
             auth_methods = []
-            if name in _NATIVE_OAUTH_PROVIDERS:
+            if name in _NATIVE_OAUTH_PROVIDERS or name == "hermes":
                 auth_methods.append("oauth")
             if profile.env_vars:
                 auth_methods.append("api_key")
@@ -810,6 +836,7 @@ class LLMRouter:
             ):
                 auth_methods.append("external")
             item.update({
+                "connection": account_snapshot(self, name),
                 "auth_methods": auth_methods,
                 "api_key_configured": api_key_configured,
                 "credential_env_vars": list(profile.env_vars),
@@ -1273,6 +1300,10 @@ class LLMRouter:
         """Non-secret status for the UI/CLI: connected? which client? when it
         expires? Never returns token material."""
         import time
+        if self._kn(provider) == "hermes":
+            checked = getattr(self, "_provider_account_checks", {}).get("hermes", {})
+            return {"provider": "hermes", "connected": checked.get("state") == "ready" and time.time() - checked.get("checked_at", 0) < 300,
+                    "managed_external": True, "source": "hermes", "refresh_managed_by": "Hermes"}
         rec = self._oauth_rec(provider)
         name = self._kn(provider)
         if (
@@ -1299,6 +1330,7 @@ class LLMRouter:
         expired = bool(exp and exp <= now)
         return {
             "provider": name,
+            "stored": bool(has_access or has_refresh),
             "connected": bool(has_refresh or (has_access and not expired)),
             "usable": bool(has_access and not expired),
             "needs_refresh": bool(has_refresh and (not has_access or expired)),
@@ -1458,6 +1490,8 @@ class LLMRouter:
         profile = self.provider_profile(name)
         efforts = tuple(getattr(profile, "reasoning_efforts", ()) or ())
         selected = str(model or self.get_cloud_model(name) or "").lower()
+        if name == "hermes" and selected == "meituan/longcat-2.5-preview:free":
+            return ()  # Catalog advertises reasoning, but no effort-level scale.
         if name == "openai-codex" and not selected.startswith("gpt-5.6"):
             efforts = tuple(value for value in efforts if value != "max")
         return efforts
@@ -1863,6 +1897,9 @@ class LLMRouter:
         except asyncio.CancelledError:
             status = "cancelled"
             raise
+        except GeneratorExit:
+            status = "closed"
+            raise
         except Exception as exc:
             code = getattr(exc, "status_code", None) or getattr(exc, "status", None)
             try:
@@ -1890,7 +1927,17 @@ class LLMRouter:
                 f"status={status}{extra}",
                 flush=True,
             )
-            end_model_call(model_call_token)
+            end_model_call(model_call_token, outcome='succeeded' if status == 'ok' else 'cancelled' if status == 'cancelled' else 'unknown' if status == 'closed' else 'failed')
+            # Even an interrupted stream retains its observed usage/terminal
+            # identity before Goal accounting or turn settlement proceeds.
+            bus = getattr(self, '_manifest_bus', None)
+            if bus is not None:
+                flushing = asyncio.create_task(bus.flush_ledger())
+                try:
+                    await asyncio.shield(flushing)
+                except asyncio.CancelledError:
+                    await flushing
+                    raise
 
     def set_local_gate(self, factory) -> None:
         """Wrap local generation in a scheduler slot. ``factory()`` returns an

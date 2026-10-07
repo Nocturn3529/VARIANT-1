@@ -68,10 +68,18 @@ class PeerCommunicationService:
         self._publisher: Callable[[dict[str, Any]], Any] | None = None
         self._external_hooks: dict[str, Callable[[dict[str, Any]], Any]] = {}
         self._wake_tasks: dict[str, asyncio.Task] = {}
+        self._idle_events: dict[str, asyncio.Event] = {}
         self._poll_task: asyncio.Task | None = None
         self._publication_tasks = OwnedTaskSet()
         self._closed = False
         self._change_event = asyncio.Event()
+        register = getattr(session_runtimes, 'register_settlement_listener', None)
+        if register is not None:
+            register(self.notify_native_settlement)
+        register = getattr(session_runtimes, 'register_run_end_listener', None)
+        if register is not None:
+            register(self.notify_native_end)
+        session_runtimes.register_idle_listener(self._notify_native_idle)
         bind_display = getattr(sessions, "bind_peer_display", None)
         if callable(bind_display):
             bind_display(self.message_display, self.sent_display)
@@ -164,6 +172,13 @@ class PeerCommunicationService:
         }
         self._change_event.set()
         self._change_event = asyncio.Event()
+        try:
+            goals = getattr(self.host.require_runtime(), 'goals', None)
+            if goals is not None and goals.parent_session is not None:
+                goals.parent_session.notify_peer_result(row)
+                goals.parent_session.notify_peer_unavailable(row)
+        except Exception:
+            _LOG.exception('Goal peer-result wake unavailable')
         publisher = self._publisher
         if not callable(publisher):
             return
@@ -314,7 +329,77 @@ class PeerCommunicationService:
         return self._sync_native_state(row)
 
     def inspect_message(self, peer_id: str, message_id: str) -> dict[str, Any]:
-        return self._message_for_peer(peer_id, message_id)
+        message = self._message_for_peer(peer_id, message_id)
+        return {**message, 'native_completion': self._native_completion(message)}
+
+    def native_completion(self, peer_id, message_id):
+        message = self._message_for_peer(peer_id, message_id)
+        return self._native_completion(message)
+
+    def _native_completion(self, message):
+        chat_id = _native_chat_id(str(message.get('target_peer_id') or ''))
+        if not chat_id or not requests_work(message) or not message.get('delivery_ticket_id'):
+            return None
+        ticket = self.session_runtimes.repository.get_ticket(message['delivery_ticket_id'])
+        if (ticket is None or ticket.chat_id != chat_id or ticket.state != 'completed'
+                or not ticket.proof.get('admission_id') or not ticket.proof.get('run_id')):
+            return None
+        result = self.session_runtimes.repository.get_run_settlement(chat_id,
+            run_id=ticket.proof['run_id'], admission_id=ticket.proof['admission_id'])
+        if result is None:
+            return None
+        return {'request_message_id':message['message_id'], 'recipient_peer_id':message['target_peer_id'],
+                'run_id':result['run_id'], 'admission_id':result['admission_id'],
+                'status':result['receipt'].get('status'), 'final_answer':result['final_reply'],
+                'truncated':result['reply_truncated'], 'basis':result['basis'],
+                'settlement_sequence':result['sequence'], 'independently_verified':False}
+
+    def notify_native_settlement(self, chat_id, run_id, admission_id):
+        # Wake observation waits, not model turns. No unsolicited prompt or
+        # fabricated peer reply is added to either session's conversation.
+        self._change_event.set(); self._change_event = asyncio.Event()
+        parent = getattr(getattr(self.host.require_runtime(), 'goals', None), 'parent_session', None)
+        if parent is None:
+            return
+        after = ''
+        while True:
+            ids = self.session_runtimes.repository.completed_peer_ticket_ids(chat_id, run_id, admission_id, after=after)
+            if not ids:
+                return
+            for row in self.repository.messages_for_tickets(ids):
+                if requests_work(row):
+                    parent.notify_peer_result({'message_kind':'result','in_reply_to':row['message_id'],
+                        'target_peer_id':row['sender_peer_id'],
+                        'message_id':'native-settlement:'+admission_id+':'+row['message_id']})
+            after = ids[-1]
+
+    def notify_native_end(self, chat_id, run_id, admission_id):
+        if not run_id or self.session_runtimes.repository.get_run_settlement(chat_id,
+                run_id=run_id, admission_id=admission_id) is not None:
+            return
+        after = ''
+        while True:
+            ids = self.session_runtimes.repository.completed_peer_ticket_ids(chat_id, run_id, admission_id, after=after)
+            if not ids:
+                return
+            for row in self.repository.messages_for_tickets(ids):
+                if row.get('state') != 'replied':
+                    self._event(self.repository.update_message(row['message_id'], state='unknown',
+                        error='Recipient turn ended without a settlement',
+                        evidence={**row.get('evidence', {}), 'native_wait_failure':'recipient_unsettled'}))
+            after = ids[-1]
+
+    def native_wait_failure(self, peer_id, message_id):
+        message = self._message_for_peer(peer_id, message_id)
+        if not requests_work(message) or not _native_chat_id(message.get('target_peer_id', '')):
+            return None
+        if self._native_completion(message) is not None:
+            return None
+        if (message.get('state') in {'failed', 'parked'}
+                or message.get('evidence', {}).get('native_wait_failure')
+                or self.sessions.get_session(_native_chat_id(message['target_peer_id'])) is None):
+            return message.get('error') or 'Recipient work is unavailable; inspect before continuing'
+        return None
 
     def inspect_request(self, peer_id: str, request_id: str) -> dict[str, Any]:
         clean = str(request_id or "").strip()
@@ -387,6 +472,7 @@ class PeerCommunicationService:
         return (
             "[Peer message]\n"
             f"Sender: {sender_name} ({sender_id})\n"
+            f"Recipient (your identity): {row.get('evidence', {}).get('target_display_name') or row.get('target_peer_id')} ({row.get('target_peer_id')})\n"
             f"Message ID: {row.get('message_id')}\n"
             f"Exchange ID: {row.get('exchange_id')}\n\n"
             + str(row.get("content") or "")
@@ -396,6 +482,8 @@ class PeerCommunicationService:
     def _sync_native_state(self, row: Mapping[str, Any]) -> dict[str, Any]:
         message = dict(row)
         ticket_id = str(message.get("delivery_ticket_id") or "")
+        if (message.get('evidence') or {}).get('native_wait_failure'):
+            return message  # Durable terminal observation, not a live queue projection.
         if not ticket_id or not _native_chat_id(str(message.get("target_peer_id") or "")):
             return message
         ticket = self.session_runtimes.repository.get_ticket(ticket_id)
@@ -403,7 +491,7 @@ class PeerCommunicationService:
             return message
         state_map = {
             "queued": "queued", "selected": "queued", "preparing": "queued",
-            "resume_queued": "parked", "parked": "parked",
+            "resume_queued": "parked", "parked": "queued" if ticket.error == 'turn_ok_before_input_delivery' else "parked",
             # `running` means the input was drained for injection, but the
             # recipient may still fail before a model turn consumes it. Only
             # transcript commit proves the recipient processed the input.
@@ -481,6 +569,8 @@ class PeerCommunicationService:
         return queued
 
     def _schedule_native_wake(self, chat_id: str) -> None:
+        if self._closed:
+            return
         clean = str(chat_id or "")
         task = self._wake_tasks.get(clean)
         if task is not None and not task.done():
@@ -489,10 +579,21 @@ class PeerCommunicationService:
             self._wake_native(clean), name=f"peer-native-wake:{clean[:48]}"
         )
 
+    def _notify_native_idle(self, chat_id: str) -> None:
+        event = self._idle_events.get(chat_id)
+        if event is not None:
+            event.set()
+        for row in self.repository.pending_native(chat_id=chat_id):
+            self._sync_native_state(row)
+
     async def _wake_native(self, chat_id: str) -> None:
         idle_delay = 0.1
+        idle_event = self._idle_events[chat_id] = asyncio.Event()
         try:
             while not self._closed:
+                # Capture the idle transition before checking admission state.
+                # An ended turn wakes this waiter even with no renderer attached.
+                idle_event.clear()
                 pending = self.repository.pending_native(chat_id=chat_id)
                 if not pending:
                     return
@@ -524,7 +625,7 @@ class PeerCommunicationService:
                 if not self.repository.pending_native(chat_id=chat_id):
                     return
                 if self.session_runtimes.is_busy(chat_id):
-                    await asyncio.sleep(0.1)
+                    await idle_event.wait()
                     continue
                 outcome = await self.chat_service.start_next_queued_input(chat_id)
                 if outcome.get("status") == "started":
@@ -541,6 +642,7 @@ class PeerCommunicationService:
                 idle_delay = min(idle_delay * 2, 2.0)
         finally:
             self._wake_tasks.pop(chat_id, None)
+            self._idle_events.pop(chat_id, None)
 
     def _resume_chainable_native_tickets(self, chat_id: str) -> int:
         """Continue peer work parked only by a successful prior turn boundary."""
@@ -736,6 +838,7 @@ class PeerCommunicationService:
             0.0, min(float(timeout_s), 30.0)
         )
         while True:
+            event = self._change_event
             reply = self.repository.find_reply(message_id)
             if reply is not None:
                 return {
@@ -743,6 +846,10 @@ class PeerCommunicationService:
                     "message": self._message_for_peer(peer_id, message_id),
                     "reply": reply,
                 }
+            completion = self.native_completion(peer_id, message_id)
+            if completion is not None:
+                return {'status':'settled', 'message':self._message_for_peer(peer_id,message_id),
+                        'completion':completion}
             # Any still-unanswered inbound request is attention, including a
             # mutual request that committed just before this wait began. This
             # is the deadlock escape for two chats that both ask then wait.
@@ -763,7 +870,6 @@ class PeerCommunicationService:
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
-            event = self._change_event
             try:
                 await asyncio.wait_for(event.wait(), timeout=remaining)
             except TimeoutError:
@@ -1111,6 +1217,9 @@ class PeerCommunicationService:
 
     async def start(self) -> None:
         self._closed = False
+        self.session_runtimes.register_idle_listener(self._notify_native_idle)
+        self.session_runtimes.register_settlement_listener(self.notify_native_settlement)
+        self.session_runtimes.register_run_end_listener(self.notify_native_end)
         for row in self.repository.reconcile_stale_external_claims():
             self._event(row)
         for row in self.repository.pending_native():
@@ -1134,6 +1243,11 @@ class PeerCommunicationService:
             await asyncio.sleep(0.25)
 
     async def shutdown(self) -> None:
+        self.session_runtimes.unregister_idle_listener(self._notify_native_idle)
+        self.session_runtimes.unregister_run_end_listener(self.notify_native_end)
+        unregister = getattr(self.session_runtimes, 'unregister_settlement_listener', None)
+        if unregister is not None:
+            unregister(self.notify_native_settlement)
         self._closed = True
         tasks = [
             task for task in [self._poll_task, *self._wake_tasks.values()]
@@ -1148,10 +1262,27 @@ class PeerCommunicationService:
         await self._publication_tasks.cancel_all()
 
     async def delete_chat(self, chat_id: str) -> int:
-        count = self.repository.retire_chat(chat_id)
-        if count:
+        retired = self.repository.retire_chat(chat_id, return_messages=True)
+        for row in retired:
+            self._event(row)
+        # Requests already observed by a turn are not pending queue entries.
+        # A deleted recipient still makes an unanswered/unsettled wait terminal.
+        after = 0
+        while True:
+            rows = self.repository.list_messages(_native_peer_id(chat_id), direction='incoming',
+                after=after, limit=200, states=('observed','parked','unknown'), message_kind='request')
+            if not rows:
+                break
+            for row in rows:
+                if (self.repository.find_result_reply(row['message_id']) is None
+                        and self._native_completion(row) is None):
+                    self._event(self.repository.update_message(row['message_id'], state='failed',
+                        error='Native peer deleted before a result was retained',
+                        evidence={**row.get('evidence', {}), 'native_wait_failure':'recipient_deleted'}))
+            after = rows[-1]['sequence']
+        if retired:
             self._event({"revision": self.repository.revision()}, peer_id=_native_peer_id(chat_id))
-        return count
+        return len(retired)
 
 
 __all__ = ["PeerCommunicationService", "PeerError"]

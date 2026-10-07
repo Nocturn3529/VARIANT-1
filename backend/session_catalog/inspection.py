@@ -64,6 +64,7 @@ class ChildInspection:
                 usage=usage,usage_rollup_state=str(row['usage_rollup_state'] or ''),
                 usage_rollup_error=str(row['usage_rollup_error'] or ''),
                 work_job_id=str(row['work_job_id'] or ''),error=str(row['error'] or ''),
+                terminal_reason=str(row['terminal_reason'] or ''),
                 last_activity=_last_activity(row))
             if child_id:
                 from .children import reported_child_text

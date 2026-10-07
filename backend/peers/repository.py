@@ -130,6 +130,8 @@ class PeerRepository:
                     ON peer_message(sender_peer_id,json_extract(evidence_json,'$.sender_invocation.run_id'),sequence);
                 CREATE INDEX IF NOT EXISTS peer_message_delivery
                     ON peer_message(target_peer_id,state,sequence);
+                CREATE INDEX IF NOT EXISTS peer_message_ticket
+                    ON peer_message(delivery_ticket_id);
 
                 CREATE TABLE IF NOT EXISTS peer_connection(
                     connection_id TEXT PRIMARY KEY,
@@ -169,6 +171,7 @@ class PeerRepository:
             if "message_kind" not in columns:
                 # Existing messages retain their originally requested wake semantics.
                 conn.execute("ALTER TABLE peer_message ADD COLUMN message_kind TEXT NOT NULL DEFAULT 'request'")
+            conn.execute("CREATE INDEX IF NOT EXISTS peer_message_reply ON peer_message(in_reply_to,sequence)")
 
     @staticmethod
     def _tick(conn: sqlite3.Connection) -> int:
@@ -519,6 +522,21 @@ class PeerRepository:
             return self._message(conn.execute(
                 "SELECT * FROM peer_message WHERE in_reply_to=? "
                 "ORDER BY sequence LIMIT 1", (str(message_id),),
+            ).fetchone())
+
+    def messages_for_tickets(self, ticket_ids):
+        identities = list(ticket_ids)[:200]
+        if not identities:
+            return []
+        with self._connect() as conn:
+            return [self._message(row) for row in conn.execute(
+                'SELECT * FROM peer_message WHERE delivery_ticket_id IN ('+','.join('?' for _ in identities)+')', identities).fetchall()]
+
+    def find_result_reply(self, message_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            return self._message(conn.execute(
+                "SELECT * FROM peer_message WHERE in_reply_to=? AND message_kind='result' "
+                "ORDER BY sequence LIMIT 1", (str(message_id),)
             ).fetchone())
 
     def list_messages(
@@ -1276,12 +1294,12 @@ class PeerRepository:
             conn.commit()
         return updated
 
-    def retire_chat(self, chat_id: str) -> int:
+    def retire_chat(self, chat_id: str, *, return_messages=False):
         peer_id = "chat:" + str(chat_id)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT message_id FROM peer_message WHERE target_peer_id=? "
+                "SELECT * FROM peer_message WHERE target_peer_id=? "
                 "AND state IN ('persisted','queued')", (peer_id,),
             ).fetchall()
             now = time.time()
@@ -1293,4 +1311,6 @@ class PeerRepository:
                     (revision, now, row["message_id"]),
                 )
             conn.commit()
-        return len(rows)
+            retired = [self._message(conn.execute('SELECT * FROM peer_message WHERE message_id=?',
+                (row['message_id'],)).fetchone()) for row in rows] if return_messages else []
+        return retired if return_messages else len(rows)

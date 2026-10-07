@@ -23,7 +23,7 @@ from core_invariants import sqlite_session_connection
 from tools import Tool, ToolError
 from work_fabric.handles import remote_handle_envelope
 from work_fabric.jobs import JobExecutionContext, JobResult
-from work_fabric.scope import WorkScope
+from work_fabric.scope import WorkScope, coerce_work_scope
 
 from .profiles import ACTION_SURFACE
 
@@ -262,6 +262,9 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     conn.execute(f"ALTER TABLE astb_child_handle ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'")
             if "model_route_json" not in columns:
                 conn.execute("ALTER TABLE astb_child_handle ADD COLUMN model_route_json TEXT NOT NULL DEFAULT '{}'")
+            if "work_scope_json" not in columns:
+                conn.execute("ALTER TABLE astb_child_handle ADD COLUMN work_scope_json TEXT NOT NULL DEFAULT '{}'")
+            conn.execute("CREATE INDEX IF NOT EXISTS astb_child_goal_idx ON astb_child_handle(json_extract(work_scope_json,'$.goal_id'),parent_chat_id)")
             if "run_generation" not in columns:
                 conn.execute(
                     "ALTER TABLE astb_child_handle ADD COLUMN "
@@ -277,6 +280,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "ALTER TABLE astb_child_handle ADD COLUMN "
                     "usage_rollup_error TEXT NOT NULL DEFAULT ''"
                 )
+            if "terminal_reason" not in columns:
+                conn.execute("ALTER TABLE astb_child_handle ADD COLUMN terminal_reason TEXT NOT NULL DEFAULT ''")
             if "child_chat_id" not in columns:
                 conn.execute(
                     "ALTER TABLE astb_child_handle ADD COLUMN "
@@ -732,6 +737,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         result_text: str = "",
         artifact_ref: str = "",
         error: str = "",
+        terminal_reason: str = "",
         parent_message: bool = False,
     ) -> bool:
         encoded_usage = json.dumps(
@@ -750,12 +756,12 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             )
             changed = conn.execute(
                 "UPDATE astb_child_handle SET status=?,result_text=?,"
-                "artifact_ref=?,error=?,usage_json=?,usage_rollup_state='pending',"
+                "artifact_ref=?,error=?,terminal_reason=?,usage_json=?,usage_rollup_state='pending',"
                 "usage_rollup_error='',completed_at=?,updated_at=? "
                 "WHERE child_id=? AND status='running'",
                 (
                     str(status), str(result_text), str(artifact_ref),
-                    str(error)[:2000], encoded_usage, completed, completed,
+                    str(error)[:2000], str(terminal_reason)[:80], encoded_usage, completed, completed,
                     str(child_id),
                 ),
             )
@@ -787,9 +793,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         if row is None:
             raise LookupError("unknown child handle")
         generation = max(1, int(row["run_generation"] or 1))
-        scope = WorkScope(
-            chat_id=str(row["parent_chat_id"] or ""),
-        )
+        scope = coerce_work_scope(json.loads(row['work_scope_json'] or '{}')).with_updates(
+            chat_id=str(row["parent_chat_id"] or ""))
         job = work.jobs.create(
             CHILD_EXECUTION_JOB,
             owner_kind="child",
@@ -922,12 +927,23 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             str(result.get("result_text") or "")
         )
         result["model_route"] = json.loads(result.pop("model_route_json", "{}") or "{}")
+        result["work_scope"] = json.loads(result.pop("work_scope_json", "{}") or "{}")
         result['outcome'] = json.loads(result.pop('outcome_json','{}') or '{}') or {
             'schema':'variant1.child-outcome.v1','status':'unreported',
             'basis':None,'independently_verified':False,
         }
         result.pop('outcome_run_id',None)
         return result
+
+    def goal_roots(self, goal_id: str, parent_chat_id: str) -> list[dict]:
+        """Exact direct roots explicitly delegated by an admitted Goal owner."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT child_id,child_chat_id,parent_chat_id FROM astb_child_handle "
+                "WHERE json_extract(work_scope_json,'$.goal_id')=? AND parent_chat_id=?",
+                (str(goal_id), str(parent_chat_id)),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     async def spawn(
         self,
@@ -945,6 +961,14 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             raise ValueError("children.spawn requires a task")
         parent_runtime = self.runtimes.ensure_runtime(str(parent_chat_id))
         model_route = self._parent_model_route(str(parent_chat_id))
+        # Attribution is inherited from host admission, never model arguments.
+        invocation = current_capability_invocation()
+        from run_context import current_run_context
+        live_context = current_run_context()
+        inherited = (invocation.work_scope if invocation and invocation.chat_id == str(parent_chat_id)
+                     else getattr(live_context, 'work_scope', None)
+                     if live_context and live_context.session_id == str(parent_chat_id) else None)
+        work_scope = coerce_work_scope(inherited)
         if parent_runtime.continuation_state == "paused_budget_exhausted":
             raise RuntimeError("parent continuation budget is exhausted")
         created_revision = None
@@ -1045,13 +1069,14 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             created = conn.execute(
                 "INSERT INTO astb_child_handle(child_id, child_chat_id, parent_chat_id, "
                 "depth, name, "
-                "task_text, context_text, action_surface, model_route_json, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "task_text, context_text, action_surface, model_route_json, work_scope_json, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (
                     child_id, child_chat_id, str(parent_chat_id), depth,
                     str(name or "worker")[:80], clean_task[:20_000],
                     str(context or "")[:40_000],
-                    child_identity.action_surface, json.dumps(model_route, sort_keys=True), now, now,
+                    child_identity.action_surface, json.dumps(model_route, sort_keys=True),
+                    json.dumps(work_scope.with_updates(chat_id=child_chat_id).to_dict(include_empty=False)), now, now,
                 ),
             )
             if created.rowcount == 1:
@@ -1157,6 +1182,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "chat_id": row["child_chat_id"],
                     "runtime_identity": child_runtime.identity.to_dict(),
                     "runtime_prompt": runtime_prompt,
+                    "work_scope": json.loads(row['work_scope_json'] or '{}'),
                 },
             )
             with (
@@ -1208,6 +1234,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 else "completed" if "FAILED" not in raw[:100]
                 else "failed"
             )
+            status = getattr(result, 'status', status)
+            error = getattr(result, 'error', '') or (raw[:2000] if status == 'failed' else '')
             completed = time.time()
             finish_usage(completed)
             self._finish_child(
@@ -1217,6 +1245,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 completed=completed,
                 result_text=projected,
                 artifact_ref=artifact_ref,
+                error=error,
+                terminal_reason=getattr(result, 'terminal_reason', ''),
                 parent_message=(status == "completed"),
             )
         except asyncio.CancelledError:
@@ -1372,7 +1402,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     f"child admission-capacity limit reached ({maximum})"
                 )
             changed = conn.execute(
-                "UPDATE astb_child_handle SET status='queued', result_text='', "
+                "UPDATE astb_child_handle SET status='queued', result_text='', terminal_reason='', "
                 "artifact_ref='', error='', usage_json='{}', started_at=NULL, "
                 "completed_at=NULL,run_generation=run_generation+1,"
                 "usage_rollup_state='complete',usage_rollup_error='',work_job_id='',updated_at=? "

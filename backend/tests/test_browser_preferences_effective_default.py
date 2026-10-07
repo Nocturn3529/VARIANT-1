@@ -102,3 +102,29 @@ async def test_default_embedded_failure_is_not_silently_discarded():
     assert state["selection"] == {"mode": "embedded"}
     assert state["state"] == "connection_failed"
     assert state["message"] == "embedded connection failed"
+
+
+def test_passive_readiness_does_not_change_selection_epoch(tmp_path):
+    from browser_fabric.store import BrowserFabricStore
+    from browser_fabric.models import BrowserConflict
+    store = BrowserFabricStore(str(tmp_path / 'browser.sqlite3'))
+    store.update_browser_preference('chat-a', state={'state': 'idle'})
+    assert store.browser_preference('chat-a')['revision'] == 0
+    selected = store.update_browser_preference('chat-a', selection={'mode': 'embedded'}, expected_revision=0)
+    store.update_browser_preference('chat-a', state={'state': 'ready'})
+    assert store.browser_preference('chat-a')['revision'] == selected['revision']
+    store.update_browser_preference('chat-a', selection={'mode': 'managed'}, expected_revision=selected['revision'])
+    with pytest.raises(BrowserConflict):
+        store.update_browser_preference('chat-a', selection={'mode': 'embedded'}, expected_revision=selected['revision'])
+
+
+def test_adopt_handles_state_only_rows_from_previous_versions(tmp_path):
+    from browser_fabric.store import BrowserFabricStore
+    store = BrowserFabricStore(str(tmp_path / 'browser.sqlite3'))
+    store.update_browser_preference('chat-a', state={'state': 'idle'})
+    with store._write() as conn:
+        conn.execute("UPDATE browser_preference SET revision=74 WHERE owner_id='chat-a'")
+    prefs = BrowserPreferences(SimpleNamespace(store=store))
+    prefs.adopt('chat-a', SimpleNamespace(kind='embedded', session_id='browser-a', profile_id='profile-a'))
+    assert store.browser_preference('chat-a')['selection'] == {'mode': 'embedded'}
+    assert store.browser_preference('chat-a')['revision'] == 75

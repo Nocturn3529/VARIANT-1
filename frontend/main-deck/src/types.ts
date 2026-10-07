@@ -1,4 +1,5 @@
 export type ProviderInfo = {
+  connection?: {state: "unchecked" | "saved" | "refresh_needed" | "ready" | "service_ready" | "unavailable"; checked_at: number; detail: string};
   name: string;
   display_name: string;
   description: string;
@@ -37,6 +38,7 @@ export type CredentialInfo = {
 export type OAuthStatus = {
   provider?: string;
   connected?: boolean;
+  stored?: boolean;
   auth_flow?: string;
   managed_external?: boolean;
   source?: string;

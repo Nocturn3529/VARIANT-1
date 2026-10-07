@@ -6,6 +6,7 @@ import pytest
 import background_tasks
 import ws_config
 import xai_oauth
+from model_runtime import hermes_proxy
 
 
 class Socket:
@@ -65,6 +66,31 @@ def handlers():
 
     ws_config.register(on)
     return found
+
+
+@pytest.mark.asyncio
+async def test_nous_reconnect_keeps_credentials_in_hermes(monkeypatch):
+    from model_runtime import provider_accounts
+    monkeypatch.setattr(background_tasks, "spawn", lambda coro, **_: asyncio.create_task(coro))
+    async def login(*, on_verification, can_commit):
+        await on_verification("https://portal.nousresearch.com/device", "CODE")
+        assert can_commit()
+    monkeypatch.setattr(hermes_proxy, "manage_account", login)
+    monkeypatch.setattr(provider_accounts, "check_account", lambda *_: asyncio.sleep(0, result={"state": "ready"}))
+    srv, socket = Server(), Socket()
+    await handlers()["cloud:oauth:start"](srv, socket, None, {"provider": "hermes", "open_browser": False, "request_id": "nous-test"})
+    task = srv._oauth_attempts["hermes"]["task"]
+    await task
+    assert srv.router.saved == []
+    assert any(row["type"] == "cloud:oauth:pending" and row["user_code"] == "CODE" for row in socket.sent)
+    assert any(row["type"] == "cloud:oauth:complete" for row in socket.sent)
+
+
+@pytest.mark.asyncio
+async def test_google_disconnect_is_available():
+    srv, socket = Server(), Socket()
+    await handlers()["cloud:oauth:disconnect"](srv, socket, None, {"provider": "google-antigravity"})
+    assert socket.sent[-1]["type"] == "cloud:oauth:disconnected"
 
 
 @pytest.mark.asyncio

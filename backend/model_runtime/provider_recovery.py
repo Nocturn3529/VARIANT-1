@@ -83,6 +83,22 @@ def annotate_provider_error(error, payload) -> None:
     metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
     error.provider_error_type = str(body.get("type") or metadata.get("error_type") or body.get("code") or "")[:100]
     error.provider_error_code = str(body.get("code") or "")[:100]
+    # OpenRouter's shared upstream capacity is not this API key's quota.
+    # BYOK and unclassified throttling retain conservative credential scope.
+    provider = str(getattr(error, 'provider', '')).casefold()
+    message = str(body.get('message') or '').casefold()
+    nous_capacity = (
+        provider == 'hermes' and getattr(error, 'status_code', 0) == 429
+        and message.startswith('the requested model is temporarily at capacity upstream.')
+        and "this is not your api key's rate limit" in message
+    )
+    error.model_specific_rate_limit = nous_capacity or (
+        str(getattr(error,'provider','')).casefold() == 'openrouter'
+        and str(body.get('code') or getattr(error,'status_code',0)) == '429'
+        and str(body.get('message') or '').casefold() == 'provider returned error'
+        and isinstance(metadata.get('provider_name'),str) and bool(metadata['provider_name'])
+        and metadata.get('is_byok') is False
+    )
     for source in (body, metadata):
         reset = _absolute_reset(source.get("reset_at") or source.get("resets_at"))
         if reset is not None:
@@ -100,6 +116,7 @@ class Failure:
     retryable: bool = False
     fallback: bool = False
     reset_at: float | None = None
+    model_specific: bool = False
 
 
 def classify_provider_error(error) -> Failure:
@@ -127,6 +144,8 @@ def classify_provider_error(error) -> Failure:
         "insufficient_quota", "usage_limit_reached", "monthly usage limit reached", "available balance", "out of budget", "quota exceeded",
         "gousagelimiterror", "freeusagelimiterror", "billing limit", "billing error")):
         return Failure("quota", fallback=True, reset_at=reset)
+    if status == 429 and getattr(error,'model_specific_rate_limit',False):
+        return Failure('rate_limit',retryable=True,fallback=True,reset_at=reset,model_specific=True)
     if codes & {"upstream_rate_limit", "upstream_blocked", "provider_policy_blocked"}:
         return Failure("upstream", fallback=True, reset_at=reset)
     if status in {401, 403}:

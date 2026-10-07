@@ -229,6 +229,7 @@ COMPACT_SUMMARY_WARNING = (
     "a capability is unavailable."
 )
 COMPACT_SUMMARY_MAX_TOKENS = 1_900
+COMPACT_SUMMARY_RETRY_MAX_TOKENS = 7_600
 COMPACT_SUMMARY_MAX_CHARS = 16_000
 COMPACT_SUMMARY_SENTINEL = "<variant1-recap-complete/>"
 COMPACT_SUMMARY_SECTIONS = (
@@ -252,24 +253,28 @@ class CompactionRetryState:
     retry_after: float = 0.0
     failed_fingerprint: str = ""
     failed_attempts: dict[str, int] = field(default_factory=dict, repr=False)
+    output_budget: int = COMPACT_SUMMARY_MAX_TOKENS
 
     def ready(self, fingerprint: str = "") -> bool:
         return (self.failed_attempts.get(fingerprint, 0) < 2
                 and time.monotonic() >= self.retry_after)
 
-    def failed(self, fingerprint: str) -> None:
+    def failed(self, fingerprint: str, *, length_limited: bool = False) -> None:
         self.failures += 1
         self.failed_fingerprint = fingerprint
         if fingerprint not in self.failed_attempts and len(self.failed_attempts) >= 32:
             self.failed_attempts.pop(next(iter(self.failed_attempts)))
         self.failed_attempts[fingerprint] = self.failed_attempts.get(fingerprint, 0) + 1
         self.retry_after = time.monotonic() + min(900, 60 * 2 ** min(self.failures - 1, 4))
+        if length_limited:
+            self.output_budget = min(COMPACT_SUMMARY_RETRY_MAX_TOKENS, self.output_budget * 2)
 
     def succeeded(self) -> None:
         self.failures = 0
         self.retry_after = 0.0
         self.failed_fingerprint = ""
         self.failed_attempts.clear()
+        self.output_budget = COMPACT_SUMMARY_MAX_TOKENS
 
 _READ_RESULT_RE = re.compile(
     r"(?m)^(.+?) \(lines (\d+)-(\d+) of (\d+)\):"
@@ -812,22 +817,26 @@ async def compress_messages(
     if retry_state is not None and not retry_state.ready(fingerprint):
         return messages
 
-    def note_failure() -> None:
+    def note_failure(*, length_limited: bool = False) -> None:
         if retry_state is not None and not (should_stop and should_stop()):
-            retry_state.failed(fingerprint)
+            retry_state.failed(fingerprint, length_limited=length_limited)
 
     try:
         with observe_usage_category("compaction"):
             summary = await complete(
                 prompt,
                 profile="internal_prose",
-                max_tokens=COMPACT_SUMMARY_MAX_TOKENS,
+                max_tokens=retry_state.output_budget if retry_state is not None else COMPACT_SUMMARY_MAX_TOKENS,
                 temperature=0.2,
                 should_stop=should_stop,
                 require_complete=True,
             )
     except Exception as e:
-        note_failure()
+        from llm_profiles import IncompleteInternalResponseError
+        # Enlarge only a later scheduled retry of a host-confirmed length stop.
+        # Keep route, effort, validation, backoff and source transcript unchanged.
+        note_failure(length_limited=isinstance(e, IncompleteInternalResponseError)
+                     and str(e).endswith(': length'))
         print(f"[compress] failed, keeping full history: {e}", flush=True)
         return messages
     compacted_summary, rejection = _validated_compaction_summary(summary)

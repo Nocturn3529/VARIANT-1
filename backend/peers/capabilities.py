@@ -15,6 +15,10 @@ _KIND = {"type": "string", "required": False, "enum": ["request", "notice", "res
 
 PEER_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     {
+        "name": "self", "description": "Return your own peer handle and exact identity; do not infer yourself from list order.",
+        "effect_class": "read", "params": {},
+    },
+    {
         "name": "list", "description": "List compact native-chat and external-harness peers.",
         "effect_class": "read",
         "params": {
@@ -29,7 +33,7 @@ PEER_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
         "params": {"peer_id": {"type": "string", "required": True}},
     },
     {
-        "name": "send", "description": "Persist an attributed peer message; default kind is request. Return immediately.",
+        "name": "send", "description": "Native chat requests reach the next safe step (start if idle). External harness delivery depends on its connection. Return immediately. Choose delivery='follow_up' to wait for idle; notices/results never start work. Reply through the original message handle to preserve correlation.",
         "effect_class": "external_side_effect",
         "params": {
             "target_peer_id": {"type": "string", "required": True},
@@ -107,7 +111,7 @@ MESSAGE_HANDLE_METHODS: tuple[dict[str, Any], ...] = (
         "returns": "message",
     },
     {
-        "name": "wait", "description": "Wait briefly for a reply or new inbound request; never cancels peer work.",
+        "name": "wait", "description": "Observe a reply or the native final answer of the exact turn that consumed this request. New inbound requests may need attention. Never cancels or prompts peer work.",
         "params": [{"name": "timeout_s", "type": "number", "required": False, "default": 30.0}],
         "returns": "dict",
     },
@@ -129,6 +133,7 @@ def _peer_handle(service, context, row: Mapping[str, Any]) -> dict[str, Any]:
         generation=generation, revision=max(0, int(row.get("revision") or 0)),
         metadata={
             "peer_id": str(row.get("peer_id") or ""),
+            "is_self": str(row.get("peer_id") or "") == "chat:" + str(context.chat_id),
             "display_name": str(row.get("display_name") or "")[:200],
             "peer_kind": str(row.get("kind") or ""),
             "status": str(row.get("status") or ""),
@@ -295,6 +300,7 @@ def register_peers_tool(registry: Any, runtime_provider: Any, host: Any) -> None
             return _message_handle(service, invocation, row)
 
         handlers = {
+            "self": lambda payload: _peer_handle(service, invocation, service.get_peer(caller)),
             "list": lambda payload: [
                 _peer_handle(service, invocation, row)
                 for row in service.list_peers(
@@ -344,8 +350,8 @@ def register_peers_tool(registry: Any, runtime_provider: Any, host: Any) -> None
         methods=PEER_OBJECT_METHODS,
         handler=peers,
         category="session_infrastructure",
-        schema_revision="variant1.peers.v2",
-        handler_revision="variant1.peers-handler.v2",
+        schema_revision="variant1.peers.v3",
+        handler_revision="variant1.peers-handler.v3",
         may_return_secrets=False,
     )
     # A reply/send can resolve a peer wait already occupying the ordinary

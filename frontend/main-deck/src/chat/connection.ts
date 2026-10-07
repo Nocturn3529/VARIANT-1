@@ -18,6 +18,7 @@ import {refreshComposerGoal} from "./goals";
 import {refreshAgentTeam} from "./agentTeam";
 import {invalidateRecoveryNotices} from "./recovery";
 import {traceAnnotationConnection} from "./annotations";
+import {executionConnection} from "./executionRecovery";
 
 const refreshPauseOnReconnect=createReconnectRefresh(()=>{
   const chats=new Map([getChatState(),...cachedChatStates()].map(chat=>[chat.sessionId,chat]));
@@ -35,6 +36,7 @@ const refreshPauseOnReconnect=createReconnectRefresh(()=>{
  * flicker the Chat header subtitle.
  */
 export function setChatConnection(status: string) {
+  executionConnection(status === "connected");
   traceAnnotationConnection(status === "connected");
   // Authority cannot use the cosmetic offline delay: even a short disconnect
   // makes an in-flight control request uncertain until runtime reattachment.

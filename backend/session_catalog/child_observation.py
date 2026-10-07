@@ -88,7 +88,7 @@ class ChildObservations:
             attention = (row["status"] == "interrupted" or row["deletion_state"] == "failed")
             terminal = row["status"] in {"completed", "failed", "cancelled"} or row["deletion_state"] == "deleted"
             settled = settled and (terminal or attention)
-            identity = [row[key] for key in ("run_generation", "status", "result_text", "artifact_ref", "error", "outcome_json")] + [attention, terminal]
+            identity = [row[key] for key in ("run_generation", "status", "result_text", "artifact_ref", "error", "terminal_reason", "outcome_json")] + [attention, terminal]
             fingerprint = hashlib.sha256(json.dumps(identity, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
             fingerprints[child_id] = fingerprint
             items.append({key: public.get(key) for key in (
@@ -105,6 +105,7 @@ class ChildObservations:
                     "deletion_state": public.get("deletion_state"), "reported_text": shown,
                     "report_truncated": len(text) > len(shown), "artifact_ref": public.get("artifact_ref"),
                     "error": str(public.get("error") or "")[:300], "outcome": public.get("outcome"),
+                    "terminal_reason": str(public.get('terminal_reason') or '')[:80],
                     "error_truncated": len(str(public.get("error") or "")) > 300,
                     "provenance": "committed_child_outcome_self_report_not_independent_verification"})
         cursor = base64.urlsafe_b64encode(json.dumps({"schema": "variant1.child-wait-cursor.v1",

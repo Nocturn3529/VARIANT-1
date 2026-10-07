@@ -23,6 +23,7 @@ from .models import (
     TICKET_STATES,
     TICKET_TERMINAL_STATES,
 )
+from .run_history import RunSettlementHistory, RUN_HISTORY_SQL
 
 
 SCHEMA_VERSION = 5
@@ -56,7 +57,7 @@ def chat_id_value(value: str) -> str:
     return chat_id
 
 
-class SessionRuntimeRepository:
+class SessionRuntimeRepository(RunSettlementHistory):
     """One authoritative repository; connections are short and thread-safe."""
 
     def __init__(self, path: str) -> None:
@@ -259,6 +260,7 @@ class SessionRuntimeRepository:
                         "PRAGMA table_info(astb_chat_runtime)"
                     ).fetchall()
                 }
+                conn.executescript(RUN_HISTORY_SQL)
                 missing_authority_columns = (
                     _MUTATION_AUTHORITY_COLUMNS - runtime_columns
                 )
@@ -1028,6 +1030,79 @@ class SessionRuntimeRepository:
                 (chat_id, run_id, call_id),
             ).fetchone()
         return self._outer_tool_call_from_row(row)
+
+    def outer_tool_summary(self, chat_id: str, run_id: str, *, call_ids=()) -> dict:
+        """Bounded projections of durable dispatches; no arguments/result text.
+
+        Aggregate counts remain exact even when the displayed sequence is
+        bounded. A replay of a call ID remains one dispatch, and physical model
+        attempts and inner capabilities are not counted as provider tool calls.
+        """
+        owner = (str(chat_id), str(run_id))
+        ids = list(dict.fromkeys(str(value)[:512] for value in call_ids[:256]))
+        with self._transaction() as conn:
+            names = conn.execute(
+                "SELECT tool_name,COUNT(*) AS n FROM astb_outer_tool_call "
+                "WHERE chat_id=? AND run_id=? GROUP BY tool_name ORDER BY tool_name", owner,
+            ).fetchall()
+            sequence = conn.execute(
+                "SELECT tool_name FROM astb_outer_tool_call WHERE chat_id=? AND run_id=? "
+                "ORDER BY created_at,call_id LIMIT 64", owner,
+            ).fetchall()
+            # Only committed terminal outcomes are result observations. A
+            # dispatch left uncertain is reported separately, never as success.
+            outcomes = conn.execute(
+                "SELECT COALESCE(NULLIF(json_extract(outcome_json,'$.status'),''),state) AS status, "
+                "COALESCE(json_extract(outcome_json,'$.error_code'),'') AS code,COUNT(*) AS n "
+                "FROM astb_outer_tool_call WHERE chat_id=? AND run_id=? AND state!='dispatched' "
+                "GROUP BY status,code", owner,
+            ).fetchall()
+            calls = []
+            if ids:
+                calls = conn.execute(
+                    "SELECT call_id,state,updated_at, "
+                    "json_extract(outcome_json,'$.status') AS status, "
+                    "json_extract(outcome_json,'$.duration_ms') AS duration_ms "
+                    "FROM astb_outer_tool_call WHERE chat_id=? AND run_id=? AND call_id IN ("
+                    + ",".join("?" for _ in ids) + ")", (*owner, *ids),
+                ).fetchall()
+        statuses, codes = {}, {}
+        without_code = 0
+        for row in outcomes:
+            status, code, count = str(row['status'])[:80], str(row['code'])[:80], int(row['n'])
+            statuses[status] = statuses.get(status, 0) + count
+            if code:
+                codes[code] = codes.get(code, 0) + count
+            elif status not in {'ok', 'success', 'succeeded', 'completed'}:
+                without_code += count
+        count = sum(int(row['n']) for row in names)
+        return {'tool_calls': count,
+                'tool_calls_by_name': {str(row['tool_name'])[:80]: int(row['n']) for row in names},
+                'tool_sequence': [str(row['tool_name'])[:80] for row in sequence],
+                'tool_sequence_truncated': count > 64,
+                'tool_results_observed': True,
+                'tool_result_count': sum(statuses.values()),
+                'tool_results_by_status': dict(list(sorted(statuses.items()))[:32]),
+                'tool_error_codes': dict(list(sorted(codes.items()))[:32]),
+                'tool_results_without_error_code': without_code,
+                'tool_result_observations_truncated': 0,
+                'tool_result_status_distribution_truncated': len(statuses) > 32,
+                'tool_error_code_distribution_truncated': len(codes) > 32,
+                'calls': [dict(row) for row in calls]}
+
+    def outer_tool_results(self, chat_id: str, run_id: str, call_ids) -> list[dict]:
+        """Indexed reads of only the retained live rows; no growing run scan."""
+        ids = list(dict.fromkeys(str(value)[:512] for value in call_ids[:256]))
+        if not ids:
+            return []
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT call_id,state,updated_at,json_extract(outcome_json,'$.status') AS status, "
+                "json_extract(outcome_json,'$.duration_ms') AS duration_ms "
+                "FROM astb_outer_tool_call WHERE chat_id=? AND run_id=? AND call_id IN ("
+                + ",".join("?" for _ in ids) + ")", (str(chat_id), str(run_id), *ids),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_ticket(self, ticket_id: str) -> InputTicket | None:
         with self._lock:

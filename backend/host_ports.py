@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import aclosing
 
 import asyncio
+import logging
 import os
 import time
 import uuid
@@ -36,6 +37,9 @@ from agent_engine.shared_ports import (
 from run_context import current_run_context
 from tool_runner import ToolRunnerPorts
 import tool_discovery
+
+
+_LOG = logging.getLogger(__name__)
 
 
 def agent_context_ports(h, *, compress_messages=None) -> AgentContextPorts:
@@ -114,13 +118,23 @@ async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
             or getattr(session, "viewed_session_id", "")
             or ""
         )
+        delivered = False
         for target in runtime.attached_transports(chat_id) if chat_id else ():
             if target is websocket:
                 continue
             try:
                 await target.send_json(payload)
+                delivered = True
             except Exception:
                 continue
+        if not delivered and chat_id and getattr(h, "hub", None) is not None:
+            # Retain the native event sink when no attached Deck accepted the
+            # frame. Display failure never replays or aborts owned work.
+            from host_chat_service import NativeChatEventTransport
+            try:
+                await NativeChatEventTransport(h, chat_id).send_json(payload)
+            except Exception:
+                _LOG.debug("Native chat display delivery failed", exc_info=True)
 
 
 def tool_runner_ports(h, websocket, session=None) -> ToolRunnerPorts:
@@ -259,6 +273,9 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
 
     async def _loop_stream(msgs, max_tokens, img_this):
         """Stream one typed assistant turn with the Python provider schema."""
+        # Compression may itself consume a model request. Recheck an explicit
+        # Goal budget before the next main request, not on every token.
+        await _wait_if_paused()
         import tool_calling
         import tool_discovery
         from llm_stream_diagnostics import StreamDiagnostics
@@ -511,12 +528,35 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         if not admission_id:
             return
         async def publish(payload):
+            note = getattr(current_run_context(), 'metadata', {}).get('goal_budget_error')
+            if note:
+                payload = {**payload, 'reason': note}
             transports = list(registry.attached_transports(_runtime_chat_id()))
             if websocket not in transports:
                 transports.append(websocket)
             await asyncio.gather(*(transport.send_json(payload) for transport in transports),
                                  return_exceptions=True)
-        await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
+        parent = getattr(getattr(h.require_runtime(), 'goals', None), 'parent_session', None)
+        while True:
+            context = current_run_context()
+            try:
+                budget_paused = (await asyncio.to_thread(parent.boundary_budget, context, admission_id)
+                                 if parent is not None else False)
+            except Exception as exc:
+                _LOG.warning('Goal budget boundary unavailable: %s', type(exc).__name__)
+                budget_paused = False
+                if context is not None and context.metadata.get('goal_budget_limited'):
+                    context.metadata['goal_budget_error'] = 'Goal budget check unavailable; inspect accounting before resuming.'
+                    try:
+                        registry.set_run_paused(_runtime_chat_id(), True,
+                            expected_admission_id=admission_id, expected_run_id=context.run_id)
+                        budget_paused = True
+                    except RuntimeError as stale:
+                        if str(stale) != 'stale_run':
+                            raise
+            await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
+            if not budget_paused:
+                return
 
     return TaskTurnPorts(
         snapshot_store=getattr(h.require_runtime().session_runtimes, "snapshot_store", None),

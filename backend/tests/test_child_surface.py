@@ -10,14 +10,16 @@ from run_context import Variant1RunContext, bind_run_context
 
 
 @pytest.mark.asyncio
-async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision():
+@pytest.mark.parametrize('native_status', ['completed', 'truncated'])
+async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision(native_status):
     captured = {}
 
     async def graph(**kwargs):
         captured.update(kwargs)
         return {
-            "status": "completed",
-            "output": {"reply": "DONE: complete", "interrupted": False},
+            "status": native_status,
+            "output": {"reply": "DONE: complete" if native_status == 'completed' else "PARTIAL: useful evidence",
+                       "interrupted": False, 'terminal_reason': 'completed' if native_status == 'completed' else 'model_output_limit'},
             "errors": [],
         }
 
@@ -72,7 +74,11 @@ async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision(
     ):
         result = await run_child_worker(ports, "complete task", "context")
 
-    assert "DONE" in result
+    if native_status == 'completed':
+        assert "DONE" in result and result.status == 'completed'
+    else:
+        assert result.status == 'failed' and result.terminal_reason == 'model_output_limit'
+        assert 'useful evidence' in result and 'native output' in result.error
     assert captured["config"].action_surface == ACTION_SURFACE
     assert captured["config"].graph_revision == "worker.ipython.v2"
     assert [row["name"] for row in captured["full_tspec"]] == ["ipython"]

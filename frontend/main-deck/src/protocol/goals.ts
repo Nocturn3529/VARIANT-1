@@ -27,6 +27,17 @@ export function goalIsTerminal(goal: ComposerGoal): boolean {
   return ["succeeded", "failed", "cancelled", "archived"].includes(goal.status);
 }
 
+/** Scheduler waits and an admitted owning turn are distinct facts. */
+export function goalWorkLabel(snapshot:ComposerGoalSnapshot|undefined|null,
+  turn:{active:boolean;sessionId:string;admissionId:string;runId:string}):string|undefined {
+  if(snapshot?.goal.status!=="waiting_external")return undefined;
+  const parent=snapshot.parentTurn;
+  if(parent && turn.active && turn.sessionId===snapshot.goal.owner_chat_id
+    && parent.admissionId===turn.admissionId && parent.runId===turn.runId && !!parent.admissionId && !!parent.runId)
+    return "Working in this chat";
+  return parent?.waitingForPeers ? "Waiting for peer results" : undefined;
+}
+
 export type ComposerGoalState = {
   snapshot: ComposerGoalSnapshot|null;
   synced: boolean;
@@ -49,6 +60,8 @@ export type ComposerGoalSnapshot = Readonly<{
   goal: ComposerGoal;
   submission_request_id:string;
   completion_basis:string;
+  historyLimited?:boolean;
+  parentTurn?:Readonly<{admissionId:string;runId:string;waitingForPeers:boolean}>;
   admittedContinuation:Readonly<{requestId:string;message:string;stepId:string;previousAttempt:number;jobId:string}>|null;
   capabilities: Readonly<{pause_scheduling:boolean;pause_active_work:boolean;resume:boolean;cancel:boolean;continue:boolean;retry_cleanup:boolean;finish:boolean;archive:boolean}>;
   objectiveOutcome:ObjectiveOutcome;
@@ -78,8 +91,15 @@ export function parseComposerGoalSnapshot(value:unknown):ComposerGoalSnapshot|nu
   const capabilities=(row.capabilities && typeof row.capabilities==="object" ? row.capabilities : {}) as Record<string,unknown>;
   const cleanup=(row.cleanup && typeof row.cleanup==="object"?row.cleanup:{}) as Record<string,unknown>;
   const termination=(row.termination && typeof row.termination==="object"?row.termination:{}) as Record<string,unknown>;
+  const state=(row.state && typeof row.state==="object"?row.state:{}) as Record<string,unknown>;
+  const parent=(state.parent_turn && typeof state.parent_turn==="object"?state.parent_turn:{}) as Record<string,unknown>;
+  const report=(parent.report && typeof parent.report==="object"?parent.report:{}) as Record<string,unknown>;
   return {goal,submission_request_id:row.submission_request_id,completion_basis:typeof row.completion_basis==="string"?row.completion_basis:"",
+    parentTurn:typeof parent.admission_id==="string" && typeof parent.run_id==="string"
+      ? {admissionId:parent.admission_id,runId:parent.run_id,waitingForPeers:parent.status==="finished" && Array.isArray(report.wait_for_message_ids) && report.wait_for_message_ids.length>0}
+      : undefined,
     admittedContinuation:admittedContinuation(row),
+    historyLimited:!!row.history_coverage && (row.history_coverage as Record<string,unknown>).complete===false,
     capabilities:{pause_scheduling:capabilities.pause_scheduling===true,pause_active_work:capabilities.pause_active_work===true,
       resume:capabilities.resume===true,cancel:capabilities.cancel===true,continue:capabilities.continue===true,retry_cleanup:capabilities.retry_cleanup===true,finish:capabilities.finish===true,archive:capabilities.archive===true},
     objectiveOutcome:parseObjectiveOutcome(row.objective_outcome),terminationKind:typeof termination.kind==="string"?termination.kind:"",

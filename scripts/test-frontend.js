@@ -70,6 +70,7 @@ const tests = [
   "test-browser-settings.js",
   "test-chat-ownership.js",
   "test-chat-reliability.js",
+  "test-live-swarm-repair.js",
   "test-chat-performance.js",
   "test-chat-lifecycle.js",
   "test-composer.js",

@@ -10,7 +10,7 @@ export type AgentSummary=Readonly<{
   runId?:string;
   lastActivity?:ChildActivityHint|null;
 }>;
-export type AgentDetail=Readonly<{id:string;generation:number;activities:readonly {id:string;kind:string;status:string;createdAt:number;completedAt:number;runId:string}[];report:string;truncated:boolean}>;
+export type AgentDetail=Readonly<{id:string;generation:number;activities:readonly {id:string;kind:string;status:string;createdAt:number;completedAt:number;runId:string}[];report:string;truncated:boolean;terminalReason?:string;error?:string}>;
 export type AgentTeamState={agents:readonly AgentSummary[];revision:number;total:number;active:number;blocked:number;truncated:boolean;synced:boolean;
   changeRevision?:number;
   readId?:string;dirty?:boolean;error?:string;selectedId:string|null;detail:AgentDetail|null;detailRevision:number;activityRevision:number;detailReadId?:string;detailDirty?:boolean;detailError?:string};
@@ -67,5 +67,5 @@ export function parseAgentDetail(row:Readonly<Record<string,unknown>>):{agent:Ag
     return [{id:string(entry.operation_id),kind:string(entry.kind),status:string(entry.status),createdAt:number(entry.created_at),completedAt:number(entry.completed_at),runId:string(scope.run_id)}];
   });
   if(activities.length!==row.activity.length || new Set(activities.map(row=>row.id)).size!==activities.length)return null;
-  return {agent,revision:Number(row.revision),activityRevision:Number(row.activity_revision),detail:{id:agent.id,generation:agent.generation,activities,report:string(child.report).slice(0,16000),truncated:row.truncated===true || child.report_truncated===true || string(child.report).length>16000}};
+  return {agent,revision:Number(row.revision),activityRevision:Number(row.activity_revision),detail:{id:agent.id,generation:agent.generation,activities,report:string(child.report).slice(0,16000),terminalReason:string(child.terminal_reason).slice(0,80),error:string(child.error).slice(0,2000),truncated:row.truncated===true || child.report_truncated===true || string(child.report).length>16000}};
 }

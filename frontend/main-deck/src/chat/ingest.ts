@@ -38,6 +38,7 @@ import {ingestAgentTeam,ingestAgentWorkEvent,ingestAgentChanged} from "./agentTe
 import {noteChildActivity} from "./childActivity";
 import {requestSessionContext} from "../sessionContextStore";
 import {applyRuntimeSnapshot, applySession} from "./session";
+import {ingestExecutionState,settleMissedTurn} from "./executionRecovery";
 import {
   acknowledgeActiveInput,
   markActiveInputDelivered,
@@ -84,6 +85,7 @@ function isConfigSurfaceError(err: string): boolean {
  * unknown loose types are ignored after the switch.
  */
 export function ingestChat(message: ChatWsMessage) {
+  if(message.type==="chat:execution"){ingestExecutionState(message);return;}
   if(message.type==="children:changed"){ingestAgentChanged(message);return;}
   if(message.type==="work:event")ingestAgentWorkEvent(message);
   // Observe only: subagent steps feed the roster, and routing below is unchanged.
@@ -115,7 +117,12 @@ function ingestOwnedChat(message: ChatWsMessage) {
   // Stream isolation: voice surfaces never feed the Chat transcript.
   if (CHAT_STREAM_TYPES.has(type)) {
     const original = message as import("../protocol/chatEvents").StreamRouting;
-    const routing = {...message,source:original.source==="queue_continue"?"chat":original.source};
+    // Goal and peer turns are ordinary admitted work in the owning chat.
+    // Only explicit chat/admission identities permit this UI-lane projection;
+    // voice and subagent provenance keep their separate routing boundaries.
+    const nativeChat=!!original.session_id && !!original.admission_id
+      && (original.source==="goal" || original.source==="peer" || original.source?.startsWith("peer:"));
+    const routing = {...message,source:original.source==="queue_continue" || nativeChat ? "chat":original.source};
     if (isForeignStream(routing)) return;
     if((message.type==="activity" || message.type==="tool:activity") && message.durable_replay) {
       if(!routing.source || routing.source==="chat")ingestActivityMessage(message);
@@ -427,6 +434,12 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "run:settled":
+      if(sharedTurnActive() && message.session_id===state.sessionId
+        && message.run_id===turn.snapshot().runId
+        && message.admission_id && message.admission_id===turn.snapshot().admissionId) {
+        settleMissedTurn(message.status);
+        if(state.sessionId)sendChat({type:"chat:session:get",id:state.sessionId});
+      }
       applySettledReceipt(message.receipt, message.session_id, message.run_id);
       requestSessionContext(message.session_id || getChatState().sessionId, getChatState().sessionId === getDisplayedChatState().sessionId);
       if (!sharedTurnActive()) setSubtitle("Connected locally", "ready");
@@ -446,6 +459,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "error": {
+      if(message.request_id)return; // Correlated command failures are not model failures.
       const err = message.error || "VARIANT-1 backend error";
       // Settings/cloud handlers return generic {type:"error"} without client_id.
       // Those must toast (if useful) but must NOT kill an in-flight chat turn.

@@ -37,6 +37,34 @@ def _stack(tmp_path):
     return service, runtimes, sessions, chat, first, second
 
 
+@pytest.mark.asyncio
+async def test_peer_receiver_launch_does_not_inherit_sender_goal_run_or_chat(tmp_path):
+    from run_context import Variant1RunContext, bind_run_context, current_run_context
+    from work_fabric.scope import WorkScope
+    service,runtimes,sessions,_chat,first,second=_stack(tmp_path)
+    runtime=SimpleNamespace(sessions=sessions,session_runtimes=runtimes)
+    host=SimpleNamespace(hub=SimpleNamespace(broadcast=AsyncMock()),require_runtime=lambda:runtime)
+    chat=ChatService(host=host,transcript=None,models=None)
+    seen=[]
+    async def turn(transport,text,session,**kwargs):
+        seen.append(current_run_context())
+        runtimes.repository.transition_ticket(kwargs['ticket_id'],'completed',expected=('preparing',),proof={'test':True})
+    chat.run_task=turn
+    runtimes.enqueue_input(second,'Independent peer work',delivery='follow_up',source='peer')
+    sender=Variant1RunContext.create(source='chat',session_id=first,
+        work_scope=WorkScope(chat_id=first,goal_id='sender-goal'),metadata={'_server_bound_kind':'chat'})
+    try:
+        with bind_run_context(sender):
+            launched=await chat.start_next_queued_input(second)
+            await launched['_task']
+        receiver=seen[0]
+        assert receiver.session_id==second and receiver.work_scope.chat_id==second
+        assert receiver.work_scope.goal_id=='' and receiver.parent_run_id==''
+        assert receiver.chat_session.viewed_session_id==second and receiver.run_id!=sender.run_id
+    finally:
+        await service.shutdown()
+
+
 async def _settle_service(service, runtimes):
     await service.shutdown()
     await runtimes.shutdown()
@@ -122,7 +150,8 @@ async def test_peer_display_is_canonical_and_sender_trace_survives_reload(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_native_discovery_and_busy_delivery_are_chat_owned(tmp_path):
+@pytest.mark.parametrize('delivery', [None, 'follow_up'])
+async def test_native_discovery_and_busy_delivery_are_chat_owned(tmp_path, delivery):
     service, runtimes, _sessions, chat, first, second = _stack(tmp_path)
     admission = runtimes.try_reserve_run(second, attachment_id="")
     running = asyncio.create_task(asyncio.Event().wait())
@@ -135,16 +164,18 @@ async def test_native_discovery_and_busy_delivery_are_chat_owned(tmp_path):
         }
         message = await service.send(
             f"chat:{first}", f"chat:{second}", "Review the parser",
-            request_id="send-1",
+            request_id="send-1", delivery=delivery,
         )
         assert message["message_id"].startswith("peer_message_")
         assert message["state"] == "queued"
         ticket = runtimes.repository.get_ticket(message["delivery_ticket_id"])
         assert ticket is not None
         assert ticket.chat_id == second
+        assert ticket.delivery == ('follow_up' if delivery else 'steer')
         assert ticket.source == f"peer:chat:{first}"
         assert ticket.client_id == f"peer-message:{message['message_id']}"
         assert "Sender: First" in ticket.text
+        assert "Recipient (your identity): Second" in ticket.text
         await asyncio.sleep(0)
         chat.start_next_queued_input.assert_not_awaited()
         runtimes.park_queued_input_tickets(second, reason="explicit_stop")
@@ -193,16 +224,19 @@ async def test_idle_native_delivery_schedules_canonical_chat_wake(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_sender_request_id_is_durable_and_conflicts_fail_before_rewrite(tmp_path):
+@pytest.mark.parametrize('first_delivery', [None, 'follow_up'])
+async def test_sender_request_id_is_durable_and_conflicts_fail_before_rewrite(tmp_path, first_delivery):
     service, runtimes, _sessions, _chat, first, second = _stack(tmp_path)
     try:
         first_send = await service.send(
-            f"chat:{first}", f"chat:{second}", "Same", request_id="stable",
+            f"chat:{first}", f"chat:{second}", "Same", request_id="stable", delivery=first_delivery,
         )
         replay = await service.send(
             f"chat:{first}", f"chat:{second}", "Same", request_id="stable",
         )
         assert replay["message_id"] == first_send["message_id"]
+        assert replay['delivery'] == first_send['delivery']
+        assert replay['delivery_ticket_id'] == first_send['delivery_ticket_id']
         assert service.inspect_request(f"chat:{first}", "stable")["message_id"] == first_send["message_id"]
         with pytest.raises(RuntimeError, match="conflicts"):
             await service.send(
@@ -357,7 +391,8 @@ async def test_deleted_sender_still_has_durable_attribution_at_admission(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_path):
+@pytest.mark.parametrize('prior_turn', ['idle', 'ended', 'busy'])
+async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_path, prior_turn):
     service, runtimes, sessions, _chat, first, second = _stack(tmp_path)
     hub = SimpleNamespace(broadcast=AsyncMock())
     runtime = SimpleNamespace(sessions=sessions, session_runtimes=runtimes)
@@ -382,6 +417,12 @@ async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_pa
         await transport.send_json({"type": "done", "text": "ok"})
 
     chat.run_task = provider_backed_turn
+    prior_admission = None
+    if prior_turn != 'idle':
+        prior_admission = runtimes.try_reserve_run(second)
+        runtimes.begin_run(prior_admission, run_id='previous-turn', thread_id='previous-turn')
+        if prior_turn == 'ended':
+            runtimes.finish_run(prior_admission, status='ok')
     try:
         first_message = await service.send(
             f"chat:{first}", f"chat:{second}", "first headless turn",
@@ -391,6 +432,15 @@ async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_pa
             f"chat:{first}", f"chat:{second}", "second headless turn",
             request_id="headless-2",
         )
+        if prior_turn == 'busy':
+            from unittest.mock import patch
+            with patch.object(service.repository, 'pending_native', wraps=service.repository.pending_native) as pending:
+                await asyncio.sleep(0.01)
+                reads = pending.call_count
+                await asyncio.sleep(0.25)
+                assert pending.call_count == reads  # Waiting for an idle event, not polling.
+                assert calls == []
+            runtimes.finish_run(prior_admission, status='ok')
         for _ in range(200):
             if len(calls) == 2:
                 break
@@ -408,6 +458,8 @@ async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_pa
         )["state"] == "observed"
         assert hub.broadcast.await_count == 2
     finally:
+        if prior_admission:
+            runtimes.finish_run(prior_admission, status='test_cleanup')
         await _settle_service(service, runtimes)
 
 
@@ -995,7 +1047,11 @@ async def test_real_cpython_broker_front_door_sends_replies_waits_and_breaks_mut
             outer_tool_call_id="peer-kernel-send-call",
             code=(
                 "target = next(p for p in peers.list() "
+                # The owning identity is explicit, not a guessed list entry.
                 f"if p.metadata['peer_id'] == 'chat:{second}')\n"
+                "own = peers.self()\n"
+                f"assert own.metadata['peer_id'] == 'chat:{first}'\n"
+                "assert own.metadata['is_self'] is True\n"
                 "sent = target.send(text='hello through CPython', "
                 "request_id='cpython-send')\n"
                 "notice = target.send(text='notice through CPython', message_kind='notice', request_id='cpython-notice')\n"

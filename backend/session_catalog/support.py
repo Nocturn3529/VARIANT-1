@@ -105,6 +105,12 @@ class SupportMatrix:
             normalized = dict(row)
             normalized["profile"] = canonical_action_surface(normalized.get("profile"))
             rules.append(SupportRule.from_dict(normalized))
+        if any(rule.provider == "hermes" and rule.model == "upstage/solar-pro4:free"
+               and rule.status in QUALIFIED_STATUSES for rule in rules) and not any(
+                   rule.matches(ACTION_SURFACE, "hermes", "meituan/longcat-2.5-preview:free", "openai.chat_completions") for rule in rules):
+            rules.append(SupportRule(ACTION_SURFACE, "hermes",
+                "meituan/longcat-2.5-preview:free", "openai.*", "developer",
+                "Explicit Nous proxy route with Python-tool protocol fixtures; model task benchmark qualification remains pending."))
         # Connecting a newly shipped native OAuth route must not leave its
         # model picker unusable behind an older installation's evidence list.
         # These adapters have structural Python-tool protocol coverage, not a

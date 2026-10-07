@@ -10,6 +10,7 @@ from chat_session import ConnectionSession
 from chat_finalize import _durable_turn_messages, persist_unfinalized_turn
 from host_ports import build_task_turn_ports
 from reasoning_summaries import ReasoningBuffer, ResponsesSummary
+from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
 from tests.test_host_ports_stream import _host_with_stream
 from tests.support.conversation_sessions import open_sessions
 
@@ -92,16 +93,22 @@ async def test_retry_discards_visible_attempt_before_starting_a_new_identity(mon
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("outcome", ["done", "cancelled", "discarded"])
-async def test_host_stream_lifecycle_and_reopen_preserve_one_summary(tmp_path, outcome):
+async def test_host_stream_lifecycle_and_reopen_preserve_one_summary(tmp_path, outcome, request):
     owner = SimpleNamespace(send_json=AsyncMock())
     host = _host_with_stream([])
     sessions = open_sessions(tmp_path / "chats")
     sid = sessions.create_session()
+    runtimes = SessionRuntimeRegistry(SessionRuntimeRepository(str(tmp_path / 'runtime.sqlite3')))
+    runtimes.ensure_runtime(sid)
+    admission = runtimes.try_reserve_run(sid)
+    assert admission
+    host.require_runtime().session_runtimes = runtimes
+    request.addfinalizer(lambda: runtimes.finish_run(admission, status='test_cleanup'))
     session = ConnectionSession(viewed_session_id=sid)
     session.active.turn_session_id = sid
     session.active.runtime_chat_id = sid
     session.active.turn_source = "chat"
-    session.active.runtime_admission_id = "admission"
+    session.active.runtime_admission_id = admission
     first, release = asyncio.Event(), asyncio.Event()
     async def stream(_messages, **kwargs):
         summary = ResponsesSummary()
@@ -133,7 +140,7 @@ async def test_host_stream_lifecycle_and_reopen_preserve_one_summary(tmp_path, o
     assert len({event["summary_id"] for event in frames}) == 1
     assert frames[-1]["status"] == outcome
     assert [event["summary_revision"] for event in frames] == list(range(1, len(frames) + 1))
-    assert all(event["source"] == "chat" and event["session_id"] == sid and event["admission_id"] == "admission" for event in frames)
+    assert all(event["source"] == "chat" and event["session_id"] == sid and event["admission_id"] == admission for event in frames)
     assert len({event["ts"] for event in frames}) == 1
     session.active.turn_display_user_text = "task"
     await persist_unfinalized_turn(SimpleNamespace(sessions=sessions, hub=SimpleNamespace(broadcast=AsyncMock())),

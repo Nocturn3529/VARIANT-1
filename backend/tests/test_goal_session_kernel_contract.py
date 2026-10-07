@@ -5,7 +5,31 @@ from tests.test_child_sessions import _Host,_manager
 from artifacts import ContentAddressedArtifactStore
 
 @pytest.mark.asyncio
+async def test_parent_goal_outcome_traverses_real_python_proxy_and_broker(catalog_stack,tmp_path):
+    from types import SimpleNamespace
+    from tests.test_goal_parent_session import stack, launch, finish
+    _registry,_enabled,_runtimes,_artifacts,broker,catalog,kernel=catalog_stack
+    work,goals,parent,registry,gate,runs,_=stack(tmp_path/'parent')
+    goal_id=await launch(goals,runs)
+    run=runs[0][0]
+    catalog.host=SimpleNamespace(require_runtime=lambda:SimpleNamespace(goals=goals))
+    _runtimes.ensure_runtime('owner',is_new=True)
+    try:
+        result=await kernel.execute(chat_id='owner',run_id=run.run_id,outer_tool_call_id='parent-report',
+            work_scope=run.work_scope.to_dict(),
+            code='receipt = session.report_outcome(status="completed", summary="Verified parent output", evidence_refs=[])\nprint(receipt["status"])')
+        assert result.ok,result.to_dict()
+        assert 'completed' in result.output.text()
+        assert (await finish(goals,goal_id,gate,registry))['status']=='succeeded'
+        assert any(r.capability['capability_id']=='session' for r in broker.receipts(limit=10))
+    finally:
+        if registry.is_busy('owner'):
+            await finish(goals,goal_id,gate,registry)
+        await kernel.shutdown();await work.shutdown()
+
+@pytest.mark.asyncio
 async def test_structured_child_outcome_traverses_real_python_proxy_and_broker(catalog_stack,tmp_path,monkeypatch):
+    from types import SimpleNamespace
     _registry,_enabled,runtimes,_artifacts,broker,catalog,kernel=catalog_stack
     host=_Host(tmp_path/'child-store.sqlite3')
     children=_manager(str(tmp_path/'child-store.sqlite3'),host,ContentAddressedArtifactStore(str(tmp_path/'child-cas')))
@@ -15,9 +39,14 @@ async def test_structured_child_outcome_traverses_real_python_proxy_and_broker(c
     with children._connect() as conn:
         conn.execute("UPDATE astb_child_handle SET status='running',outcome_run_id=? WHERE child_id=?",(run_id,child['child_id']))
     catalog.children=children
+    # A delegated child's inherited Goal scope must not route its report to the parent.
+    catalog.host=SimpleNamespace(require_runtime=lambda:SimpleNamespace(goals=SimpleNamespace(
+        get=lambda goal_id:SimpleNamespace(owner_chat_id='parent',completion_policy={'execution_owner':'parent'}),
+        parent_session=SimpleNamespace(report=lambda *args,**kwargs:(_ for _ in ()).throw(AssertionError('child report routed to parent'))))))
     runtimes.ensure_runtime(sid,is_new=True);catalog.select(sid,'build')
     try:
         result=await kernel.execute(chat_id=sid,run_id=run_id,outer_tool_call_id='outcome-cell',
+            work_scope={'chat_id':sid,'goal_id':'parent-goal'},
             code='receipt = session.report_outcome(status="completed", summary="Verified output", evidence_refs=[])\nprint(receipt["status"])')
         assert result.ok,result.to_dict()
         assert 'completed' in result.output.text()

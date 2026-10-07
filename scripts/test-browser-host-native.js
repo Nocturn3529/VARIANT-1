@@ -36,7 +36,7 @@ fs.mkdirSync(out, {recursive: true});
     boot.applyGpuFlags(app); boot.registerVariant1Scheme(protocol);
     app.setPath('userData',${JSON.stringify(path.join(temp,'profile'))});
     const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-    const logs=[]; let win, server;
+    const logs=[]; let win, server, cover;
     app.whenReady().then(async()=>{
       boot.registerVariant1Protocol(protocol,${JSON.stringify(temp)});
       server=http.createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end('<!doctype html><html><head><title>'+req.url+'</title></head><body style="background:#111;color:white;font:24px monospace"><h1>Native browser '+req.url+'</h1><button id="probe">Local button</button><input aria-label="Local input"><div style="position:fixed;left:680px;top:350px;width:40px;height:40px;background:white"> </div></body></html>');});
@@ -75,8 +75,13 @@ fs.mkdirSync(out, {recursive: true});
       const cloneRecovery=check(await command({action:'evaluate',tab_id:'native-a',expression:'(() => ({title:document.title, calls:window.cloneProbe}))()'}),'explicit invocation recovery');
       assert.equal(cloneRecovery.value.title,'/one');
       assert.equal(cloneRecovery.value.calls,1,'a clone failure must not replay JavaScript effects');
+      if(process.platform==='win32') {
+        cover=new BrowserWindow({show:false,frame:false,...win.getBounds(),backgroundColor:'#333333',webPreferences:{sandbox:true,contextIsolation:true,nodeIntegration:false}});
+        await cover.loadURL('about:blank');cover.showInactive();await pause(200);
+      }
       const active=check(await command({action:'screenshot',tab_id:'native-a'}),'active capture');
       readable(active);
+      if(cover){cover.destroy();cover=null;console.log('Windows covered-window guest capture passed');}
       fs.writeFileSync(${JSON.stringify(path.join(out,'native-active.png'))},Buffer.from(active.image,'base64'));
       check(await command({action:'new_page',tab_id:'native-b',url:base+'/two'}),'second page');
       assert.equal(await evaluate('window.e01.group("native-a")'),await evaluate('window.e01.group("native-b")'),'new host tabs share the browser group');
@@ -156,6 +161,7 @@ fs.mkdirSync(out, {recursive: true});
     }).catch(error=>{logs.push(error.stack||String(error));console.error(error);process.exitCode=1;}).finally(async()=>{
       if(win&&!win.isDestroyed()) {try{fs.writeFileSync(${JSON.stringify(path.join(out,'receipts.json'))},JSON.stringify(await win.webContents.executeJavaScript('window.e01.receipts()'),null,2))}catch{}}
       fs.writeFileSync(${JSON.stringify(path.join(out,'native.log'))},logs.join('\\n'));
+      if(cover&&!cover.isDestroyed())cover.destroy();
       if(server) server.close(); app.exit(process.exitCode||0);
     });
   `);

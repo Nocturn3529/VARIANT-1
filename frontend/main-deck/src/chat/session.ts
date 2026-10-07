@@ -29,6 +29,7 @@ import {applyInputQueue,refreshInputQueue,reconcileContinuedHistory} from "./inp
 import {refreshComposerGoal} from "./goals";
 import {refreshAgentTeam} from "./agentTeam";
 import {restoreRecoveryNotice,dismissRecoveryNotice} from "./recovery";
+import {persistTrace} from "./annotations";
 
 function parseRuntime(value: unknown): ChatRuntimeState | null {
   if (!value || typeof value !== "object") return null;
@@ -122,7 +123,7 @@ function hydrateTurn(runtime: ChatRuntimeState | null): void {
   } else if (runtime.busy === false && turn.snapshot().admissionId) turn.end({status:"complete"});
 }
 
-type RunSnapshot = {runId: string; revision: number; steps: ChatTurnStep[]; segment?: number; text: string};
+type RunSnapshot = {steps: ChatTurnStep[]; segment?: number; text: string};
 /** Newest snapshot revision applied per admission; a lower one arriving late is stale. */
 const appliedSnapshots = new Map<string, number>();
 
@@ -136,10 +137,10 @@ function parseRunSnapshot(value: unknown, runId: string, admissionId: string): R
   const snapshotAdmission = typeof row.admission_id === "string" ? row.admission_id : "";
   if (admissionId && snapshotAdmission !== admissionId) return null;
   const fence = `${runId}:${snapshotAdmission}`;
-  const segment = typeof row.segment === "number" && Number.isSafeInteger(row.segment) && row.segment > 0 ? row.segment : undefined;
+  const segment = Number.isSafeInteger(row.segment) && (row.segment as number) > 0 ? row.segment as number : undefined;
   // Live results merge on the same key a live start gets.
   const steps = (parseTurnSteps(row.steps, true) || []).map(step => step.callId && !step.key ? {...step, key: `call:${step.callId}`} : step);
-  const revision = typeof row.revision === "number" && Number.isSafeInteger(row.revision) ? row.revision : 0;
+  const revision = Number.isSafeInteger(row.revision) ? row.revision as number : 0;
   // The revision moves on bindings and step changes, not as a call's text
   // grows, so an equal revision can still carry newer text for that call.
   // Only a lower one is stale; the merge keeps longer or later text seen here.
@@ -148,7 +149,7 @@ function parseRunSnapshot(value: unknown, runId: string, admissionId: string): R
     appliedSnapshots.set(fence, revision);
     while (appliedSnapshots.size > 64) appliedSnapshots.delete(appliedSnapshots.keys().next().value!);
   }
-  return {runId, revision, steps, segment, text: typeof row.text === "string" ? row.text : ""};
+  return {steps, segment, text: typeof row.text === "string" ? row.text : ""};
 }
 
 /**
@@ -232,6 +233,15 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
   }
 
   let nextMessages = messages;
+  let recoveredTrace = false;
+  const recoveredRun=turnApi().snapshot().runId;
+  if(!sessionChanged && !turnApi().isActive() && state.turnSteps.length && recoveredRun) {
+    nextMessages=nextMessages.map(message=>{
+      if(message.role!=="assistant" || message.runId!==recoveredRun || message.steps?.some(step=>!step.peerMessage))return message;
+      recoveredTrace=true;
+      return {...message,steps:state.turnSteps};
+    });
+  }
   if (!sessionChanged) {
     nextMessages = mergeMessageEnrichment(nextMessages, state.messages);
   }
@@ -249,6 +259,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     streamText: "",
     queuedFollowUps: 0,
     activeTurnId: null,
+    turnSteps: [],
     pendingActiveInputs: [],
     mutationTogglePending: sessionChanged || mutationSettledBySnapshot
       ? null
@@ -256,6 +267,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     runtime: parsedRuntime,
   });
   setSubtitle("Connected locally", "ready");
+  if(recoveredTrace)persistTrace({type:"chat:session:annotate",id,run_id:recoveredRun!,steps:state.turnSteps});
   if(candidateRuntime?.inputQueue)applyInputQueue(candidateRuntime.inputQueue);else refreshInputQueue();
     refreshComposerGoal();
     refreshAgentTeam();

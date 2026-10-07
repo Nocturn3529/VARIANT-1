@@ -6,15 +6,17 @@ from tools import ToolError
 
 REPORT_OUTCOME_METHOD = {
     'name': 'report_outcome',
-    'description': ('Report this child objective as completed, blocked, or continuing. '
+    'description': ('Report this active child or owning-session Goal objective as completed, blocked, or continuing. '
                     'This records an agent claim, not independent verification or an execution Stop. '
                     'Report once before the final response; identical retries are safe. '
-                    'Ordinary prose never marks a goal complete.'),
+                    'Ordinary prose never marks a goal complete. A parent Goal may use '
+                    'continuing with wait_for_message_ids to sleep until all requested peer results arrive.'),
     'effect_class': 'external_side_effect',
     'params': {
         'status': {'type': 'string', 'required': True, 'enum': ['completed', 'blocked', 'continuing']},
         'summary': {'type': 'string', 'required': True},
         'evidence_refs': {'type': 'array', 'required': False, 'items': {'type': 'string'}},
+        'wait_for_message_ids': {'type': 'array', 'required': False, 'items': {'type': 'string'}},
     },
 }
 
@@ -45,7 +47,9 @@ class ChildOutcomes:
             revision=self._clock_revision(conn)
         self._notify_committed_change(parent_chat_id,str(child_id),revision)
 
-    def report_outcome(self, chat_id, run_id, *, status, summary, evidence_refs=None):
+    def report_outcome(self, chat_id, run_id, *, status, summary, evidence_refs=None, wait_for_message_ids=None):
+        if wait_for_message_ids:
+            raise ToolError('Peer-result waits are available only to an owning-session Goal')
         if status not in {'completed','blocked','continuing'}:
             raise ToolError('outcome status must be completed, blocked, or continuing')
         if not isinstance(summary,str) or not summary.strip() or len(summary)>4000:

@@ -92,7 +92,10 @@ async def test_live_external_owner_blocks_until_process_exit(tmp_path, monkeypat
     script = ("import time\nfrom pathlib import Path\n"
               "from kernel_runtime.ownership import KernelStorageOwnership\n"
               f"owner=KernelStorageOwnership({str(root)!r},{str(ledger)!r},'external',restrict=lambda *a:None)\n"
-              f"Path({str(ready)!r}).write_text('owned')\n"
+              f"ready=Path({str(ready)!r})\n"
+              "temporary=ready.with_suffix('.tmp')\n"
+              "temporary.write_text('owned')\n"
+              "temporary.replace(ready)\n"
               "while True: time.sleep(.1)\n")
     process = subprocess.Popen([sys.executable, "-c", script], cwd=Path(__file__).parents[1],
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
