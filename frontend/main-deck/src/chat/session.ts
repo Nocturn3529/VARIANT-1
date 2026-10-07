@@ -122,17 +122,30 @@ function hydrateTurn(runtime: ChatRuntimeState | null): void {
   } else if (runtime.busy === false && turn.snapshot().admissionId) turn.end({status:"complete"});
 }
 
-type RunSnapshot = {runId: string; steps: ChatTurnStep[]; segment?: number; text: string};
+type RunSnapshot = {runId: string; revision: number; steps: ChatTurnStep[]; segment?: number; text: string};
+/** Newest snapshot revision applied per admission; an older one arriving late is stale. */
+const appliedSnapshots = new Map<string, number>();
 
 /** The backend's view of the active run, sent with chat:session while it runs. */
-function parseRunSnapshot(value: unknown, runId: string): RunSnapshot | null {
+function parseRunSnapshot(value: unknown, runId: string, admissionId: string): RunSnapshot | null {
   if (!value || typeof value !== "object" || !runId) return null;
   const row = value as Record<string, unknown>;
   if (row.run_id !== runId) return null;
+  // A resumed run keeps its logical id under a new admission; only the
+  // admission this window follows may speak for it.
+  const snapshotAdmission = typeof row.admission_id === "string" ? row.admission_id : "";
+  if (admissionId && snapshotAdmission !== admissionId) return null;
+  const fence = `${runId}:${snapshotAdmission}`;
   const segment = typeof row.segment === "number" && Number.isSafeInteger(row.segment) && row.segment > 0 ? row.segment : undefined;
   // Live results merge on the same key a live start gets.
   const steps = (parseTurnSteps(row.steps, true) || []).map(step => step.callId && !step.key ? {...step, key: `call:${step.callId}`} : step);
-  return {runId, steps, segment, text: typeof row.text === "string" ? row.text : ""};
+  const revision = typeof row.revision === "number" && Number.isSafeInteger(row.revision) ? row.revision : 0;
+  if (revision && revision <= (appliedSnapshots.get(fence) ?? 0)) return null;
+  if (revision) {
+    appliedSnapshots.set(fence, revision);
+    while (appliedSnapshots.size > 64) appliedSnapshots.delete(appliedSnapshots.keys().next().value!);
+  }
+  return {runId, revision, steps, segment, text: typeof row.text === "string" ? row.text : ""};
 }
 
 /**
@@ -152,9 +165,14 @@ function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatSta
   });
   const steps = [...merged, ...remote.values()].map((step, order) => ({step, order}))
     .sort((a, b) => (a.step.ts - b.step.ts) || (a.order - b.order)).map(({step}) => step);
-  const sameCall = snapshot.segment !== undefined && snapshot.segment === state.streamSegment;
-  const streamText = sameCall && state.streamText.length >= snapshot.text.length ? state.streamText : snapshot.text;
-  return {turnSteps: steps, streamText, streamSegment: snapshot.segment ?? state.streamSegment, streaming: state.streaming || !!streamText};
+  // Text this window already saw for the same or a later call is newer than
+  // the snapshot; text the snapshot already saved as narration is not live.
+  const seenSegment = state.streamSegment ?? 0, remoteSegment = snapshot.segment ?? 0;
+  const keepLocal = seenSegment > remoteSegment || (seenSegment === remoteSegment && state.streamText.length >= snapshot.text.length);
+  let streamText = keepLocal ? state.streamText : snapshot.text;
+  const streamSegment = keepLocal ? state.streamSegment : snapshot.segment;
+  if (streamSegment && steps.some(step => step.kind === "text" && step.segment === streamSegment)) streamText = "";
+  return {turnSteps: steps, streamText, streamSegment, streaming: state.streaming || !!streamText};
 }
 
 export function applySession(session: Record<string, unknown>, navigation?: ChatNavigationOutcome) {
@@ -185,7 +203,8 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     if (id && turnSession && id !== turnSession) return;
     const acceptPrefix=!candidateRuntime || !runtimeConflictsWithActiveRun(candidateRuntime);
     const delivered=new Set(acceptPrefix?messages.map(row=>row.ticketId).filter((id):id is string=>!!id):[]);
-    const snapshot = parseRunSnapshot(session.run_snapshot, turnApi().snapshot().runId || parsedRuntime?.activeRunId || "");
+    const snapshot = acceptPrefix ? parseRunSnapshot(session.run_snapshot, turnApi().snapshot().runId || parsedRuntime?.activeRunId || "",
+      turnApi().snapshot().admissionId || parsedRuntime?.activeAdmissionId || "") : null;
     replaceChatState({
       ...state,
       ...(snapshot ? {...mergeRunSnapshot(state, snapshot), turnActive: true} : parsedRuntime?.busy ? {turnActive: true} : {}),

@@ -275,7 +275,7 @@ export async function run() {
   reset();activateChatState("C");noteDisplayedSession("C");
   incoming({type:"chat:session",session:{id:"C",title:"Busy",messages:[{role:"user",text:"Go",ts:1}],
     runtime:{busy:true,active_run_id:"run-busy",active_admission_id:"admission-busy"},
-    run_snapshot:{run_id:"run-busy",segment:3,text:"Writing the rep",steps:[
+    run_snapshot:{run_id:"run-busy",admission_id:"admission-busy",revision:4,segment:3,text:"Writing the rep",steps:[
       {id:"s-n1",kind:"text",label:"Narration",detail:"Reading inputs.",status:"done",ts:1000,segment:1},
       {id:"k1",kind:"tool",call_id:"k1",tool:"ipython",label:"ipython",status:"ok",ts:1100,started_at:1100,completed_at:1900},
       {id:"k2",kind:"tool",call_id:"k2",tool:"ipython",label:"ipython",status:"running",ts:2000,started_at:2000}]}}});
@@ -286,6 +286,21 @@ export async function run() {
   incoming({type:"activity",session_id:"C",source:"chat",run_id:"run-busy",event:"tool:result",tool:"ipython",call_id:"k2",status:"ok",surface:"side"});
   assert.equal(getChatState().streamText,"Writing the report.");
   assert.deepEqual(getChatState().turnSteps.map(step=>step.status),["done","ok","ok"],"a live result settles the snapshot's running cell in place");
+
+  // Snapshots are fenced: another admission of the same logical run, an older
+  // revision, or an earlier model call never replaces newer observed text.
+  const busySession=(snapshot:Record<string,unknown>)=>incoming({type:"chat:session",session:{id:"C",title:"Busy",messages:[{role:"user",text:"Go",ts:1}],
+    runtime:{busy:true,active_run_id:"run-busy",active_admission_id:"admission-busy"},run_snapshot:{run_id:"run-busy",steps:[],...snapshot}}});
+  busySession({admission_id:"admission-old",revision:9,segment:1,text:"Old admission output"});
+  assert.equal(getChatState().streamText,"Writing the report.","an old admission's snapshot is ignored");
+  assert.equal(getChatState().streamSegment,3);
+  busySession({admission_id:"admission-busy",revision:3,segment:3,text:"Stale"});
+  assert.equal(getChatState().streamText,"Writing the report.","an older revision is ignored");
+  busySession({admission_id:"admission-busy",revision:5,segment:2,text:"Earlier call"});
+  assert.deepEqual([getChatState().streamText,getChatState().streamSegment],["Writing the report.",3],"an earlier call never replaces newer text");
+  busySession({admission_id:"admission-busy",revision:6,segment:0,text:"",steps:[{id:"n3",kind:"text",label:"Narration",detail:"Writing the report.",status:"done",ts:3000,segment:3}]});
+  assert.equal(getChatState().streamText,"","text the backend saved as narration is not also the live reply");
+  assert.equal(getChatState().turnSteps.filter(step=>step.kind==="text" && step.segment===3).length,1);
 
   // Queued messages from other agents say who sent them.
   const queue=parseInputQueueSnapshot({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:"A",revision:1,items:[
