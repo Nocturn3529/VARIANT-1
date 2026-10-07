@@ -23,7 +23,6 @@ import {ChatDestination} from "../ChatDestination";
 import {TerminalPanel} from "../context/TerminalPanel";
 import {FilesPanel} from "../context/FilesPanel";
 import {LazySurface} from "../ui/LazySurface";
-const ReviewPanel = lazy(() => import("../context/ReviewPanel").then(module => ({default: module.ReviewPanel})));
 import {getTerminalSnapshot, killTerminal, openNewTerminal, selectTerminal} from "../context/terminalStore";
 import {HistoryRail} from "../shell/HistoryRail";
 import {useAppState} from "../state/appStore";
@@ -83,6 +82,9 @@ import {
   type WorkbenchState,
 } from "./workbenchStore";
 import {allPaneIds,findGroupOfPane, type DropPosition, type GroupNode, type LayoutNode, type SplitNode} from "./layoutModel";
+
+// The Review pane is off the startup path; it loads on first open.
+const ReviewPanel = lazy(() => import("../context/ReviewPanel").then(module => ({default: module.ReviewPanel})));
 
 type PaneDescriptor = {
   id: string;
