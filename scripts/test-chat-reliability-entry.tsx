@@ -14,6 +14,7 @@ import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
 import {normalizeActivityStatus} from "../frontend/main-deck/src/chat/activityModel";
 import {traceSummary} from "../frontend/main-deck/src/chat/traceModel";
 import {persistTrace,traceAnnotationConnection,acknowledgeTrace,resetTraceAnnotations} from "../frontend/main-deck/src/chat/annotations";
+import {parseInputQueueSnapshot} from "../frontend/main-deck/src/protocol/chatQueue";
 
 export async function run() {
   const sent:Array<Record<string,unknown>>=[];
@@ -235,5 +236,81 @@ export async function run() {
   const retained=parseTurnSteps(Array.from({length:60},(_,index)=>({id:`history-${index}`,label:"Action",status:index===59?"error":"ok"})))!;
   assert.equal(retained[0].id,"history-12");assert.equal(retained[0].omittedBefore,12);
   done("trace-audit");
-  console.log("Chat reliability: terminal idempotence, trace outcomes/identity/previews, durable enrichment, active-prefix/optimistic-tail reconciliation and replay side-effect isolation passed");
+
+  // A model call that streams text and then calls tools was narrating: its
+  // text joins the timeline in order and the next call streams fresh.
+  const kinds=()=>getChatState().turnSteps.map(step=>step.kind==="text"?`text:${step.detail}`:step.kind);
+  const cell=(id:string,event:string,call_id:string)=>incoming(event==="tool:start"
+    ?{type:"tool:activity",...route(id),event,tool:"ipython",call_id,status:"running",args_preview:"{}"}
+    :{type:"activity",session_id:"A",source:"chat",run_id:`run-${id}`,event,tool:"ipython",call_id,status:"ok",surface:"side"});
+  reset();sendUserMessage("Narrate");start("narrate");
+  incoming({type:"thinking",...route("narrate"),text:"Plan the check.",segment:1});
+  incoming({type:"token",...route("narrate"),token:"Let me check the team.",segment:1});
+  cell("narrate","tool:start","n1");cell("narrate","tool:result","n1");
+  incoming({type:"token",...route("narrate"),token:"Peers found.",segment:2});
+  cell("narrate","tool:start","n2");cell("narrate","tool:result","n2");
+  incoming({type:"token",...route("narrate"),token:"All done.",segment:3});
+  assert.deepEqual(kinds(),["thinking","text:Let me check the team.","tool","text:Peers found.","tool"],"narration keeps its place between calls");
+  assert.equal(getChatState().streamText,"All done.","only the current call streams as the reply");
+  done("narrate","All done.");
+  assert.deepEqual(getChatState().messages.at(-1)!.steps!.filter(step=>step.kind==="text").map(step=>step.segment),[1,2]);
+  assert.equal(getChatState().messages.at(-1)!.text,"All done.");
+  sent.length=0;
+  persistTrace({type:"chat:session:annotate",id:"A",run_id:"run-narrate",steps:getChatState().messages.at(-1)!.steps!});
+  assert.deepEqual((sent.at(-1)!.steps as {kind:string}[]).map(step=>step.kind),["thinking","tool","tool"],"the backend saves narration itself; annotations carry the rest");
+  reset();sendUserMessage("Continue");start("continue");
+  incoming({type:"token",...route("continue"),token:"First part.",segment:1});incoming({type:"token",...route("continue"),token:"Second part.",segment:2});
+  assert.equal(getChatState().streamText,"First part.\n\nSecond part.","a call without tools in between continues the reply in a new paragraph");
+  assert.equal(getChatState().turnSteps.length,0);
+  reset();sendUserMessage("Stop me");start("stop");done("stop","Task stopped.");
+  incoming({type:"done",...route("stop"),text:"Task stopped.",cancelled:true});
+  assert.equal(getChatState().messages.at(-1)!.outcome,undefined,"an uncancelled done records no outcome");
+  reset();sendUserMessage("Stop me");start("stop2");incoming({type:"done",...route("stop2"),text:"Task stopped.",cancelled:true});
+  assert.equal(getChatState().messages.at(-1)!.outcome,"stopped");
+  reset();sendUserMessage("Fail");start("fail");incoming({type:"done",...route("fail"),text:"Model error: boom",status:"error"});
+  assert.equal(getChatState().messages.at(-1)!.outcome,"error");
+
+  // Opening a chat mid-run starts from the backend's run snapshot, and live
+  // frames continue it.
+  reset();activateChatState("C");noteDisplayedSession("C");
+  incoming({type:"chat:session",session:{id:"C",title:"Busy",messages:[{role:"user",text:"Go",ts:1}],
+    runtime:{busy:true,active_run_id:"run-busy",active_admission_id:"admission-busy"},
+    run_snapshot:{run_id:"run-busy",segment:3,text:"Writing the rep",steps:[
+      {id:"s-n1",kind:"text",label:"Narration",detail:"Reading inputs.",status:"done",ts:1000,segment:1},
+      {id:"k1",kind:"tool",call_id:"k1",tool:"ipython",label:"ipython",status:"ok",ts:1100,started_at:1100,completed_at:1900},
+      {id:"k2",kind:"tool",call_id:"k2",tool:"ipython",label:"ipython",status:"running",ts:2000,started_at:2000}]}}});
+  assert.equal(getChatState().turnActive,true,"a running chat opens live");
+  assert.deepEqual(getChatState().turnSteps.map(step=>`${step.kind}:${step.status}`),["text:done","tool:ok","tool:running"]);
+  assert.equal(getChatState().streamText,"Writing the rep");
+  incoming({type:"token",session_id:"C",client_id:"client",source:"chat",admission_id:"admission-busy",run_id:"run-busy",token:"ort.",segment:3});
+  incoming({type:"activity",session_id:"C",source:"chat",run_id:"run-busy",event:"tool:result",tool:"ipython",call_id:"k2",status:"ok",surface:"side"});
+  assert.equal(getChatState().streamText,"Writing the report.");
+  assert.deepEqual(getChatState().turnSteps.map(step=>step.status),["done","ok","ok"],"a live result settles the snapshot's running cell in place");
+
+  // Queued messages from other agents say who sent them.
+  const queue=parseInputQueueSnapshot({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:"A",revision:1,items:[
+    {ticket_id:"t-peer",chat_id:"A",text:"[Peer message]",delivery:"follow_up",state:"queued",origin:{kind:"peer",peer_id:"chat:chat:branch_x",message_id:"peer_message_1",display_name:"Space Bunny"}},
+    {ticket_id:"t-own",chat_id:"A",text:"mine",delivery:"follow_up",state:"queued",origin:{kind:"other"}}]})!;
+  assert.deepEqual(queue.items.map(item=>item.origin?.display_name ?? null),["Space Bunny",null]);
+
+  // A message from another agent that steers into the running turn shows in
+  // the timeline where it landed; one that starts a turn is a peer card, never
+  // the model's envelope text.
+  const peerQueue=(revision:number,delivery:"steer"|"follow_up",items=true)=>({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:"A",revision,
+    items:items?[{ticket_id:"t-peer",chat_id:"A",text:"[Peer message]\nSender: Space Bunny (chat:chat:branch_x)\n\nTake the Git track.",delivery,state:"queued",
+      origin:{kind:"peer",peer_id:"chat:chat:branch_x",message_id:"peer_message_9",display_name:"Space Bunny",content:"Take the Git track."}}]:[]});
+  reset();sendUserMessage("Long mission");start("mission");
+  incoming({type:"token",...route("mission"),token:"Working through the feeds.",segment:1});
+  incoming(peerQueue(1,"steer"));
+  incoming({type:"chat:queue_progress",session_id:"A",id:"t-peer",delivery:"steer",state:"delivered",queue:peerQueue(2,"steer",false)});
+  const inbound=getChatState().turnSteps.find(step=>step.peerInbound);
+  assert.equal(inbound?.peerInbound?.content,"Take the Git track.","a steered peer message lands in the timeline");
+  assert.equal(getChatState().turnSteps[0].kind,"text","narration before it stays in order");
+  assert.equal(getChatState().messages.some(message=>message.text.startsWith("[Peer message]")),false,"the envelope never becomes a bubble");
+  reset();
+  incoming(peerQueue(1,"follow_up"));
+  incoming({type:"chat:queue_progress",session_id:"A",id:"t-peer",delivery:"follow_up",state:"delivered",queue:peerQueue(2,"follow_up",false)});
+  const card=getChatState().messages.at(-1)!;
+  assert.deepEqual([card.origin?.message_id,card.peerDisplay?.content],["peer_message_9","Take the Git track."],"a delivered follow-up is a peer card");
+  console.log("Chat reliability: terminal idempotence, trace outcomes/identity/previews, durable enrichment, active-prefix/optimistic-tail reconciliation, replay side-effect isolation, ordered narration, run snapshots and peer queue origins passed");
 }

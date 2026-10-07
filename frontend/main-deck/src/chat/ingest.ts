@@ -360,6 +360,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
         orphanedTask:null,
         pause: currentPause(),
         streamText: "",
+        streamSegment: undefined,
         streaming: true,
         turnActive: true,
         lastError: "",
@@ -375,12 +376,17 @@ function ingestOwnedChat(message: ChatWsMessage) {
     }
 
     case "token": {
-      const cur = getChatState();
       settleRunningThinking();
+      const cur = getChatState();
+      // A new model call without tools in between continues the reply (for
+      // example after a length recovery); give it its own paragraph.
+      const segment = message.segment ?? cur.streamSegment;
+      const joiner = segment !== cur.streamSegment && cur.streamText.trim() && !/\n\s*$/.test(cur.streamText) ? "\n\n" : "";
       patchChatState({
         streaming: true,
         turnActive: true,
-        streamText: `${cur.streamText || ""}${message.token}`,
+        streamText: `${cur.streamText || ""}${joiner}${message.token}`,
+        streamSegment: segment,
       });
       return;
     }

@@ -16,10 +16,11 @@ import {
 import {
   mergeMessageEnrichment,
   parseMessages,
+  parseTurnSteps,
   reconcileActiveTranscript,
 } from "./messages";
 import {ACTION_SURFACE} from "./runtimeProfile";
-import type {ChatRuntimeState} from "./types";
+import type {ChatRuntimeState, ChatState, ChatTurnStep} from "./types";
 import type {ChatNavigationOutcome} from "../protocol/chatEvents";
 import {invalidatePendingChatAttachments} from "./attachments";
 import {restorePauseFromRuntime,runtimeConflictsWithActiveRun} from "./pause";
@@ -121,6 +122,41 @@ function hydrateTurn(runtime: ChatRuntimeState | null): void {
   } else if (runtime.busy === false && turn.snapshot().admissionId) turn.end({status:"complete"});
 }
 
+type RunSnapshot = {runId: string; steps: ChatTurnStep[]; segment?: number; text: string};
+
+/** The backend's view of the active run, sent with chat:session while it runs. */
+function parseRunSnapshot(value: unknown, runId: string): RunSnapshot | null {
+  if (!value || typeof value !== "object" || !runId) return null;
+  const row = value as Record<string, unknown>;
+  if (row.run_id !== runId) return null;
+  const segment = typeof row.segment === "number" && Number.isSafeInteger(row.segment) && row.segment > 0 ? row.segment : undefined;
+  // Live results merge on the same key a live start gets.
+  const steps = (parseTurnSteps(row.steps, true) || []).map(step => step.callId && !step.key ? {...step, key: `call:${step.callId}`} : step);
+  return {runId, steps, segment, text: typeof row.text === "string" ? row.text : ""};
+}
+
+/**
+ * Opening a chat mid-run starts from the backend's snapshot. Steps this
+ * window already saw keep their place and pick up newer results; narration
+ * is one step per model call.
+ */
+function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatState, "turnSteps" | "streamText" | "streamSegment" | "streaming"> {
+  const local = state.turnSteps;
+  const identity = (step: ChatTurnStep) => step.kind === "text" && step.segment ? `text:${step.segment}` : step.callId || step.id;
+  const remote = new Map(snapshot.steps.map(step => [identity(step), step]));
+  const merged = local.map(step => {
+    const newer = remote.get(identity(step));
+    if (!newer) return step;
+    remote.delete(identity(step));
+    return step.status === "running" && newer.status !== "running" ? {...step, ...newer, id: step.id} : step;
+  });
+  const steps = [...merged, ...remote.values()].map((step, order) => ({step, order}))
+    .sort((a, b) => (a.step.ts - b.step.ts) || (a.order - b.order)).map(({step}) => step);
+  const sameCall = snapshot.segment !== undefined && snapshot.segment === state.streamSegment;
+  const streamText = sameCall && state.streamText.length >= snapshot.text.length ? state.streamText : snapshot.text;
+  return {turnSteps: steps, streamText, streamSegment: snapshot.segment ?? state.streamSegment, streaming: state.streaming || !!streamText};
+}
+
 export function applySession(session: Record<string, unknown>, navigation?: ChatNavigationOutcome) {
   const prior = getChatState();
   const id = String(session.id || session.session_id || "") || null;
@@ -149,8 +185,10 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     if (id && turnSession && id !== turnSession) return;
     const acceptPrefix=!candidateRuntime || !runtimeConflictsWithActiveRun(candidateRuntime);
     const delivered=new Set(acceptPrefix?messages.map(row=>row.ticketId).filter((id):id is string=>!!id):[]);
+    const snapshot = parseRunSnapshot(session.run_snapshot, turnApi().snapshot().runId || parsedRuntime?.activeRunId || "");
     replaceChatState({
       ...state,
+      ...(snapshot ? {...mergeRunSnapshot(state, snapshot), turnActive: true} : parsedRuntime?.busy ? {turnActive: true} : {}),
       connected: true,
       sessionId: state.sessionId || id,
       title: (!id || id === state.sessionId) ? (title || state.title) : state.title,

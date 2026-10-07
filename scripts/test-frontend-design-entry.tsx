@@ -55,7 +55,8 @@ export async function run() {
     assert.equal(host.querySelector('.execution-trace__owner'), null, 'main agent has no name or empty badge');
     const thought: ChatTurnStep = {id: 'visible-thought', kind: 'thinking', label: 'Thinking', detail: 'Check the browser connection before opening the page.', status: 'running', ts: Date.now()};
     await act(async () => root.render(<TurnActivity key="thought-test" steps={[thought]} live={true} streamText="" turnStartedAt={Date.now()}/>));
-    assert.match(host.querySelector('.execution-trace__counts')!.textContent!, /1 thought/);
+    assert.ok(host.querySelector('.turn-timeline > .trace-entry--thought'), 'a thought is its own block in the timeline');
+    assert.equal(host.querySelector('.execution-trace__summary'), null, 'a thought is not folded into a tool run');
     assert.equal(host.querySelector('.trace-entry--thought button')!.getAttribute('aria-expanded'), 'true', 'live supplied thought is visible');
     await act(async () => host.querySelector<HTMLButtonElement>('.trace-entry--thought button')!.click());
     assert.match(host.querySelector('.trace-entry__headline')!.textContent!, /Check the browser/, 'collapsed thought still has a readable preview');
@@ -91,10 +92,10 @@ export async function run() {
     assert.match(host.querySelector('.trace-entry__body code')!.textContent!, /browser.navigate/);
     await act(async () => setChatState({...getChatState(), pause: {state: 'paused', admissionId: 'test', runId: 'test', revision: 1, synced: true}}));
     assert.equal(host.querySelector('.trace-progress'), null, 'paused run stops animated activity');
-    assert.match(host.querySelector('.execution-trace__summary')!.textContent!, /Paused/);
+    assert.match(host.querySelector('.turn-timeline__status')!.textContent!, /Paused/);
     await act(async () => setChatState({...getChatState(), pause: null, connected: false}));
     assert.equal(host.querySelector('.trace-progress'), null, 'disconnected run does not pretend to be live');
-    assert.match(host.querySelector('.execution-trace__summary')!.textContent!, /Reconnecting/);
+    assert.match(host.querySelector('.turn-timeline__status')!.textContent!, /Reconnecting/);
     await act(async () => setChatState({...getChatState(), connected: true}));
     await act(async () => root.render(<TurnActivity key="live-cell-test" steps={[{...browserCell, status: 'ok'}]} live={true} streamText="" turnStartedAt={Date.now()}/>));
     assert.equal(host.querySelector('.trace-entry .trace-progress'), null, 'completed row stops animating');
@@ -112,11 +113,27 @@ export async function run() {
     assert.equal(host.querySelector('.trace-entry__body'),null,'same call IDs in another chat do not borrow row disclosure state');
     const stopped:ChatTurnStep={id:"status-only",kind:"tool",tool:"custom_call",label:"Custom action",status:"cancelled",durationMs:1200,ts:100};
     await act(async()=>root.render(<TurnActivity key="status-only" steps={[stopped]} live={false} streamText="" turnStartedAt={100}/>));
-    assert.match(host.querySelector('.execution-trace__alerts')!.textContent!,/Stopped/,'a folded trace retains interruption information');
-    await act(async()=>host.querySelector<HTMLButtonElement>('.execution-trace__summary')!.click());
+    assert.equal(host.querySelector('.execution-trace__summary'),null,'a single call is a row, not a run');
     const statusRow=host.querySelector('.trace-entry__disclosure')!;
     assert.equal(statusRow.tagName,'DIV');assert.equal(statusRow.getAttribute('tabindex'),'0');
     assert.match(statusRow.getAttribute('aria-label')!,/Stopped.*1\.2s/);
+
+    // A turn reads in order: thought, narration, a run of cells, a message to another agent.
+    const narration: ChatTurnStep = {id: "narration-1", kind: "text", label: "Narration", detail: "Let me check the **peers** first.", status: "done", ts: 101, segment: 1};
+    const peerSend: ChatTurnStep = {id: "peer-1", kind: "step", label: "Message to LongCat", status: "done", ts: 104,
+      peerMessage: {message_id: "peer_message_1", state: "queued", content: "Take the Git track.", target_display_name: "LongCat"} as ChatTurnStep["peerMessage"]};
+    await act(async () => root.render(<TurnActivity key="ordered" steps={[{...thought, status: "done", ts: 100}, narration, ...cells, peerSend]} live={false} streamText="" turnStartedAt={100}/>));
+    assert.deepEqual([...host.querySelector(".turn-timeline")!.children].map(node => node.classList[0]),
+      ["trace-entry", "turn-narration", "tool-run", "peer-send-trace"], "thought, narration, tool run and agent message keep their order");
+    assert.equal(host.querySelector(".turn-narration strong")?.textContent, "peers", "narration renders as text");
+    assert.match(host.querySelector(".peer-send-trace summary")!.textContent!, /Sent a message to LongCat.*Queued/);
+    assert.equal(host.querySelectorAll(".tool-run .execution-trace__summary").length, 1, "consecutive cells share one run");
+    assert.equal(host.querySelector(".tool-run code.trace-entry__headline"), null, "a folded run shows its summary, not each cell");
+    await act(async () => host.querySelector<HTMLButtonElement>(".tool-run .execution-trace__summary")!.click());
+    assert.equal(host.querySelector(".tool-run code.trace-entry__headline")!.textContent, "Load measurements", "a cell names its first line");
+    await act(async () => root.render(<TurnActivity key="ordered-live" steps={[...cells, {...cells[1], id: "cell-3", callId: "call-3", status: "running"}]} live={true} streamText="" turnStartedAt={Date.now()}/>));
+    assert.equal(host.querySelector(".tool-run .execution-trace__summary")!.getAttribute("aria-expanded"), "false", "a live run stays folded");
+    assert.ok(host.querySelector(".tool-run__ticker .trace-entry.is-running"), "the ticker shows the running call");
     await act(async () => root.render(<><AppearanceBindings/><AppearanceSettings/></>));
     await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Compact')!.click());
     assert.equal(getAppearance().density, "compact"); assert.equal(document.documentElement.dataset.density, "compact");

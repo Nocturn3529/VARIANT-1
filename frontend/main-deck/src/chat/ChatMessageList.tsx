@@ -1,5 +1,6 @@
 import {PeerTranscriptMessage} from "../peers/PeerTranscriptMessage";
 import {CopyButton} from "../ui/CopyButton";
+import {Icon} from "../ui/Icon";
 import {KernelGlyph} from "../motion/KernelGlyph";
 /**
  * Virtualized transcript and safe Markdown rendering for the Chat destination.
@@ -164,6 +165,9 @@ function addFailedActivityTurn(turns: TranscriptTurn[], steps: ChatTurnStep[]): 
   }];
 }
 
+/** The whole reply of a run the user stopped before it answered. */
+const STOPPED_ONLY = /^(?:task stopped|stopped)\.?$/i;
+
 function lib(): typeof runtimeLib {
   return runtimeLib;
 }
@@ -230,9 +234,17 @@ function MessageArticle({
   const key = speechKeyFor(message, index);
   const speechActive = !isUser && !streaming && speechKey === key;
   const phase = speechActive ? speechPhase : "idle";
+  // Saved rows predate the outcome field; the backend's error and stop texts are fixed.
+  const outcome = isUser || streaming ? undefined
+    : message.outcome || (/^Model error:/.test(text) ? "error" : STOPPED_ONLY.test(text.trim()) ? "stopped" : undefined);
+  if (outcome === "stopped" && STOPPED_ONLY.test(text.trim())) {
+    return <article className="message message--assistant message--status" aria-label="VARIANT-1">
+      <p className="message__status" role="status"><Icon name="stop"/>Task stopped</p>
+    </article>;
+  }
 
   return <article
-    className={`message message--${isUser ? "user" : "assistant"}${streaming ? " runtime-streaming" : ""}`}
+    className={`message message--${isUser ? "user" : "assistant"}${streaming ? " runtime-streaming" : ""}${outcome === "error" ? " is-error" : ""}`}
     aria-label={isUser ? "You" : "VARIANT-1"}
   >
     <div className="message__body">
@@ -254,7 +266,8 @@ function MessageArticle({
           ) : null}
         </div>
       </> : <>
-        <div className="message__content" aria-busy={streaming || undefined}>
+        <div className="message__content" aria-busy={streaming || undefined} role={outcome === "error" ? "alert" : undefined}>
+          {outcome === "error" ? <Icon name="error" className="message__outcome-icon"/> : null}
           <RichText value={text} streaming={streaming} />
         </div>
         {!streaming ? <div className={`message-actions runtime-message-actions${latest ? " is-latest" : ""}`}>
@@ -291,6 +304,7 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
 }) {
   const steps = stepsForTurn(turn);
   const hasResponse = turn.assistants.length > 0 || Boolean(turn.streamingMessage);
+  const shownPeerMessages = useMemo(() => new Set(turn.users.flatMap(({message}) => message.origin ? [message.origin.message_id] : [])), [turn.users]);
 
   const turnStartedAt = Math.max(0, Number(
     turn.users[0]?.message.ts || turn.assistants[0]?.message.ts || Date.now() / 1000,
@@ -318,12 +332,13 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
       streamText={turn.streamingMessage?.text || ""}
       turnStartedAt={turnStartedAt}
       scope={turn.key}
+      shownPeerMessages={shownPeerMessages}
     /> : null}
 
     {hasResponse ? <div className="chat-turn__responses">
       {turn.assistants.map(({message, index}) => (
         <div className="chat-response-segment" key={`${index}-${message.ts || 0}-response`}>
-        {!turn.live ? <TurnActivity steps={message.steps || []} live={false} streamText="" turnStartedAt={turnStartedAt} tracePersistence={message.tracePersistence} scope={message.runId || turn.key}/> : null}
+        {!turn.live ? <TurnActivity steps={message.steps || []} live={false} streamText="" turnStartedAt={turnStartedAt} tracePersistence={message.tracePersistence} scope={message.runId || turn.key} shownPeerMessages={shownPeerMessages}/> : null}
         <MessageArticle
           key={`${index}-${message.ts || 0}-assistant`}
           message={message}
@@ -350,8 +365,11 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
 export function ChatMessageList() {
   const {
     messages, streaming, streamText, turnActive, speechKey, speechPhase, turnSteps,
-    lastError, activeTurnId, runtime, sessionId, connected,
+    lastError, activeTurnId, runtime, sessionId, connected, inputQueue,
   } = useChatState();
+  // Another agent's message waits in this chat's queue until the current
+  // task ends. Show it where it will land instead of only as a queue count.
+  const waitingPeers = useMemo(() => (inputQueue.snapshot?.items || []).filter(item => item.origin), [inputQueue.snapshot]);
   const transcriptTurns = useMemo(() => buildTranscriptTurns(messages), [messages]);
   const turns = useMemo(() => (
     streaming || turnActive
@@ -640,6 +658,11 @@ export function ChatMessageList() {
           style={{height: Math.max(0, Math.round(windowRange.bottomPad))}}
         />
       </>}
+      {waitingPeers.length ? <div className="chat-waiting-peers">{waitingPeers.map(item => <PeerTranscriptMessage key={item.ticket_id}
+        message={{role: "user", text: "", origin: {kind: "peer", peer_id: item.origin!.peer_id, message_id: item.origin!.message_id},
+          ...(item.origin!.content !== undefined ? {peerDisplay: {display_name: item.origin!.display_name, content: item.origin!.content}} : {})}}
+        displayName={item.origin!.display_name}
+        waiting={item.state === "parked" || item.state === "resume_queued" ? "Parked" : "Waiting for the current task"}/>)}</div> : null}
     </div>
   </div>
   <ConversationTimeline

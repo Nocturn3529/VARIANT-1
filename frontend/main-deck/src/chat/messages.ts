@@ -82,7 +82,8 @@ function parseStoredAttachments(raw: unknown): ChatAttachment[] {
   return out;
 }
 
-export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
+/** Saved steps; `live` keeps running rows for a run still in progress. */
+export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | undefined {
   if (!Array.isArray(raw) || !raw.length) return undefined;
   const out: ChatTurnStep[] = [];
   for (const item of raw) {
@@ -93,14 +94,15 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
     const kindRaw = String(row.kind || "note");
     const kind = (
       kindRaw === "tool" || kindRaw === "note" || kindRaw === "step"
-      || kindRaw === "thinking"
+      || kindRaw === "thinking" || kindRaw === "text"
     ) ? kindRaw as ChatTurnStep["kind"] : "note";
+    if (kind === "text" && !String(row.detail || "").trim()) continue;
     let status = String(row.status || "done") as ChatTurnStep["status"];
     if (!["running", "ok", "error", "done", "cancelled", "interrupted", "timed_out", "skipped", "degraded", "unknown"].includes(status || "")) {
       status = "unknown";
     }
     // Reloaded steps should never stay "Live".
-    if (status === "running") status = "interrupted";
+    if (status === "running" && !live) status = "interrupted";
     if (kind === "thinking" && (row.source === "provider_summary" || row.summary_source === "provider_summary")) status = "done";
     out.push({
       id: String(row.id || newStepId()),
@@ -109,7 +111,8 @@ export function parseTurnSteps(raw: unknown): ChatTurnStep[] | undefined {
         ? (row.status === "running" ? "cancelled" : row.status) as ChatTurnStep["summaryState"] : undefined,
       summaryRevision: typeof row.summary_revision === "number" && Number.isSafeInteger(row.summary_revision) ? row.summary_revision : undefined,
       label: label.slice(0, 160),
-      detail: row.detail != null ? boundedPreview(String(row.detail), kind === "thinking" ? 16_000 : 400) : undefined,
+      detail: row.detail != null ? boundedPreview(String(row.detail), kind === "thinking" || kind === "text" ? 16_000 : 400) : undefined,
+      segment: typeof row.segment === "number" && Number.isSafeInteger(row.segment) && row.segment > 0 ? row.segment : undefined,
       omittedBefore: Math.max(0, Math.min(1_000_000, Number(row.omitted_before) || 0)),
       status,
       tool: row.tool != null ? String(row.tool) : undefined,
