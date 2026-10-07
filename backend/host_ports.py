@@ -95,12 +95,17 @@ def child_worker_ports(h) -> child_worker.ChildWorkerPorts:
 
 
 async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
-    """Send to the owner socket, falling through to surviving chat Decks."""
+    """Send to the owner socket, falling through to surviving chat Decks.
+
+    Display delivery never decides a run's outcome: when no Deck can take the
+    frame (a background chat nobody is viewing, a closed window), the frame is
+    dropped and the run continues; its results are committed as usual.
+    """
 
     try:
         await websocket.send_json(payload)
         return
-    except Exception as owner_error:
+    except Exception:
         runtime = h.require_runtime().session_runtimes
         chat_id = str(
             getattr(getattr(session, "active", None), "runtime_chat_id", "")
@@ -108,17 +113,13 @@ async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
             or getattr(session, "viewed_session_id", "")
             or ""
         )
-        delivered = False
         for target in runtime.attached_transports(chat_id) if chat_id else ():
             if target is websocket:
                 continue
             try:
                 await target.send_json(payload)
-                delivered = True
             except Exception:
                 continue
-        if not delivered:
-            raise owner_error
 
 
 def tool_runner_ports(h, websocket, session=None) -> ToolRunnerPorts:
