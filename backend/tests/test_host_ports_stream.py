@@ -107,12 +107,14 @@ async def test_task_stream_sends_live_tokens_only_to_the_owner_socket():
         {
             "type": "token",
             "token": "Hel",
+            "segment": 1,
             "client_id": "deck-react-owner",
             "source": "chat",
         },
         {
             "type": "token",
             "token": "lo",
+            "segment": 1,
             "client_id": "deck-react-owner",
             "source": "chat",
         },
