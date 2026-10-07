@@ -2,6 +2,16 @@ export type ViewportSize = Readonly<{width: number; height: number}>;
 export const DEFAULT_BROWSER_VIEWPORT: ViewportSize = {width: 800, height: 480};
 export const browserWindowSize = (size: ViewportSize) => ({width: size.width + 32, height: size.height + 160});
 
+/** Occluded native windows may suspend animation frames despite valid layout. */
+export function nextBrowserLayoutFrame(owner: Window): Promise<void> {
+  return new Promise(resolve => {
+    let frame = 0;
+    const finish = () => { clearTimeout(timer); owner.cancelAnimationFrame(frame); resolve(); };
+    const timer = setTimeout(finish, 100);
+    frame = owner.requestAnimationFrame(finish);
+  });
+}
+
 /** A deliberate mobile size is valid; an automatic narrow dock is not. */
 export function parseBrowserViewport(value: Record<string, unknown>): ViewportSize | null {
   if (value.mode === "auto") return null;

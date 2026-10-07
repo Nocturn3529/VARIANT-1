@@ -70,6 +70,8 @@ Use the release notes for the behavior and qualification of a downloaded build.
   Explicit Goal budgets pause at model/tool boundaries; defaults remain unlimited.
   Unavailable peer work blocks an awaiting Goal for inspection. Provider usage
   is durably recorded off the event loop before terminal budget reconciliation.
+  Restart recovery surfaces consumed peer work without a settlement as uncertain,
+  preserving its evidence for inspection.
 
 ## Costs and model access
 

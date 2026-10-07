@@ -89,6 +89,13 @@ class SessionRuntimeRegistry:
         self._idle_listeners: list[Callable[[str], Any]] = []
         self._settlement_listeners: list[Callable[[str, str, str], Any]] = []
         self._run_end_listeners: list[Callable[[str, str, str], Any]] = []
+        self._pending_admission_tasks: dict[str, asyncio.Task] = {}
+
+    def admission_task_pending(self, admission_id):
+        """Process-owned finalization may outlive release of its Work admission."""
+        with self._guard:
+            task = self._pending_admission_tasks.get(str(admission_id or ''))
+            return task is not None and not task.done()
 
     def register_run_end_listener(self, callback):
         if callback not in self._run_end_listeners:
@@ -800,12 +807,16 @@ class SessionRuntimeRegistry:
             if admission is None:
                 raise LookupError(f"unknown run admission: {admission_id}")
             admission.task = task
+            self._pending_admission_tasks[admission.admission_id] = task
         def ended(_task):
             # This is later than admission release: terminal persistence may
             # still be running after finish_run. Observers must distinguish it
             # from a task that actually ended without a settlement.
             if admission.task is not _task:
                 return
+            with self._guard:
+                if self._pending_admission_tasks.get(admission.admission_id) is _task:
+                    self._pending_admission_tasks.pop(admission.admission_id, None)
             for callback in tuple(self._run_end_listeners):
                 try:
                     callback(admission.chat_id, admission.run_id, admission.admission_id)

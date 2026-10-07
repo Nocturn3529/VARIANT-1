@@ -1,6 +1,6 @@
 import {BrowserCommandError, browserDeadline, checkBrowserRequest} from "./browserLifecycle";
 import {allowedBrowserUrl, getPreviewState, setBrowserViewport, type BrowserPageState} from "./previewStore";
-import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, parseBrowserViewport} from "./browserViewport";
+import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, nextBrowserLayoutFrame, parseBrowserViewport} from "./browserViewport";
 import {downloadsForTab, findStartedDownload, isDownloadCommand, runBrowserDownloadCommand} from "./browserDownloads";
 import {browserKeyInput} from "./browserKeyboard";
 
@@ -339,7 +339,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     setBrowserViewport(handle.id, requested);
     applyBrowserViewport(webview, requested);
     const owner = webview.ownerDocument.defaultView || window;
-    await browserDeadline(new Promise<void>(resolve => owner.requestAnimationFrame(() => owner.requestAnimationFrame(() => resolve()))), 2000, "viewport", signal);
+    await browserDeadline((async () => {await nextBrowserLayoutFrame(owner); await nextBrowserLayoutFrame(owner);})(), 2000, "viewport", signal);
     if(webview.flushLayout)await browserDeadline(webview.flushLayout(),2000,"viewport",signal);
     valid();
     const viewport = measureBrowserViewport(webview);
@@ -403,16 +403,16 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     // Revealing a retained tab schedules its automatic layout in the next
     // frame. Settle that layout before fixing the capture's size provenance.
     applyBrowserViewport(webview, getPreviewState().tabs.find(tab => tab.id === handle.id)?.viewport);
-    const owner = webview.ownerDocument.defaultView || window;
     let settling = true;
     const settle = async () => {
       let previous = measureBrowserViewport(webview), frames = 0;
       while (frames < 2) {
-        await new Promise<void>(resolve => owner.requestAnimationFrame(() => resolve()));
+        await nextBrowserLayoutFrame(webview.ownerDocument.defaultView || window);
         if (!settling) return;
         valid();
         const next = measureBrowserViewport(webview);
-        frames = next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
+        frames = next.visible_width > 0 && next.visible_height > 0
+          && next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
         previous = next;
       }
     };

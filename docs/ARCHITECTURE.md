@@ -114,6 +114,11 @@ recipient. Request-handle inspection/waits expose a committed native answer and
 terminal status by exact recipient run/admission identity. This observation
 creates no synthetic reply or prompt and is not independent task verification.
 Explicit replies remain supported and take precedence in message waits.
+Startup reconciles consumed native requests that have exact admission/run proof
+but no settlement into explicit uncertain observations. This blocks awaiting
+Goals for inspection without replaying work. Process-owned finalization remains
+protected even after admission release; legacy requests without proof are not
+assigned invented identities or outcomes.
 
 The metadata-only `data/model-usage.sqlite3` ledger retains physical requests
 independently of the bounded model inspector. It records session/Goal/run lineage,
@@ -349,6 +354,9 @@ resynchronization. Tokens first target the owner, then surviving chat views or
 the native event sink. A failed display send does not abort canonical execution.
 Native token/thinking publication enqueues without waiting for a slow Deck;
 terminal frames retain the same ordered outbox.
+Browser viewport and capture layout waits have bounded timer fallbacks for
+occluded windows whose animation frames stop. Capture waits for visible layout
+to settle before pinning image provenance; ownership and document fences remain.
 
 Admitted Goal and peer turns project into their owning chat's live transcript.
 Their original source remains in the event; the UI chat lane requires explicit

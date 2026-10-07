@@ -25,10 +25,28 @@ CREATE INDEX IF NOT EXISTS idx_run_settlement_chat_cursor
     ON astb_run_settlement(chat_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_ticket_admission_proof
     ON astb_input_ticket(chat_id,json_extract(proof_json,'$.admission_id'),state,ticket_id);
+CREATE INDEX IF NOT EXISTS idx_completed_native_request
+    ON astb_input_ticket(ticket_id) WHERE state='completed' AND source GLOB 'peer:*';
 '''
 
 
 class RunSettlementHistory:
+    def unsettled_completed_peer_tickets(self, *, after='', limit=200):
+        """Cursor-page exact consumed requests lacking their native settlement."""
+        with self._connect() as conn:
+            rows = conn.execute("""SELECT t.ticket_id,t.chat_id,
+                json_extract(t.proof_json,'$.admission_id') AS admission_id,
+                json_extract(t.proof_json,'$.run_id') AS run_id
+                FROM astb_input_ticket t WHERE t.ticket_id>? AND t.state='completed'
+                AND t.source GLOB 'peer:*'
+                AND COALESCE(json_extract(t.proof_json,'$.admission_id'),'')<>''
+                AND COALESCE(json_extract(t.proof_json,'$.run_id'),'')<>''
+                AND NOT EXISTS(SELECT 1 FROM astb_run_settlement s WHERE s.chat_id=t.chat_id
+                    AND s.admission_id=json_extract(t.proof_json,'$.admission_id')
+                    AND s.run_id=json_extract(t.proof_json,'$.run_id'))
+                ORDER BY t.ticket_id LIMIT ?""",(str(after),max(1,min(200,int(limit))))).fetchall()
+        return [dict(row) for row in rows]
+
     def completed_peer_ticket_ids(self, chat_id, run_id, admission_id, *, after='', limit=200):
         cap = max(1, min(200, int(limit)))
         with self._connect() as conn:

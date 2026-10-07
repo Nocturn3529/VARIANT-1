@@ -8,6 +8,59 @@ from peers import PeerError
 
 
 @pytest.mark.asyncio
+async def test_restart_records_uncertain_consumed_peer_request_without_replaying(tmp_path):
+    from peers import PeerCommunicationService
+    from session_runtime.registry import SessionRuntimeRegistry
+    from session_runtime.repository import SessionRuntimeRepository
+    service, runtimes, sessions, chat, first, second = _stack(tmp_path)
+    service.host.require_runtime=lambda:SimpleNamespace()
+    admission=runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission,run_id='lost-run',thread_id='lost-run',source='chat')
+    request=await service.send('chat:'+first,'chat:'+second,'Review once')
+    row=runtimes.claim_input(second,'steer',run_id='lost-run')
+    runtimes.complete_transcript_commit(second,[row])
+    await service.shutdown()
+    # Process-owned reservations vanish across restart; durable proof survives.
+    fresh=SessionRuntimeRegistry(SessionRuntimeRepository(runtimes.repository.path))
+    recovered=PeerCommunicationService(service.host, service.repository,
+        sessions=sessions,session_runtimes=fresh,chat_service=chat)
+    try:
+        await recovered.start()
+        assert 'without a settlement' in recovered.native_wait_failure('chat:'+first,request['message_id'])
+        assert recovered.native_completion('chat:'+first,request['message_id']) is None
+        assert service.repository.find_reply(request['message_id']) is None
+        chat.start_next_queued_input.assert_not_awaited()
+        revision=service.repository.get_message(request['message_id'])['revision']
+        await recovered.shutdown();await recovered.start()
+        assert recovered.native_completion('chat:'+first,request['message_id']) is None
+        assert service.repository.get_message(request['message_id'])['revision']==revision
+    finally:
+        await recovered.shutdown()
+        runtimes.finish_run(admission,status='test_cleanup')
+
+
+@pytest.mark.asyncio
+async def test_service_restart_does_not_invalidate_final_persistence_after_release(tmp_path):
+    service,runtimes,_,_,first,second=_stack(tmp_path)
+    service.host.require_runtime=lambda:SimpleNamespace()
+    admission=runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission,run_id='finishing-run',thread_id='finishing-run',source='chat')
+    gate=asyncio.Event();task=asyncio.create_task(gate.wait());runtimes.bind_admission_task(admission,task)
+    request=await service.send('chat:'+first,'chat:'+second,'Review once')
+    row=runtimes.claim_input(second,'steer',run_id='finishing-run')
+    runtimes.complete_transcript_commit(second,[row]);runtimes.finish_run(admission,status='terminal')
+    try:
+        await service.shutdown();await service.start()
+        assert service.native_wait_failure('chat:'+first,request['message_id']) is None
+        runtimes.repository.store_run_settlement(second,admission,{'run_id':'finishing-run','status':'ok','settled':True},'Retained result')
+        gate.set();await task;await asyncio.sleep(0)
+        assert not runtimes.admission_task_pending(admission)
+        assert service.native_completion('chat:'+first,request['message_id'])['final_answer']=='Retained result'
+    finally:
+        gate.set();await task;await service.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_finished_task_without_settlement_exposes_failure_without_fabricating_completion(tmp_path):
     service, runtimes, _, _, first, second = _stack(tmp_path)
     service.host.require_runtime=lambda:SimpleNamespace()
