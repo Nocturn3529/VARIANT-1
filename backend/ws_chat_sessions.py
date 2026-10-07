@@ -465,6 +465,9 @@ def register(on):
         call_ids = msg.get('call_ids') if isinstance(msg.get('call_ids'), list) else []
         calls = runtimes.repository.outer_tool_results(sid, observed_run, call_ids)
         runtime = runtimes.snapshot(sid)
+        settlement = (runtimes.repository.get_run_settlement(sid, run_id=observed_run,
+                                                            admission_id=observed_admission)
+                      if observed_run and observed_admission else None)
         if not runtime:
             await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
                                        'request_id': request_id, 'error': 'runtime_unavailable'})
@@ -475,7 +478,7 @@ def register(on):
             'busy': runtime.get('busy', False),
             'active_run_id': runtime.get('active_run_id', ''),
             'active_admission_id': runtime.get('active_admission_id', ''),
-            'queue': runtimes.queue_snapshot(sid), 'calls': calls})
+            'queue': runtimes.queue_snapshot(sid), 'calls': calls, 'settlement': settlement})
 
     @on("chat:runtime:action")
     async def _chat_runtime_action(srv, websocket, session, msg):

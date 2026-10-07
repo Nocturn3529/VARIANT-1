@@ -21,8 +21,9 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
 (async()=>{
   assert.equal((await handler({trusted:false},7)).ok,false);
   assert.equal((await handler({trusted:true},'7')).ok,false);
-  assert.equal((await handler({trusted:true},99)).ok,false);
-  guest.hostWebContents=outsider; assert.equal((await handler({trusted:true},7)).ok,false);
+  assert.match((await handler({trusted:true},99)).error,/guest_missing/);
+  guest.isDestroyed=()=>true;assert.match((await handler({trusted:true},7)).error,/guest_destroyed/);guest.isDestroyed=()=>false;
+  guest.hostWebContents=outsider; assert.match((await handler({trusted:true},7)).error,/foreign_owner/);
   assert.equal(captures,0,'untrusted or unrelated captures cannot reach Chromium');
   guest.hostWebContents=owner;
   const captured = await handler({trusted:true},7);
@@ -68,9 +69,9 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
   exported.exports.registerBrowserCapture({getDeckWindow:()=>({webContents:owner}),
     isTrustedIpcSender:event=>event.trusted===true,isNativeHost:()=>false,
     getRetainedGuest:id=>id===7?{contents:guest,owner,attachmentId:attachment,visible}:null});
-  assert.equal((await handler({trusted:true,sender:outsider},7)).ok,false);
+  assert.match((await handler({trusted:true,sender:outsider},7)).error,/owner_mismatch/);
   assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,'retained WebContentsView uses canonical ownership');
-  visible=false;assert.equal((await handler({trusted:true,sender:owner},7)).ok,false);visible=true;
+  visible=false;assert.match((await handler({trusted:true,sender:owner},7)).error,/attachment_hidden.*Reveal/);visible=true;
   guest.capturePage=()=>new Promise(resolve=>{finish=resolve});
   const moved=handler({trusted:true,sender:owner},7);await new Promise(setImmediate);
   attachment='retained-b';finish(image);

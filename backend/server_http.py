@@ -57,6 +57,7 @@ def health_payload(srv: Any) -> dict:
         "version": srv.version,
         "instance_id": srv.instance_id,
         "uptime_s": round(time.time() - srv.start_time, 1),
+        "event_loop": dict(getattr(srv, 'event_loop_timing', {}) or {}),
     }
 
 

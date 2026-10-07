@@ -136,6 +136,8 @@ class GoalService:
         return self.repository.list_goals(**filters)
 
     def snapshot(self, goal_id: str) -> dict[str, Any]:
+        if self.parent_session is not None:
+            self.parent_session.refresh_budget(goal_id)
         goal = self.repository.require_goal(goal_id)
         dependencies = self.repository.dependencies(goal_id)
         steps = self.repository.list_steps(goal_id)

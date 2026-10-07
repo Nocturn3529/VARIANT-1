@@ -907,6 +907,7 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                     flush=True,
                 )
             turn_can_release = not hard_cancelled or cancel_terminal_finalized
+            settlement_reply = str(getattr(session.active, 'terminal_reply', '') or '')
             if ((turn_seq is None or turn_seq == session.latest_turn_seq)
                     and turn_can_release):
                 session.busy = False
@@ -928,6 +929,13 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                             receipt = durable_receipt
                     except Exception:
                         _LOG.exception("settled run receipt could not be persisted")
+                    if runtime_registry is not None and admission_id:
+                        try:
+                            runtime_registry.repository.store_run_settlement(
+                                receipt_session_id, admission_id, receipt, settlement_reply)
+                            runtime_registry.notify_run_settlement(receipt_session_id, run_id, admission_id)
+                        except Exception:
+                            _LOG.exception('historical run settlement could not be persisted')
                 settled_event = {
                     "type": "run:settled",
                     "schema": "variant1.run-settled.v1",

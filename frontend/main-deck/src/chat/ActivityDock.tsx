@@ -1,4 +1,4 @@
-import {useEffect, useId, useState} from "react";
+import {useEffect, useId, useState, useSyncExternalStore} from "react";
 import {useChatSelection, shallowChatSelection} from "../chatStore";
 import {useTerminalState, processFinished} from "../context/terminalStore";
 import {Icon} from "../ui/Icon";
@@ -10,6 +10,8 @@ import {ComposerGoalPanel} from "./ComposerGoalPanel";
 import {BackgroundProcesses, processMark, useProcessRefresh} from "./BackgroundProcesses";
 import {queueAdmissionPending} from "./inputQueue";
 import {closeTeamAgent} from "./agentTeam";
+import {goalWorkLabel} from "../protocol/goals";
+import {getTurnSnapshot,subscribeTurn} from "../state/turnStore";
 
 type Section = "agents" | "queue" | "goal" | "processes";
 type Chip = {section: Section; title: string; mark: MarkState; text: string; label: string};
@@ -35,6 +37,7 @@ function goalMark(status: string, pending: boolean): MarkState {
  * mounted (hidden) while closed so their state and controls persist.
  */
 export function ActivityDock() {
+  const turn=useSyncExternalStore(subscribeTurn,getTurnSnapshot,getTurnSnapshot);
   const {sessionId, connected, agentTeam: team, inputQueue: queue, goal} = useChatSelection(state => ({
     sessionId: state.sessionId, connected: state.connected, agentTeam: state.agentTeam, inputQueue: state.inputQueue, goal: state.goal,
   }), shallowChatSelection);
@@ -70,7 +73,7 @@ export function ActivityDock() {
     const cleanupFailed = goal.snapshot?.cleanup.status === "failed";
     chips.push({section: "goal", title: "Goal", mark: goal.error || cleanupFailed ? "failed" : goalMark(status, !!goal.pending && !record),
       text: steps.length ? `Goal ${done}/${steps.length}` : "Goal",
-      label: `Goal${record ? `: ${record.title || record.objective}` : ""}, ${record ? status.replaceAll("_", " ") : "awaiting confirmation"}${steps.length ? `, ${done} of ${steps.length} steps` : ""}`});
+      label: `Goal${record ? `: ${record.title || record.objective}` : ""}, ${record ? goalWorkLabel(goal.snapshot,turn) || status.replaceAll("_", " ") : "awaiting confirmation"}${steps.length ? `, ${done} of ${steps.length} steps` : ""}`});
   }
   if (processes.length) {
     const running = processes.filter(process => !processFinished(process.state)).length;

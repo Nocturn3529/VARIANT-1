@@ -264,6 +264,9 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
 
     async def _loop_stream(msgs, max_tokens, img_this):
         """Stream one typed assistant turn with the Python provider schema."""
+        # Compression may itself consume a model request. Recheck an explicit
+        # Goal budget before the next main request, not on every token.
+        await _wait_if_paused()
         import tool_calling
         import tool_discovery
         from llm_stream_diagnostics import StreamDiagnostics
@@ -501,7 +504,13 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                 transports.append(websocket)
             await asyncio.gather(*(transport.send_json(payload) for transport in transports),
                                  return_exceptions=True)
-        await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
+        parent = getattr(getattr(h.require_runtime(), 'goals', None), 'parent_session', None)
+        while True:
+            budget_paused = (await asyncio.to_thread(parent.boundary_budget, current_run_context(), admission_id)
+                             if parent is not None else False)
+            await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
+            if not budget_paused:
+                return
 
     return TaskTurnPorts(
         snapshot_store=getattr(h.require_runtime().session_runtimes, "snapshot_store", None),

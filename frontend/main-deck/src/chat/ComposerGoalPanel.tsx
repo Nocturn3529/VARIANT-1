@@ -1,7 +1,9 @@
 import {useChatSelection,shallowChatSelection} from "../chatStore";
+import {useSyncExternalStore} from "react";
 import {useSessionState} from "../state/sessionStore";
 import {Icon} from "../ui/Icon";
-import {goalIsTerminal} from "../protocol/goals";
+import {goalIsTerminal,goalWorkLabel} from "../protocol/goals";
+import {getTurnSnapshot,subscribeTurn} from "../state/turnStore";
 import {refreshComposerGoal,requestGoalControl,setGoalGuidance,MAX_GOAL_GUIDANCE} from "./goals";
 
 const statusLabels:Record<string,string>={draft:"Draft",queued:"Queued",running:"Running",waiting_user:"Waiting for your input",
@@ -10,6 +12,7 @@ const DONE_STEP=/succeed|complete|done|finish/;
 const stepState=(status:string)=>DONE_STEP.test(status)?"done":/run|start|progress/.test(status)?"running":/fail|error|block/.test(status)?"failed":"pending";
 
 export function ComposerGoalPanel() {
+  const turn=useSyncExternalStore(subscribeTurn,getTurnSnapshot,getTurnSnapshot);
   const state=useChatSelection(state=>({goal:state.goal,sessionId:state.sessionId,connected:state.connected}),shallowChatSelection),goal=state.goal,snapshot=goal.snapshot;
   const navigating=!!useSessionState().pendingAction;
   if(!snapshot && !goal.pending && !goal.error)return null;
@@ -24,7 +27,7 @@ export function ComposerGoalPanel() {
     :pending?.operation==="continue"?"Continuing goal…":pending?.operation==="finish"?"Ending goal…":pending?.operation==="archive"?"Removing finished goal…":"";
   const lifecycle=record ? snapshot?.cleanup.status==="pending"?"Cleanup pending":snapshot?.cleanup.status==="failed"?"Cleanup failed":snapshot?.terminationKind==="user_finished"?"Ended by you":record.status==="cancelled" && snapshot?.cleanup.complete?"Stopped":statusLabels[record.status]:"Awaiting confirmation";
   return <section className="composer-goal" aria-label="Durable goal" data-goal-id={record?.goal_id}>
-    <header><strong><Icon name="goal"/>Goal</strong><span role="status">{lifecycle}</span>
+    <header><strong><Icon name="goal"/>Goal</strong><span role="status">{goalWorkLabel(snapshot,turn) || lifecycle}</span>
       <button type="button" className="composer-icon-button" aria-label="Refresh goal" aria-busy={!!goal.refreshRequestId} disabled={!state.connected || navigating} onClick={()=>refreshComposerGoal(true)}><Icon name="refresh"/></button></header>
     {record ? <>
       <p className="composer-goal__title">{record.title || record.objective}</p>

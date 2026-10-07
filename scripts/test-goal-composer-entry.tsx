@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {parseGoalCommand} from "../frontend/main-deck/src/chat/goalCommand";
-import {parseComposerGoal} from "../frontend/main-deck/src/protocol/goals";
+import {parseComposerGoal,parseComposerGoalSnapshot,goalWorkLabel} from "../frontend/main-deck/src/protocol/goals";
 
 import {act} from "react";
 import {createRoot} from "react-dom/client";
@@ -40,6 +40,13 @@ export async function run() {
   const last=(type:string)=>commands.filter(command=>command.type===type).at(-1)!;
   const click=async(label:string)=>act(async()=>{const button=Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent===label || b.getAttribute("aria-label")===label);assert.ok(button,label);button.click();});
   const makeSnapshot=(request:string,version:number,status="running",id="goal-1",session="A")=>({schema:"variant1.goal-snapshot.v1",goal:{...record,goal_id:id,owner_chat_id:session,status,version},submission_request_id:request,completion_basis:"agent_report",objective_outcome:{status:status==="succeeded"?"completed":"unreported",basis:"agent_report",independently_verified:false},cleanup:{status:status==="cancelled"?"complete":"not_requested",complete:status==="cancelled"},capabilities:{pause_scheduling:true,pause_active_work:false,resume:true,cancel:status!=="cancelled",continue:false,retry_cleanup:false,finish:false,archive:false},reports:status==="succeeded"?[{child_id:"child-1",step_id:"s1",status:"succeeded",text:"Tests passed. <script>do not execute</script>",truncated:true,completion_basis:"agent_report"}]:[],steps:[{step_id:"s1",title:"Implement and test",status:"running"}]});
+  const working=parseComposerGoalSnapshot({...makeSnapshot("native",2,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"running"}}})!;
+  const nativeTurn={active:true,sessionId:"A",admissionId:"parent-admit",runId:"parent-run"};
+  assert.equal(goalWorkLabel(working,nativeTurn),"Working in this chat");
+  assert.equal(goalWorkLabel(working,{...nativeTurn,admissionId:"different"}),undefined);
+  assert.equal(goalWorkLabel(working,{...nativeTurn,active:false}),undefined);
+  const waiting=parseComposerGoalSnapshot({...makeSnapshot("native",3,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"finished",report:{wait_for_message_ids:["request-a"]}}}})!;
+  assert.equal(goalWorkLabel(waiting,{...nativeTurn,active:false}),"Waiting for peer results");
   const reply=async(request:Record<string,unknown>,result:unknown,type="goal:accepted")=>ingest({type,session_id:request.session_id,request_id:request.request_id,operation:String(request.type).split(":").at(-1),result});
   try {
     await act(async()=>{root.render(<ChatComposer/>);});

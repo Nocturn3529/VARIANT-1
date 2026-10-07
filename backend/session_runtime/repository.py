@@ -23,6 +23,7 @@ from .models import (
     TICKET_STATES,
     TICKET_TERMINAL_STATES,
 )
+from .run_history import RunSettlementHistory, RUN_HISTORY_SQL
 
 
 SCHEMA_VERSION = 5
@@ -56,7 +57,7 @@ def chat_id_value(value: str) -> str:
     return chat_id
 
 
-class SessionRuntimeRepository:
+class SessionRuntimeRepository(RunSettlementHistory):
     """One authoritative repository; connections are short and thread-safe."""
 
     def __init__(self, path: str) -> None:
@@ -259,6 +260,7 @@ class SessionRuntimeRepository:
                         "PRAGMA table_info(astb_chat_runtime)"
                     ).fetchall()
                 }
+                conn.executescript(RUN_HISTORY_SQL)
                 missing_authority_columns = (
                     _MUTATION_AUTHORITY_COLUMNS - runtime_columns
                 )

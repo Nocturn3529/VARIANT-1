@@ -7,6 +7,7 @@ service fields directly.
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
 
@@ -213,6 +214,10 @@ async def start_workers(h: Any) -> list:
         await lifecycle.start_critical_services()
         tasks = [
             _supervise_task(
+                h, observe_event_loop(h), name="event-loop-timing",
+                long_lived=True, degrade=False,
+            ),
+            _supervise_task(
                 h,
                 lifecycle.start_optional_services(),
                 name="optional-service-startup",
@@ -243,6 +248,24 @@ async def start_workers(h: Any) -> list:
         h.startup_error = str(exc)
         _record_worker_failure(h, "critical-startup", exc, degrade=True)
         raise
+
+
+async def observe_event_loop(h: Any) -> None:
+    """Constant-space timing evidence; this never changes watchdog decisions."""
+    loop = asyncio.get_running_loop()
+    h.event_loop_timing = {}
+    last_warning = float('-inf')
+    while True:
+        scheduled = loop.time() + 1.0
+        await asyncio.sleep(1.0)
+        observed = loop.time()
+        lag = round(max(0.0, observed - scheduled) * 1000, 1)
+        previous = h.event_loop_timing
+        h.event_loop_timing = {'samples': previous.get('samples', 0) + 1,
+            'last_lag_ms': lag, 'max_lag_ms': max(previous.get('max_lag_ms', 0), lag)}
+        if lag >= 250 and observed - last_warning >= 30:
+            logging.getLogger(__name__).warning('health:event_loop_lag lag_ms=%s', lag)
+            last_warning = observed
 
 
 async def shutdown(h: Any) -> dict:

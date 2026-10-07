@@ -352,7 +352,8 @@ def test_messaging_credential_handlers_registered():
     assert "messaging:credential:clear" in ws_dispatch.HANDLERS
 
 
-def test_dispatch_swallows_handler_exceptions_without_leaking_details(capsys):
+@pytest.mark.parametrize("identity", [{}, {"request_id": "request-1", "session_id": "chat-1"}])
+def test_dispatch_swallows_handler_exceptions_without_leaking_details(capsys, identity):
     """A broken handler must not raise out of dispatch (would drop the socket)."""
     import asyncio
 
@@ -374,9 +375,11 @@ def test_dispatch_swallows_handler_exceptions_without_leaking_details(capsys):
         ws = WS()
         server_logs = []
         srv = type("Srv", (), {"log": server_logs.append})()
-        ok = asyncio.run(ws_dispatch.dispatch(srv, ws, object(), {"type": "ping"}))
+        ok = asyncio.run(ws_dispatch.dispatch(srv, ws, object(), {"type": "ping", **identity}))
         assert ok is True
-        assert ws.sent == [{"type": "error", "error": "handler_failed:ping"}]
+        assert ws.sent == [{"type": "error", "error": "handler_failed:ping",
+                            "request_id": identity.get("request_id", ""),
+                            "session_id": identity.get("session_id", "")}]
         assert sensitive_detail not in str(ws.sent)
         assert sensitive_detail in capsys.readouterr().out
         assert any(sensitive_detail in line for line in server_logs)

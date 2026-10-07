@@ -12,6 +12,8 @@ import time
 
 from tools import ToolError
 from work_fabric.models import WorkActor
+from .conditions import budget_allows
+from .models import GoalConflict
 from .executor import StepExecutionResult
 
 _LOG = logging.getLogger(__name__)
@@ -38,14 +40,69 @@ class ParentSessionGoals:
         ledger = getattr(getattr(getattr(self.host, 'router', None), '_manifest_bus', None), 'usage_ledger', None)
         if ledger is None:
             return
-        totals = ledger.totals(goal_id=goal_id)
+        # Read the indexed totals on each CAS attempt. A concurrent newer
+        # receipt must never be overwritten by an older observation.
+        for _ in range(4):
+            goal = self.goals.repository.require_goal(goal_id)
+            if goal.completion_policy.get('execution_owner') != 'parent':
+                return None
+            totals = ledger.totals(goal_id=goal_id)
+            values = {'provider_calls': totals['requests'], 'tokens': totals['total_tokens'], 'cost_usd': totals['cost_usd']}
+            delta = {key: value - float(goal.budget_usage.get(key) or 0)
+                     for key, value in values.items()
+                     if value is not None and value != float(goal.budget_usage.get(key) or 0)}
+            if not delta:
+                return totals
+            try:
+                self.goals.repository.update_budget_usage(goal_id, delta, expected_version=goal.version, actor=_ACTOR)
+                return totals
+            except GoalConflict:
+                continue
+        raise GoalConflict('Goal accounting changed concurrently; retry the boundary')
+
+    def boundary_budget(self, context, admission_id):
+        """Pause only the exact parent admission at a completed-work boundary."""
+        goal_id = str(getattr(getattr(context, 'work_scope', None), 'goal_id', '') or '')
+        if not goal_id or not admission_id:
+            return False
+        runtime = self.host.require_runtime()
         goal = self.goals.repository.require_goal(goal_id)
-        values = {'provider_calls': totals['requests'], 'tokens': totals['total_tokens'], 'cost_usd': totals['cost_usd']}
-        delta = {key: value - float(goal.budget_usage.get(key) or 0)
-                 for key, value in values.items()
-                 if value is not None and value != float(goal.budget_usage.get(key) or 0)}
-        if delta:
-            self.goals.repository.update_budget_usage(goal_id, delta, expected_version=goal.version, actor=_ACTOR)
+        slot = self.goals.repository.state_get(goal_id, 'parent_turn') or {}
+        if (goal.completion_policy.get('execution_owner') != 'parent'
+                or goal.owner_chat_id != context.session_id
+                or slot.get('admission_id') != admission_id or slot.get('run_id') != context.run_id):
+            return False
+        active = runtime.session_runtimes.pause_snapshot(goal.owner_chat_id)
+        if active['admission_id'] != admission_id or active['run_id'] != context.run_id:
+            return False
+        totals = self.refresh_budget(goal_id)
+        goal = self.goals.repository.require_goal(goal_id)
+        if goal.terminal:
+            return False  # Canonical cancellation owns retiring this admission.
+        decision = budget_allows(goal)
+        reason = decision.reason if not decision.allowed else ''
+        if totals is None and any(key in goal.budget_limits for key in ('tokens', 'cost_usd', 'provider_calls')):
+            reason = 'budget accounting is unavailable'
+        bus = getattr(getattr(self.host, 'router', None), '_manifest_bus', None)
+        if (getattr(bus, 'ledger_failures', 0)
+                and any(key in goal.budget_limits for key in ('tokens', 'cost_usd', 'provider_calls'))):
+            reason = 'budget accounting has lost usage records'
+        if totals and totals['requests']:
+            for limit, field in [('tokens', 'total_tokens'), ('cost_usd', 'cost_usd')]:
+                if (limit in goal.budget_limits
+                        and totals.get(field + '_known_requests', 0) < totals['requests']):
+                    reason = f'budget {limit} requires complete usage measurements'
+                    break
+        if not reason:
+            return False
+        # No new Work jobs and no task cancellation: the graph remains at its
+        # saved boundary, with its live Python state available to the user.
+        if goal.status != 'paused':
+            self.goals.repository.transition_goal(goal_id, 'paused', expected_version=goal.version,
+                reason=reason, actor=_ACTOR, event_type='goal.budget_exhausted')
+        runtime.session_runtimes.set_run_paused(goal.owner_chat_id, True,
+            expected_admission_id=admission_id, expected_run_id=context.run_id)
+        return True
 
     def notify_peer_result(self, message):
         if message.get('message_kind') != 'result' or not message.get('in_reply_to'):
@@ -134,6 +191,7 @@ class ParentSessionGoals:
         if owned and owned[0] == slot['admission_id']:
             self._tasks.pop(goal_id,None)
         try:
+            self.refresh_budget(goal_id)
             goal = self.goals.repository.require_goal(goal_id)
             current = self.goals.repository.state_get(goal_id, "parent_turn") or {}
             if current.get("admission_id") != slot["admission_id"] or goal.terminal:
@@ -222,7 +280,10 @@ class ParentSessionGoals:
         if slot.get('status') == 'finished' and report.get('status') == 'continuing':
             peers = getattr(runtime, 'peers', None)
             awaited = report.get('wait_for_message_ids') or []
-            if awaited and (peers is None or any(peers.repository.find_result_reply(item) is None for item in awaited)):
+            if awaited and (peers is None or any(
+                    peers.repository.find_result_reply(item) is None
+                    and getattr(peers, 'native_completion', lambda *_:None)('chat:'+wait.matcher['chat_id'], item) is None
+                    for item in awaited)):
                 return None
         self._outcome(wait.goal_id, {**report, "step_id": wait.step_id,
             'execution_status':slot.get('status'), 'continuation_allowed':slot.get('status')=='finished'})

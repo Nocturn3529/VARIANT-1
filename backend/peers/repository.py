@@ -130,6 +130,8 @@ class PeerRepository:
                     ON peer_message(sender_peer_id,json_extract(evidence_json,'$.sender_invocation.run_id'),sequence);
                 CREATE INDEX IF NOT EXISTS peer_message_delivery
                     ON peer_message(target_peer_id,state,sequence);
+                CREATE INDEX IF NOT EXISTS peer_message_ticket
+                    ON peer_message(delivery_ticket_id);
 
                 CREATE TABLE IF NOT EXISTS peer_connection(
                     connection_id TEXT PRIMARY KEY,
@@ -521,6 +523,14 @@ class PeerRepository:
                 "SELECT * FROM peer_message WHERE in_reply_to=? "
                 "ORDER BY sequence LIMIT 1", (str(message_id),),
             ).fetchone())
+
+    def messages_for_tickets(self, ticket_ids):
+        identities = list(ticket_ids)[:200]
+        if not identities:
+            return []
+        with self._connect() as conn:
+            return [self._message(row) for row in conn.execute(
+                'SELECT * FROM peer_message WHERE delivery_ticket_id IN ('+','.join('?' for _ in identities)+')', identities).fetchall()]
 
     def find_result_reply(self, message_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:

@@ -1588,6 +1588,14 @@ function testEvidenceExtraction(): void {
   });
   assert.equal(link[0]?.kind, "url");
   assert.equal(link[0]?.value, "https://docs.python.org/3/library/json.html");
+  assert.equal(link.some(item => item.kind === "file"), false);
+  for (const url of ["https://github.com/python/cpython", "http://example.test/C:/docs/readme.md"]) {
+    const items = extractEvidence({tool:"ipython",text:url});
+    assert.deepEqual(items.map(item=>item.kind), ["url"], "URL spans cannot become drive paths");
+  }
+  assert.equal(extractEvidence({text:"file:///C:/project/readme.md"})[0]?.value, "C:/project/readme.md");
+  assert.ok(extractEvidence({text:"(C:/project/readme.md)"}).some(item=>item.kind==="file"));
+  assert.ok(extractEvidence({argsPreview:JSON.stringify({path:"\\\\server\\share\\readme.md"})}).some(item=>item.value.startsWith("\\\\server")));
 
   const search = extractEvidence({
     tool: "web_search",

@@ -9,13 +9,25 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
     const guest = webContents.fromId(id);
     const retained = getRetainedGuest?.(id);
     const owner = retained?.owner || guest?.hostWebContents;
-    if (!guest || guest.isDestroyed() || !owner || (retained
-      ? retained.contents !== guest || retained.owner !== event.sender || !retained.visible
-      : guest.getType() !== 'webview' || (owner !== deck?.webContents && !isNativeHost(owner)))) return {ok:false, error:'browser_guest_not_owned'};
+    const deny = (reason, guidance = 'Refresh this chat\'s browser state before capturing again') => {
+      log(`[browser-capture] guest=${id} denied=${reason}`);
+      return {ok:false, error:`browser_guest_not_owned: ${reason}. ${guidance}`};
+    };
+    if (!guest) return deny('guest_missing');
+    if (guest.isDestroyed()) return deny('guest_destroyed');
+    if (!owner) return deny('owner_missing');
+    if (retained) {
+      if (retained.contents !== guest) return deny('retained_guest_mismatch');
+      if (retained.owner !== event.sender) return deny('owner_mismatch');
+      if (!retained.visible) return deny('attachment_hidden', 'Reveal this chat\'s browser panel before capturing again');
+    } else {
+      if (guest.getType() !== 'webview') return deny('unsupported_guest_type');
+      if (owner !== deck?.webContents && !isNativeHost(owner)) return deny('foreign_owner');
+    }
     const sameAttachment = () => {
       if (!retained) return guest.hostWebContents === owner;
       const current = getRetainedGuest?.(id);
-      return current?.owner === owner && current.attachmentId === retained.attachmentId
+      return current?.contents === guest && current.owner === owner && current.attachmentId === retained.attachmentId
         && current.host === retained.host && current.visible;
     };
     let changed = false;

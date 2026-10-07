@@ -229,6 +229,16 @@ function createBackendManager(deps) {
 
   function pingHealth(port, timeoutMs, record, failed = () => {}) {
     return new Promise((resolve) => {
+      const startedAt = now();
+      let settled = false;
+      const finish = (ok, reason = '', timing = null) => {
+        if (settled) return;
+        settled = true;
+        const elapsed = Math.max(0, now() - startedAt);
+        if (!ok || elapsed >= 250) log(`[backend] health probe elapsed_ms=${elapsed} result=${ok ? 'ok' : reason} loop_lag_ms=${Number.isFinite(timing?.last_lag_ms) ? timing.last_lag_ms : 'unknown'}`);
+        if (!ok) failed(reason);
+        resolve(ok);
+      };
       const req = http.get(
         {host: '127.0.0.1', port, path: '/health', timeout: timeoutMs},
         (res) => {
@@ -237,22 +247,19 @@ function createBackendManager(deps) {
           res.on('end', () => {
             try {
               const j = JSON.parse(body);
-              if (res.statusCode !== 200) failed(`http_${res.statusCode}`);
-              else if (!backendIdentityMatches(record, j, expectedVersion)) failed('identity_mismatch');
-              resolve(res.statusCode === 200
-                && backendIdentityMatches(record, j, expectedVersion));
+              const matches = backendIdentityMatches(record, j, expectedVersion);
+              finish(res.statusCode === 200 && matches,
+                res.statusCode !== 200 ? `http_${res.statusCode}` : 'identity_mismatch', matches ? j.event_loop : null);
             } catch (_) {
-              failed('invalid_response');
-              resolve(false);
+              finish(false, 'invalid_response');
             }
           });
         },
       );
-      req.on('error', () => {failed('connection_error');resolve(false);});
+      req.on('error', () => {finish(false, 'connection_error');});
       req.on('timeout', () => {
-        failed('timeout');
+        finish(false, 'timeout');
         req.destroy();
-        resolve(false);
       });
     });
   }

@@ -66,7 +66,14 @@ export function ingestExecutionState(message:Record<string,unknown>): void {
     const queue=parseInputQueueSnapshot(message.queue);if(queue)applyInputQueue(queue);
     const nextAdmission=String(message.active_admission_id || ""),nextRun=String(message.active_run_id || "");
     if(busy && nextAdmission===turn.admissionId && nextRun===turn.runId)return;
-    settleMissedTurn("interrupted");
+    const settlement=message.settlement && typeof message.settlement==='object'
+      ? message.settlement as Record<string,unknown> : null;
+    const receipt=settlement?.receipt && typeof settlement.receipt==='object'
+      ? settlement.receipt as Record<string,unknown> : null;
+    const exactSettlement=settlement?.chat_id===id && settlement?.run_id===request.runId
+      && settlement?.admission_id===request.admissionId && receipt?.run_id===request.runId && receipt?.settled===true;
+    const terminal=String(receipt?.status || '');
+    settleMissedTurn(exactSettlement && ['ok','error','failed','cancelled','interrupted'].includes(terminal) ? terminal : 'interrupted');
     const runtime=getChatState().runtime;
     patchChatState({runtime:runtime?{...runtime,busy,activeAdmissionId:nextAdmission,activeRunId:nextRun}:runtime});
     if(busy && nextAdmission) {

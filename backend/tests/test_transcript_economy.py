@@ -90,6 +90,36 @@ async def test_compaction_abort_preserves_canonical_state_without_failure_backof
     assert state.failures == 0
 
 
+@pytest.mark.asyncio
+async def test_confirmed_length_stop_enlarges_only_later_compaction_retry(monkeypatch):
+    from llm_profiles import IncompleteInternalResponseError
+    clock = [100.0]
+    monkeypatch.setattr(te.time, 'monotonic', lambda: clock[0])
+    state = te.CompactionRetryState()
+    messages = _compressible_messages()
+    original = copy.deepcopy(messages)
+    budgets = []
+
+    async def complete(prompt, **kwargs):
+        budgets.append(kwargs['max_tokens'])
+        assert kwargs['profile'] == 'internal_prose' and kwargs['require_complete'] is True
+        if len(budgets) == 1:
+            raise IncompleteInternalResponseError('Internal response not committed: length')
+        return _complete_recap()
+
+    assert await te.compress_messages(messages, complete=complete, retry_state=state) is messages
+    assert state.output_budget == 3800
+    assert await te.compress_messages(messages, complete=complete, retry_state=state) is messages
+    assert budgets == [1900]  # No immediate or unbounded retry.
+    clock[0] = state.retry_after
+    compacted = await te.compress_messages(messages, complete=complete, retry_state=state)
+    assert len(compacted) < len(messages) and budgets == [1900, 3800]
+    assert state.output_budget == 1900 and messages == original
+    for _ in range(10):
+        state.failed('different-projection', length_limited=True)
+    assert state.output_budget == 7600
+
+
 def test_compaction_backoff_increases_and_is_bounded(monkeypatch):
     monkeypatch.setattr(te.time, "monotonic", lambda: 100)
     state = te.CompactionRetryState()

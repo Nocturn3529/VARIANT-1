@@ -88,6 +88,8 @@ def register(on):
     async def goal_status(srv,websocket,session,msg):
         async def action():
             service = _runtime(srv,session,msg)
+            if service.parent_session is not None:
+                await asyncio.to_thread(service.parent_session.refresh_budget, str(msg.get('goal_id') or ''))
             goal = await asyncio.to_thread(service.get,str(msg.get('goal_id') or ''))
             runtimes = getattr(srv.require_runtime(),'session_runtimes',None)
             runtime = await asyncio.to_thread(runtimes.snapshot,goal.owner_chat_id) if runtimes else {}

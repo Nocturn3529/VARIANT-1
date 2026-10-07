@@ -63,6 +63,9 @@ Use the release notes for the behavior and qualification of a downloaded build.
   Goal completion records the agent's claim and the available evidence.
   Admitted Goal and peer work appears live in that same chat, with session,
   admission and run identities keeping separate executions isolated.
+  Addressed peer requests wake idle sessions or reach an active turn at its next
+  safe step. Request handles expose the recipient's settled answer and outcome.
+  Explicit Goal budgets pause at model/tool boundaries; defaults remain unlimited.
 
 ## Costs and model access
 

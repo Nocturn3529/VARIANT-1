@@ -65,6 +65,16 @@ export async function run() {
   incoming({type:"chat:execution",session_id:"A",request_id:final.request_id,observed_run_id:"run-one",observed_admission_id:"admission-one",busy:false,calls:[]});
   assert.equal(sharedTurnActive(),false,"idle reconciliation recovers a completely missed terminal event");
   assert.equal(sent.at(-1)?.type,"chat:session:get");
+  for(const status of ['ok','cancelled','error']) {
+    reset();incoming({type:'start',...route()});refreshExecutionStates();const observed=sent.at(-1)!;
+    incoming({type:'chat:execution',session_id:'A',request_id:observed.request_id,observed_run_id:'run-one',observed_admission_id:'admission-one',busy:false,calls:[],
+      settlement:{chat_id:'A',run_id:'run-one',admission_id:'admission-one',receipt:{run_id:'run-one',settled:true,status}}});
+    assert.equal(turnController.snapshot().lastEndStatus,status,'exact historical settlement supplies the terminal status');
+  }
+  reset();incoming({type:'start',...route()});refreshExecutionStates();const wrong=sent.at(-1)!;
+  incoming({type:'chat:execution',session_id:'A',request_id:wrong.request_id,observed_run_id:'run-one',observed_admission_id:'admission-one',busy:false,calls:[],
+    settlement:{chat_id:'A',run_id:'run-one',admission_id:'other-admission',receipt:{run_id:'run-one',settled:true,status:'ok'}}});
+  assert.equal(turnController.snapshot().lastEndStatus,'interrupted','foreign settlement cannot imply successful completion');
   for(const source of ['goal','peer','peer:chat:lead']) {
     reset();
     incoming({type:'start',...route(),source,client_id:'native-client-one'});

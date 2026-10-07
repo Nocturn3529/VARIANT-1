@@ -463,4 +463,11 @@ def test_failed_chat_receipt_recovers_completed_calls_without_live_metrics(tmp_p
         assert receipt['tool_error_codes'] == {'python_exception':1}
         assert 'private tool result' not in json.dumps(receipt)
         assert receipt['settled'] is True and not runtimes.is_busy(sid)
+        event = next(call.args[0] for call in socket.send_json.await_args_list
+                     if call.args[0].get('type') == 'run:settled')
+        history = repository.get_run_settlement(sid, run_id=receipt['run_id'],
+                                                admission_id=event['admission_id'])
+        assert history is not None and history['receipt'] == receipt
+        assert history['receipt']['tool_calls'] == 8
+        assert len(repository.run_settlement_history(sid)['items']) == 1
     asyncio.run(scenario())

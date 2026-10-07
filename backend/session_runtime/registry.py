@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import contextmanager
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -20,6 +21,8 @@ from .models import (
     TICKET_TERMINAL_STATES,
 )
 from .repository import SessionRuntimeRepository, chat_id_value
+
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass
@@ -84,12 +87,34 @@ class SessionRuntimeRegistry:
         self._chat_tombstone_cleanup: list[Callable[[str], Any]] = []
         self._snapshot_store = snapshot_store
         self._idle_listeners: list[Callable[[str], Any]] = []
+        self._settlement_listeners: list[Callable[[str, str, str], Any]] = []
+
+    def register_settlement_listener(self, callback):
+        if callback not in self._settlement_listeners:
+            self._settlement_listeners.append(callback)
+
+    def unregister_settlement_listener(self, callback):
+        if callback in self._settlement_listeners:
+            self._settlement_listeners.remove(callback)
+
+    def notify_run_settlement(self, chat_id, run_id, admission_id):
+        for callback in tuple(self._settlement_listeners):
+            try:
+                callback(chat_id, run_id, admission_id)
+            except Exception:
+                _LOG.exception('Native settlement observer failed')
 
     def register_idle_listener(self, callback: Callable[[str], Any]) -> None:
         if not callable(callback):
             raise TypeError("idle listener must be callable")
         with self._guard:
-            self._idle_listeners.append(callback)
+            if callback not in self._idle_listeners:
+                self._idle_listeners.append(callback)
+
+    def unregister_idle_listener(self, callback: Callable[[str], Any]) -> None:
+        with self._guard:
+            if callback in self._idle_listeners:
+                self._idle_listeners.remove(callback)
 
     def _notify_idle(self, chat_id: str) -> None:
         for callback in tuple(self._idle_listeners):
@@ -1152,6 +1177,7 @@ class SessionRuntimeRegistry:
 
     def complete_transcript_commit(self, chat_id: str, delivered: Iterable[dict]) -> None:
         clean = self._chat_id(chat_id)
+        active = self.pause_snapshot(clean)
         for row in delivered or ():
             ticket_id = str((row or {}).get("id") or "")
             if not ticket_id:
@@ -1160,7 +1186,8 @@ class SessionRuntimeRegistry:
                 ticket_id,
                 "completed",
                 expected=("transcript_committing", "running", "preparing"),
-                proof={"chat_id": clean, "ticket_id": ticket_id},
+                proof={"chat_id": clean, "ticket_id": ticket_id,
+                       "admission_id": active['admission_id'], "run_id": active['run_id']},
             )
             self._emit(
                 "runtime:input_ticket",

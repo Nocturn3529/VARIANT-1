@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -77,6 +78,89 @@ async def test_parent_goal_uses_canonical_chat_and_reports_without_spawning_chil
     result = await finish(goals, goal_id, gate, registry)
     assert result["status"] == "succeeded"
     assert goals.repository.state_get(goal_id, "objective_outcome")["independently_verified"] is False
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('limit', [{'tokens':100}, {'provider_calls':1}, {'wall_time_s':0}])
+async def test_live_goal_budget_pauses_exact_admission_before_another_step(tmp_path, limit):
+    from model_runtime.usage_ledger import ModelUsageLedger
+    from tests.test_model_usage_ledger import request
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    ledger = ModelUsageLedger(tmp_path/'live-usage.sqlite3')
+    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(usage_ledger=ledger))
+    goal_id = await launch(goals, runs)
+    run = runs[0][0]
+    ledger.record(request(goal=goal_id)); ledger.patch_usage('mreq-a', {'total_tokens':100})
+    with goals.repository.work._write() as conn:
+        conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', (json.dumps(limit),goal_id))
+    admission = registry.active_admission('owner')
+    assert parent.boundary_budget(run, admission)
+    assert goals.get(goal_id).status == 'paused'
+    assert registry.pause_snapshot('owner')['state'] == 'pausing'
+    assert not registry._reservations[admission].task.done()
+    assert goals.get(goal_id).budget_usage['tokens'] == 100
+    await finish(goals, goal_id, gate, registry)
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_explicit_goal_cap_stops_on_missing_ledger_records_but_not_foreign_admission(tmp_path):
+    from model_runtime.usage_ledger import ModelUsageLedger
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    ledger = ModelUsageLedger(tmp_path/'failed-ledger.sqlite3')
+    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(usage_ledger=ledger, ledger_failures=1))
+    goal_id = await launch(goals, runs)
+    run = runs[0][0]
+    admission = registry.active_admission('owner')
+    assert not parent.boundary_budget(run, admission)  # Unlimited default.
+    with goals.repository.work._write() as conn:
+        conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', ('{"provider_calls":10}',goal_id))
+    assert not parent.boundary_budget(run, 'foreign-admission')
+    assert parent.boundary_budget(run, admission)
+    assert goals.get(goal_id).pause_reason == 'budget accounting has lost usage records'
+    await finish(goals, goal_id, gate, registry)
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_goal_snapshot_reconciles_usage_without_waking_work(tmp_path):
+    from model_runtime.usage_ledger import ModelUsageLedger
+    from tests.test_model_usage_ledger import request
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    ledger = ModelUsageLedger(tmp_path/'stopped-usage.sqlite3')
+    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(usage_ledger=ledger))
+    goal_id = await launch(goals, runs)
+    goal = goals.get(goal_id)
+    goals.repository.transition_goal(goal_id, 'cancelled', expected_version=goal.version)
+    ledger.record(request(goal=goal_id)); ledger.patch_usage('mreq-a', {'total_tokens':123})
+    jobs = len(work.jobs.list(owner_kind='goal', owner_id=goal_id))
+    snapshot = goals.snapshot(goal_id)
+    assert snapshot['goal']['budget']['usage'] == {'provider_calls':1.0, 'tokens':123.0}
+    version = snapshot['goal']['version']
+    assert goals.snapshot(goal_id)['goal']['version'] == version
+    assert len(work.jobs.list(owner_kind='goal', owner_id=goal_id)) == jobs
+    gate.set(); await registry._reservations[registry.active_admission('owner')].task
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_goal_budget_unknown_cost_is_not_zero_and_default_stays_unlimited(tmp_path):
+    from model_runtime.usage_ledger import ModelUsageLedger
+    from tests.test_model_usage_ledger import request
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    ledger = ModelUsageLedger(tmp_path/'unknown-usage.sqlite3')
+    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(usage_ledger=ledger))
+    goal_id = await launch(goals, runs)
+    run = runs[0][0]; admission = registry.active_admission('owner')
+    ledger.record(request(goal=goal_id)); ledger.patch_usage('mreq-a', {'total_tokens':100})
+    assert not parent.boundary_budget(run, admission)
+    with goals.repository.work._write() as conn:
+        conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', ('{"cost_usd":10}',goal_id))
+    assert parent.boundary_budget(run, admission)
+    assert goals.get(goal_id).pause_reason == 'budget cost_usd requires complete usage measurements'
+    assert 'cost_usd' not in goals.get(goal_id).budget_usage
+    await finish(goals, goal_id, gate, registry)
     await work.shutdown()
 
 
@@ -198,11 +282,14 @@ async def test_interrupted_parent_turn_cannot_restart_from_earlier_continuation_
 
 
 @pytest.mark.asyncio
-async def test_only_correlated_peer_results_wake_a_sleeping_coordinator(tmp_path):
+@pytest.mark.parametrize('completion', ['reply', 'native'])
+async def test_only_correlated_peer_results_wake_a_sleeping_coordinator(tmp_path, completion):
     from peers.repository import PeerRepository
     work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
     repo = PeerRepository(tmp_path / 'peers.sqlite3')
-    parent.host.require_runtime().peers = SimpleNamespace(repository=repo)
+    settled_requests = set()
+    parent.host.require_runtime().peers = SimpleNamespace(repository=repo,
+        native_completion=lambda peer, identity: {'status':'ok'} if identity in settled_requests else None)
     request, _ = repo.persist_message({'message_id': 'request-a', 'sender_peer_id': 'chat:owner',
         'target_peer_id': 'chat:collaborator', 'content': 'Verify the deliverable',
         'delivery': 'follow_up', 'message_kind': 'request', 'state': 'queued'})
@@ -213,8 +300,13 @@ async def test_only_correlated_peer_results_wake_a_sleeping_coordinator(tmp_path
     before = len(work.jobs.list(owner_kind='goal', owner_id=goal_id))
     parent.notify_peer_result({'message_kind':'notice','in_reply_to':'request-a','target_peer_id':'chat:owner'})
     assert len(work.jobs.list(owner_kind='goal', owner_id=goal_id)) == before
-    reply, _ = repo.persist_message({'sender_peer_id':'chat:collaborator','target_peer_id':'chat:owner',
-        'content':'Review evidence', 'delivery':'notice','message_kind':'result','in_reply_to':'request-a','state':'received'})
+    if completion == 'reply':
+        reply, _ = repo.persist_message({'sender_peer_id':'chat:collaborator','target_peer_id':'chat:owner',
+            'content':'Review evidence', 'delivery':'notice','message_kind':'result','in_reply_to':'request-a','state':'received'})
+    else:
+        settled_requests.add('request-a')
+        reply = {'message_kind':'result','in_reply_to':'request-a','target_peer_id':'chat:owner',
+                 'message_id':'native-settlement:recipient-admission:request-a'}
     parent.notify_peer_result(reply)
     assert len(work.jobs.list(owner_kind='goal', owner_id=goal_id)) == before + 1
     assert (await goals.supervisor.tick(goal_id))['status'] == 'running'

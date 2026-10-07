@@ -93,7 +93,8 @@ generation remain the same. Optional children are explicitly delegated; existing
 Goal records with a child execution contract retain that contract. A structured
 `session.report_outcome()` claim distinguishes completed, blocked and continuing
 work. A continuing owner may name its outgoing peer requests in
-`wait_for_message_ids`; correlated result messages wake the Goal when all arrive.
+`wait_for_message_ids`; correlated result messages or exact native turn settlements
+wake the Goal when all named requests settle.
 Notices and unrelated results do not create new Goal turns.
 
 Parent-turn waits release the Work execution slot and use terminal/idle events
@@ -102,8 +103,23 @@ configuration changes priority. Exact admission/run identities fence reports and
 cancellation. Restart recovery reconciles once and blocks an uncertain parent
 turn rather than replaying its effects. Pausing scheduling lets an admitted turn
 settle; cancellation stops Goal-attributed managed processes and delegated roots
-while retaining the parent session. Goal token/provider-call budgets read the
-durable request accounting before admitting another turn.
+while retaining the parent session. Goal usage reads and settlements reconcile
+the durable physical-request ledger, including cancelled Goals. Explicit
+token/provider-call/cost/time budgets are checked at model/tool boundaries and
+before another turn. A boundary pause retains the live task and Python state;
+an in-flight step can finish. Missing measurements or lost ledger records pause
+explicit accounting caps rather than treating unknown cost/tokens as zero.
+Unlimited defaults remain unchanged.
+
+Native peer requests default to `steer`: a busy recipient consumes them at a safe
+step, while an idle or ended session starts its own normal admitted turn without
+requiring an open chat view. Explicit `follow_up` waits for idle. Busy wake tasks
+wait for an idle event. Notices and results do not start unsolicited turns.
+`peers.self()` identifies the caller; incoming request framing also names the
+recipient. Request-handle inspection/waits expose a committed native answer and
+terminal status by exact recipient run/admission identity. This observation
+creates no synthetic reply or prompt and is not independent task verification.
+Explicit replies remain supported and take precedence in message waits.
 
 The metadata-only `data/model-usage.sqlite3` ledger retains physical requests
 independently of the bounded model inspector. It records session/Goal/run lineage,
@@ -258,6 +274,11 @@ and reports omissions. Oversized complete metadata is retained in a scoped
 artifact for later recovery. An edit-call path alone does not prove a successful
 change. The existing protected tail supplies recent assistant context, so no
 extra assistant anchor is injected.
+An internal recap starts with a 1,900-token output budget. A confirmed length
+stop enlarges a later scheduled retry to at most 7,600 tokens, under the existing
+backoff and per-projection attempt limits. Success resets that budget. Recap
+section/sentinel validation and native tool lineage remain required; rejected
+summaries retain the full canonical history and do not change the selected route.
 
 Provider recovery stays inside the canonical router. The optional
 `provider_recovery` configuration defaults to disabled and names explicit
@@ -334,7 +355,10 @@ session and admission identities. Start frames also carry the matching run
 identity. Fresh admissions may change ingress clients, while stale admissions
 and separate voice/subagent streams remain excluded.
 
-The Electron backend watchdog records health-probe failure reasons. After its
+The Electron backend watchdog records health-probe failure reasons and elapsed
+time. A constant-space, once-per-second backend sampler exposes last/maximum
+event-loop lag through `/health`; sustained stalls produce rate-limited logs.
+These measurements do not change retirement decisions. After its
 normal grace period, recent structured work completions on the currently owned
 process pipe defer retirement for timeouts or connection failures. Ordinary
 output and request starts do not extend that interval; identity mismatches do
@@ -346,6 +370,11 @@ projections reconcile every five seconds using at most one outstanding read per
 chat. Those reads address only retained call IDs through the durable dispatch
 index, and carry observed admission/run identities; a late response cannot
 settle a newer admission. Terminal receipts also settle missed completion frames.
+An immutable `astb_run_settlement` row retains each exact admission's receipt
+separately from conversation append status and recoverable checkpoints. Indexed
+lookup repairs missed terminal status; cursor reads are bounded to 200 rows.
+Its answer preview is bounded to 16,000 characters with an explicit truncation
+flag. Older runs without a settlement are not inferred successful or backfilled.
 Missing individual tool results remain interrupted/unobserved until exact evidence
 arrives. Final tool aggregates read durable dispatch/result records, so failed
 turns retain counts beyond the bounded live trace and do not count replayed call
