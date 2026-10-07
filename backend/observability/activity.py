@@ -89,7 +89,7 @@ def _live_run(session_id: str, run_id: str) -> dict:
 
     run = _LIVE_RUNS.get(session_id)
     if run is None or run["run_id"] != run_id:
-        run = {"run_id": run_id, "steps": OrderedDict(), "live": None}
+        run = {"run_id": run_id, "steps": OrderedDict(), "live": None, "revision": 0}
         _LIVE_RUNS[session_id] = run
     _LIVE_RUNS.move_to_end(session_id)
     while len(_LIVE_RUNS) > _LAST_SESSION_ACTIVITY_LIMIT:
@@ -98,6 +98,7 @@ def _live_run(session_id: str, run_id: str) -> dict:
 
 
 def _put_run_step(run: dict, step: dict) -> None:
+    run["revision"] += 1
     run["steps"][step["id"]] = step
     while len(run["steps"]) > _RUN_STEP_LIMIT:
         run["steps"].popitem(last=False)
@@ -159,31 +160,50 @@ def remember_run_narration(step: dict) -> None:
     if not session_id or not run_id or not step.get("id"):
         return
     with _LAST_SESSION_ACTIVITY_LOCK:
-        _put_run_step(_live_run(session_id, run_id), dict(step))
+        run = _live_run(session_id, run_id)
+        _put_run_step(run, dict(step))
+        live = run["live"]
+        if live is not None and live[0] == step.get("segment"):
+            # That call's text is now this completed narration step, not a
+            # reply still being written.
+            run["live"] = None
 
 
-def bind_live_text(segment: int, parts: list) -> None:
+def bind_live_text(segment: int, parts: list, *, admission_id: str = "") -> None:
     """Point the bound run's live record at the streaming call's text parts."""
 
     session_id, run_id = _context_run_identity()
     if not session_id or not run_id:
         return
     with _LAST_SESSION_ACTIVITY_LOCK:
-        _live_run(session_id, run_id)["live"] = (int(segment), parts)
+        run = _live_run(session_id, run_id)
+        run["revision"] += 1
+        run["live"] = (int(segment), parts, str(admission_id or ""))
 
 
-def run_snapshot(session_id: str, run_id: str) -> dict | None:
-    """Steps so far of the chat's run ``run_id``, plus the current partial text."""
+def run_snapshot(session_id: str, run_id: str, admission_id: str = "") -> dict | None:
+    """Steps so far of the chat's run ``run_id``, plus the current partial text.
+
+    ``admission_id`` is the chat's current admission. Partial text bound by
+    another admission of the same logical run (a resumed run) is left out.
+    ``revision`` grows with every change, so a client can ignore an older one.
+    """
 
     with _LAST_SESSION_ACTIVITY_LOCK:
         run = _LIVE_RUNS.get(str(session_id or ""))
         if run is None or not run_id or run["run_id"] != run_id:
             return None
         steps = [dict(step) for step in run["steps"].values()]
-        segment, parts = run["live"] or (0, [])
+        segment, parts, live_admission = run["live"] or (0, [], "")
+        if admission_id and live_admission and live_admission != admission_id:
+            segment, parts = 0, []
         text = "".join(str(part) for part in list(parts))
+        revision = int(run["revision"])
     steps.sort(key=lambda step: float(step.get("ts") or 0))
-    return {"run_id": run_id, "steps": steps, "segment": segment, "text": text}
+    return {
+        "run_id": run_id, "admission_id": str(admission_id or ""),
+        "revision": revision, "steps": steps, "segment": segment, "text": text,
+    }
 
 
 def last_session_activity(session_id: str) -> dict | None:

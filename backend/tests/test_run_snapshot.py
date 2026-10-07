@@ -91,3 +91,34 @@ async def test_chat_session_payload_carries_the_snapshot_only_while_busy():
     assert [step["call_id"] for step in busy["run_snapshot"]["steps"]] == ["call-1"]
     state["active_run_id"] = ""
     assert "run_snapshot" not in ws_chat_sessions._session_payload(srv, "chat-a")
+
+
+@pytest.mark.asyncio
+async def test_reopening_during_tools_shows_narration_once_not_as_reply_text():
+    with bind_run_context(_ctx()):
+        activity.bind_live_text(1, ["Let me check."], admission_id="adm-1")
+        activity.remember_run_narration({
+            "id": "text_1", "kind": "text", "label": "Narration",
+            "detail": "Let me check.", "segment": 1, "status": "done", "ts": 1.0,
+        })
+        await emit_activity("tool:start", tool="ipython", call_id="call-1")
+    during_tools = activity.run_snapshot("chat-a", "run-1", "adm-1")
+    assert [step["kind"] for step in during_tools["steps"]] == ["text", "tool"]
+    assert (during_tools["segment"], during_tools["text"]) == (0, "")
+
+    with bind_run_context(_ctx()):
+        activity.bind_live_text(2, ["Next"], admission_id="adm-1")
+    next_call = activity.run_snapshot("chat-a", "run-1", "adm-1")
+    assert (next_call["segment"], next_call["text"]) == (2, "Next")
+    assert next_call["revision"] > during_tools["revision"]
+
+
+@pytest.mark.asyncio
+async def test_partial_text_of_another_admission_is_not_offered():
+    with bind_run_context(_ctx()):
+        activity.bind_live_text(1, ["Old admission output"], admission_id="old")
+    stale = activity.run_snapshot("chat-a", "run-1", "new")
+    assert stale["admission_id"] == "new"
+    assert (stale["segment"], stale["text"]) == (0, "")
+    own = activity.run_snapshot("chat-a", "run-1", "old")
+    assert (own["segment"], own["text"]) == (1, "Old admission output")

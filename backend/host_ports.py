@@ -284,7 +284,10 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             )
             routing = chat_pipeline.stream_meta(session)
             active = session.active
-            activity_hub.bind_live_text(segment, parts)
+            activity_hub.bind_live_text(
+                segment, parts,
+                admission_id=str(getattr(active, "runtime_admission_id", "") or ""),
+            )
 
             class SummarySink:
                 async def summary_event(self, event):

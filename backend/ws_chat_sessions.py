@@ -76,7 +76,10 @@ def _session_payload(srv, sid: str):
         # A Deck opening this chat mid-run rebuilds the live timeline from it.
         from observability.activity import run_snapshot
 
-        snapshot = run_snapshot(sid, active_run_id)
+        snapshot = run_snapshot(
+            sid, active_run_id,
+            str((runtime or {}).get("active_admission_id") or ""),
+        )
         if snapshot is not None:
             payload["run_snapshot"] = snapshot
     if runtime:
