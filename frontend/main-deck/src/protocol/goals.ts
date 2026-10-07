@@ -35,7 +35,25 @@ export function goalWorkLabel(snapshot:ComposerGoalSnapshot|undefined|null,
   if(parent && turn.active && turn.sessionId===snapshot.goal.owner_chat_id
     && parent.admissionId===turn.admissionId && parent.runId===turn.runId && !!parent.admissionId && !!parent.runId)
     return "Working in this chat";
+  if(snapshot.awaitingPeers.some(peer=>peer.state==="parked"))return "Waiting on a paused request";
   return parent?.waitingForPeers ? "Waiting for peer results" : undefined;
+}
+
+/** Budget limits the usage ledger has to measure, as opposed to a deadline. */
+const MEASURED_LIMITS=["tokens","cost_usd","provider_calls"];
+
+/** A peer request the Goal waits on; a Stop in its recipient chat parks it. */
+export type AwaitedPeer=Readonly<{messageId:string;chatId:string;displayName:string;state:string}>;
+
+function parseAwaitedPeers(value:unknown):readonly AwaitedPeer[] {
+  return (Array.isArray(value)?value:[]).slice(0,20).flatMap(value=>{
+    if(!value || typeof value!=="object")return [];
+    const row=value as Record<string,unknown>;
+    if(typeof row.message_id!=="string" || typeof row.chat_id!=="string" || !row.chat_id)return [];
+    return [{messageId:row.message_id,chatId:row.chat_id,
+      displayName:typeof row.display_name==="string" && row.display_name.trim()?row.display_name.trim():"another chat",
+      state:typeof row.state==="string"?row.state:""}];
+  });
 }
 
 export type ComposerGoalState = {
@@ -62,6 +80,11 @@ export type ComposerGoalSnapshot = Readonly<{
   completion_basis:string;
   historyLimited?:boolean;
   parentTurn?:Readonly<{admissionId:string;runId:string;waitingForPeers:boolean}>;
+  awaitingPeers:readonly AwaitedPeer[];
+  /** Usage records the ledger lost for this Goal; null when unreported. */
+  lostUsageRecords:number|null;
+  /** A token, cost or call limit, which needs every usage record to hold. */
+  measuredBudget:boolean;
   admittedContinuation:Readonly<{requestId:string;message:string;stepId:string;previousAttempt:number;jobId:string}>|null;
   capabilities: Readonly<{pause_scheduling:boolean;pause_active_work:boolean;resume:boolean;cancel:boolean;continue:boolean;retry_cleanup:boolean;finish:boolean;archive:boolean}>;
   objectiveOutcome:ObjectiveOutcome;
@@ -94,7 +117,14 @@ export function parseComposerGoalSnapshot(value:unknown):ComposerGoalSnapshot|nu
   const state=(row.state && typeof row.state==="object"?row.state:{}) as Record<string,unknown>;
   const parent=(state.parent_turn && typeof state.parent_turn==="object"?state.parent_turn:{}) as Record<string,unknown>;
   const report=(parent.report && typeof parent.report==="object"?parent.report:{}) as Record<string,unknown>;
-  return {goal,submission_request_id:row.submission_request_id,completion_basis:typeof row.completion_basis==="string"?row.completion_basis:"",
+  const accounting=(row.accounting && typeof row.accounting==="object"?row.accounting:{}) as Record<string,unknown>;
+  const lost=accounting.lost_usage_records;
+  const budget=((row.goal as Record<string,unknown>).budget || {}) as Record<string,unknown>;
+  const limits=(budget.limits && typeof budget.limits==="object"?budget.limits:{}) as Record<string,unknown>;
+  return {goal,
+    awaitingPeers:parseAwaitedPeers(row.awaiting_peers),
+    lostUsageRecords:Number.isSafeInteger(lost) && (lost as number)>=0 ? lost as number : null,
+    measuredBudget:MEASURED_LIMITS.some(key=>limits[key]!==undefined && limits[key]!==null),submission_request_id:row.submission_request_id,completion_basis:typeof row.completion_basis==="string"?row.completion_basis:"",
     parentTurn:typeof parent.admission_id==="string" && typeof parent.run_id==="string"
       ? {admissionId:parent.admission_id,runId:parent.run_id,waitingForPeers:parent.status==="finished" && Array.isArray(report.wait_for_message_ids) && report.wait_for_message_ids.length>0}
       : undefined,

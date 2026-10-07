@@ -1,6 +1,6 @@
 import {useChatSelection,shallowChatSelection} from "../chatStore";
 import {useSyncExternalStore} from "react";
-import {useSessionState} from "../state/sessionStore";
+import {switchSession,useSessionState} from "../state/sessionStore";
 import {Icon} from "../ui/Icon";
 import {goalIsTerminal,goalWorkLabel} from "../protocol/goals";
 import {getTurnSnapshot,subscribeTurn} from "../state/turnStore";
@@ -26,6 +26,11 @@ export function ComposerGoalPanel() {
     :pending?.operation==="cancel"?"Stopping goal and checking cleanup…"
     :pending?.operation==="continue"?"Continuing goal…":pending?.operation==="finish"?"Ending goal…":pending?.operation==="archive"?"Removing finished goal…":"";
   const lifecycle=record ? snapshot?.cleanup.status==="pending"?"Cleanup pending":snapshot?.cleanup.status==="failed"?"Cleanup failed":snapshot?.terminationKind==="user_finished"?"Ended by you":record.status==="cancelled" && snapshot?.cleanup.complete?"Stopped":statusLabels[record.status]:"Awaiting confirmation";
+  // A Stop in the recipient chat parks its queue; the goal keeps waiting
+  // until someone continues it there. One notice per chat, not per request.
+  const parkedChats=[...new Map((snapshot?.awaitingPeers || []).filter(peer=>peer.state==="parked")
+    .map(peer=>[peer.chatId,peer] as const)).values()];
+  const lost=snapshot?.lostUsageRecords || 0;
   return <section className="composer-goal" aria-label="Durable goal" data-goal-id={record?.goal_id}>
     <header><strong><Icon name="goal"/>Goal</strong><span role="status">{goalWorkLabel(snapshot,turn) || lifecycle}</span>
       <button type="button" className="composer-icon-button" aria-label="Refresh goal" aria-busy={!!goal.refreshRequestId} disabled={!state.connected || navigating} onClick={()=>refreshComposerGoal(true)}><Icon name="refresh"/></button></header>
@@ -33,6 +38,19 @@ export function ComposerGoalPanel() {
       <p className="composer-goal__title">{record.title || record.objective}</p>
       {snapshot.steps.length ? <div className="composer-goal__progress" role="img" aria-label={`${snapshot.steps.filter(step=>DONE_STEP.test(step.status)).length} of ${snapshot.steps.length} steps finished`}>
         {snapshot.steps.map(step=><i key={step.id} data-step-state={stepState(step.status)} title={`${step.title} · ${step.status.replaceAll("_"," ")}`}/>)}
+      </div> : null}
+      {parkedChats.map(peer=>peer.chatId===state.sessionId
+        ? <div className="composer-goal__notice" data-goal-notice="parked" key={peer.chatId}>
+          <p>A request in this chat's queue is paused. Continue it from the queue to resume this goal.</p>
+        </div>
+        : <div className="composer-goal__notice" data-goal-notice="parked" key={peer.chatId}>
+          <p>A request to <strong>{peer.displayName}</strong> is paused in its queue. Continue it there to resume this goal.</p>
+          <button type="button" className="deck-button" aria-label={`Open ${peer.displayName}`} disabled={navigating} onClick={()=>switchSession(peer.chatId)}><Icon name="peers"/>Open chat</button>
+        </div>)}
+      {lost ? <div className="composer-goal__notice" data-goal-notice="usage">
+        <p>{lost} usage {lost===1?"record":"records"} could not be saved{snapshot.measuredBudget
+          ? ", so this goal's budget can't be checked reliably."
+          : ". Usage totals may be low."}</p>
       </div> : null}
       <details><summary>Objective and steps</summary><p className="composer-goal__objective">{record.objective}</p>
         {snapshot.steps.length ? <ol>{snapshot.steps.map(step=><li key={step.id} data-step-state={stepState(step.status)}><span>{step.title}</span><small>{step.status.replaceAll("_"," ")}</small></li>)}</ol> : null}
