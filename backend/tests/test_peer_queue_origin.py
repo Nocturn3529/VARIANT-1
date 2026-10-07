@@ -79,3 +79,65 @@ async def test_a_request_reaches_a_busy_chat_at_its_next_step(tmp_path):
         await asyncio.gather(running, return_exceptions=True)
         runtimes.finish_run(admission, status="test")
         await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_retrying_a_committed_follow_up_without_delivery_keeps_its_mode(tmp_path):
+    """A lost acknowledgement from before the steer default still reconciles."""
+    service, runtimes, _sessions, _chat, first, second = _stack(tmp_path)
+    try:
+        original = await service.send(
+            f"chat:{first}", f"chat:{second}", "Old request", request_id="old-1",
+            delivery="follow_up",
+        )
+        retried = await service.send(
+            f"chat:{first}", f"chat:{second}", "Old request", request_id="old-1",
+        )
+        assert retried["message_id"] == original["message_id"]
+        assert retried["delivery"] == "follow_up"
+        with pytest.raises(PeerError) as conflict:
+            await service.send(
+                f"chat:{first}", f"chat:{second}", "Old request", request_id="old-1",
+                delivery="steer",
+            )
+        assert conflict.value.code == "peer_request_conflict"
+    finally:
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_websocket_send_keeps_an_omitted_delivery_omitted(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    import ws_peers
+
+    service, runtimes, sessions, _chat, first, second = _stack(tmp_path)
+    handlers = {}
+
+    def on(*names):
+        def register(handler):
+            for name in names:
+                handlers[name] = handler
+            return handler
+        return register
+
+    ws_peers.register(on)
+    host = SimpleNamespace(require_runtime=lambda: SimpleNamespace(
+        sessions=sessions, peers=service,
+    ))
+    websocket = SimpleNamespace(send_json=AsyncMock())
+    try:
+        await service.send(
+            f"chat:{first}", f"chat:{second}", "Old request", request_id="ws-1",
+            delivery="follow_up",
+        )
+        await handlers["peers:send"](host, websocket, None, {
+            "type": "peers:send", "chat_id": first, "request_id": "ws-1",
+            "peer_id": f"chat:{second}", "text": "Old request",
+        })
+        reply = websocket.send_json.await_args.args[0]
+        assert reply["ok"] is True, reply
+        assert reply["result"]["delivery"] == "follow_up"
+    finally:
+        await _settle_service(service, runtimes)

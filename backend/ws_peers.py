@@ -63,8 +63,8 @@ def register(on):
                 text = _text(message.get("text"), "text")
                 target = _text(message.get("peer_id" if operation == "send" else "message_id"),
                                "peer_id" if operation == "send" else "message_id")
-                delivery = str(message.get("delivery") or "")
-                if delivery not in {"", "follow_up", "steer"}:
+                delivery = message.get("delivery") or None  # omitted: service default
+                if delivery not in {None, "follow_up", "steer"}:
                     raise ValueError("delivery must be follow_up or steer")
                 entered_service = True
                 if operation == "send":
