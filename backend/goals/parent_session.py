@@ -115,7 +115,8 @@ class ParentSessionGoals:
         if totals is None and any(key in goal.budget_limits for key in ('tokens', 'cost_usd', 'provider_calls')):
             reason = 'budget accounting is unavailable'
         bus = getattr(getattr(self.host, 'router', None), '_manifest_bus', None)
-        if (getattr(bus, 'ledger_failures', 0)
+        lost = getattr(bus, 'goal_usage_lost', None)
+        if (callable(lost) and lost(goal_id)
                 and any(key in goal.budget_limits for key in ('tokens', 'cost_usd', 'provider_calls'))):
             reason = 'budget accounting has lost usage records'
         if totals and totals['requests']:
@@ -150,11 +151,36 @@ class ParentSessionGoals:
             self.goals.supervisor.enqueue(goal.goal_id, reason='awaited_peer_result',
                 dedupe_key='peer-result:' + str(message['message_id']))
 
+    def panel_facts(self, goal_id):
+        """Lost usage records and the peer requests this Goal's turn awaits."""
+        bus = getattr(getattr(self.host, 'router', None), '_manifest_bus', None)
+        lost = getattr(bus, 'goal_usage_lost', None)
+        accounting = {'lost_usage_records': lost(goal_id)
+                      if callable(lost) and getattr(bus, 'usage_ledger', None) is not None else None}
+        goal = self.goals.repository.get_goal(goal_id)
+        slot = self.goals.repository.state_get(goal_id, 'parent_turn') or {} if goal else {}
+        awaited = ((slot.get('report') or {}).get('wait_for_message_ids') or [])[:20]
+        peers = getattr(self.host.require_runtime(), 'peers', None)
+        rows = []
+        for message_id in awaited:
+            try:
+                rows.append(peers.awaited_request('chat:' + goal.owner_chat_id, message_id))
+            except Exception:
+                rows.append({'message_id': message_id, 'chat_id': '', 'display_name': '',
+                             'state': 'unavailable'})
+        return {'accounting': accounting, 'awaiting_peers': rows}
+
     def notify_peer_unavailable(self, message):
         if (message.get('message_kind') != 'request'
                 or not str(message.get('sender_peer_id', '')).startswith('chat:')
                 or not (message.get('state') in {'failed', 'parked'}
                         or message.get('evidence', {}).get('native_wait_failure'))):
+            return
+        # Wake only for a dead end. A Stop-parked request may still be resumed,
+        # and an early wake would spend this request's one-time dedupe key.
+        peers = getattr(self.host.require_runtime(), 'peers', None)
+        failure = getattr(peers, 'native_wait_failure', None)
+        if callable(failure) and not failure(message['sender_peer_id'], message['message_id']):
             return
         goal = self.goals.repository.active_composer_goal(message['sender_peer_id'][5:])
         if goal is None or goal.completion_policy.get('execution_owner') != 'parent':

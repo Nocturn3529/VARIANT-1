@@ -102,7 +102,10 @@ an in-flight step can finish. Missing measurements or lost ledger records pause
 explicit accounting caps rather than treating unknown cost/tokens as zero.
 Accounting faults pause capped work visibly rather than failing as provider
 errors; unlimited turns continue. Unavailable named peer requests wake and
-block their waiting Goal without a fabricated result or automatic retry.
+block their waiting Goal without a fabricated result or automatic retry. A
+request parked by a recipient Stop is still resumable, so its Goal keeps waiting;
+only a deleted recipient, a failed, cancelled or unadmitted request, or a turn
+that ended without a settlement blocks it.
 Unlimited defaults remain unchanged.
 
 Native peer requests default to `steer`: a busy recipient consumes them at a safe
@@ -337,7 +340,8 @@ survive idle view eviction.
 The WebSocket reader accepts embedded-browser acknowledgements independently
 of an ordered, bounded ordinary-command worker. Disconnect cleanup discards
 unstarted commands and gives the active command up to ten seconds to finish,
-then releases the view attachment. ASGI cancellation is preserved after cleanup.
+then releases the view attachment. Browser acknowledgements awaited from the
+closed socket fail immediately rather than consuming that grace. ASGI cancellation is preserved after cleanup.
 Native and detached turns can publish through the host event sink after their
 original socket closes; foreground disconnect cancellation retains its existing
 ownership rules. Response delivery failure never changes a committed operation
@@ -370,7 +374,9 @@ Physical-request accounting retains SQLite WAL with FULL durability. Repeated
 provider identity chunks are coalesced per manifest in a bounded cache. Patches
 use a bounded serial writer off the event loop; terminal request boundaries await
 an ordered write fence, independent of future requests from other sessions.
-Writer failures/overflow remain visible to explicit Goal accounting caps.
+Pending partial-usage writes coalesce to one per request. A lost request or usage
+write marks only that request's Goal as having incomplete accounting, which
+pauses its explicit caps; other Goals keep their exact totals.
 
 The Electron backend watchdog records health-probe failure reasons and elapsed
 time. A constant-space, once-per-second backend sampler exposes last/maximum

@@ -520,6 +520,15 @@ async def _queue_command(srv, websocket, session, msg):
             registry.repository.queued_ticket_command(chat_id, ticket_id,
                 expected_revision=expected_revision, operation="remove")
             accepted = True
+            peers = getattr(srv.require_runtime(), "peers", None)
+            if peers is not None:
+                # A removed peer request can no longer be answered; tell the
+                # sender's waits now rather than leave them pending.
+                try:
+                    peers.native_ticket_changed(ticket_id)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("peer ticket resync failed")
         else:
             snapshot = registry.queue_snapshot(chat_id)
             if type(expected_revision) is not int or expected_revision != snapshot["revision"]:

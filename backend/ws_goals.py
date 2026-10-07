@@ -97,7 +97,9 @@ def register(on):
             return {'goal':goal.to_dict(),
                 'runtime':{key:runtime.get(key) for key in ('busy','queued_inputs','pause_state','configuration_pending')},
                 'accounting':{'available':getattr(bus,'usage_ledger',None) is not None,
-                              'failures':getattr(bus,'ledger_failures',None)}}
+                              'failures':getattr(bus,'ledger_failures',None),
+                              'lost_usage_records':(bus.goal_usage_lost(goal.goal_id)
+                                                    if callable(getattr(bus,'goal_usage_lost',None)) else None)}}
         # Here mutation=False means no mandatory request_id, not a ban on
         # reconciling derived accounting. The status read starts no Goal work.
         await _respond(websocket,msg,'status',action,mutation=False)

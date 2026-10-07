@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import threading
 from collections import OrderedDict, deque
 from contextvars import Context
 
@@ -30,6 +31,12 @@ class ModelRequestManifestBus:
         self._ledger_queue: asyncio.Queue | None = None
         self._ledger_task: asyncio.Task | None = None
         self._response_identities: OrderedDict[str, dict] = OrderedDict()
+        # A lost usage record makes only its own Goal's capped accounting
+        # incomplete; other Goals and unscoped chats keep exact totals.
+        self._manifest_goals: OrderedDict[str, str] = OrderedDict()
+        self._goal_usage_losses: dict[str, int] = {}
+        self._pending_partial: dict[str, dict] = {}
+        self._partial_lock = threading.Lock()
         # The receipt window is intentionally small, but usage is cumulative
         # for the lifetime of this router. Keeping totals separately prevents a
         # long agent run from losing its early Responses cache/reasoning usage
@@ -88,11 +95,12 @@ class ModelRequestManifestBus:
         if not isinstance(manifest, dict):
             return
         stored = copy.deepcopy(manifest)
+        self._remember_goal(stored)
         if self.usage_ledger is not None:
             try:
                 await asyncio.to_thread(self.usage_ledger.record, stored)
             except Exception:
-                self.ledger_failures += 1
+                self._usage_lost(self.manifest_id_from_ref(stored))
         self._items.append(stored)
         route = stored.get("route") or {}
         messages = (stored.get("messages") or {}).get("rendered") or {}
@@ -176,7 +184,7 @@ class ModelRequestManifestBus:
                             'usage': copy.deepcopy(normalized_usage)})
                     except Exception:
                         self.publish_failures += 1
-        self.submit_ledger(persist)
+        self.submit_ledger(persist, manifest_id=manifest_id, usage=True)
         if manifest_id not in self._usage_manifest_ids:
             if (
                 self._usage_manifest_order.maxlen
@@ -277,11 +285,12 @@ class ModelRequestManifestBus:
             self.enqueue(updated)
             return
 
-    def submit_ledger(self, operation) -> bool:
+    def submit_ledger(self, operation, *, manifest_id: str = "", usage: bool = False) -> bool:
         """Serialize blocking patches off the loop, with a bounded pending queue.
 
-        Overflow/failure stays visible to strict Goal accounting. Synchronous
-        callers outside an event loop retain immediate durable semantics.
+        A lost ``usage`` patch is charged to its request's Goal, which strict
+        accounting then treats as incomplete. Other overflow/failures are only
+        counted. Synchronous callers outside an event loop write immediately.
         """
         if self.usage_ledger is None:
             return True
@@ -292,30 +301,78 @@ class ModelRequestManifestBus:
                 operation()
                 return True
             except Exception:
-                self.ledger_failures += 1
+                self._ledger_failed(manifest_id, usage)
                 return False
         if self._ledger_task is None or self._ledger_task.done():
             self._ledger_queue = asyncio.Queue(maxsize=256)
             self._ledger_task = loop.create_task(self._ledger_loop(), name='model-usage-writer', context=Context())
         try:
-            self._ledger_queue.put_nowait(operation)
+            self._ledger_queue.put_nowait((operation, manifest_id, usage))
             return True
         except asyncio.QueueFull:
-            self.ledger_failures += 1
+            self._ledger_failed(manifest_id, usage)
             return False
+
+    def submit_partial_usage(self, manifest_id: str, usage: dict) -> bool:
+        """Queue at most one partial-usage write per request; it stores the latest."""
+        with self._partial_lock:
+            queued = manifest_id in self._pending_partial
+            self._pending_partial[manifest_id] = usage
+        if queued:
+            return True
+
+        def persist():
+            with self._partial_lock:
+                latest = self._pending_partial.pop(manifest_id, None)
+            if latest is not None:
+                self.usage_ledger.patch_usage(manifest_id, latest, partial=True)
+
+        if self.submit_ledger(persist, manifest_id=manifest_id, usage=True):
+            return True
+        with self._partial_lock:
+            self._pending_partial.pop(manifest_id, None)
+        return False
+
+    def _remember_goal(self, manifest: dict) -> None:
+        manifest_id = self.manifest_id_from_ref(manifest)
+        scope = (manifest.get("run") or {}).get("work_scope") or {}
+        goal_id = str(scope.get("goal_id") or "")[:160]
+        if manifest_id and goal_id:
+            self._manifest_goals[manifest_id] = goal_id
+            self._manifest_goals.move_to_end(manifest_id)
+            if len(self._manifest_goals) > 8192:
+                self._manifest_goals.popitem(last=False)
+
+    def _usage_lost(self, manifest_id: str) -> None:
+        self.ledger_failures += 1
+        goal_id = self._manifest_goals.get(manifest_id, "")
+        if goal_id:
+            self._goal_usage_losses[goal_id] = self._goal_usage_losses.get(goal_id, 0) + 1
+
+    def _ledger_failed(self, manifest_id: str, usage: bool) -> None:
+        if usage:
+            self._usage_lost(manifest_id)
+        else:
+            self.ledger_failures += 1
+
+    def goal_usage_lost(self, goal_id: str) -> int:
+        """Usage records of this Goal's requests that could not be stored."""
+        return self._goal_usage_losses.get(str(goal_id or ""), 0)
 
     async def _ledger_loop(self):
         queue = self._ledger_queue
         while True:
-            operation = await queue.get()
+            item = await queue.get()
             try:
-                if isinstance(operation, asyncio.Future):
-                    if not operation.done():
-                        operation.set_result(None)
+                if isinstance(item, asyncio.Future):
+                    if not item.done():
+                        item.set_result(None)
                 else:
-                    await asyncio.to_thread(operation)
-            except Exception:
-                self.ledger_failures += 1
+                    operation, manifest_id, usage = item
+                    try:
+                        await asyncio.to_thread(operation)
+                    except Exception:
+                        self._ledger_failed(manifest_id, usage)
             finally:
                 queue.task_done()
 

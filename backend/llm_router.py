@@ -471,8 +471,7 @@ class LLMRouter:
                 normalized[field] = None
         # Incomplete observations must not preempt the final UI/CloudUsage count.
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
-        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
-            identity, normalized, partial=True))
+        self._manifest_bus.submit_partial_usage(identity, normalized)
 
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,

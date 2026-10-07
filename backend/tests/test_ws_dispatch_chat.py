@@ -112,9 +112,11 @@ async def test_queue_remove_is_revisioned_and_rejects_foreign_selection(tmp_path
     assert socket.send_json.await_args.args[0]["error"] == "stale_queue_selection"
     assert repository.get_ticket(ticket.ticket_id).state == "queued"
     session.viewed_session_id = sid
+    srv.require_runtime().peers = SimpleNamespace(native_ticket_changed=MagicMock())
     await ws_dispatch.HANDLERS[message["type"]](srv, socket, session, message)
     assert socket.send_json.await_args.args[0]["accepted"]
     assert repository.get_ticket(ticket.ticket_id).state == "cancelled"
+    srv.require_runtime().peers.native_ticket_changed.assert_called_once_with(ticket.ticket_id)
 
 
 @pytest.mark.asyncio
