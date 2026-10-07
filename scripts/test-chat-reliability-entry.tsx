@@ -302,6 +302,20 @@ export async function run() {
   assert.equal(getChatState().streamText,"","text the backend saved as narration is not also the live reply");
   assert.equal(getChatState().turnSteps.filter(step=>step.kind==="text" && step.segment===3).length,1);
 
+  // The revision moves on bindings and step changes, not as one call's text
+  // grows. These two snapshots were captured from backend run_snapshot() over
+  // one growing live buffer: same revision, longer text. Recovery must show it.
+  const grown=[
+    {run_id:"run-grow",admission_id:"admission-grow",revision:1,steps:[],segment:1,text:"Initial"},
+    {run_id:"run-grow",admission_id:"admission-grow",revision:1,steps:[],segment:1,text:"Initial continued"},
+  ];
+  reset();activateChatState("D");noteDisplayedSession("D");
+  const growSession=(snapshot:Record<string,unknown>)=>incoming({type:"chat:session",session:{id:"D",title:"Growing",messages:[{role:"user",text:"Go",ts:1}],
+    runtime:{busy:true,active_run_id:"run-grow",active_admission_id:"admission-grow"},run_snapshot:snapshot}});
+  growSession(grown[0]);assert.equal(getChatState().streamText,"Initial");
+  growSession(grown[1]);assert.equal(getChatState().streamText,"Initial continued","an equal revision with more text for the same call advances the view");
+  growSession(grown[0]);assert.equal(getChatState().streamText,"Initial continued","a shorter copy of the same call never shrinks the view");
+
   // Queued messages from other agents say who sent them.
   const queue=parseInputQueueSnapshot({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:"A",revision:1,items:[
     {ticket_id:"t-peer",chat_id:"A",text:"[Peer message]",delivery:"follow_up",state:"queued",origin:{kind:"peer",peer_id:"chat:chat:branch_x",message_id:"peer_message_1",display_name:"Space Bunny"}},

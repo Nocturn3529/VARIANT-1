@@ -123,7 +123,7 @@ function hydrateTurn(runtime: ChatRuntimeState | null): void {
 }
 
 type RunSnapshot = {runId: string; revision: number; steps: ChatTurnStep[]; segment?: number; text: string};
-/** Newest snapshot revision applied per admission; an older one arriving late is stale. */
+/** Newest snapshot revision applied per admission; a lower one arriving late is stale. */
 const appliedSnapshots = new Map<string, number>();
 
 /** The backend's view of the active run, sent with chat:session while it runs. */
@@ -140,7 +140,10 @@ function parseRunSnapshot(value: unknown, runId: string, admissionId: string): R
   // Live results merge on the same key a live start gets.
   const steps = (parseTurnSteps(row.steps, true) || []).map(step => step.callId && !step.key ? {...step, key: `call:${step.callId}`} : step);
   const revision = typeof row.revision === "number" && Number.isSafeInteger(row.revision) ? row.revision : 0;
-  if (revision && revision <= (appliedSnapshots.get(fence) ?? 0)) return null;
+  // The revision moves on bindings and step changes, not as a call's text
+  // grows, so an equal revision can still carry newer text for that call.
+  // Only a lower one is stale; the merge keeps longer or later text seen here.
+  if (revision && revision < (appliedSnapshots.get(fence) ?? 0)) return null;
   if (revision) {
     appliedSnapshots.set(fence, revision);
     while (appliedSnapshots.size > 64) appliedSnapshots.delete(appliedSnapshots.keys().next().value!);
