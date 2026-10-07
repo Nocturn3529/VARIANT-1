@@ -228,6 +228,7 @@ class WSHub:
         self.max_queued = max(1, int(max_queued))
         self._outboxes: dict = {}
         self._drainers: dict = {}
+        self._closing: set = set()
 
     def add(self, ws):
         self.active.add(ws)
@@ -264,7 +265,9 @@ class WSHub:
                     await closer()
                 except Exception:
                     pass  # The socket is already gone or closing.
-            asyncio.create_task(_close())
+            task = asyncio.create_task(_close())
+            self._closing.add(task)
+            task.add_done_callback(self._closing.discard)
 
     def _enqueue(self, ws, payload):
         outbox = self._outboxes.setdefault(ws, deque())
