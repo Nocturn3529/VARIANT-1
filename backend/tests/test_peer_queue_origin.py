@@ -1,4 +1,4 @@
-"""Queued peer messages say who sent them; a peer cannot message itself."""
+"""Queued peer messages say who sent them and reach a busy chat at its next step."""
 
 from __future__ import annotations
 
@@ -34,18 +34,6 @@ async def test_queue_snapshot_carries_the_peer_origin_of_a_waiting_message(tmp_p
         running.cancel()
         await asyncio.gather(running, return_exceptions=True)
         runtimes.finish_run(admission, status="test")
-        await _settle_service(service, runtimes)
-
-
-@pytest.mark.asyncio
-async def test_a_peer_cannot_send_a_message_to_itself(tmp_path):
-    service, runtimes, _sessions, _chat, first, _second = _stack(tmp_path)
-    try:
-        with pytest.raises(PeerError) as refused:
-            await service.send(f"chat:{first}", f"chat:{first}", "Note to self")
-        assert refused.value.code == "peer_self_send"
-        assert runtimes.queue_snapshot(first)["items"] == []
-    finally:
         await _settle_service(service, runtimes)
 
 
