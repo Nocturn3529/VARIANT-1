@@ -449,7 +449,7 @@ class LLMRouter:
         return self._manifest_bus.snapshot(manifest_id=manifest_id)
 
     async def _record_model_request_manifest(self, manifest: dict) -> None:
-        """Store and enqueue one receipt without delaying the provider request."""
+        """Durably record the request before I/O and enqueue its display receipt."""
         await self._manifest_bus.record(manifest)
 
     def _patch_model_request_manifest_usage(
@@ -459,13 +459,9 @@ class LLMRouter:
         self._manifest_bus.patch_usage(manifest_ref, normalized_usage)
 
     def _patch_model_request_manifest_terminal(self, manifest_ref, *, outcome, duration_s=None):
-        ledger = self._manifest_bus.usage_ledger
-        if ledger is not None:
-            try:
-                ledger.patch_terminal(self._manifest_bus.manifest_id_from_ref(manifest_ref),
-                    outcome=outcome, duration_s=duration_s)
-            except Exception:
-                self._manifest_bus.ledger_failures += 1
+        identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
+        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_terminal(
+            identity, outcome=outcome, duration_s=duration_s))
 
     def _patch_model_request_manifest_partial_usage(self, manifest_ref, raw_usage):
         normalized = normalize_manifest_usage('openrouter', raw_usage=raw_usage)
@@ -474,12 +470,9 @@ class LLMRouter:
             if basis not in normalized['reported_fields']:
                 normalized[field] = None
         # Incomplete observations must not preempt the final UI/CloudUsage count.
-        ledger = self._manifest_bus.usage_ledger
-        if ledger is not None:
-            try:
-                ledger.patch_usage(self._manifest_bus.manifest_id_from_ref(manifest_ref), normalized, partial=True)
-            except Exception:
-                self._manifest_bus.ledger_failures += 1
+        identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
+        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
+            identity, normalized, partial=True))
 
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,
@@ -1935,6 +1928,16 @@ class LLMRouter:
                 flush=True,
             )
             end_model_call(model_call_token, outcome='succeeded' if status == 'ok' else 'cancelled' if status == 'cancelled' else 'unknown' if status == 'closed' else 'failed')
+            # Even an interrupted stream retains its observed usage/terminal
+            # identity before Goal accounting or turn settlement proceeds.
+            bus = getattr(self, '_manifest_bus', None)
+            if bus is not None:
+                flushing = asyncio.create_task(bus.flush_ledger())
+                try:
+                    await asyncio.shield(flushing)
+                except asyncio.CancelledError:
+                    await flushing
+                    raise
 
     def set_local_gate(self, factory) -> None:
         """Wrap local generation in a scheduler slot. ``factory()`` returns an

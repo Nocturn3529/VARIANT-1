@@ -165,6 +165,44 @@ async def test_goal_budget_unknown_cost_is_not_zero_and_default_stays_unlimited(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('capped', [False, True])
+async def test_accounting_conflict_pauses_only_capped_goal_without_model_error(tmp_path, monkeypatch, capped):
+    from goals.models import GoalConflict
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    goal_id = await launch(goals, runs)
+    if capped:
+        with goals.repository.work._write() as conn:
+            conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', ('{"tokens":100}',goal_id))
+    def conflict(_):
+        raise GoalConflict('concurrent accounting')
+    monkeypatch.setattr(parent, 'refresh_budget', conflict)
+    admission = registry.active_admission('owner')
+    assert parent.boundary_budget(runs[0][0], admission) is capped
+    if capped:
+        assert goals.get(goal_id).status == 'paused'
+        assert 'unavailable' in goals.get(goal_id).pause_reason
+    monkeypatch.undo()
+    await finish(goals, goal_id, gate, registry)
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stale_goal_scope_and_admission_race_do_not_fail_or_pause_successor(tmp_path, monkeypatch):
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    goal_id = await launch(goals, runs)
+    run = runs[0][0]; admission = registry.active_admission('owner')
+    stale = SimpleNamespace(work_scope=SimpleNamespace(goal_id='deleted'), session_id='owner', run_id=run.run_id)
+    assert parent.boundary_budget(stale, admission) is False
+    with goals.repository.work._write() as conn:
+        conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', ('{"provider_calls":0}',goal_id))
+    monkeypatch.setattr(registry, 'set_run_paused', lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('stale_run')))
+    assert parent.boundary_budget(run, admission) is False
+    monkeypatch.undo()
+    await finish(goals, goal_id, gate, registry)
+    await work.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status,expected", [("blocked", "blocked"), (None, "blocked"), ("continuing", "running")])
 async def test_parent_outcomes_control_continuation_and_prose_never_completes(tmp_path, status, expected):
     work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
@@ -311,6 +349,40 @@ async def test_only_correlated_peer_results_wake_a_sleeping_coordinator(tmp_path
     assert len(work.jobs.list(owner_kind='goal', owner_id=goal_id)) == before + 1
     assert (await goals.supervisor.tick(goal_id))['status'] == 'running'
     await work.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['parked', 'deleted', 'unsettled'])
+async def test_unavailable_named_peer_wakes_and_blocks_without_another_turn(tmp_path, failure):
+    from peers import PeerCommunicationService, PeerRepository
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    runtime = parent.host.require_runtime()
+    live_sessions = {'owner':{'id':'owner'}, 'collaborator':{'id':'collaborator'}}
+    runtime.sessions.get_session = live_sessions.get
+    repo = PeerRepository(tmp_path/'peers.sqlite3')
+    peers = PeerCommunicationService(parent.host, repo, sessions=runtime.sessions,
+        session_runtimes=registry, chat_service=runtime.chat)
+    runtime.peers = peers
+    repo.persist_message({'message_id':'request-a','sender_peer_id':'chat:owner',
+        'target_peer_id':'chat:collaborator','content':'Verify', 'delivery':'follow_up',
+        'message_kind':'request','state':'queued'})
+    goal_id = await launch(goals, runs)
+    parent.report(invocation(runs[0][0]),status='continuing',summary='Await verification',wait_for_message_ids=['request-a'])
+    assert (await finish(goals,goal_id,gate,registry))['status'] == 'waiting_external'
+    before = len(work.jobs.list(owner_kind='goal',owner_id=goal_id))
+    if failure == 'deleted':
+        live_sessions.pop('collaborator')
+        assert await peers.delete_chat('collaborator') == 1
+    else:
+        row = repo.update_message('request-a',state='parked' if failure == 'parked' else 'unknown',
+            error='Recipient unavailable',evidence={'native_wait_failure':'recipient_unsettled'} if failure == 'unsettled' else {})
+        peers._event(row)
+    assert len(work.jobs.list(owner_kind='goal',owner_id=goal_id)) == before + 1
+    result = await goals.supervisor.tick(goal_id)
+    assert result['status'] == 'blocked'
+    assert goals.repository.state_get(goal_id,'objective_outcome')['continuation_allowed'] is False
+    assert len(runs) == 1 and repo.find_reply('request-a') is None
+    await peers.shutdown();await work.shutdown()
 
 
 @pytest.mark.asyncio

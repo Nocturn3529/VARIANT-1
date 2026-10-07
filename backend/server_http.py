@@ -319,11 +319,15 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
     queue = asyncio.Queue(maxsize=128)
     dispatcher = None
     receiver = None
+    ingress_closed = False
+    end_dispatch = object()
 
     async def dispatch_messages():
         while True:
             message = await queue.get()
             try:
+                if ingress_closed or message is end_dispatch:
+                    return
                 handled = await ws_dispatch.dispatch(srv, logged, session, message)
                 if not handled:
                     mtype = message.get("type") if isinstance(message, dict) else None
@@ -405,8 +409,8 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
                     "request_id": str(msg.get("request_id") or "")[:512] if isinstance(msg, dict) else ""})
     except asyncio.CancelledError:
         # ASGI scopes may cancel the endpoint as soon as the peer closes.
-        # This ends the transport, not the durable run's ownership policy.
-        pass
+        # Cleanup is shielded below; preserve ASGI shutdown cancellation.
+        raise
     except Exception as exc:
         if not transport_disconnected(exc):
             raise
@@ -414,12 +418,32 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
         # Finish detachment even when the ASGI parent scope has already been
         # cancelled; awaiting our workers must not abandon ownership cleanup.
         with anyio.CancelScope(shield=True):
-            tasks = [task for task in (receiver, dispatcher) if task is not None]
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            ingress_closed = True
+            if receiver is not None:
+                receiver.cancel()
+                await asyncio.gather(receiver, return_exceptions=True)
+            # Unstarted commands have performed no effects. Let the active
+            # command finish its domain action, even if its reply cannot be
+            # delivered, rather than cancelling it at an arbitrary await.
+            while not queue.empty():
+                queue.get_nowait()
+                queue.task_done()
+            queue.put_nowait(end_dispatch)
+            if dispatcher is not None:
+                try:
+                    await asyncio.wait_for(asyncio.shield(dispatcher), timeout=10.0)
+                except asyncio.TimeoutError:
+                    print('[ws] active command exceeded disconnect grace; outcome needs reconciliation', flush=True)
+                    dispatcher.cancel()
+                    await asyncio.gather(dispatcher, return_exceptions=True)
+                except asyncio.CancelledError:
+                    if not dispatcher.cancelled():
+                        raise
+                    # A cancelled command is already stopped; still detach the
+                    # view. Endpoint cancellation re-raises after this finally.
+                except Exception:
+                    # A failed reply after disconnect does not undo an action.
+                    pass
             if view_role != "detached_chat":
                 try:
                     from browser_fabric.interactive import unregister_host

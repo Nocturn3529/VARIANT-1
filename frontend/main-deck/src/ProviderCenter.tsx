@@ -224,7 +224,7 @@ export function ProviderAccounts() {
         <span className="provider-account-row__copy"><span className="provider-account-row__title"><strong>Local models</strong></span><small>Run a GGUF model supplied on this device.</small></span>
         <span className="provider-account-row__trail" aria-hidden="true">›</span>
       </button>
-      {connected.length ? <p className="provider-group-label">Connections checked</p> : null}
+      {connected.length ? <p className="provider-group-label">Checked</p> : null}
       {connected.map(provider => <ProviderAccountRow
         key={provider.name}
         provider={provider}

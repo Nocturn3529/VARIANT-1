@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+
+def test_unclassified_model_step_failure_is_a_harness_cause():
+    from observability.run_receipts import terminal_cause_class
+    assert terminal_cause_class('model_step_error') == 'harness'
+
 import asyncio
 import json
 from types import SimpleNamespace

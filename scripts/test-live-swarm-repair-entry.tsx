@@ -10,6 +10,7 @@ import {ingestChat} from "../frontend/main-deck/src/chat/ingest";
 import {parseChatWsMessage} from "../frontend/main-deck/src/protocol";
 import {applySession} from "../frontend/main-deck/src/chat/session";
 import {refreshExecutionStates,executionConnection} from "../frontend/main-deck/src/chat/executionRecovery";
+import {resetTraceAnnotations} from "../frontend/main-deck/src/chat/annotations";
 
 export async function run() {
   const sent:Record<string,unknown>[]=[];
@@ -31,7 +32,8 @@ export async function run() {
     assert.ok(getSessionState().pendingAction,"uncertain navigation must still block chat input");
     retrySessionNavigation();assert.equal(sent.at(-1)?.request_id,request.requestId,"retry retains idempotency identity");
     ingestSessions({type:"error",request_id:request.requestId,error:"handler_failed:chat:session:switch"});
-    assert.ok(getSessionState().pendingAction);assert.match(getSessionState().navigationError,/handler_failed/);
+    assert.ok(getSessionState().pendingAction);assert.match(getSessionState().navigationError,/Could not confirm the conversation/);
+    assert.doesNotMatch(getSessionState().navigationError,/handler_failed/);
     returnToDisplayedSession();const rebound=getSessionState().pendingAction!;
     assert.equal(rebound.type,"switch");assert.notEqual(rebound.requestId,request.requestId);
     assert.equal(acceptIncomingSession("B","A",{request_id:request.requestId,requested_id:"B",effective_id:"B",status:"switched"}),false);
@@ -54,6 +56,17 @@ export async function run() {
   applySession({id:"A",messages:[{role:"assistant",run_id:"run-one",text:"Actual durable failure"}],runtime:{busy:false}});
   assert.equal(getChatState().messages.at(-1)?.text,"Actual durable failure");
   assert.equal(getChatState().messages.at(-1)?.steps?.[0].status,"ok");
+  const recoveredAnnotation=sent.findLast(row=>row.type==="chat:session:annotate")!;
+  assert.equal(recoveredAnnotation.id,"A");assert.equal(recoveredAnnotation.run_id,"run-one");
+  assert.equal((recoveredAnnotation.steps as {status:string}[])[0].status,"ok");
+  assert.equal(getChatState().messages.at(-1)?.tracePersistence,"pending");
+  incoming({type:"chat:session:annotated",id:"A",run_id:"run-one",request_id:recoveredAnnotation.request_id,ok:true});
+  assert.equal(getChatState().messages.at(-1)?.tracePersistence,"saved");
+  const annotationCount=sent.filter(row=>row.type==="chat:session:annotate").length;
+  applySession({id:"A",messages:[{role:"assistant",run_id:"run-one",text:"Actual durable failure",steps:recoveredAnnotation.steps}],runtime:{busy:false}});
+  assert.equal(getChatState().messages.at(-1)?.steps?.[0].status,"ok","reloading the persisted annotation retains the trace");
+  assert.equal(sent.filter(row=>row.type==="chat:session:annotate").length,annotationCount,"saved trace is not annotated again");
+  resetTraceAnnotations();
   assert.equal(getChatState().turnSteps.length,0);
   incoming({type:"start",...route("two")});refreshExecutionStates();const older=sent.at(-1)!;
   incoming({type:"run:settled",...route(),status:"ok",receipt:{}});assert.equal(sharedTurnActive(),true,"old terminal cannot settle a newer admission");

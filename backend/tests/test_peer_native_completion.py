@@ -8,6 +8,30 @@ from peers import PeerError
 
 
 @pytest.mark.asyncio
+async def test_finished_task_without_settlement_exposes_failure_without_fabricating_completion(tmp_path):
+    service, runtimes, _, _, first, second = _stack(tmp_path)
+    service.host.require_runtime=lambda:SimpleNamespace()
+    admission=runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission,run_id='recipient-run',thread_id='recipient-run',source='chat')
+    gate=asyncio.Event()
+    task=asyncio.create_task(gate.wait())
+    runtimes.bind_admission_task(admission,task)
+    try:
+        request=await service.send('chat:'+first,'chat:'+second,'Review once')
+        row=runtimes.claim_input(second,'steer',run_id='recipient-run')
+        runtimes.complete_transcript_commit(second,[row])
+        runtimes.finish_run(admission,status='terminal')
+        assert service.native_wait_failure('chat:'+first,request['message_id']) is None, 'release precedes terminal persistence'
+        gate.set();await task;await asyncio.sleep(0)
+        assert 'without a settlement' in service.native_wait_failure('chat:'+first,request['message_id'])
+        assert service.native_completion('chat:'+first,request['message_id']) is None
+        assert service.repository.find_reply(request['message_id']) is None
+    finally:
+        gate.set();await task
+        await service.shutdown()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('terminal', ['ok', 'error', 'cancelled'])
 async def test_native_final_answer_resolves_addressed_request_without_prompt_or_fake_reply(tmp_path, terminal):
     service, runtimes, sessions, chat, first, second = _stack(tmp_path)

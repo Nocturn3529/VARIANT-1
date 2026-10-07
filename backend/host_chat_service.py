@@ -23,7 +23,11 @@ class NativeChatEventTransport:
     async def send_json(self, message: dict) -> None:
         payload = dict(message or {})
         payload.setdefault("session_id", self.chat_id)
-        await self.host.hub.broadcast(payload)
+        publish = getattr(self.host.hub, 'publish', None)
+        if payload.get('type') in {'token', 'thinking'} and callable(publish):
+            publish(payload)
+        else:
+            await self.host.hub.broadcast(payload)
 
 
 def launch_reserved_chat_turn(

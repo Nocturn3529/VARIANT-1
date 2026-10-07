@@ -321,7 +321,8 @@ class WSHub:
             if self._drainers.get(ws) is asyncio.current_task():
                 self._drainers.pop(ws, None)
 
-    async def broadcast(self, message: dict):
+    def publish(self, message: dict):
+        """Enqueue in socket order without coupling producers to delivery."""
         deliveries = [(ws, message) for ws in list(self.active)]
         projected = presence_projection(message)
         if projected is not None:
@@ -334,6 +335,10 @@ class WSHub:
             )
             if future is not None
         ]
+        return futures
+
+    async def broadcast(self, message: dict):
+        futures = self.publish(message)
         if futures:
             await asyncio.wait(futures, timeout=self.send_timeout_s)
 

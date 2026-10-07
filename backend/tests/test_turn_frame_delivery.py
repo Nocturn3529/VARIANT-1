@@ -61,3 +61,31 @@ async def test_native_display_failure_does_not_abort_the_owned_turn():
     host.hub = SimpleNamespace(broadcast=AsyncMock(side_effect=RuntimeError('observer unavailable')))
     await host_ports._send_turn_frame(host, owner, _session(), {'type':'token','token':'hi'})
     host.hub.broadcast.assert_awaited_once_with({'type':'token','token':'hi','session_id':'chat-a'})
+
+
+@pytest.mark.asyncio
+async def test_native_tokens_never_wait_for_slow_deck_and_terminal_frames_keep_order():
+    import asyncio
+    from host_chat_service import NativeChatEventTransport
+    from observability.activity import WSHub
+    gate = asyncio.Event()
+    class SlowSocket(Socket):
+        async def send_json(self, payload):
+            await gate.wait()
+            await super().send_json(payload)
+    socket = SlowSocket(); hub = WSHub(send_timeout_s=0.01)
+    hub.add(socket)
+    transport = NativeChatEventTransport(SimpleNamespace(hub=hub), 'chat-a')
+    async def produce():
+        for n in range(30):
+            await transport.send_json({'type':'token','token':str(n)})
+        await transport.send_json({'type':'thinking','text':'Progress'})
+    await asyncio.wait_for(produce(), timeout=0.1)
+    assert not socket.frames
+    await transport.send_json({'type':'done'})
+    await hub.broadcast({'type':'run:settled'})
+    gate.set()
+    await asyncio.wait_for(hub._drainers[socket], timeout=1)
+    assert [row['token'] for row in socket.frames[:30]] == [str(n) for n in range(30)]
+    assert [row['type'] for row in socket.frames[-3:]] == ['thinking','done','run:settled']
+    hub.remove(socket)

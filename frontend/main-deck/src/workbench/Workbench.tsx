@@ -7,6 +7,7 @@ import {openDirectoryPreview} from "./previewStore";
 import {Icon, type IconName} from "../ui/Icon";
 import {
   Fragment,
+  lazy,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -21,7 +22,8 @@ import {
 import {ChatDestination} from "../ChatDestination";
 import {TerminalPanel} from "../context/TerminalPanel";
 import {FilesPanel} from "../context/FilesPanel";
-import {ReviewPanel} from "../context/ReviewPanel";
+import {LazySurface} from "../ui/LazySurface";
+const ReviewPanel = lazy(() => import("../context/ReviewPanel").then(module => ({default: module.ReviewPanel})));
 import {getTerminalSnapshot, killTerminal, openNewTerminal, selectTerminal} from "../context/terminalStore";
 import {HistoryRail} from "../shell/HistoryRail";
 import {useAppState} from "../state/appStore";
@@ -546,7 +548,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
       const picker=<div className="workbench-preview__state"><p>No project selected for this chat.</p><button onClick={()=>void chooseChatProject(owner)}>Choose project folder</button>{projects.errors[owner] ? <p role="alert">{projects.errors[owner]}</p>:null}</div>;
       const moreFiles=async()=>{const path=await api?.pickFolder?.();if(path)openDirectoryPreview(path,owner);};
       rows.set(chatPaneId("files",owner), {id:chatPaneId("files",owner),label:project?.name || "Files",icon:"folder",close:"hide",newTab:()=>void moreFiles(),render:()=> <>{project ? <FilesPanel key={project.root} directory={project.root} chatId={owner} onChooseProject={()=>void chooseChatProject(owner)}/> : picker}</>});
-      rows.set(chatPaneId("review",owner),{id:chatPaneId("review",owner),label:"Review",icon:"review",close:"hide",render:()=>project ? <ReviewPanel key={project.root} directory={project.root} chatId={owner}/> : picker});
+      rows.set(chatPaneId("review",owner),{id:chatPaneId("review",owner),label:"Review",icon:"review",close:"hide",render:()=>project ? <LazySurface label="Review"><ReviewPanel key={project.root} directory={project.root} chatId={owner}/></LazySurface> : picker});
       rows.set(chatPaneId("terminal",owner),{id:chatPaneId("terminal",owner),label:"Terminal",icon:"terminal",close:"hide",render:()=> <TerminalPanel chatId={owner}/>});
     }
     for (const tab of preview.tabs) {

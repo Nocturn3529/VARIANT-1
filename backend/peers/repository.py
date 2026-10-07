@@ -1294,12 +1294,12 @@ class PeerRepository:
             conn.commit()
         return updated
 
-    def retire_chat(self, chat_id: str) -> int:
+    def retire_chat(self, chat_id: str, *, return_messages=False):
         peer_id = "chat:" + str(chat_id)
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
-                "SELECT message_id FROM peer_message WHERE target_peer_id=? "
+                "SELECT * FROM peer_message WHERE target_peer_id=? "
                 "AND state IN ('persisted','queued')", (peer_id,),
             ).fetchall()
             now = time.time()
@@ -1311,4 +1311,6 @@ class PeerRepository:
                     (revision, now, row["message_id"]),
                 )
             conn.commit()
-        return len(rows)
+            retired = [self._message(conn.execute('SELECT * FROM peer_message WHERE message_id=?',
+                (row['message_id'],)).fetchone()) for row in rows] if return_messages else []
+        return retired if return_messages else len(rows)

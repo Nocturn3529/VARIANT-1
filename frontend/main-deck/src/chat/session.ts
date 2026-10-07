@@ -29,6 +29,7 @@ import {applyInputQueue,refreshInputQueue,reconcileContinuedHistory} from "./inp
 import {refreshComposerGoal} from "./goals";
 import {refreshAgentTeam} from "./agentTeam";
 import {restoreRecoveryNotice,dismissRecoveryNotice} from "./recovery";
+import {persistTrace} from "./annotations";
 
 function parseRuntime(value: unknown): ChatRuntimeState | null {
   if (!value || typeof value !== "object") return null;
@@ -232,10 +233,14 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
   }
 
   let nextMessages = messages;
+  let recoveredTrace = false;
   const recoveredRun=turnApi().snapshot().runId;
   if(!sessionChanged && !turnApi().isActive() && state.turnSteps.length && recoveredRun) {
-    nextMessages=nextMessages.map(message=>message.role==="assistant" && message.runId===recoveredRun
-      && !message.steps?.some(step=>!step.peerMessage) ? {...message,steps:state.turnSteps} : message);
+    nextMessages=nextMessages.map(message=>{
+      if(message.role!=="assistant" || message.runId!==recoveredRun || message.steps?.some(step=>!step.peerMessage))return message;
+      recoveredTrace=true;
+      return {...message,steps:state.turnSteps};
+    });
   }
   if (!sessionChanged) {
     nextMessages = mergeMessageEnrichment(nextMessages, state.messages);
@@ -262,6 +267,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     runtime: parsedRuntime,
   });
   setSubtitle("Connected locally", "ready");
+  if(recoveredTrace)persistTrace({type:"chat:session:annotate",id,run_id:recoveredRun!,steps:state.turnSteps});
   if(candidateRuntime?.inputQueue)applyInputQueue(candidateRuntime.inputQueue);else refreshInputQueue();
     refreshComposerGoal();
     refreshAgentTeam();

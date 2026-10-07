@@ -128,9 +128,8 @@ async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
             except Exception:
                 continue
         if not delivered and chat_id and getattr(h, "hub", None) is not None:
-            # Endpoint/runtime policy still cancels an unobserved foreground
-            # turn when appropriate. Detached/native runs retain their event
-            # sink; failure to display a frame never replays or aborts work.
+            # Retain the native event sink when no attached Deck accepted the
+            # frame. Display failure never replays or aborts owned work.
             from host_chat_service import NativeChatEventTransport
             try:
                 await NativeChatEventTransport(h, chat_id).send_json(payload)
@@ -529,6 +528,9 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         if not admission_id:
             return
         async def publish(payload):
+            note = getattr(current_run_context(), 'metadata', {}).get('goal_budget_error')
+            if note:
+                payload = {**payload, 'reason': note}
             transports = list(registry.attached_transports(_runtime_chat_id()))
             if websocket not in transports:
                 transports.append(websocket)
@@ -536,8 +538,22 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                                  return_exceptions=True)
         parent = getattr(getattr(h.require_runtime(), 'goals', None), 'parent_session', None)
         while True:
-            budget_paused = (await asyncio.to_thread(parent.boundary_budget, current_run_context(), admission_id)
-                             if parent is not None else False)
+            context = current_run_context()
+            try:
+                budget_paused = (await asyncio.to_thread(parent.boundary_budget, context, admission_id)
+                                 if parent is not None else False)
+            except Exception as exc:
+                _LOG.warning('Goal budget boundary unavailable: %s', type(exc).__name__)
+                budget_paused = False
+                if context is not None and context.metadata.get('goal_budget_limited'):
+                    context.metadata['goal_budget_error'] = 'Goal budget check unavailable; inspect accounting before resuming.'
+                    try:
+                        registry.set_run_paused(_runtime_chat_id(), True,
+                            expected_admission_id=admission_id, expected_run_id=context.run_id)
+                        budget_paused = True
+                    except RuntimeError as stale:
+                        if str(stale) != 'stale_run':
+                            raise
             await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
             if not budget_paused:
                 return

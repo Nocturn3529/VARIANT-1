@@ -1,4 +1,4 @@
-import {lazy, Suspense, useEffect, useMemo, useRef, useState} from "react";
+import {useEffect, useMemo, useRef, useState} from "react";
 import {RichText, thoughtPreview} from "./RichText";
 import {canRevealPaneForStep, revealPaneForStep} from "../workbench/activityRouting";
 import {formatActivityDuration, stepFailed, activityStatusLabel} from "./activityModel";
@@ -11,8 +11,6 @@ import {useElapsed} from "./elapsedClock";
 import {PEER_DELIVERY} from "../peers/peerModels";
 import {requestPeer, usePeers} from "../peers/peerStore";
 import {disclosureKey, disclosureChoice, rememberDisclosure as remember} from "./disclosures";
-
-const PeerMessageNotice = lazy(() => import("./PeerMessageNotice"));
 
 // Virtualized turns retain disclosures across scroll and overlay visits.
 function timeMs(value?: number) {
@@ -147,10 +145,16 @@ function Narration({step}: {step: ChatTurnStep}) {
 
 /** A message this agent sent to another agent, shown where it was sent. */
 function PeerSendNotice({step}: {step: ChatTurnStep}) {
-  return <Suspense><PeerMessageNotice step={step} Icon={Icon} deliveryLabels={PEER_DELIVERY}/></Suspense>;
+  const peer = step.peerMessage!;
+  const name = peer.target_display_name || "another agent";
+  const state = PEER_DELIVERY[peer.state]?.label || peer.state;
+  return <details className={`peer-send-trace${peer.state === "failed" ? " is-error" : ""}`} data-conversation-scaffold="" data-trace-id={step.id}>
+    <summary aria-label={`Sent a message to ${name}, ${state}`}><Icon name="send"/><span>Sent a message to <strong>{name}</strong></span><small>{state}</small><Icon name="chevron"/></summary>
+    <p>{peer.content}</p>
+  </details>;
 }
 
-/** Keep peer lookup scoped to the viewed chat while loading its trace markup. */
+/** A message from another agent that steered into this run, where it landed. */
 function PeerInboundNotice({step}: {step: ChatTurnStep}) {
   const inbound = step.peerInbound!;
   const peers = usePeers();
@@ -161,7 +165,11 @@ function PeerInboundNotice({step}: {step: ChatTurnStep}) {
     if (content !== undefined || !peers.connected || !sessionId) return;
     requestPeer(sessionId, {operation: "inspect", message_id: inbound.message_id});
   }, [content, peers.connected, sessionId, inbound.message_id]);
-  return <Suspense><PeerMessageNotice step={step} Icon={Icon} incoming={{content, connected: peers.connected}}/></Suspense>;
+  const name = inbound.display_name || "another agent";
+  return <details className="peer-send-trace peer-receive-trace" open data-conversation-scaffold="" data-trace-id={step.id}>
+    <summary aria-label={`Message from ${name}, steered into this task`}><Icon name="peers"/><span>Message from <strong>{name}</strong></span><small>Steered in</small><Icon name="chevron"/></summary>
+    <p>{content ?? (peers.connected ? "Loading message…" : "Message unavailable while offline.")}</p>
+  </details>;
 }
 
 /**

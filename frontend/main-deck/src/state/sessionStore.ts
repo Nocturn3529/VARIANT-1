@@ -326,7 +326,7 @@ export function ingestSessions(message: Record<string, unknown>): void {
   const state = store.getState();
   if (type === "error" && state.pendingAction && message.request_id === state.pendingAction.requestId) {
     // A dispatcher error can follow binding but precede snapshot publication.
-    store.setState({navigationError: String(message.error || "Could not confirm the conversation. Retry opening it.")});
+    store.setState({navigationError: "Could not confirm the conversation. Retry opening it or choose another conversation."});
     return;
   }
   if(type==="chat:session:deleted") {

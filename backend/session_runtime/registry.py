@@ -88,6 +88,15 @@ class SessionRuntimeRegistry:
         self._snapshot_store = snapshot_store
         self._idle_listeners: list[Callable[[str], Any]] = []
         self._settlement_listeners: list[Callable[[str, str, str], Any]] = []
+        self._run_end_listeners: list[Callable[[str, str, str], Any]] = []
+
+    def register_run_end_listener(self, callback):
+        if callback not in self._run_end_listeners:
+            self._run_end_listeners.append(callback)
+
+    def unregister_run_end_listener(self, callback):
+        if callback in self._run_end_listeners:
+            self._run_end_listeners.remove(callback)
 
     def register_settlement_listener(self, callback):
         if callback not in self._settlement_listeners:
@@ -791,6 +800,18 @@ class SessionRuntimeRegistry:
             if admission is None:
                 raise LookupError(f"unknown run admission: {admission_id}")
             admission.task = task
+        def ended(_task):
+            # This is later than admission release: terminal persistence may
+            # still be running after finish_run. Observers must distinguish it
+            # from a task that actually ended without a settlement.
+            if admission.task is not _task:
+                return
+            for callback in tuple(self._run_end_listeners):
+                try:
+                    callback(admission.chat_id, admission.run_id, admission.admission_id)
+                except Exception:
+                    _LOG.exception('Native run-end observer failed')
+        task.add_done_callback(ended)
 
     def admission_chat_id(self, admission_id: str) -> str:
         """Return the immutable chat that owns a transferred admission."""

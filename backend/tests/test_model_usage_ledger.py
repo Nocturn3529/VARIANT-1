@@ -106,11 +106,91 @@ async def test_long_request_usage_and_generation_survive_receipt_eviction(tmp_pa
     bus.patch_usage("mreq-a", normalize_manifest_usage("openrouter", raw_usage={
         "prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30,
         "completion_tokens_details": {"reasoning_tokens": 12}}))
+    await bus.flush_ledger()
     assert bus.snapshot(manifest_id="mreq-a")["items"] == []
     assert traced[0]["run"]["session_id"] == "chat-a"
     assert traced[0]["usage"]["reasoning_tokens"] == 12
     assert ledger.get("mreq-a")["response"]["provider_generation_id"] == "gen-a"
     assert ledger.get("mreq-a")["usage"]["reported_fields"] == ["input_tokens", "output_tokens", "total_tokens", "reasoning_tokens"]
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_stream_identity_is_coalesced_off_loop_and_usage_flushes_in_order(tmp_path):
+    import asyncio
+    import threading
+    import time
+    from llm_manifest_bus import ModelRequestManifestBus
+    from llm_router import LLMRouter
+    from model_runtime.request_manifest import observe_provider_chunk
+    class SlowLedger(ModelUsageLedger):
+        def patch_response(self, *args):
+            writes.append(threading.get_ident())
+            time.sleep(0.03)
+            return super().patch_response(*args)
+    writes = []
+    ledger = SlowLedger(tmp_path/'usage.sqlite3')
+    bus = ModelRequestManifestBus(maxlen=1, usage_ledger=ledger)
+    router = object.__new__(LLMRouter); router._manifest_bus = bus
+    await bus.record(request())
+    # Eviction must not defeat coalescing for a long-running physical request.
+    await bus.record(request('mreq-b'))
+    for _ in range(1000):
+        observe_provider_chunk(router, 'mreq-a', {'id':'gen-a', 'model':'returned-model'})
+    observe_provider_chunk(router, 'mreq-b', {'id':'gen-b', 'model':'returned-model'})
+    observe_provider_chunk(router, 'mreq-a', {'id':'gen-a', 'system_fingerprint':'new-fingerprint',
+        'usage':{'completion_tokens':4}})
+    router._patch_model_request_manifest_usage('mreq-a', {'input_tokens':10,'output_tokens':4,'total_tokens':14})
+    router._patch_model_request_manifest_terminal('mreq-a', outcome='cancelled')
+    progressed = asyncio.Event()
+    asyncio.get_running_loop().call_later(0.01, progressed.set)
+    await progressed.wait()
+    assert len(writes) < 3, 'loop callback runs during the blocking ledger writes'
+    await bus.flush_ledger()
+    assert len(writes) == 3 and threading.get_ident() not in writes
+    row = ledger.get('mreq-a')
+    assert row['response']['provider_generation_id'] == 'gen-a'
+    assert row['response']['system_fingerprint'] == 'new-fingerprint'
+    assert ledger.get('mreq-b')['response']['provider_generation_id'] == 'gen-b'
+    assert row['usage']['total_tokens'] == 14 and row['outcome'] == 'cancelled'
+    assert ledger.totals()['total_tokens'] == 14
+    assert bus.ledger_failures == 0
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_async_ledger_failure_and_overflow_are_visible():
+    from llm_manifest_bus import ModelRequestManifestBus
+    bus = ModelRequestManifestBus(usage_ledger=object())
+    def fails():
+        raise OSError('accounting unavailable')
+    for _ in range(257):
+        bus.submit_ledger(fails)
+    assert bus.ledger_failures == 1
+    await bus.flush_ledger()
+    assert bus.ledger_failures == 257
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_ledger_boundary_does_not_wait_for_future_swarm_writes():
+    import asyncio
+    import threading
+    from llm_manifest_bus import ModelRequestManifestBus
+    gate = threading.Event()
+    bus = ModelRequestManifestBus(usage_ledger=object())
+    flushed = asyncio.create_task(bus.flush_ledger())
+    # Start a writer before the fence is scheduled, then add a future write
+    # after the fence. Queue.join would incorrectly wait for that future work.
+    bus.submit_ledger(lambda:None)
+    await asyncio.sleep(0)
+    bus.submit_ledger(lambda:gate.wait(timeout=2))
+    try:
+        await asyncio.wait_for(flushed, timeout=1)
+        assert not gate.is_set()
+    finally:
+        gate.set()
+        await bus.stop()
 
 
 @pytest.mark.asyncio

@@ -66,7 +66,9 @@ class ParentSessionGoals:
         if not goal_id or not admission_id:
             return False
         runtime = self.host.require_runtime()
-        goal = self.goals.repository.require_goal(goal_id)
+        goal = self.goals.repository.get_goal(goal_id)
+        if goal is None:
+            return False  # A stale/non-parent scope does not govern this run.
         slot = self.goals.repository.state_get(goal_id, 'parent_turn') or {}
         if (goal.completion_policy.get('execution_owner') != 'parent'
                 or goal.owner_chat_id != context.session_id
@@ -75,10 +77,39 @@ class ParentSessionGoals:
         active = runtime.session_runtimes.pause_snapshot(goal.owner_chat_id)
         if active['admission_id'] != admission_id or active['run_id'] != context.run_id:
             return False
+        try:
+            return self._boundary_budget(context, admission_id, goal)
+        except Exception as exc:
+            _LOG.warning('Goal budget boundary unavailable: %s', type(exc).__name__)
+            if not (goal.budget_limits or goal.deadline):
+                return False
+            # Accounting failure is a visible pause for capped work, not a
+            # provider failure. Never pause a successor admission after a race.
+            context.metadata['goal_budget_error'] = 'Goal budget check unavailable; inspect accounting before resuming.'
+            try:
+                current = self.goals.repository.get_goal(goal_id)
+                if current is not None and not current.terminal and current.status != 'paused':
+                    self.goals.repository.transition_goal(goal_id, 'paused', expected_version=current.version,
+                        reason=context.metadata['goal_budget_error'], actor=_ACTOR, event_type='goal.accounting_unavailable')
+            except Exception:
+                _LOG.warning('Goal accounting pause could not be persisted')
+            try:
+                runtime.session_runtimes.set_run_paused(goal.owner_chat_id, True,
+                    expected_admission_id=admission_id, expected_run_id=context.run_id)
+                return True
+            except RuntimeError as stale:
+                if str(stale) != 'stale_run':
+                    raise
+                return False  # wait_if_paused enforces the obsolete admission.
+
+    def _boundary_budget(self, context, admission_id, goal):
+        goal_id = goal.goal_id
+        runtime = self.host.require_runtime()
         totals = self.refresh_budget(goal_id)
         goal = self.goals.repository.require_goal(goal_id)
         if goal.terminal:
             return False  # Canonical cancellation owns retiring this admission.
+        context.metadata.pop('goal_budget_error', None)
         decision = budget_allows(goal)
         reason = decision.reason if not decision.allowed else ''
         if totals is None and any(key in goal.budget_limits for key in ('tokens', 'cost_usd', 'provider_calls')):
@@ -119,6 +150,20 @@ class ParentSessionGoals:
             self.goals.supervisor.enqueue(goal.goal_id, reason='awaited_peer_result',
                 dedupe_key='peer-result:' + str(message['message_id']))
 
+    def notify_peer_unavailable(self, message):
+        if (message.get('message_kind') != 'request'
+                or not str(message.get('sender_peer_id', '')).startswith('chat:')
+                or not (message.get('state') in {'failed', 'parked'}
+                        or message.get('evidence', {}).get('native_wait_failure'))):
+            return
+        goal = self.goals.repository.active_composer_goal(message['sender_peer_id'][5:])
+        if goal is None or goal.completion_policy.get('execution_owner') != 'parent':
+            return
+        slot = self.goals.repository.state_get(goal.goal_id, 'parent_turn') or {}
+        if message['message_id'] in (slot.get('report') or {}).get('wait_for_message_ids', []):
+            self.goals.supervisor.enqueue(goal.goal_id, reason='awaited_peer_unavailable',
+                dedupe_key='peer-unavailable:' + message['message_id'])
+
     def _state(self, goal_id, value):
         goal = self.goals.repository.require_goal(goal_id)
         self.goals.repository.state_set(goal_id, "parent_turn", value,
@@ -157,7 +202,8 @@ class ParentSessionGoals:
             run = self.host.make_run_context("goal", context.goal.objective, session=session,
                 chat_transport=transport, inherit_parent=False,
                 metadata={"_server_bound_kind": "chat", "chat_id": chat_id,
-                          "work_scope": scope.to_dict(), "goal_admission_id": admission})
+                          "work_scope": scope.to_dict(), "goal_admission_id": admission,
+                          "goal_budget_limited": bool(context.goal.budget_limits or context.goal.deadline)})
             slot = {"admission_id": admission, "effect_id": effect.effect_id,
                     "run_id": run.run_id, "step_id": context.step.step_id,
                     "attempt": context.attempt.attempt, "status": "running"}
@@ -191,7 +237,10 @@ class ParentSessionGoals:
         if owned and owned[0] == slot['admission_id']:
             self._tasks.pop(goal_id,None)
         try:
-            self.refresh_budget(goal_id)
+            try:
+                self.refresh_budget(goal_id)
+            except Exception as exc:
+                _LOG.warning('Goal terminal accounting refresh unavailable: %s', type(exc).__name__)
             goal = self.goals.repository.require_goal(goal_id)
             current = self.goals.repository.state_get(goal_id, "parent_turn") or {}
             if current.get("admission_id") != slot["admission_id"] or goal.terminal:
@@ -280,6 +329,14 @@ class ParentSessionGoals:
         if slot.get('status') == 'finished' and report.get('status') == 'continuing':
             peers = getattr(runtime, 'peers', None)
             awaited = report.get('wait_for_message_ids') or []
+            for identity in awaited:
+                if peers is None or peers.repository.find_result_reply(identity) is not None:
+                    continue
+                failure = getattr(peers, 'native_wait_failure', lambda *_:None)('chat:'+wait.matcher['chat_id'], identity)
+                if failure:
+                    self._outcome(wait.goal_id, {**report, 'status':'blocked', 'continuation_allowed':False,
+                        'basis':'peer_unavailable', 'request_message_id':identity, 'error':failure})
+                    return {'status':'blocked', 'error':failure}
             if awaited and (peers is None or any(
                     peers.repository.find_result_reply(item) is None
                     and getattr(peers, 'native_completion', lambda *_:None)('chat:'+wait.matcher['chat_id'], item) is None

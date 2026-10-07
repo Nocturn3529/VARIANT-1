@@ -14,6 +14,75 @@ from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_endpoint', [False, True])
+@pytest.mark.parametrize('cancel_action', [False, True])
+async def test_disconnect_finishes_active_command_drops_queue_and_preserves_shutdown_cancellation(monkeypatch, cancel_endpoint, cancel_action):
+    started, release, read_wait = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    committed, invoked = [], []
+    class Socket:
+        query_params = {'token':'secret'}
+        closed = False
+        reads = 0
+        async def accept(self):
+            pass
+        async def send_json(self, value):
+            if self.closed:
+                raise RuntimeError('socket closed')
+        async def receive_text(self):
+            self.reads += 1
+            if self.reads == 1:
+                return json.dumps({'type':'save','request_id':'active'})
+            await started.wait()
+            if self.reads == 2:
+                return json.dumps({'type':'save','request_id':'unstarted'})
+            read_wait.set()
+            if cancel_endpoint:
+                await asyncio.Event().wait()
+            self.closed = True
+            asyncio.get_running_loop().call_later(0.01, release.set)
+            raise server_http.WebSocketDisconnect()
+    class Hub:
+        active = set()
+        def add(self, ws): self.active.add(ws)
+        def remove(self, ws): self.active.discard(ws)
+    class Runtimes:
+        def attach(self, *args): pass
+        def detach(self, *args): return []
+    runtime = SimpleNamespace(sessions=SimpleNamespace(get_active=lambda:'chat-a'),
+        session_runtimes=Runtimes(), chat=SimpleNamespace(orphaned_task_payload=lambda *_:None),
+        tool_settings=SimpleNamespace(state=lambda:{'type':'tools'}))
+    host = SimpleNamespace(hub=Hub(), require_runtime=lambda:runtime)
+    async def dispatch(_host, socket, _session, msg):
+        from ws_protocol import CorrelatedResponder
+        invoked.append(msg['request_id'])
+        async def action():
+            started.set()
+            await release.wait()
+            if cancel_action:
+                raise asyncio.CancelledError()
+            committed.append(msg['request_id'])
+            return {'saved':True}
+        await CorrelatedResponder('fixture','fixture.v1')(socket,msg,'save',action)
+        return True
+    monkeypatch.setattr(server_http.ws_dispatch, 'dispatch', dispatch)
+    monkeypatch.setattr(server_http, 'hello_payload', lambda *_:{'type':'hello'})
+    monkeypatch.setattr(server_http, 'cancel_session_work', AsyncMock())
+    socket = Socket()
+    endpoint = asyncio.create_task(server_http.websocket_endpoint(host,socket,auth_token='secret',session_factory=ConnectionSession))
+    await read_wait.wait()
+    if cancel_endpoint:
+        socket.closed=True
+        endpoint.cancel()
+        asyncio.get_running_loop().call_later(0.01,release.set)
+        with pytest.raises(asyncio.CancelledError):
+            await endpoint
+    else:
+        await endpoint
+    assert committed == ([] if cancel_action else ['active']) and invoked == ['active']
+    assert host.hub.active == set()
+
+
+@pytest.mark.asyncio
 async def test_cancel_session_work_cancels_and_settles_owned_tasks():
     session = ConnectionSession()
     session.busy = True

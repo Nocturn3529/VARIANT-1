@@ -100,6 +100,9 @@ token/provider-call/cost/time budgets are checked at model/tool boundaries and
 before another turn. A boundary pause retains the live task and Python state;
 an in-flight step can finish. Missing measurements or lost ledger records pause
 explicit accounting caps rather than treating unknown cost/tokens as zero.
+Accounting faults pause capped work visibly rather than failing as provider
+errors; unlimited turns continue. Unavailable named peer requests wake and
+block their waiting Goal without a fabricated result or automatic retry.
 Unlimited defaults remain unchanged.
 
 Native peer requests default to `steer`: a busy recipient consumes them at a safe
@@ -332,8 +335,9 @@ are protected, including unconfirmed trace evidence; settled admission fences
 survive idle view eviction.
 
 The WebSocket reader accepts embedded-browser acknowledgements independently
-of an ordered, bounded ordinary-command worker. Disconnect cleanup cancels that
-worker and releases the view attachment even when the ASGI scope is cancelled.
+of an ordered, bounded ordinary-command worker. Disconnect cleanup discards
+unstarted commands and gives the active command up to ten seconds to finish,
+then releases the view attachment. ASGI cancellation is preserved after cleanup.
 Native and detached turns can publish through the host event sink after their
 original socket closes; foreground disconnect cancellation retains its existing
 ownership rules. Response delivery failure never changes a committed operation
@@ -343,6 +347,8 @@ Hub fan-out uses a bounded ordered outbox per socket. A slow observer can catch
 up; a socket that falls beyond its queue budget closes for reconnect and
 resynchronization. Tokens first target the owner, then surviving chat views or
 the native event sink. A failed display send does not abort canonical execution.
+Native token/thinking publication enqueues without waiting for a slow Deck;
+terminal frames retain the same ordered outbox.
 
 Admitted Goal and peer turns project into their owning chat's live transcript.
 Their original source remains in the event; the UI chat lane requires explicit
@@ -355,9 +361,16 @@ peer messages. Consecutive tools fold into a run. Mid-run snapshots carry exact
 admission identity, structural revision and model segment. Equal revisions may
 contain a longer live-text buffer; recovery keeps newer/later observed text,
 rejects stale admission/revision snapshots and prevents text regressing to an
-earlier segment. Completed narration clears its live buffer. Peer trace markup
-loads on demand within the existing
-startup bundle budget.
+earlier segment. Completed narration clears its live buffer. Recovered terminal
+tool traces use the same run-correlated annotation retries as ordinary completion.
+Peer rows render synchronously; the Review panel loads on demand with a visible
+loading state within the existing startup bundle budget.
+
+Physical-request accounting retains SQLite WAL with FULL durability. Repeated
+provider identity chunks are coalesced per manifest in a bounded cache. Patches
+use a bounded serial writer off the event loop; terminal request boundaries await
+an ordered write fence, independent of future requests from other sessions.
+Writer failures/overflow remain visible to explicit Goal accounting caps.
 
 The Electron backend watchdog records health-probe failure reasons and elapsed
 time. A constant-space, once-per-second backend sampler exposes last/maximum

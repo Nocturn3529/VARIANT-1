@@ -10,7 +10,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
-from collections import deque
+from collections import OrderedDict, deque
+from contextvars import Context
 
 
 class ModelRequestManifestBus:
@@ -26,6 +27,9 @@ class ModelRequestManifestBus:
         self.publish_failures = 0
         self.usage_ledger = usage_ledger
         self.ledger_failures = 0
+        self._ledger_queue: asyncio.Queue | None = None
+        self._ledger_task: asyncio.Task | None = None
+        self._response_identities: OrderedDict[str, dict] = OrderedDict()
         # The receipt window is intentionally small, but usage is cumulative
         # for the lifetime of this router. Keeping totals separately prevents a
         # long agent run from losing its early Responses cache/reasoning usage
@@ -80,7 +84,7 @@ class ModelRequestManifestBus:
         }
 
     async def record(self, manifest: dict) -> None:
-        """Store and enqueue one receipt without delaying the provider request."""
+        """Durably record before provider I/O, then enqueue display publication."""
         if not isinstance(manifest, dict):
             return
         stored = copy.deepcopy(manifest)
@@ -155,13 +159,24 @@ class ModelRequestManifestBus:
         manifest_id = self.manifest_id_from_ref(manifest_ref)
         if not manifest_id or not isinstance(normalized_usage, dict):
             return
-        durable = None
-        if self.usage_ledger is not None:
-            try:
-                self.usage_ledger.patch_usage(manifest_id, normalized_usage)
+        in_window = any(row.get('manifest_id') == manifest_id for row in self._items)
+        def persist():
+            self.usage_ledger.patch_usage(manifest_id, normalized_usage)
+            if not in_window:
                 durable = self.usage_ledger.get(manifest_id)
-            except Exception:
-                self.ledger_failures += 1
+                if durable is not None:
+                    try:
+                        from observability.trace_events import record_model_usage
+                        metadata = durable['metadata']
+                        record_model_usage({'manifest_id': manifest_id,
+                            'logical_call_id': durable['logical_call_id'],
+                            'run': {'session_id': durable['session_id'], 'run_id': durable['run_id'],
+                                'thread_id': metadata['thread_id'], 'source': metadata['source']},
+                            'route': {'provider': durable['provider'], 'model': durable['model']},
+                            'usage': copy.deepcopy(normalized_usage)})
+                    except Exception:
+                        self.publish_failures += 1
+        self.submit_ledger(persist)
         if manifest_id not in self._usage_manifest_ids:
             if (
                 self._usage_manifest_order.maxlen
@@ -215,20 +230,6 @@ class ModelRequestManifestBus:
                 pass
             self.enqueue(updated)
             return
-        if durable is not None:
-            # The durable identity outlives the intentionally small UI window.
-            # A long request must still emit its attributed usage on completion.
-            metadata = durable["metadata"]
-            try:
-                from observability.trace_events import record_model_usage
-                record_model_usage({"manifest_id": manifest_id,
-                    "logical_call_id": durable["logical_call_id"],
-                    "run": {"session_id": durable["session_id"], "run_id": durable["run_id"],
-                        "thread_id": metadata["thread_id"], "source": metadata["source"]},
-                    "route": {"provider": durable["provider"], "model": durable["model"]},
-                    "usage": copy.deepcopy(normalized_usage)})
-            except Exception:
-                pass
 
     def patch_response_metadata(self, manifest_ref, metadata: dict) -> None:
         """Patch allowlisted provider-returned identity fields, fail-open.
@@ -241,11 +242,6 @@ class ModelRequestManifestBus:
         manifest_id = self.manifest_id_from_ref(manifest_ref)
         if not manifest_id or not isinstance(metadata, dict):
             return
-        if self.usage_ledger is not None:
-            try:
-                self.usage_ledger.patch_response(manifest_id, metadata)
-            except Exception:
-                self.ledger_failures += 1
         allowed = {
             key: str(metadata.get(key) or "").strip()[:300]
             for key in (
@@ -258,6 +254,15 @@ class ModelRequestManifestBus:
         }
         if not allowed:
             return
+        prior = self._response_identities.get(manifest_id, {})
+        changed = {key: value for key, value in allowed.items() if prior.get(key) != value}
+        if not changed:
+            return
+        if self.submit_ledger(lambda: self.usage_ledger.patch_response(manifest_id, changed)):
+            self._response_identities[manifest_id] = {**prior, **changed}
+            self._response_identities.move_to_end(manifest_id)
+            if len(self._response_identities) > 8192:
+                self._response_identities.popitem(last=False)
         for index in range(len(self._items) - 1, -1, -1):
             current = self._items[index]
             if str((current or {}).get("manifest_id") or "") != manifest_id:
@@ -267,13 +272,71 @@ class ModelRequestManifestBus:
             if not isinstance(route, dict):
                 route = {}
                 updated["route"] = route
-            route.update(allowed)
+            route.update(changed)
             self._items[index] = updated
             self.enqueue(updated)
             return
 
+    def submit_ledger(self, operation) -> bool:
+        """Serialize blocking patches off the loop, with a bounded pending queue.
+
+        Overflow/failure stays visible to strict Goal accounting. Synchronous
+        callers outside an event loop retain immediate durable semantics.
+        """
+        if self.usage_ledger is None:
+            return True
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                operation()
+                return True
+            except Exception:
+                self.ledger_failures += 1
+                return False
+        if self._ledger_task is None or self._ledger_task.done():
+            self._ledger_queue = asyncio.Queue(maxsize=256)
+            self._ledger_task = loop.create_task(self._ledger_loop(), name='model-usage-writer', context=Context())
+        try:
+            self._ledger_queue.put_nowait(operation)
+            return True
+        except asyncio.QueueFull:
+            self.ledger_failures += 1
+            return False
+
+    async def _ledger_loop(self):
+        queue = self._ledger_queue
+        while True:
+            operation = await queue.get()
+            try:
+                if isinstance(operation, asyncio.Future):
+                    if not operation.done():
+                        operation.set_result(None)
+                else:
+                    await asyncio.to_thread(operation)
+            except Exception:
+                self.ledger_failures += 1
+            finally:
+                queue.task_done()
+
+    async def flush_ledger(self):
+        """Finish pending patches before the next model/budget boundary."""
+        if self._ledger_queue is not None:
+            # A fence covers preceding writes, not an indefinitely busy
+            # swarm's future requests. It cannot starve waiting for an empty
+            # queue while other sessions continue streaming.
+            fence = asyncio.get_running_loop().create_future()
+            await self._ledger_queue.put(fence)
+            await fence
+
     async def stop(self) -> None:
         """Cancel the publisher task (engine shutdown)."""
+        await self.flush_ledger()
+        if self._ledger_task is not None:
+            self._ledger_task.cancel()
+            await asyncio.gather(self._ledger_task, return_exceptions=True)
+        self._ledger_task = None
+        self._ledger_queue = None
         task = self._task
         if task is not None and not task.done():
             task.cancel()

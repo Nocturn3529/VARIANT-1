@@ -68,6 +68,8 @@ Use the release notes for the behavior and qualification of a downloaded build.
   Addressed peer requests wake idle sessions or reach an active turn at its next
   safe step. Request handles expose the recipient's settled answer and outcome.
   Explicit Goal budgets pause at model/tool boundaries; defaults remain unlimited.
+  Unavailable peer work blocks an awaiting Goal for inspection. Provider usage
+  is durably recorded off the event loop before terminal budget reconciliation.
 
 ## Costs and model access
 
