@@ -122,3 +122,19 @@ async def test_partial_text_of_another_admission_is_not_offered():
     assert (stale["segment"], stale["text"]) == (0, "")
     own = activity.run_snapshot("chat-a", "run-1", "old")
     assert (own["segment"], own["text"]) == (1, "Old admission output")
+
+
+@pytest.mark.asyncio
+async def test_a_growing_live_buffer_keeps_its_revision_and_returns_longer_text():
+    """Contract with the Deck: text growth within one call is not a new revision.
+
+    A client merges an equal revision and keeps the longer observed text.
+    """
+    parts = ["Initial"]
+    with bind_run_context(_ctx()):
+        activity.bind_live_text(1, parts, admission_id="adm-1")
+    first = activity.run_snapshot("chat-a", "run-1", "adm-1")
+    parts.append(" continued")
+    second = activity.run_snapshot("chat-a", "run-1", "adm-1")
+    assert (first["revision"], first["text"]) == (1, "Initial")
+    assert (second["revision"], second["text"]) == (1, "Initial continued")
