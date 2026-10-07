@@ -164,7 +164,7 @@ assert.match(
   /className="trace-entry__related"[\s\S]*onClick=\{\(\) => revealPaneForStep\(step\)\}/,
   'tool activity should retain a semantic keyboard action to its related pane',
 );
-assert.match(activitySource, /step.kind === "thinking"[\s\S]*if \(!rows.length\) return live && !streamText/,
+assert.match(activitySource, /step.kind === "thinking"[\s\S]*if \(!blocks.length\) return live && !streamText/,
   'thought content and unnamed waits must remain distinct');
 assert.match(timelineSource, /MIN_ENTRIES = 4[\s\S]*activeConversationIndex[\s\S]*170/,
   'long chats should get the bounded Hermes prompt navigator only after four prompts');

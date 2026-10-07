@@ -172,6 +172,8 @@ export type StreamStartMessage = Readonly<{
 export type StreamTokenMessage = Readonly<{
   type: "token";
   token: string;
+  /** One per model call in the run, from 1; a change starts a new text part. */
+  segment?: number;
 } & StreamRouting>;
 
 export type StreamThinkingMessage = Readonly<{
@@ -182,6 +184,7 @@ export type StreamThinkingMessage = Readonly<{
   summary_revision?: number;
   ts?: number;
   status?: "running" | "done" | "discarded" | "cancelled";
+  segment?: number;
 } & StreamRouting>;
 
 /** Main-chat STEPS activity for tool traces and task steps. */
@@ -356,6 +359,11 @@ function routing(row: Record<string, unknown>): StreamRouting {
  * Shape a raw WS envelope into a Chat family message.
  * Always returns a message (loose fallback) so dispatch never drops frames.
  */
+/** The model call a token or thought belongs to, when the backend reports it. */
+function segmentOf(row: Record<string, unknown>): {segment?: number} {
+  return typeof row.segment === "number" && Number.isSafeInteger(row.segment) && row.segment > 0 ? {segment: row.segment} : {};
+}
+
 export function parseChatWsMessage(
   raw: RawWsEnvelope | Record<string, unknown>,
 ): ChatWsMessage {
@@ -509,14 +517,14 @@ export function parseChatWsMessage(
     case "start":
       return {type: "start", ...r};
     case "token":
-      return {type: "token", token: str(row.token), ...r};
+      return {type: "token", token: str(row.token), ...r, ...segmentOf(row)};
     case "thinking": {
       const publicSummary = row.summary_source === "provider_summary";
       const valid = /^summary_[a-f0-9]{32}$/.test(str(row.summary_id))
         && ["running", "done", "discarded", "cancelled"].includes(str(row.status))
         && (row.summary_revision === undefined || (Number.isSafeInteger(row.summary_revision) && Number(row.summary_revision) >= 0));
       if (publicSummary && !valid) return {type: "chat:unknown", originalType: type, ...r};
-      return {type: "thinking", text: str(row.text), ...r,
+      return {type: "thinking", text: str(row.text), ...r, ...segmentOf(row),
         ...(publicSummary ? {summary_id: str(row.summary_id), summary_source: "provider_summary" as const,
           summary_revision: row.summary_revision as number | undefined, status: row.status as StreamThinkingMessage["status"],
           ts: typeof row.ts === "number" && Number.isFinite(row.ts) ? row.ts : undefined} : {})};

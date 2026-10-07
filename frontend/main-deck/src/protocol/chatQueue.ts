@@ -2,7 +2,17 @@ export type InputQueueItem = Readonly<{
   ticket_id:string; chat_id:string; text:string; delivery:"steer"|"follow_up";
   state:"queued"|"resume_queued"|"parked"|"selected"|"preparing";
   client_id:string; source:string; created_at?:number|string; updated_at?:number|string;
+  /** Set when another agent sent this input. */
+  origin?:InputQueueOrigin;
 }>;
+export type InputQueueOrigin = Readonly<{kind:"peer"; peer_id:string; message_id:string; display_name:string; content?:string}>;
+function parseOrigin(value:unknown):InputQueueOrigin|undefined {
+  if(!value || typeof value!=="object")return undefined;
+  const row=value as Record<string,unknown>;
+  if(row.kind!=="peer" || typeof row.peer_id!=="string" || !row.peer_id || typeof row.message_id!=="string" || !row.message_id)return undefined;
+  return {kind:"peer",peer_id:row.peer_id,message_id:row.message_id,display_name:typeof row.display_name==="string"?row.display_name:"",
+    ...(typeof row.content==="string" ? {content:row.content} : {})};
+}
 export type InputQueueSnapshot = Readonly<{
   type:"chat:queue_snapshot"; schema:"variant1.input-queue.v1"; session_id:string;
   revision:number; items:readonly InputQueueItem[]; request_id?:string;
@@ -27,7 +37,8 @@ export function parseInputQueueSnapshot(value:unknown):InputQueueSnapshot|null {
     items.push({ticket_id:item.ticket_id,chat_id:row.session_id,text:item.text,delivery:item.delivery as InputQueueItem["delivery"],state:item.state as InputQueueItem["state"],
       client_id:typeof item.client_id==="string"?item.client_id:"",source:typeof item.source==="string"?item.source:"",
       created_at:typeof item.created_at==="number"||typeof item.created_at==="string"?item.created_at:undefined,
-      updated_at:typeof item.updated_at==="number"||typeof item.updated_at==="string"?item.updated_at:undefined});
+      updated_at:typeof item.updated_at==="number"||typeof item.updated_at==="string"?item.updated_at:undefined,
+      ...(parseOrigin(item.origin) ? {origin:parseOrigin(item.origin)} : {})});
   }
   return {type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:row.session_id,revision:row.revision,items,
     request_id:typeof row.request_id==="string"?row.request_id:undefined};

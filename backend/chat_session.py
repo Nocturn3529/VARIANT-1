@@ -70,6 +70,11 @@ class ActiveTurn:
     turn_persisted: bool = False
     delivered_inputs: list[dict] = field(default_factory=list)
     provider_summaries: list[dict] = field(default_factory=list)
+    # One per model call in this run; token/thinking frames carry it so the
+    # Deck can split text parts. Calls that also request tools keep their text
+    # here as narration steps for the saved turn.
+    model_segment: int = 0
+    text_segments: list[dict] = field(default_factory=list)
     runtime_admission_id: str = ""
     runtime_chat_id: str = ""
     # Exact assistant text produced by the graph. This is populated before the
@@ -101,6 +106,8 @@ class ActiveTurn:
         self.turn_persisted = False
         self.delivered_inputs = []
         self.provider_summaries = []
+        self.model_segment = 0
+        self.text_segments = []
         self.runtime_admission_id = ""
         self.runtime_chat_id = ""
         self.terminal_reply = ""

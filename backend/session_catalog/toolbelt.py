@@ -18,9 +18,10 @@ def _tests_param(*, required: bool) -> dict[str, Any]:
         "minItems": 1,
         "maxItems": 20,
         "desc": (
-            "Candidate cases shaped as {'arguments': {...}, 'mocks': "
-            "{'capability_alias': mocked_result}, 'expected': exact_return_value}. "
-            "For repeated calls to one alias, use "
+            "Optional example cases, never required, shaped as {'arguments': {...}, "
+            "'mocks': {'capability_alias': mocked_result}, 'expected': "
+            "exact_return_value}. They run in the tool worker and their outcomes are "
+            "reported with the registration. For repeated calls to one alias, use "
             "{'$sequence': [first_result, second_result]} as that alias's mocked result."
         ),
         "items": {
@@ -109,7 +110,7 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "mutation_status",
-        "description": "Inspect drafts, active versions, and probation state.",
+        "description": "Inspect session tools: active versions, drafts, and invocation observations.",
         "effect_class": "read",
         "params": {
             "limit": {"type": "integer", "required": False, "minimum": 1, "maximum": 100},
@@ -126,14 +127,14 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
         "params": {
             "slot": _SLOT_PARAM,
             "source": _SOURCE_PARAM,
-            "tests": _tests_param(required=True),
+            "tests": _tests_param(required=False),
             "purpose": {"type": "string", "required": False},
             "invoke": _INVOKE_PARAM,
         },
     },
     {
         "name": "synthesize",
-        "description": "Atomically test and synthesize one tool in an explicit vacancy.",
+        "description": "Atomically register one session tool in an explicit vacancy.",
         "effect_class": "write",
         "condition": "mutation_write",
         "params": {
@@ -145,7 +146,7 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
                 "desc": "Public JSON object schema for candidate arguments.",
             },
             "source": _SOURCE_PARAM,
-            "tests": _tests_param(required=True),
+            "tests": _tests_param(required=False),
             "invoke": _INVOKE_PARAM,
         },
     },
@@ -158,14 +159,14 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "validate",
-        "description": "Validate a draft in the disposable same-user worker.",
+        "description": "Check a draft's syntax and run(arguments) contract.",
         "effect_class": "write",
         "condition": "mutation_write",
         "params": {"draft_id": {"type": "string", "required": True}},
     },
     {
         "name": "test",
-        "description": "Test a draft with mocked mounted-proxy results.",
+        "description": "Run optional example cases against a draft with mocked proxy results.",
         "effect_class": "write",
         "condition": "mutation_write",
         "params": {
@@ -175,7 +176,7 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "activate",
-        "description": "CAS-activate a validated draft in probation.",
+        "description": "CAS-activate a checked draft.",
         "effect_class": "write",
         "condition": "mutation_write",
         "params": {
@@ -185,7 +186,7 @@ TOOLBELT_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "propose_activate",
-        "description": "Propose, validate, host-test, and CAS-activate one draft.",
+        "description": "Propose, check, run any supplied examples, and CAS-activate one draft.",
         "effect_class": "write",
         "condition": "mutation_write",
         "params": _ACTIVATE_PROPOSAL_PARAMS,

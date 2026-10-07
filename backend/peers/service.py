@@ -653,6 +653,13 @@ class PeerCommunicationService:
         request_id: str = "",
         *, message_kind: str | None = None, _invocation: Any = None,
     ) -> dict[str, Any]:
+        """Persist and deliver one peer message.
+
+        With ``delivery`` omitted, a new request to a native chat reaches it at
+        its next step boundary (``steer``); ``follow_up`` waits for the target's
+        turn to end. A retry of a committed request keeps its committed mode.
+        Notices and results go to the inbox.
+        """
         sender = self.get_peer(sender_peer_id)
         target = self.get_peer(target_peer_id)
         evidence = {
@@ -668,14 +675,23 @@ class PeerCommunicationService:
             if all(invocation.values()) and _native_peer_id(invocation["chat_id"]) == sender_peer_id:
                 evidence["sender_invocation"] = invocation
         clean_text = _bounded_text(text)
-        prior = (self.repository.get_message_by_request(sender_peer_id, str(request_id).strip()[:512])
-                 if delivery is None and request_id else None)
-        # A changed default must not change a committed request during lost-ack
-        # reconciliation. Explicit delivery changes still conflict as before.
-        mode = str(delivery or (prior or {}).get('delivery') or (
-            "steer" if message_kind == "request" and target["kind"] == "variant_chat"
-            else "follow_up"
-        )).strip().lower()
+        clean_request = str(request_id or "").strip()[:512]
+        message_id = (
+            "peer_message_" + hashlib.sha256(
+                (str(sender_peer_id) + "\0" + clean_request).encode("utf-8")
+            ).hexdigest()[:32]
+            if clean_request else ""
+        )
+        if not delivery:
+            # A lost-acknowledgement retry keeps the mode it was committed
+            # with; only a new message takes the current default.
+            prior = self.repository.get_message(message_id) if message_id else None
+            delivery = str((prior or {}).get("delivery") or "") or (
+                "steer"
+                if message_kind == "request" and target.get("kind") == "variant_chat"
+                else "follow_up"
+            )
+        mode = str(delivery).strip().lower()
         if mode not in {"follow_up", "steer"}:
             raise PeerError("peer_delivery_invalid", "delivery must be follow_up or steer")
         if message_kind != "request" and mode == "steer":
@@ -687,13 +703,6 @@ class PeerCommunicationService:
                 raise PeerError("peer_reply_direction_invalid", "reply target is not the current peer")
             if str(parent.get("sender_peer_id")) != str(target_peer_id):
                 raise PeerError("peer_reply_target_invalid", "reply target does not match the exchange sender")
-        clean_request = str(request_id or "").strip()[:512]
-        message_id = (
-            "peer_message_" + hashlib.sha256(
-                (str(sender_peer_id) + "\0" + clean_request).encode("utf-8")
-            ).hexdigest()[:32]
-            if clean_request else ""
-        )
         try:
             row, created = self.repository.persist_message({
                 "message_id": message_id,

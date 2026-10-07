@@ -55,8 +55,10 @@ Use the release notes for the behavior and qualification of a downloaded build.
   and resource lifetimes. Stopping work does not undo actions already completed.
   Cancelling kernel startup retires that generation without retrying or running
   the cancelled request; a later explicit request can start normally.
-- **Adapt tools when needed.** Optional chat-local tool authoring can change
-  executable tool methods. Authoring is off by default and does not train model weights.
+- **Adapt tools when needed.** Optional chat-local tool authoring lets the model
+  register its own helpers as tools or replace a failing tool method. What it
+  registers stays until it or you roll it back. Authoring is off by default and
+  does not train model weights.
 - **Run a Goal in its owning session.** The session agent retains its conversation,
   model route, peer identity, and live Python state while working toward the
   objective. It can explicitly delegate children or coordinate other sessions.
@@ -98,7 +100,6 @@ every model's inference availability. Nous Portal can be reconnected in Settings
 through the installed Hermes account. Its sign-out control also signs Hermes out.
 Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
-The Live2D cat and its floating overlay have been removed.
 
 ## Execution and data
 

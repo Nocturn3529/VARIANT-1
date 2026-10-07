@@ -87,6 +87,12 @@ def handle_shutdown(runtime: dict, auth_token: str, request: Request) -> JSONRes
 
 async def handle_webhook(srv: Any, token: str, request: Request) -> JSONResponse:
     """Fire a webhook-triggered automation (loopback + token gate)."""
+    # The server binds to loopback today; keep the gate here too so a future
+    # bind change cannot expose automations, and check it before the token so
+    # remote callers learn nothing about which tokens exist.
+    client_host = str(getattr(getattr(request, "client", None), "host", "") or "")
+    if client_host not in {"127.0.0.1", "::1"}:
+        return JSONResponse({"ok": False, "error": "loopback only"}, status_code=403)
     task = srv.automations.get_by_webhook(token)
     if not task:
         return JSONResponse(

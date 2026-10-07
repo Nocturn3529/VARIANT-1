@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from importlib import metadata
 from pathlib import Path
+import platform
 import sys
 
 from packaging.markers import Marker
@@ -20,20 +21,33 @@ class NoticeCollectionError(RuntimeError):
     """Release packaging cannot continue without complete notices."""
 
 
-def _dependency_inventory(project_root: Path | None = None) -> Path:
-    """Prefer the win32 lock on Windows; otherwise the portable requirements.txt."""
+PLATFORM_LOCKS = {
+    ("win32", "amd64"): "requirements.lock",
+    ("linux", "x86_64"): "requirements-linux-x86_64.lock",
+    ("darwin", "arm64"): "requirements-macos-arm64.lock",
+}
+
+
+def _dependency_inventory(
+    project_root: Path | None = None,
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+) -> Path:
+    """This platform's pinned lock when present; otherwise requirements.txt."""
     base = project_root or root
-    lock = base / "backend" / "requirements.lock"
+    key = (
+        (system or sys.platform).lower(),
+        (machine or platform.machine()).lower(),
+    )
+    name = PLATFORM_LOCKS.get(key)
+    lock = base / "backend" / name if name else None
     req = base / "backend" / "requirements.txt"
-    if sys.platform.startswith("win") and lock.is_file():
+    if lock is not None and lock.is_file():
         return lock
     if req.is_file():
         return req
-    if lock.is_file():
-        return lock
-    raise NoticeCollectionError(
-        "missing backend/requirements.txt and backend/requirements.lock"
-    )
+    raise NoticeCollectionError("missing backend/requirements.txt")
 
 
 def _strip_requirement_comment(line: str) -> str:

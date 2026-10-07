@@ -55,26 +55,27 @@ try {
     console.warn('pip self-upgrade skipped (continuing): ' + e.message);
   }
 
-  // Prefer the pinned lock on Windows for reproducible installs. The checked-in
-  // requirements.lock is win32-targeted (pywin32/uiautomation); on Linux/macOS
-  // use the platform-marked requirements.txt until a Unix lock exists.
-  const lockFile = path.join('backend', 'requirements.lock');
+  // Prefer this platform's pinned lock for reproducible installs. Each lock is
+  // generated and validated on its own platform (see
+  // .github/workflows/platform-locks.yml); without one, fall back to the
+  // platform-marked requirements.txt.
+  const platformLocks = {
+    'win32-x64': 'requirements.lock',
+    'linux-x64': 'requirements-linux-x86_64.lock',
+    'darwin-arm64': 'requirements-macos-arm64.lock',
+  };
+  const lockName = platformLocks[process.platform + '-' + process.arch];
+  const lockFile = lockName ? path.join('backend', lockName) : '';
   const reqFile = path.join('backend', 'requirements.txt');
-  const lockPath = path.join(root, lockFile);
-  const reqPath = path.join(root, reqFile);
   let depsFile;
-  if (isWin && fs.existsSync(lockPath)) {
+  if (lockFile && fs.existsSync(path.join(root, lockFile))) {
     depsFile = lockFile;
-  } else if (fs.existsSync(reqPath)) {
-    if (!isWin && fs.existsSync(lockPath)) {
-      console.log('Using requirements.txt on ' + process.platform +
-        ' (requirements.lock is win32-targeted).');
-    }
+  } else if (fs.existsSync(path.join(root, reqFile))) {
+    console.log('No pinned lock for ' + process.platform + '-' + process.arch +
+      '; using requirements.txt.');
     depsFile = reqFile;
-  } else if (fs.existsSync(lockPath)) {
-    depsFile = lockFile;
   } else {
-    throw new Error('missing backend/requirements.txt and backend/requirements.lock');
+    throw new Error('missing backend/requirements.txt');
   }
   console.log('installing from ' + depsFile);
   setupPhase = 'Python dependencies';

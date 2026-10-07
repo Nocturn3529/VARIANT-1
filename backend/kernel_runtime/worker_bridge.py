@@ -37,6 +37,13 @@ from .bridge_protocol import (
     write_async_frame,
     write_sync_frame,
 )
+from .candidate_contract import MAX_PURPOSE_CHARS
+from .proxy_arguments import (
+    TOOLS_RESERVED_NAMES,
+    declared_parameter_order,
+    normalize_call_arguments,
+    proxy_signature,
+)
 from .wire_values import unpack_value
 
 
@@ -2288,140 +2295,29 @@ class CapabilityProxy:
             + ("\n\n" if description else "")
             + f"Awaitable form: await {self.__qualname__}.async_(..., _deadline_ms=None)"
         )
-        params = []
         raw_params = descriptor.get("params") if isinstance(descriptor.get("params"), dict) else {}
-        required: list[tuple[str, dict]] = []
-        optional: list[tuple[str, dict]] = []
-        for name, spec in raw_params.items():
-            item = (_identifier(str(name)), spec if isinstance(spec, dict) else {})
-            (required if item[1].get("required") else optional).append(item)
-        ordered = required + optional
-        # Catalog artifacts are canonical JSON, so object keys are sorted when
-        # they cross the host/worker boundary.  The catalog's explicit
-        # signature retains the author-declared Python argument order; recover
-        # it here so positional calls do not silently bind to alphabetical
-        # fields when a mounted method is called positionally.
-        raw_signature = str(descriptor.get("signature") or "").strip()
-        left = raw_signature.find("(")
-        right = raw_signature.rfind(")")
-        if 0 <= left < right:
-            # Defaults may contain commas, quoted text or nested containers.
-            # Parse only the syntax; no default expression is ever evaluated.
-            try:
-                parsed = ast.parse("def _contract" + raw_signature[left:right + 1] + ": pass")
-                arguments = parsed.body[0].args
-                signature_names = [item.arg for item in
-                                   arguments.posonlyargs + arguments.args + arguments.kwonlyargs]
-            except (SyntaxError, ValueError):
-                signature_names = []
-            by_name = {name: spec for name, spec in ordered}
-            if (
-                len(signature_names) == len(by_name)
-                and len(set(signature_names)) == len(signature_names)
-                and set(signature_names) == set(by_name)
-            ):
-                ordered = [(name, by_name[name]) for name in signature_names]
+        specs = {
+            _identifier(str(name)): spec if isinstance(spec, dict) else {}
+            for name, spec in raw_params.items()
+        }
+        # Catalog keys arrive sorted; bind positionals in the author's declared
+        # order, the same order mutation workers use.
+        ordered = [
+            (name, specs[name])
+            for name in declared_parameter_order(
+                specs, str(descriptor.get("signature") or "")
+            )
+        ]
         self._ordered_names = [name for name, _ in ordered]
         self._param_specs = {name: dict(spec) for name, spec in ordered}
-        for name, spec in ordered:
-            annotation = {
-                "string": str,
-                "integer": int,
-                "number": float,
-                "boolean": bool,
-                "array": list,
-                "object": dict,
-            }.get(str(spec.get("type") or "").lower(), inspect.Parameter.empty)
-            params.append(inspect.Parameter(
-                name,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                default=(inspect.Parameter.empty if spec.get("required") else spec.get("default")),
-                annotation=annotation,
-            ))
-        self.__signature__ = inspect.Signature(params)
+        self.__signature__ = proxy_signature(ordered)
         self.async_ = _AsyncCapabilityCall(self)
 
     def _arguments(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
-        if len(args) > len(self._ordered_names):
-            raise TypeError(
-                f"Invalid call to {self.__qualname__}{self.__signature__}: "
-                f"received {len(args)} positional arguments, accepts at most "
-                f"{len(self._ordered_names)}. Inspect "
-                f"{self.__qualname__}.documentation() for the exact contract."
-            )
-        values = dict(kwargs)
-        positional = list(args)
-        if (
-            len(positional) == 1
-            and isinstance(positional[0], list)
-            and "argv" in self._ordered_names
-            and "command" in self._ordered_names
-            and "argv" not in values
-            and "command" not in values
-            and all(isinstance(item, str) for item in positional[0])
-        ):
-            # ``run_command([program, arg, ...], cwd=...)`` is the natural
-            # Python spelling of an exact argv invocation.  Do not bind that
-            # list to the neighboring ``command`` string parameter.
-            values["argv"] = list(positional[0])
-            positional = []
-        elif len(positional) == 1 and not kwargs and isinstance(positional[0], dict):
-            candidate = dict(positional[0])
-            if set(candidate).issubset(set(self._ordered_names)):
-                # Accept the conventional provider-style argument envelope in
-                # addition to normal Python keyword arguments.
-                values = candidate
-                positional = []
-            elif len(self._ordered_names) == 1:
-                name = self._ordered_names[0]
-                spec = self._param_specs.get(name) or {}
-                items = spec.get("items") if isinstance(spec.get("items"), dict) else {}
-                if str(spec.get("type") or "").lower() == "array" and str(
-                    items.get("type") or ""
-                ).lower() == "object":
-                    # A single object is an unambiguous one-item array for
-                    # batch-shaped capabilities such as apply_patch.
-                    values = {name: [candidate]}
-                    positional = []
-        elif len(positional) == 1 and not kwargs:
-            candidate = positional[0]
-            if (
-                "selection" in self._ordered_names
-                and isinstance(candidate, list)
-                and len(candidate) == 1
-                and isinstance(candidate[0], dict)
-            ):
-                # Discovery APIs return ranked lists. Passing an unambiguous
-                # one-item result directly into a selection-shaped capability
-                # should compose without forcing list ceremony on small models.
-                values = {"selection": dict(candidate[0])}
-                positional = []
-            elif (
-                "selection" in self._ordered_names
-                and "tool_name" in self._ordered_names
-                and isinstance(candidate, str)
-            ):
-                # A lone name is the natural unique-tool shorthand; the host
-                # still rejects ambiguity before any connector call.
-                values = {"tool_name": candidate}
-                positional = []
-        for index, value in enumerate(positional):
-            name = self._ordered_names[index]
-            if name in values:
-                raise TypeError(f"{self.__qualname__} got multiple values for {name!r}")
-            values[name] = value
-        try:
-            bound = self.__signature__.bind(**values)
-        except TypeError as exc:
-            raise TypeError(
-                f"Invalid call to {self.__qualname__}{self.__signature__}: {exc}. "
-                f"Inspect {self.__qualname__}.documentation() for the exact contract."
-            ) from None
-        clean = {
-            key: value
-            for key, value in bound.arguments.items()
-            if value is not None
-        }
+        # Shared with mutation workers so a promoted helper binds identically.
+        clean = normalize_call_arguments(
+            self.__qualname__, self.__signature__, self._param_specs, args, kwargs,
+        )
         fixed_arguments = self._descriptor.get("fixed_arguments")
         if isinstance(fixed_arguments, dict):
             # Dispatcher method identity always wins over caller kwargs so a
@@ -2504,7 +2400,7 @@ class _AsyncCapabilityCall:
 
 
 class ReadOnlyTools:
-    _RESERVED = frozenset({"aliases", "methods", "describe", "documentation"})
+    _RESERVED = TOOLS_RESERVED_NAMES
 
     def __init__(
         self,
@@ -2821,7 +2717,7 @@ def _normalized_promotion_tests(
             if outcome is False:
                 raise AssertionError(f"tests[{index}] returned False")
             # The assertion has already run in the same trusted Python session.
-            # Host validation and probation still gate activation.
+            # Host registration still checks the candidate's source contract.
             continue
         if isinstance(value, str):
             try:
@@ -2951,10 +2847,19 @@ def _promoted_helper_contract(
         closure_variables = None
     if closure_variables is not None:
         for name, value in sorted(closure_variables.globals.items()):
-            if isinstance(value, (CapabilityProxy, ReadOnlyTools, MountedPythonAPI)):
-                # Mounted capabilities are resolved as mutation dependencies.
-                continue
             statement = ""
+            if isinstance(value, (CapabilityProxy, ReadOnlyTools, MountedPythonAPI)):
+                # Mounted capabilities exist in the worker under their own
+                # names; rebind any other name the helper used for them.
+                target = (
+                    value.__qualname__ if isinstance(value, CapabilityProxy)
+                    else object.__getattribute__(value, "_namespace")
+                    if isinstance(value, ReadOnlyTools)
+                    else object.__getattribute__(value, "_name")
+                )
+                if name != target:
+                    prelude.extend(ast.parse(f"{name} = {target}", mode="exec").body)
+                continue
             if isinstance(value, types.ModuleType):
                 module_name = str(getattr(value, "__name__", "") or "")
                 if module_name and all(part.isidentifier() for part in module_name.split(".")):
@@ -3010,6 +2915,46 @@ def _promoted_helper_contract(
     return helper.__name__, schema, candidate_source
 
 
+# Host operations the ergonomic mutate/synthesize path uses internally. They
+# stay callable for compatibility but are not part of the model-facing API.
+_STAGED_CONTROL_METHODS = frozenset({
+    "propose", "validate", "test", "activate", "propose_activate",
+})
+
+
+def _kernel_assertion_count(tests: Any) -> int:
+    """How many zero-argument assertion callables a tests value contains."""
+
+    if tests is None or isinstance(tests, (Mapping, str)):
+        return 0
+    if callable(tests):
+        return 1
+    try:
+        return sum(1 for item in tests if callable(item))
+    except TypeError:
+        return 0
+
+
+def _registration_purpose(explicit: Any, helper: Any, fallback: str) -> str:
+    """The model's purpose as given; a docstring-derived one fits the host bound."""
+
+    if explicit:
+        return str(explicit).strip()
+    derived = str(inspect.getdoc(helper) or "").strip() or fallback
+    return derived[:MAX_PURPOSE_CHARS].rstrip()
+
+
+def _with_assertion_report(result: Any, count: int) -> Any:
+    """Say which checks ran in this kernel versus as examples in the worker."""
+
+    if isinstance(result, dict):
+        try:
+            result["kernel_assertions"] = int(count)
+        except Exception:
+            pass
+    return result
+
+
 class ToolbeltNamespace:
     """Local, non-authoritative discovery view over the pinned catalog."""
 
@@ -3032,7 +2977,7 @@ class ToolbeltNamespace:
             for name in names:
                 method = getattr(control, name)
                 self._control_callables[name] = method
-                if name in {"mutate", "synthesize"}:
+                if name in {"mutate", "synthesize"} or name in _STAGED_CONTROL_METHODS:
                     continue
                 if hasattr(self, name):
                     raise ValueError(f"toolbelt control method conflicts: {name}")
@@ -3063,9 +3008,10 @@ class ToolbeltNamespace:
                     "Replace one mounted callable for this durable chat. Pass the "
                     "callable itself, such as computer.click, or its qualified name. "
                     "Define the replacement as an ordinary synchronous helper with "
-                    "named parameters. VARIANT-1 infers its slot, schema, source, and "
-                    "activation lifecycle. Optional tests may be declarative case "
-                    "objects or zero-argument assertion functions."
+                    "named parameters. VARIANT-1 infers its slot, schema and source "
+                    "and registers it. Optional tests are never required: declarative "
+                    "case objects run as examples in the tool worker and are reported; "
+                    "zero-argument assertion functions run immediately in this kernel."
                 ),
                 "effect_class": "write",
             }
@@ -3078,10 +3024,12 @@ class ToolbeltNamespace:
                     "purpose=None, invoke=None)"
                 ),
                 "description": (
-                    "Turn an ordinary synchronous Python helper with named parameters "
-                    "into a bounded session tool. The first vacancy in the current "
-                    "category is used when slot is omitted. Optional tests may be "
-                    "declarative case objects or zero-argument assertion functions."
+                    "Register an ordinary synchronous Python helper with named "
+                    "parameters as a session tool. The first vacancy in the current "
+                    "category is used when slot is omitted. Optional tests are never "
+                    "required: declarative case objects run as examples in the tool "
+                    "worker and are reported; zero-argument assertion functions run "
+                    "immediately in this kernel."
                 ),
                 "effect_class": "write",
             }
@@ -3094,9 +3042,9 @@ class ToolbeltNamespace:
                     "purpose=None, invoke=None)"
                 ),
                 "description": (
-                    "Turn a successful Python function into a tested "
-                    "session-local tool. The current category's first available "
-                    "vacancy is used when slot is omitted."
+                    "Register a working Python function as a session tool. The "
+                    "current category's first available vacancy is used when slot "
+                    "is omitted."
                 ),
                 "effect_class": "write",
             }
@@ -3109,7 +3057,10 @@ class ToolbeltNamespace:
         result = self._control_object.documentation(method)
         if method is None:
             result = dict(result)
-            methods = dict(result.get("methods") or {})
+            methods = {
+                name: row for name, row in dict(result.get("methods") or {}).items()
+                if name not in _STAGED_CONTROL_METHODS
+            }
             local_names = ["last_failure"]
             if "synthesize" in self._control_methods:
                 local_names.extend(("mutate", "synthesize", "promote_helper"))
@@ -3124,7 +3075,10 @@ class ToolbeltNamespace:
         return result
 
     def methods(self) -> list[str]:
-        names = list(self._control_methods)
+        names = [
+            name for name in self._control_methods
+            if name not in _STAGED_CONTROL_METHODS
+        ]
         if self._bridge is not None:
             names.append("last_failure")
         if "synthesize" in self._control_methods:
@@ -3278,11 +3232,9 @@ class ToolbeltNamespace:
             "slot": short_slot,
             "parent": short_slot,
             "alias": alias,
-            "purpose": str(
-                purpose
-                or inspect.getdoc(using)
-                or f"Session replacement for {namespace}.{alias}"
-            ).strip(),
+            "purpose": _registration_purpose(
+                purpose, using, f"Session replacement for {namespace}.{alias}"
+            ),
             "schema": schema,
             "source": candidate_source,
         }
@@ -3290,8 +3242,9 @@ class ToolbeltNamespace:
             payload["tests"] = normalized_tests
         if invoke is not None:
             payload["invoke"] = dict(invoke)
-        return self._control("propose_activate")(
-            **payload,
+        return _with_assertion_report(
+            self._control("propose_activate")(**payload),
+            _kernel_assertion_count(tests),
         )
 
     def synthesize(
@@ -3337,11 +3290,9 @@ class ToolbeltNamespace:
             schema_override=schema,
         )
         clean_alias = _identifier(str(alias or helper_name))
-        clean_purpose = str(
-            purpose
-            or inspect.getdoc(helper)
-            or f"Synthesized session helper {clean_alias}"
-        ).strip()
+        clean_purpose = _registration_purpose(
+            purpose, helper, f"Synthesized session helper {clean_alias}"
+        )
         selected_slot = self._promotion_slot(slot)
         payload = {
             "slot": selected_slot,
@@ -3355,8 +3306,11 @@ class ToolbeltNamespace:
         if invoke is not None:
             payload["invoke"] = dict(invoke)
         if "propose_activate" in self._control_methods:
-            return self._control("propose_activate")(
-                kind="create", parent=None, **payload
+            return _with_assertion_report(
+                self._control("propose_activate")(
+                    kind="create", parent=None, **payload
+                ),
+                _kernel_assertion_count(tests),
             )
         return self._control("synthesize")(**payload)
 
@@ -3370,7 +3324,7 @@ class ToolbeltNamespace:
         purpose: str | None = None,
         invoke: dict[str, Any] | None = None,
     ) -> Any:
-        """Promote ordinary working Python through the tested atomic create path."""
+        """Promote ordinary working Python through the atomic create path."""
 
         return self.synthesize(
             helper,
@@ -3455,7 +3409,7 @@ class ToolbeltNamespace:
             f"catalog={state['catalog_release_id']} "
             f"category={state['selected_category_id'] or '-'} "
             f"mount={state['mount_revision']} "
-            f"methods={','.join(self._control_methods) or '-'}>"
+            f"methods={','.join(name for name in self._control_methods if name not in _STAGED_CONTROL_METHODS) or '-'}>"
         )
 
 

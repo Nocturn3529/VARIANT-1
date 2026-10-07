@@ -2045,7 +2045,8 @@ class CatalogService:
                 "The optional `invoke` arguments activate and run the adaptation in the "
                 "same call; omit them when first use should happen later. Correct an "
                 "ordinary argument mistake directly. VARIANT-1 infers the slot, schema, "
-                "packaged imports/constants, dependencies, activation, and probation."
+                "packaged imports/constants and dependencies, and registers the tool; "
+                "it stays until you revise, roll back or reset it."
             )
         elif mutation_requested:
             current_parts.append(

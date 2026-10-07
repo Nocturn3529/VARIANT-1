@@ -83,7 +83,7 @@ PEER_HANDLE_METHODS: tuple[dict[str, Any], ...] = (
         "params": [
             {"name": "text", "type": "string", "required": True},
             {"name": "message_kind", **_KIND},
-            {"name": "delivery", "type": "string", "required": False},
+            {"name": "delivery", "type": "string", "required": False, "default": None},
             {"name": "request_id", "type": "string", "required": False, "default": ""},
         ],
         "returns": "message",
@@ -211,7 +211,7 @@ async def _handle_router(
                 raise ToolError("peers.peer.send needs text and optional delivery/request_id")
             sent = await service.send(
                 caller, handle_id, str(args["text"]),
-                delivery=args.get("delivery"),
+                delivery=args.get("delivery") or None,
                 request_id=str(args.get("request_id") or ""),
                 _invocation=context,
                 message_kind=args.get("message_kind"),
@@ -282,7 +282,7 @@ def register_peers_tool(registry: Any, runtime_provider: Any, host: Any) -> None
                 caller, str(payload.get("target_peer_id") or ""),
                 str(payload.get("text") or ""),
                 in_reply_to=str(payload.get("in_reply_to") or ""),
-            delivery=payload.get("delivery"),
+                delivery=payload.get("delivery") or None,
                 request_id=str(payload.get("request_id") or ""),
                 _invocation=invocation,
                 message_kind=payload.get("message_kind"),

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import ast
 from contextlib import suppress
-import hashlib
 import json
 import math
 import os
@@ -26,61 +25,25 @@ if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 
 from core_invariants import canonical_digest
+from kernel_runtime.candidate_contract import (
+    MAX_SOURCE_BYTES,
+    CandidateContractError,
+    validate_source,
+)
 from kernel_runtime.worker_bridge import (
     Variant1RemoteHandle,
     REMOTE_HANDLE_DISPATCH_SCHEMA,
     _decode_host_result,
     _encode_host_argument,
 )
+from kernel_runtime.proxy_arguments import normalize_call_arguments, proxy_signature
 from session_catalog.mutation_contracts import MUTATION_REMOTE_HANDLE_ROLE
 
 PROTOCOL = "variant1.astb.mutation-worker.v2"
-MAX_SOURCE_BYTES = 64 * 1024
 MAX_OUTPUT_BYTES = 32 * 1024
-
-
-class CandidateContractError(ValueError):
-    pass
-
-
-def validate_source(source: str) -> tuple[ast.Module, str]:
-    """Validate only the mutation callable contract, not Python capability."""
-    raw = str(source or "")
-    if not raw.strip():
-        raise CandidateContractError("candidate source is empty")
-    if len(raw.encode("utf-8")) > MAX_SOURCE_BYTES:
-        raise CandidateContractError(
-            f"candidate source exceeds {MAX_SOURCE_BYTES} bytes"
-        )
-    try:
-        tree = ast.parse(raw, filename="<session-mutation>", mode="exec")
-    except SyntaxError as exc:
-        raise CandidateContractError(
-            f"candidate syntax error at line {exc.lineno}: {exc.msg}"
-        ) from exc
-    run_nodes = [
-        node
-        for node in tree.body
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and node.name == "run"
-    ]
-    if len(run_nodes) != 1 or isinstance(run_nodes[0], ast.AsyncFunctionDef):
-        raise CandidateContractError(
-            "candidate must define exactly one synchronous run(arguments)"
-        )
-    run_node = run_nodes[0]
-    positional = list(run_node.args.posonlyargs) + list(run_node.args.args)
-    if [node.arg for node in positional] != ["arguments"]:
-        raise CandidateContractError("run must have the exact signature run(arguments)")
-    if (
-        run_node.args.vararg is not None
-        or run_node.args.kwarg is not None
-        or run_node.args.kwonlyargs
-        or run_node.args.defaults
-    ):
-        raise CandidateContractError("run must have the exact signature run(arguments)")
-    compile(tree, "<session-mutation>", "exec")
-    return tree, hashlib.sha256(raw.encode("utf-8")).hexdigest()
+# The source contract lives in kernel_runtime.candidate_contract so host
+# registration and worker execution check exactly the same rules.
+__all__ = ["CandidateContractError", "MAX_SOURCE_BYTES", "validate_source", "main"]
 
 
 def _safe_json(value: Any, *, depth: int = 0) -> Any:
@@ -164,28 +127,28 @@ class _ProxyMethod:
         parameters: list[str],
         observed: list[dict[str, Any]],
         remote_handles: _MutationRemoteHandleBridge,
+        param_specs: dict[str, Any] | None = None,
     ):
         self.reader = reader
         self.writer = writer
         self.qualified_name = str(qualified_name)
         self.parameters = [str(item) for item in parameters]
+        specs = dict(param_specs or {})
+        self.param_specs = {
+            name: dict(specs.get(name) or {}) for name in self.parameters
+        }
+        self.signature = proxy_signature(
+            [(name, self.param_specs[name]) for name in self.parameters]
+        )
         self.observed = observed
         self.remote_handles = remote_handles
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        if len(args) > len(self.parameters):
-            raise TypeError(
-                f"{self.qualified_name} accepts at most {len(self.parameters)} "
-                "positional arguments"
-            )
-        arguments = dict(kwargs)
-        for index, value in enumerate(args):
-            name = self.parameters[index]
-            if name in arguments:
-                raise TypeError(
-                    f"{self.qualified_name} got multiple values for {name!r}"
-                )
-            arguments[name] = value
+        # The same rules as the kernel proxy, so a promoted helper calls
+        # mounted capabilities exactly as it did in the persistent kernel.
+        arguments = normalize_call_arguments(
+            self.qualified_name, self.signature, self.param_specs, args, kwargs,
+        )
         payload = {
             "schema": PROTOCOL,
             "type": "proxy_call",
@@ -337,6 +300,7 @@ def _execute(request: dict[str, Any], reader: Any, writer: Any) -> dict[str, Any
             parameters,
             observed_calls,
             remote_handles,
+            param_specs=dict(spec.get("param_specs") or {}),
         )
         if str(spec.get("internal_role") or "") == MUTATION_REMOTE_HANDLE_ROLE:
             remote_handles.bind(proxy)
