@@ -41,6 +41,11 @@ _LAST_SESSION_ACTIVITY_LIMIT = 512
 _LAST_SESSION_ACTIVITY_CHARS = 200
 _LAST_SESSION_ACTIVITY: "OrderedDict[str, dict]" = OrderedDict()
 _LAST_SESSION_ACTIVITY_LOCK = threading.Lock()
+# The current run's steps per chat, so a Deck that opens the chat mid-run can
+# rebuild its live timeline (chat:session run_snapshot). Same bounds and
+# guarantees as the latest-step hint: process-local and display-only.
+_RUN_STEP_LIMIT = 64
+_LIVE_RUNS: "OrderedDict[str, dict]" = OrderedDict()
 
 
 def _bounded_tool_result_value(value, *, default: str = "") -> str:
@@ -77,6 +82,108 @@ def _remember_session_activity(message: dict) -> None:
         _LAST_SESSION_ACTIVITY.move_to_end(session_id)
         while len(_LAST_SESSION_ACTIVITY) > _LAST_SESSION_ACTIVITY_LIMIT:
             _LAST_SESSION_ACTIVITY.popitem(last=False)
+
+
+def _live_run(session_id: str, run_id: str) -> dict:
+    """The live-run record for a chat, replaced when a new run starts."""
+
+    run = _LIVE_RUNS.get(session_id)
+    if run is None or run["run_id"] != run_id:
+        run = {"run_id": run_id, "steps": OrderedDict(), "live": None}
+        _LIVE_RUNS[session_id] = run
+    _LIVE_RUNS.move_to_end(session_id)
+    while len(_LIVE_RUNS) > _LAST_SESSION_ACTIVITY_LIMIT:
+        _LIVE_RUNS.popitem(last=False)
+    return run
+
+
+def _put_run_step(run: dict, step: dict) -> None:
+    run["steps"][step["id"]] = step
+    while len(run["steps"]) > _RUN_STEP_LIMIT:
+        run["steps"].popitem(last=False)
+
+
+def _remember_run_step(message: dict) -> None:
+    """Fold tool start/result events into the chat's live-run record."""
+
+    session_id = str(message.get("session_id") or "").strip()
+    run_id = str(message.get("run_id") or "").strip()
+    event = str(message.get("event") or "")
+    if not session_id or not run_id:
+        return
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        if event == "task:done":
+            run = _LIVE_RUNS.get(session_id)
+            if run is not None and run["run_id"] == run_id:
+                _LIVE_RUNS.pop(session_id, None)
+            return
+        call_id = str(message.get("call_id") or "").strip()[:128]
+        if event not in {"tool:start", "tool:result"} or not call_id:
+            return
+        run = _live_run(session_id, run_id)
+        ts_ms = float(message.get("ts") or time.time()) * 1000
+        step = dict(run["steps"].get(call_id) or {
+            "id": call_id, "kind": "tool", "call_id": call_id, "ts": ts_ms,
+        })
+        tool = str(message.get("tool") or step.get("tool") or "")[:80]
+        step.update(tool=tool, label=tool or "Tool")
+        if event == "tool:start":
+            step["status"] = "running"
+            step["started_at"] = ts_ms
+            preview = message.get("args_preview")
+            if preview:
+                step["args_preview"] = str(preview)[:600]
+        else:
+            step["status"] = str(message.get("status") or "ok")[:24]
+            step["completed_at"] = ts_ms
+            text = message.get("text")
+            if text:
+                step["result_preview"] = str(text)[:800]
+        _put_run_step(run, step)
+
+
+def _context_run_identity() -> tuple[str, str]:
+    ctx = current_run_context()
+    if ctx is None:
+        return "", ""
+    session_id = str(
+        ctx.session_id or getattr(ctx.work_scope, "chat_id", "") or ""
+    ).strip()
+    return session_id, str(ctx.run_id or "")
+
+
+def remember_run_narration(step: dict) -> None:
+    """Keep one narration step (kind "text") on the bound run's live record."""
+
+    session_id, run_id = _context_run_identity()
+    if not session_id or not run_id or not step.get("id"):
+        return
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        _put_run_step(_live_run(session_id, run_id), dict(step))
+
+
+def bind_live_text(segment: int, parts: list) -> None:
+    """Point the bound run's live record at the streaming call's text parts."""
+
+    session_id, run_id = _context_run_identity()
+    if not session_id or not run_id:
+        return
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        _live_run(session_id, run_id)["live"] = (int(segment), parts)
+
+
+def run_snapshot(session_id: str, run_id: str) -> dict | None:
+    """Steps so far of the chat's run ``run_id``, plus the current partial text."""
+
+    with _LAST_SESSION_ACTIVITY_LOCK:
+        run = _LIVE_RUNS.get(str(session_id or ""))
+        if run is None or not run_id or run["run_id"] != run_id:
+            return None
+        steps = [dict(step) for step in run["steps"].values()]
+        segment, parts = run["live"] or (0, [])
+        text = "".join(str(part) for part in list(parts))
+    steps.sort(key=lambda step: float(step.get("ts") or 0))
+    return {"run_id": run_id, "steps": steps, "segment": segment, "text": text}
 
 
 def last_session_activity(session_id: str) -> dict | None:
@@ -313,6 +420,7 @@ async def emit_activity(event: str, **fields) -> None:
     msg.update({k: v for k, v in fields.items() if v is not None})
     try:
         _remember_session_activity(msg)
+        _remember_run_step(msg)
     except Exception:
         pass
     # Graph events are recorded by agent_engine.state.queue_event so their

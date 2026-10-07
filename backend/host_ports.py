@@ -19,6 +19,7 @@ from session_catalog import child_worker
 import llm_router
 from observability import system_info
 import tools
+from observability import activity as activity_hub
 from observability.activity import args_preview as _args_preview
 from assistant_turn import AssistantTurn, normalized_stop_reason
 from reasoning_summaries import ReasoningBuffer, SUMMARY_STEP_LIMIT, summary_text
@@ -283,6 +284,7 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             )
             routing = chat_pipeline.stream_meta(session)
             active = session.active
+            activity_hub.bind_live_text(segment, parts)
 
             class SummarySink:
                 async def summary_event(self, event):
@@ -362,6 +364,7 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                     "ts": segment_started_ms,
                 })
                 del active.text_segments[:-SUMMARY_STEP_LIMIT]
+                activity_hub.remember_run_narration(active.text_segments[-1])
             if actions:
                 print(f"[tools] provider tool_calls n={len(actions)} "
                       f"names={[a.get('tool') for a in actions]}", flush=True)

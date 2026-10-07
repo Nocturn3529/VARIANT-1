@@ -71,6 +71,14 @@ def _session_payload(srv, sid: str):
         runtime = runtimes.snapshot(sid) if runtimes is not None else {}
     except Exception as exc:
         runtime = {"error": str(exc)}
+    active_run_id = str((runtime or {}).get("active_run_id") or "")
+    if active_run_id:
+        # A Deck opening this chat mid-run rebuilds the live timeline from it.
+        from observability.activity import run_snapshot
+
+        snapshot = run_snapshot(sid, active_run_id)
+        if snapshot is not None:
+            payload["run_snapshot"] = snapshot
     if runtime:
         runtime = dict(runtime)
         runtime["input_queue"] = runtimes.queue_snapshot(sid)
