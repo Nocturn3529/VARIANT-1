@@ -21,6 +21,8 @@ hiddenimports = [
     "kernel_runtime.capsule_contracts",
     "kernel_runtime.runtime_profile",
     "kernel_runtime.mutation_worker",
+    "kernel_runtime.candidate_contract",
+    "kernel_runtime.proxy_arguments",
     "psutil",
     "numpy",
     "pandas",

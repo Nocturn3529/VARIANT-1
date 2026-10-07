@@ -792,11 +792,76 @@ const messages: FixtureMessage[] = [
   },
 ];
 
+/**
+ * `?scenario=timeline`: a coordinator mission as the chat should read it.
+ * A saved turn in order (thought, narration, a run of cells, a failed cell,
+ * a message to another agent), an inbound agent message, a failed and a
+ * stopped run, then a live turn with a running cell and a queued message
+ * from another agent.
+ */
+const timelineSession = "fixture-welcome";
+const timelineCell = (id: string, code: string, ts: number, status = "ok", result = "") => ({
+  id, call_id: id, kind: "tool", tool: "ipython", label: "ipython", status, ts, duration_ms: 420,
+  args_preview: JSON.stringify({code}), result_preview: result || JSON.stringify({execution_count: 7, kernel_generation: 1, result: "ok"}),
+});
+const timelineMessages = [
+  {role: "user", text: "Coordinate the Research Observatory team: assign the CPython, SQLite and Git tracks, then review what comes back.", ts: now - 900},
+  {
+    role: "assistant", ts: now - 820, run_id: "fixture-saved-run",
+    text: "Assignments are out. **Ling Sante** owns CPython notes and **LongCat** owns the SQLite and Git sources. I fixed the dashboard search myself and will review both tracks when they report back.",
+    steps: [
+      {id: "tl-thought", kind: "thinking", label: "Thinking", status: "done", ts: (now - 899) * 1000, duration_ms: 3800,
+        detail: "Two collaborators are idle. Split the work by file so nobody edits the same paths, and keep the app fix for myself because it blocks verification."},
+      {id: "tl-text-1", kind: "text", label: "Narration", status: "done", ts: (now - 895) * 1000, segment: 1,
+        detail: "Let me check the team and what already exists in the shared folder before handing out work."},
+      timelineCell("tl-cell-1", "# List the shared project folder\nsorted(p.name for p in Path('.').iterdir())", (now - 894) * 1000),
+      timelineCell("tl-cell-2", "# Read the mission and the current report\nmission = read('MISSION.md')", (now - 890) * 1000),
+      timelineCell("tl-cell-3", "# Which collaborators are reachable?\npeers.list()", (now - 886) * 1000),
+      {id: "tl-text-2", kind: "text", label: "Narration", status: "done", ts: (now - 880) * 1000, segment: 2,
+        detail: "Both collaborators are idle. I'll give each one a track with explicit file ownership so they don't collide."},
+      {id: "tl-peer", kind: "step", label: "Message to LongCat", status: "done", ts: (now - 876) * 1000,
+        peer_message: {message_id: "peer_message_fixture_1", sender_peer_id: "chat:fixture-welcome", target_peer_id: "chat:fixture-longcat",
+          target_display_name: "Live Observatory — LongCat collaborator", state: "queued",
+          content: "TASK (coordinator assignment — Git track). Work only inside the shared folder.\n\nYou own drafts/sources-sqlite-git.md and the feed generator. Do not edit app/, tests/ or report.md."}},
+      timelineCell("tl-cell-4", "# Fix the dashboard search\nfrom app import search\nsearch('sqlite')", (now - 860) * 1000, "error",
+        "NameError: name 'search' is not defined"),
+      timelineCell("tl-cell-5", "# Retry with the module path\nfrom app.search import search\nsearch('sqlite')", (now - 850) * 1000),
+    ],
+  },
+  {role: "user", ts: now - 700, text: "[Peer message]",
+    origin: {kind: "peer", peer_id: "chat:chat:fixture-longcat", message_id: "peer_message_fixture_2"},
+    peer_display: {display_name: "Live Observatory — LongCat collaborator",
+      content: "Git track done: drafts/sources-sqlite-git.md cites git-scm.com and the Git source docs. sqlite.org failed TLS verification here, so I marked it unavailable instead of guessing."}},
+  {role: "assistant", ts: now - 690, text: "Model error: Cannot call \"send\" once a close message has been sent."},
+  {role: "user", ts: now - 300, text: "Review LongCat's sources and update the report."},
+  {role: "assistant", ts: now - 290, text: "Task stopped."},
+  {role: "user", ts: now - 60, text: "Keep the dashboard current and wake the team when the next feed lands."},
+];
+const timelineRoute = {session_id: timelineSession, source: "chat", admission_id: "fixture-live-admission", run_id: "fixture-live-run"};
+const timelineLive: FixtureMessage[] = [
+  {type: "start", ...timelineRoute},
+  {type: "thinking", ...timelineRoute, segment: 1, text: "LongCat finished the Git track. Check the inbox, then rebuild the index so the dashboard shows the new sources."},
+  {type: "token", ...timelineRoute, segment: 1, token: "Checking the inbox and LongCat's report before I rebuild the index."},
+  {type: "tool:activity", ...timelineRoute, event: "tool:start", tool: "ipython", call_id: "live-1", status: "running", args_preview: JSON.stringify({code: "# Read the team inbox\nmessages = peers.inbox()"})},
+  {type: "activity", ...timelineRoute, surface: "side", event: "tool:result", tool: "ipython", call_id: "live-1", status: "ok", duration_ms: 310, text: "2 messages"},
+  {type: "tool:activity", ...timelineRoute, event: "tool:start", tool: "ipython", call_id: "live-2", status: "running", args_preview: JSON.stringify({code: "# Load LongCat's report\nreport = read('drafts/sources-sqlite-git.md')"})},
+  {type: "activity", ...timelineRoute, surface: "side", event: "tool:result", tool: "ipython", call_id: "live-2", status: "ok", duration_ms: 540, text: "1,204 characters"},
+  {type: "tool:activity", ...timelineRoute, event: "tool:start", tool: "ipython", call_id: "live-3", status: "running", args_preview: JSON.stringify({code: "# Rebuild the dashboard index\nindex = build_index(feeds)"})},
+  {type: "chat:queue_snapshot", schema: "variant1.input-queue.v1", session_id: timelineSession, revision: 4, items: [
+    {ticket_id: "fixture-ticket-peer", chat_id: timelineSession, text: "[Peer message]", delivery: "follow_up", state: "queued", source: "peer",
+      origin: {kind: "peer", peer_id: "chat:chat:fixture-lingsante", message_id: "peer_message_fixture_3", display_name: "Live Observatory — Ling Sante collaborator",
+        content: "CPython notes are ready for review: research/cpython-notes.md cites the devguide and PEP 659/684/703 with retrieval dates."}},
+  ]},
+];
+
 function dispatchFixtures(): void {
   document.dispatchEvent(new CustomEvent("variant1:fixture-state", {detail: "connected"}));
   messages.forEach(message => {
     const scenario = new URLSearchParams(window.location.search).get("scenario");
     let detail = message;
+    if (scenario === "timeline" && message.type === "chat:session") {
+      detail = {...message, session: {...message.session as Record<string, unknown>, messages: timelineMessages}};
+    }
     if (scenario === "empty" || scenario === "setup") {
       if (message.type === "chat:session") detail = {...message, session: {...message.session as Record<string, unknown>, messages: [], project: null}};
       if (["hello", "config", "engine"].includes(message.type)) detail = {...message, model_ready: scenario === "empty"};
@@ -804,6 +869,9 @@ function dispatchFixtures(): void {
     }
     document.dispatchEvent(new CustomEvent("variant1:fixture-message", {detail}));
   });
+  if (new URLSearchParams(window.location.search).get("scenario") === "timeline") {
+    timelineLive.forEach(detail => document.dispatchEvent(new CustomEvent("variant1:fixture-message", {detail})));
+  }
 }
 
 if (document.body.dataset.variant1FixtureReady === "1") {

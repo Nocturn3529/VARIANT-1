@@ -270,6 +270,9 @@ def _durable_turn_messages(
     summaries = list(getattr(session.active, "provider_summaries", None) or [])
     if summaries:
         rows[-1]["provider_summaries"] = summaries
+    narration = list(getattr(session.active, "text_segments", None) or [])
+    if narration:
+        rows[-1]["text_segments"] = narration
     owner_run = str(run_id or getattr(current_run_context(), "run_id", "") or "")
     if owner_run:
         for row in rows:

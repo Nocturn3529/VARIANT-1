@@ -645,7 +645,7 @@ def prepare_case(
             "right.strip() + exactly one final newline through tools.apply_patch. Pass "
             "that helper to toolbelt.synthesize with slot='8' and invoke={...} for the "
             "three first-use paths, so activation and first use happen in the same call. "
-            "VARIANT-1 derives the public schema, dependencies, validation, and probation."
+            "VARIANT-1 derives the public schema and dependencies and registers the tool."
         )
         prompt = (
             "First inspect toolbelt.mutation_status(). If authority.effective_write_enabled "

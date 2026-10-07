@@ -139,7 +139,7 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         if not label:
             continue
         kind = str(raw.get("kind") or "note").strip().lower() or "note"
-        if kind not in {"tool", "note", "step", "thinking"}:
+        if kind not in {"tool", "note", "step", "thinking", "text"}:
             kind = "note"
         status = str(raw.get("status") or "done").strip().lower() or "done"
         public_summary = kind == "thinking" and raw.get("source") == "provider_summary"
@@ -159,8 +159,10 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         }
         if public_summary and type(raw.get("summary_revision")) is int:
             row["summary_revision"] = max(0, raw["summary_revision"])
+        if type(raw.get("segment")) is int and raw["segment"] > 0:
+            row["segment"] = raw["segment"]
         for key, aliases, limit in (
-            ("detail", ("detail",), SUMMARY_TEXT_LIMIT if kind == "thinking" else 400),
+            ("detail", ("detail",), SUMMARY_TEXT_LIMIT if kind in {"thinking", "text"} else 400),
             ("tool", ("tool",), 80),
             ("key", ("key",), 160),
             ("call_id", ("call_id", "callId"), 128),
@@ -214,6 +216,17 @@ def _provider_summary_steps(value: Any) -> list[dict]:
         item for item in value if isinstance(item, Mapping) and item.get("kind") == "thinking"
         and item.get("source") == "provider_summary" and str(item.get("id") or "").strip()
     ], limit=SUMMARY_STEP_LIMIT)]
+
+
+def _text_segment_steps(value: Any) -> list[dict]:
+    """Narration between tool steps, saved by the backend for each model call."""
+
+    if not isinstance(value, list):
+        return []
+    return _compact_steps([
+        item for item in value if isinstance(item, Mapping) and item.get("kind") == "text"
+        and str(item.get("id") or "").strip()
+    ], limit=SUMMARY_STEP_LIMIT)
 
 
 def _compact_receipt(raw: Any) -> dict[str, Any] | None:
@@ -320,7 +333,10 @@ class ChatSessionService:
         run_rows = {}
         for row in projected:
             if row.get("role") == "assistant":
-                summaries = _provider_summary_steps(row.get("provider_summaries"))
+                summaries = [
+                    *_provider_summary_steps(row.get("provider_summaries")),
+                    *_text_segment_steps(row.get("text_segments")),
+                ]
                 if summaries:
                     identities = {item["id"] for item in summaries}
                     steps = [item for item in row.get("steps") or [] if item.get("id") not in identities]
@@ -471,7 +487,8 @@ class ChatSessionService:
                 "ts": float(node.created_at),
             }
             for key in ("ticket_id", "attachments", "mood", "steps", "receipt", "origin",
-                        "peer_display", "run_id", "run_chat_id", "provider_summaries"):
+                        "peer_display", "run_id", "run_chat_id", "provider_summaries",
+                        "text_segments"):
                 if key in node.metadata:
                     message[key] = copy.deepcopy(node.metadata[key])
             overlay = overlays.get(node.node_id)
@@ -961,6 +978,9 @@ class ChatSessionService:
             summaries = _provider_summary_steps(raw.get("provider_summaries"))
             if summaries:
                 metadata["provider_summaries"] = summaries
+            narration = _text_segment_steps(raw.get("text_segments"))
+            if narration:
+                metadata["text_segments"] = narration
         return {"role": role, "content": text, "metadata": metadata}
 
     def append_messages(self, sid: str, messages: list[dict]) -> dict[str, Any] | None:

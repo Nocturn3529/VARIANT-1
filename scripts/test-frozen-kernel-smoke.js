@@ -72,7 +72,7 @@ const astbTests = [
   'tests/test_mutation.py::test_disposable_worker_has_same_user_python_and_routes_normal_proxy',
   'tests/test_mutation.py::test_mutate_live_remount_probation_and_reset',
   'tests/test_mutation.py::test_atomic_model_api_remounts_inside_the_same_cell',
-  'tests/test_mutation.py::test_atomic_create_requires_tests_and_activates_one_vacancy',
+  'tests/test_mutation.py::test_atomic_create_activates_one_vacancy_with_optional_examples',
   'tests/test_mutation.py::test_off_hides_authoring_keeps_overlay_live_and_pauses_probation',
 ];
 const tests = process.argv.includes('--astb') ? astbTests : packagingTests;

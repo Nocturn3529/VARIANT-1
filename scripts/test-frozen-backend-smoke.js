@@ -24,11 +24,11 @@ const executable = path.join(
   'Variant1Backend',
   process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend',
 );
+const venvBin = path.join(
+  root, 'backend', '.venv', process.platform === 'win32' ? 'Scripts' : 'bin',
+);
 const archiveViewer = path.join(
-  root,
-  'backend',
-  '.venv',
-  'Scripts',
+  venvBin,
   process.platform === 'win32' ? 'pyi-archive_viewer.exe' : 'pyi-archive_viewer',
 );
 const scratch = path.join(os.tmpdir(), `variant1-frozen-smoke-${randomUUID()}`);
@@ -37,7 +37,7 @@ const smokeData = path.join(scratch, 'data');
 const mcpAudit = path.join(scratch, 'mcp-audit.jsonl');
 const mcpFixture = path.join(root, 'experiments', 'live-canary', 'fixture_mcp_server.py');
 const backendPython = path.join(
-  root, 'backend', '.venv', 'Scripts',
+  venvBin,
   process.platform === 'win32' ? 'python.exe' : 'python',
 );
 const deadline = Date.now() + 60000;
@@ -62,7 +62,7 @@ for (const required of [
   'lxml.html', 'xlsxwriter', 'mcp.client.session', 'mcp.client.stdio',
   'mcp.client.streamable_http', 'mcp.client.sse',
   'browser_fabric.provisioning', 'speech.assets',
-  process.platform === 'win32' ? 'mss.windows' : 'mss.linux',
+  {win32: 'mss.windows', darwin: 'mss.darwin'}[process.platform] || 'mss.linux',
 ]) {
   assert.ok(hasModule(required), `frozen backend is missing runtime module ${required}`);
 }

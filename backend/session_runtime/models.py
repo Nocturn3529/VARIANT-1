@@ -125,6 +125,10 @@ class ChatRuntimeRecord:
         }
 
 
+# Must match the hint peers/service.py appends to a native peer envelope.
+_PEER_REPLY_HINT = "\n\nReply only when useful with peers.inspect_message(...).reply(...)."
+
+
 @dataclass(frozen=True)
 class InputTicket:
     ticket_id: str
@@ -158,8 +162,35 @@ class InputTicket:
             "session_id": self.chat_id,
         }
 
+    def origin(self) -> dict[str, str] | None:
+        """Who sent a queued peer message, derived from the ticket's own fields."""
+
+        if not (self.source.startswith("peer:") and self.client_id.startswith("peer-message:")):
+            return None
+        peer_id = self.source[len("peer:"):]
+        display_name = peer_id
+        prefix, suffix = "Sender: ", f" ({peer_id})"
+        for line in self.text.splitlines()[:4]:
+            if line.startswith(prefix) and line.endswith(suffix):
+                display_name = line[len(prefix):-len(suffix)] or peer_id
+                break
+        origin = {
+            "kind": "peer",
+            "peer_id": peer_id,
+            "message_id": self.client_id[len("peer-message:"):],
+            "display_name": display_name,
+        }
+        # The body peers/service.py wraps between its header block and the
+        # reply hint; omitted when the envelope does not have that shape.
+        header, separator, rest = self.text.partition("\n\n")
+        if separator and "\nExchange ID: " in header and rest.endswith(_PEER_REPLY_HINT):
+            origin["content"] = rest[:-len(_PEER_REPLY_HINT)]
+        return origin
+
     def to_dict(self) -> dict[str, Any]:
+        origin = self.origin()
         return {
+            **({"origin": origin} if origin else {}),
             "ticket_id": self.ticket_id,
             "chat_id": self.chat_id,
             "delivery": self.delivery,

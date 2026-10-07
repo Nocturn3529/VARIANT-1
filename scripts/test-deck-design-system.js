@@ -326,6 +326,41 @@ for (const name of cssFiles) {
   assert.strictEqual(depth, 0, `${name} leaves ${depth} block(s) unclosed`);
 }
 
+// Token drift only shrinks. Raw colors, pixel radii and pixel font sizes that
+// predate the tokens stay at or below these counts; new styles use tokens.
+// Lower a ceiling when you tokenize; never raise one.
+const literalCeilings = {
+  'activity.css': {hex: 0, radius: 2, size: 0},
+  'automations.css': {hex: 0, radius: 1, size: 0},
+  'chat.css': {hex: 7, radius: 18, size: 1},
+  'composer-motion.css': {hex: 0, radius: 1, size: 0},
+  'composer.css': {hex: 3, radius: 30, size: 6},
+  'design-system.css': {hex: 2, radius: 3, size: 0},
+  'goals.css': {hex: 0, radius: 3, size: 0},
+  'local-models.css': {hex: 0, radius: 1, size: 0},
+  'overview.css': {hex: 0, radius: 5, size: 10},
+  'refinement.css': {hex: 0, radius: 1, size: 14},
+  'settings.css': {hex: 6, radius: 25, size: 5},
+  'shell.css': {hex: 5, radius: 2, size: 1},
+  'workbench.css': {hex: 86, radius: 26, size: 5},
+  'workspace-overlays.css': {hex: 4, radius: 11, size: 22},
+};
+for (const name of cssFiles) {
+  const source = fs.readFileSync(path.join(stylesDir, name), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split(/\r?\n/).filter(line => !/^\s*--[\w-]+\s*:/.test(line)).join('\n');
+  const counts = {
+    hex: (source.match(/#[0-9a-fA-F]{3,8}\b/g) || []).length,
+    radius: (source.match(/border-radius\s*:\s*[^;}]*\d+(?:\.\d+)?px/g) || []).length,
+    size: (source.match(/font-size\s*:\s*\d+(?:\.\d+)?px/g) || []).length,
+  };
+  const ceiling = literalCeilings[name] || {hex: 0, radius: 0, size: 0};
+  for (const kind of ['hex', 'radius', 'size']) {
+    assert.ok(counts[kind] <= ceiling[kind],
+      `${name} has ${counts[kind]} raw ${kind === 'hex' ? 'colors' : kind === 'radius' ? 'pixel radii' : 'pixel font sizes'} (ceiling ${ceiling[kind]}); use the --deck-* tokens`);
+  }
+}
+
 // References must resolve to a stylesheet definition or a deliberately supplied
 // component-local style property. Fallbacks must not hide misspelled root tokens.
 const allStyles = cssFiles.map(name => fs.readFileSync(path.join(stylesDir, name), 'utf8')).join('\n');

@@ -44,7 +44,14 @@ export function persistTrace(command: ChatSessionAnnotateCommand): void {
     if (evicted.timer) clearTimeout(evicted.timer);
     mark(evicted, "failed");pending.delete(oldest);
   }
-  const entry: Pending = {command:{...command, request_id:globalThis.crypto.randomUUID()}, attempts:0};
+  // The backend records each model call's narration itself, including for
+  // chats nobody watched, so the client annotation carries only its own rows.
+  // An inbound peer message is a transcript row of its own.
+  const steps = command.steps?.filter(step => {
+    const row = step as {kind?: unknown; peerInbound?: unknown} | null;
+    return row?.kind !== "text" && !row?.peerInbound;
+  });
+  const entry: Pending = {command:{...command, ...(steps ? {steps} : {}), request_id:globalThis.crypto.randomUUID()}, attempts:0};
   pending.set(identity, entry);mark(entry, "pending");dispatch(entry);
 }
 

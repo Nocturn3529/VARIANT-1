@@ -38,8 +38,13 @@ export type ChatTurnStep = {
   summaryState?: "running" | "done" | "discarded" | "cancelled";
   summaryRevision?: number;
   peerMessage?:import("../protocol/peerActivity").PeerActivity;
+  /** A message from another agent that steered into this run. */
+  peerInbound?: Readonly<{peer_id: string; message_id: string; display_name: string; content?: string}>;
   id: string;
-  kind: "tool" | "note" | "step" | "thinking";
+  /** `text` is model narration written between tool calls (not the final reply). */
+  kind: "tool" | "note" | "step" | "thinking" | "text";
+  /** The model call this step came from, when the backend reports it. */
+  segment?: number;
   label: string;
   detail?: string;
   status?: "running" | "ok" | "error" | "done" | "cancelled" | "interrupted" | "timed_out" | "skipped" | "degraded" | "unknown";
@@ -106,6 +111,8 @@ export type ChatMessage = {
   delivery?: "steer" | "follow_up";
   /** Client-built cost/model summary on the assistant row. */
   receipt?: ChatTurnReceipt;
+  /** How the run ended when it did not answer normally. */
+  outcome?: "error" | "stopped";
   /** The reply was visible but the backend could not commit its transcript. */
   durability?: "durable" | "failed";
   /** Trace enrichment is acknowledged separately from the saved reply. */
@@ -191,7 +198,10 @@ export type ChatState = {
   /** True while a reply is being streamed for this client. */
   turnActive: boolean;
   streaming: boolean;
+  /** Text of the model call streaming now; earlier calls become narration steps. */
   streamText: string;
+  /** Model call that produced `streamText`, when the backend reports it. */
+  streamSegment?: number;
   subtitle: string;
   subtitleState: SubtitleState;
   lastError: string;

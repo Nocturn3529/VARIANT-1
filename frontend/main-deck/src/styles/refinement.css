@@ -59,6 +59,18 @@
 .execution-trace__alerts p { margin: 2px 0; }
 .execution-trace__alerts .is-error { color: var(--deck-danger); }
 .execution-trace__status { padding: 4px 8px; color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+/* A turn reads in order: thoughts, narration, tool runs and agent messages. */
+.turn-timeline { gap: 2px; margin: 2px 0 12px; }
+.turn-timeline > .execution-trace { margin: 2px 0; }
+.execution-trace__summary small + .deck-icon:last-child { margin-left: 2px; }
+.turn-narration { margin: 6px 0; padding: 0 8px 0 34px; color: var(--deck-text-secondary); font: var(--deck-text-md)/1.65 var(--font-ui); }
+.turn-narration > :first-child { margin-top: 0; }
+.turn-narration > :last-child { margin-bottom: 0; }
+.turn-narration__stopped { display: block; margin-top: 4px; color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+.tool-run__ticker { margin: 2px 0 0 19px; padding: 0 0 0 10px; border-left: 1px solid var(--deck-line-strong); }
+.tool-run__ticker .trace-entry { animation: trace-arrive var(--deck-motion-panel) ease-out; }
+code.trace-entry__headline { min-width: 0; color: var(--deck-text-muted); font: var(--deck-text-xs)/1.5 var(--font-chat-code); font-variant-ligatures: none; }
+.turn-timeline__status em { margin-left: auto; color: var(--deck-text-muted); font-style: normal; font-variant-numeric: tabular-nums; }
 .trace-entry__disclosure { min-height: 36px; flex-wrap: nowrap; gap: 10px; font-family: var(--font-ui); }
 .trace-entry__disclosure > .deck-icon:last-child { margin-left: 2px; width: 12px; }
 .trace-entry__status { display: inline-flex; width: 16px; align-items: center; justify-content: center; flex: none; }
@@ -92,9 +104,9 @@
 .execution-trace.is-live .trace-entry { animation: trace-arrive var(--deck-motion-panel) ease-out; }
 @keyframes trace-working { 0%, 100% { transform: scaleY(.65); opacity: .45; } 50% { transform: scaleY(1.8); opacity: 1; } }
 @keyframes trace-arrive { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
-:root[data-motion="reduced"] :is(.trace-progress i, .execution-trace.is-live .trace-entry) { animation: none; }
+:root[data-motion="reduced"] :is(.trace-progress i, .execution-trace.is-live .trace-entry, .tool-run__ticker .trace-entry) { animation: none; }
 @media (prefers-reduced-motion: reduce) {
-  .trace-progress i, .execution-trace.is-live .trace-entry { animation: none; }
+  .trace-progress i, .execution-trace.is-live .trace-entry, .tool-run__ticker .trace-entry { animation: none; }
 }
 .trace-entry__body { margin: 0 6px 8px 30px; padding: 10px 12px; border-left: 1px solid var(--deck-line); }
 .trace-entry__metadata { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 12px; }

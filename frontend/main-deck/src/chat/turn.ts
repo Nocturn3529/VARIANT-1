@@ -69,6 +69,8 @@ export function pushTurnStep(partial: {
   admissionMs?: number;
   appendDetail?: boolean;
   peerMessage?:ChatTurnStep["peerMessage"];
+  peerInbound?:ChatTurnStep["peerInbound"];
+  segment?: number;
 }) {
   const state = getChatState();
   if (!sharedTurnActive() && !state.turnActive && !state.streaming) return;
@@ -112,6 +114,8 @@ export function pushTurnStep(partial: {
           admissionMs: partial.admissionMs ?? steps[i].admissionMs,
           evidence: mergeEvidence(steps[i].evidence, partial.evidence),
           peerMessage:partial.peerMessage || steps[i].peerMessage,
+          peerInbound:partial.peerInbound || steps[i].peerInbound,
+          segment: partial.segment ?? steps[i].segment,
           ts: partial.completedAt || partial.startedAt || Date.now(),
         };
         patchChatState({turnSteps: retainTurnSteps(steps)});
@@ -139,9 +143,29 @@ export function pushTurnStep(partial: {
     key: key || undefined,
     evidence: partial.evidence?.length ? partial.evidence : undefined,
     peerMessage:partial.peerMessage,
+    peerInbound:partial.peerInbound,
+    segment: partial.segment,
     ts: partial.completedAt || partial.startedAt || Date.now(),
   });
   patchChatState({turnSteps: retainTurnSteps(steps)});
+}
+
+/**
+ * A model call that streamed text and then called tools was narrating its
+ * work, not answering. Keep that text in the timeline, in order, and let the
+ * next call stream fresh. The final call has no tools, so its text stays the
+ * reply.
+ */
+export function flushNarration(): void {
+  const state = getChatState();
+  const text = state.streamText.trim();
+  if (!text) return;
+  const now = Date.now();
+  pushTurnStep({
+    kind: "text", label: "Narration", detail: text, status: "done",
+    key: `text:${state.streamSegment ?? newStepId()}`, startedAt: now, completedAt: now, segment: state.streamSegment,
+  });
+  patchChatState({streamText: ""});
 }
 
 /**
@@ -169,6 +193,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
   if(message.event==="peer:sent" && message.peer_message){
     if(message.durable_replay)return;
     const peer=message.peer_message;
+    flushNarration();
     pushTurnStep({kind:"step",label:`Message to ${peer.target_display_name || "Peer agent"}`,key:`peer:${peer.message_id}`,callId:`peer:${peer.message_id}`,peerMessage:peer,status:peer.state==="failed" ? "error" : "done",rawStatus:peer.state});return;
   }
   if(message.durable_replay) {
@@ -217,6 +242,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
   if (event === "tool:start" || (event === "tool:activity" && (!statusRaw || statusRaw === "running")) || (event !== "tool:result" && tool && statusRaw === "running")) {
     if (tool) noteReceiptTool(tool);
     settleRunningThinking();
+    flushNarration();
     const startedAt = activityTimeMs(message.ts);
     const callId = String(message.call_id || "").trim();
     pushTurnStep({
@@ -285,6 +311,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
     // Bare step counters (no text) just noise the STEPS strip when tools already
     // log real rows — only surface steps that carry a human-readable label.
     if (!text) return;
+    flushNarration();
     const stepNo = message.step || "";
     pushTurnStep({
       kind: "step",
@@ -417,6 +444,7 @@ export function finishStream(message: StreamDoneMessage) {
     steps,
     tracePersistence: steps?.length ? (message.durable === false ? "failed" : "pending") : undefined,
     receipt: snapshotTurnReceipt(),
+    ...(cancelled ? {outcome: "stopped" as const} : ["error", "failed"].includes(String(message.status || "").toLowerCase()) ? {outcome: "error" as const} : {}),
     optimisticTurnId: state.activeTurnId || undefined,
     durability: message.durable === false || pending?.failed ? "failed" : undefined,
   });
@@ -428,6 +456,7 @@ export function finishStream(message: StreamDoneMessage) {
     pause: null,
     streaming: false,
     streamText: "",
+    streamSegment: undefined,
     turnSteps: [],
     pendingTurnCommit: undefined,
     // Active-input bubbles remain provisional until chat:appended proves

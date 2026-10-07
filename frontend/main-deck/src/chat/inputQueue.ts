@@ -3,6 +3,7 @@ import type {StreamRouting} from "../protocol/chatEvents";
 import {getChatState,getChatContext,patchChatState,sendChat,sharedTurnActive,notifyChat} from "./stateCore";
 import {getSessionState} from "../state/sessionStore";
 import {getContextForSession} from "../sessionContextStore";
+import {flushNarration,pushTurnStep} from "./turn";
 
 export function queueAdmissionPending():boolean {
   const item=getChatState().inputQueue.continuation;
@@ -147,7 +148,18 @@ export function markQueuedPromptDelivered(ticketId:string,item?:InputQueueItem):
       pendingActiveInputs:state.pendingActiveInputs.filter(item=>item.optimisticTurnId!==ticketId)});return;
   }
   if(!item)return;
-  patchChatState({messages:[...state.messages,{role:"user",text:item.text,ticketId,optimisticTurnId:ticketId,activeInputAccepted:true,activeInputState:"delivered",delivery:item.delivery}]});
+  const origin=item.origin;
+  // Another agent steered into the running turn: show it where it landed.
+  if(origin && item.delivery==="steer" && sharedTurnActive()){
+    flushNarration();
+    pushTurnStep({kind:"step",label:`Message from ${origin.display_name || "another agent"}`,key:`peer-in:${origin.message_id}`,status:"done",
+      peerInbound:{peer_id:origin.peer_id,message_id:origin.message_id,display_name:origin.display_name,...(origin.content!==undefined?{content:origin.content}:{})}});
+    return;
+  }
+  patchChatState({messages:[...state.messages,{role:"user",text:item.text,ticketId,optimisticTurnId:ticketId,activeInputAccepted:true,activeInputState:"delivered",delivery:item.delivery,
+    // The queue text is the model's envelope; a peer card shows the message itself.
+    ...(origin?{origin:{kind:"peer" as const,peer_id:origin.peer_id,message_id:origin.message_id},
+      ...(origin.content!==undefined?{peerDisplay:{display_name:origin.display_name,content:origin.content}}:{})}:{})}]});
 }
 
 export function reconcileContinuedHistory():void {

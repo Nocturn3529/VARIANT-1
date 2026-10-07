@@ -327,6 +327,11 @@
 .message__content li,
 .message__content a { overflow-wrap: anywhere; word-break: break-word; }
 
+/* Runs that ended without answering read as status, not as a reply. */
+.message--status .message__status { display: flex; align-items: center; gap: 8px; margin: 0; color: var(--deck-text-muted); font-size: var(--deck-text-compact); }
+.message--status .message__status svg { width: 13px; height: 13px; }
+.message.is-error .message__content { display: flex; align-items: flex-start; gap: 10px; padding: 9px 12px; border: 1px solid var(--deck-line); border-left: 2px solid var(--deck-danger); border-radius: var(--deck-radius-md); color: var(--deck-text-secondary); background: var(--deck-surface-panel); font-size: var(--deck-text-compact); }
+.message.is-error .message__outcome-icon { width: 14px; height: 14px; flex: none; margin-top: 3px; color: var(--deck-danger); }
 .message-actions { display: flex; align-items: center; margin-top: 10px; margin-left: -4px; gap: 1px; opacity: 0; transition: opacity .15s ease; }
 .message:hover .message-actions,
 .message-actions.is-latest { opacity: 1; }
@@ -513,6 +518,11 @@
   background: var(--deck-canvas);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
 }
+/* A question list that failed to load is a one-line notice, not an empty card. */
+.runtime-clarification--status { flex-direction: row; align-items: center; gap: 10px; padding: 5px 5px 5px 12px; font-size: var(--deck-text-compact); }
+.runtime-clarification--status > svg { width: 14px; height: 14px; flex: none; color: var(--deck-danger); }
+.runtime-clarification--status > p { flex: 1; min-width: 0; margin: 0; color: var(--deck-text-secondary); }
+.runtime-clarification--status > .deck-button { flex: none; }
 .runtime-clarification__header { min-height: 42px; display: flex; align-items: center; margin: 0; padding: 0 12px; gap: 8px; border-bottom: 1px solid var(--deck-line-soft); background: var(--deck-surface-raised); font-size: var(--deck-text-xs); }
 .runtime-clarification__header > span { padding: 0; border-radius: 0; color: var(--deck-text-faint); background: transparent; font: 600 var(--deck-text-xs) var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
 .runtime-clarification__question { margin: 0; padding: 13px 14px 10px; font-size: var(--deck-text-md); line-height: 1.5; }

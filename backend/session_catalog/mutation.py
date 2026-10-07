@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import ast
+import asyncio
 from dataclasses import replace
 import hashlib
 import json
 import os
-import re
 import sqlite3
 import threading
 import time
@@ -31,8 +30,6 @@ from .catalog import (
     canonical_bytes,
 )
 from .mutation_contracts import (
-    MUTATION_REMOTE_HANDLE_PROXY,
-    MUTATION_REMOTE_HANDLE_ROLE,
     MutationAuthorityLease,
     MutationError,
     MutationWorkerError,
@@ -40,12 +37,39 @@ from .mutation_contracts import (
     stable_json as _stable,
     utc_timestamp as _now,
 )
+from .mutation_proxies import (
+    build_proxy_contracts,
+    draft_target_proxy,
+    source_dependencies,
+    worker_proxy_contracts,
+)
+from .mutation_schema import (
+    atomic_schema_from_params as _atomic_schema_from_params,
+    ordered_params as _ordered_params,
+    parameter_order as _parameter_order,
+    public_schema as _public_schema,
+    resolve_slot as _slot,
+    selected_slot_reference as _selected_slot_reference,
+    slot_parameter_order as _slot_parameter_order,
+    source_check_report as _source_check_report,
+    stored_order as _stored_order,
+    wrapped_helper_order as _wrapped_helper_order,
+)
 from .mutation_worker_client import MutationWorkerClient
+from kernel_runtime.candidate_contract import (
+    MAX_EXAMPLE_BYTES,
+    MAX_EXAMPLE_CASES,
+    MAX_PURPOSE_CHARS,
+    MAX_SOURCE_BYTES,
+)
+from kernel_runtime.proxy_arguments import (
+    TOOLS_RESERVED_NAMES,
+    proxy_name_problem,
+)
 
 
 MUTATION_SCHEMA = "variant1.astb.session-mutation.v2"
 MUTATION_HANDLER = "mutation_invoke"
-_ALIAS = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 _EFFECT_RANK = {
     "pure": 0,
     "read": 1,
@@ -53,9 +77,9 @@ _EFFECT_RANK = {
     "external_side_effect": 3,
     "interactive": 4,
 }
-MAX_FAILED_ACTIVATIONS = 8
-IDENTICAL_FAILURE_BREAKER = 3
-MAX_PROBATION_CALLS = 6
+# Inactive versions beyond this many per slot are retired when a new
+# version is registered; the active version and its rollback references stay.
+RETAINED_SLOT_VERSIONS = 8
 
 
 def _effective_workspace_roots(explicit: Sequence[str] = ()) -> list[str]:
@@ -74,135 +98,6 @@ def _effective_workspace_roots(explicit: Sequence[str] = ()) -> list[str]:
         )
         if str(path or "").strip()
     ]
-
-
-def _public_schema(schema: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    raw = json.loads(json.dumps(schema, ensure_ascii=False))
-    if not isinstance(raw, dict) or raw.get("type") != "object":
-        raise MutationError(
-            "invalid_schema", "mutation schema must be a JSON object schema"
-        )
-    properties = raw.get("properties")
-    if not isinstance(properties, dict):
-        raise MutationError(
-            "invalid_schema", "mutation schema properties must be an object"
-        )
-    if len(properties) > 32:
-        raise MutationError("schema_quota", "mutation schema exceeds 32 properties")
-    required = {str(item) for item in raw.get("required") or ()}
-    if not required <= set(properties):
-        raise MutationError("invalid_schema", "schema required names must exist")
-    supported = {
-        "any", "string", "integer", "number", "boolean", "array", "object",
-    }
-    params: dict[str, Any] = {}
-    for name, value in properties.items():
-        clean = str(name)
-        if not _ALIAS.fullmatch(clean):
-            raise MutationError("invalid_schema", f"invalid parameter name: {clean!r}")
-        spec = dict(value) if isinstance(value, dict) else {}
-        if str(spec.get("type") or "") not in supported:
-            raise MutationError(
-                "invalid_schema", f"unsupported type for {clean!r}: {spec.get('type')!r}"
-            )
-        params[clean] = {**spec, "required": clean in required}
-    raw["additionalProperties"] = False
-    raw["required"] = sorted(required)
-    raw["properties"] = properties
-    if len(canonical_bytes(raw)) > 16 * 1024:
-        raise MutationError("schema_quota", "mutation schema exceeds 16384 bytes")
-    return raw, params
-
-
-def _atomic_schema_from_params(params: Any) -> dict[str, Any]:
-    """Project one existing direct seed contract into mutation JSON Schema."""
-
-    type_names = {
-        "str": "string", "int": "integer", "float": "number",
-        "bool": "boolean", "dict": "object", "list": "array",
-    }
-
-    def normalize(raw: Any) -> dict[str, Any]:
-        spec = dict(raw) if isinstance(raw, dict) else {}
-        typ = str(spec.get("type") or "string")
-        spec["type"] = type_names.get(typ, typ)
-        spec.pop("required", None)
-        if isinstance(spec.get("items"), dict):
-            spec["items"] = normalize(spec["items"])
-        if isinstance(spec.get("properties"), dict):
-            spec["properties"] = {
-                str(name): normalize(child)
-                for name, child in spec["properties"].items()
-            }
-        return spec
-
-    rows = dict(params or {})
-    required = sorted(
-        str(name) for name, spec in rows.items()
-        if isinstance(spec, dict) and bool(spec.get("required"))
-    )
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": required,
-        "properties": {
-            str(name): normalize(spec) for name, spec in rows.items()
-        },
-    }
-
-
-def _slot(loaded: LoadedCatalog, reference: str) -> tuple[str, int, dict[str, Any]]:
-    raw = str(reference or "").strip()
-    prefix = loaded.release_id + "/"
-    if raw.startswith(prefix):
-        raw = raw[len(prefix):]
-    match = re.fullmatch(r"([a-z][a-z0-9_]*)[/.:]([1-9][0-9]*)", raw.casefold())
-    if match:
-        category_id, position_text = match.groups()
-        position = int(position_text)
-        for category in loaded.document.get("categories") or ():
-            if category.get("category_id") != category_id:
-                continue
-            for candidate in category.get("slots") or ():
-                if int(candidate.get("position") or 0) == position:
-                    return category_id, position, dict(candidate)
-    matches: list[tuple[str, int, dict[str, Any]]] = []
-    for category in loaded.document.get("categories") or ():
-        for candidate in category.get("slots") or ():
-            aliases = {
-                str(binding.get("alias") or "").casefold()
-                for binding in candidate.get("bindings") or ()
-            }
-            aliases.update({
-                str(candidate.get("bundle") or "").casefold(),
-            })
-            if raw.casefold() in aliases:
-                matches.append((
-                    str(category.get("category_id") or ""),
-                    int(candidate.get("position") or 0),
-                    dict(candidate),
-                ))
-    if len(matches) == 1:
-        return matches[0]
-    raise MutationError("invalid_slot", f"unknown or ambiguous mutation slot: {reference!r}")
-
-
-def _selected_slot_reference(record: Any, reference: Any) -> str:
-    """Resolve a bare numeric position against the chat's selected category."""
-
-    raw = str(reference or "").strip()
-    if not re.fullmatch(r"[1-9][0-9]*", raw):
-        return raw
-    selected = str(
-        getattr(getattr(record, "identity", None), "selected_category_id", "")
-        or ""
-    ).strip()
-    if not selected:
-        raise MutationError(
-            "invalid_slot",
-            f"numeric mutation slot {raw!r} requires a selected category",
-        )
-    return f"{selected}/{int(raw)}"
 
 
 class MutationManager:
@@ -270,6 +165,7 @@ class MutationManager:
                     source_ref TEXT NOT NULL,
                     source_sha256 TEXT NOT NULL,
                     proposal_fingerprint TEXT NOT NULL DEFAULT '',
+                    parameter_order_json TEXT NOT NULL DEFAULT '',
                     dependencies_json TEXT NOT NULL,
                     tests_json TEXT NOT NULL,
                     status TEXT NOT NULL,
@@ -371,6 +267,11 @@ class MutationManager:
                 conn.execute(
                     "ALTER TABLE mutation_draft ADD COLUMN "
                     "proposal_fingerprint TEXT NOT NULL DEFAULT ''"
+                )
+            if "parameter_order_json" not in columns:
+                conn.execute(
+                    "ALTER TABLE mutation_draft ADD COLUMN "
+                    "parameter_order_json TEXT NOT NULL DEFAULT ''"
                 )
             if "dependencies_json" not in columns and "capabilities_json" in columns:
                 conn.execute(
@@ -582,18 +483,6 @@ class MutationManager:
                 ),
             )
 
-    def _assert_activation_allowed(self, chat_id: str) -> None:
-        with self._lock, self._connect() as conn:
-            failed = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_failure WHERE chat_id=? "
-                "AND stage='activation'", (str(chat_id),)
-            ).fetchone()[0])
-        if failed >= MAX_FAILED_ACTIVATIONS:
-            raise MutationError(
-                "failed_activation_quota",
-                f"session reached the failed activation quota ({MAX_FAILED_ACTIVATIONS})",
-            )
-
     def _draft(self, chat_id: str, draft_id: str) -> dict[str, Any]:
         with self._lock, self._connect() as conn:
             row = conn.execute(
@@ -606,6 +495,7 @@ class MutationManager:
         for key in (
             "schema_json", "params_json", "dependencies_json",
             "tests_json", "validation_json", "host_test_json",
+            "parameter_order_json",
         ):
             result[key[:-5] if key.endswith("_json") else key] = (
                 json.loads(result[key]) if result[key] else None
@@ -719,7 +609,10 @@ class MutationManager:
                 for namespace, alias in dict.fromkeys(
                     item for item in projections if item[0] and item[1]
                 ):
-                    if not _ALIAS.fullmatch(namespace) or not _ALIAS.fullmatch(alias):
+                    if proxy_name_problem(namespace) or proxy_name_problem(
+                        alias,
+                        TOOLS_RESERVED_NAMES if namespace == "tools" else frozenset(),
+                    ):
                         raise MutationError(
                             "invalid_projected_alias",
                             f"projected name is invalid: {namespace}.{alias}",
@@ -763,126 +656,9 @@ class MutationManager:
         exclude_slot_id: str = "",
         exclude_proxy: str = "",
     ) -> dict[str, dict[str, Any]]:
-        """Build the ordinary Python proxy surface available to mutations.
-
-        Category mounts remain a disclosure mechanism. Candidate code may use
-        any currently installed catalog proxy by its normal Python name; the
-        host derives dependencies from source and observed receipts.
-        """
+        """This chat's proxy surface for mutations (see build_proxy_contracts)."""
 
         enabled = set(self.enabled_resolver() or ())
-        contracts: dict[str, dict[str, Any]] = {}
-
-        def add(
-            qualified_name: str,
-            *,
-            binding: Mapping[str, Any],
-            params: Mapping[str, Any] | None = None,
-            fixed_arguments: Mapping[str, Any] | None = None,
-            argument_envelope: bool = False,
-            slot_id: str = "",
-            slot_version: int = 0,
-            effect_class: str = "",
-        ) -> None:
-            name = str(qualified_name or "").strip()
-            if not name or name in contracts:
-                return
-            ref = CapabilityRef(
-                capability_id=str(binding.get("capability_id") or ""),
-                schema_revision=str(binding.get("schema_revision") or ""),
-                handler_revision=str(binding.get("handler_revision") or ""),
-                catalog_release_id=loaded.release_id,
-                slot_id=str(slot_id or ""),
-                slot_version=max(0, int(slot_version or 0)),
-            )
-            contract_params = dict(params or binding.get("params") or {})
-            contracts[name] = {
-                "proxy": name,
-                "ref": ref.to_dict(),
-                "effect_class": str(
-                    effect_class
-                    or binding.get("effect_class")
-                    or "external_side_effect"
-                ),
-                "parameters": [str(name) for name in contract_params],
-                "fixed_arguments": dict(fixed_arguments or {}),
-                "argument_envelope": bool(argument_envelope),
-            }
-
-        for category in loaded.document.get("categories") or ():
-            category_id = str(category.get("category_id") or "")
-            for slot in category.get("slots") or ():
-                position = int(slot.get("position") or 0)
-                slot_id = f"{loaded.release_id}/{category_id}/{position}"
-                bindings = [
-                    dict(row) for row in (slot.get("bindings") or ())
-                    if str(row.get("tool_name") or "") in enabled
-                ]
-                if not bindings:
-                    continue
-                projection = str(slot.get("projection") or "seeds")
-                if projection == "seeds":
-                    for binding in bindings:
-                        add(
-                            f"tools.{binding.get('alias')}",
-                            binding=binding,
-                            slot_id=slot_id,
-                        )
-                    continue
-                if projection != "object" or len(bindings) != 1:
-                    continue
-                binding = bindings[0]
-                root = str(slot.get("bundle") or "")
-                for method in slot.get("methods") or ():
-                    if not isinstance(method, Mapping):
-                        continue
-                    alias = str(method.get("alias") or "")
-                    add(
-                        f"{root}.{alias}",
-                        binding=binding,
-                        params=dict(method.get("params") or {}),
-                        fixed_arguments={
-                            "operation": str(method.get("operation") or alias)
-                        },
-                        slot_id=slot_id,
-                        effect_class=str(method.get("effect_class") or ""),
-                    )
-
-            for api in category.get("python_apis") or ():
-                if not isinstance(api, Mapping):
-                    continue
-                root = str(api.get("name") or "")
-                if not root or root == "toolbelt":
-                    continue
-                transport = dict(api.get("transport") or {})
-                if str(api.get("tool_name") or transport.get("tool_name") or "") not in enabled:
-                    continue
-                binding = {
-                    **transport,
-                    "capability_id": str(
-                        transport.get("capability_id")
-                        or api.get("tool_name")
-                        or root
-                    ),
-                }
-                slot_id = f"{loaded.release_id}/{category_id}/api-{root}"
-                for method in api.get("methods") or ():
-                    if not isinstance(method, Mapping):
-                        continue
-                    alias = str(method.get("alias") or "")
-                    add(
-                        f"{root}.{alias}",
-                        binding=binding,
-                        params=dict(method.get("params") or {}),
-                        fixed_arguments={
-                            "operation": str(method.get("operation") or alias)
-                        },
-                        slot_id=slot_id,
-                        effect_class=str(method.get("effect_class") or ""),
-                    )
-
-        # Activated session tools are finite slot versions, not a growing
-        # script list. They can be composed by later session mutations.
         try:
             record = self.runtime_registry.ensure_runtime(str(chat_id))
             overlays, _refs = self.active_overlays(
@@ -890,125 +666,30 @@ class MutationManager:
                 loaded,
                 mount_revision=int(record.identity.mount_revision or 0),
             )
-        except Exception:
+        except Exception as exc:
+            # Authoring stays available without composing session tools, but a
+            # candidate that calls one then fails with unknown_proxy; keep why.
+            operational_log(
+                "mutation", "session_tools_unprojected", level="warn",
+                chat_id=str(chat_id), error_type=type(exc).__name__,
+                error=str(exc)[:300],
+            )
             overlays = []
-        for descriptor in overlays:
-            same_slot = str(descriptor.get("slot_id") or "") == str(
-                exclude_slot_id or ""
-            )
-            is_object = str(descriptor.get("kind") or "") == "mounted_object"
-            if same_slot and not (is_object and exclude_proxy):
-                continue
-            if is_object:
-                root = str(descriptor.get("name") or "")
-                for method in descriptor.get("methods") or ():
-                    if not isinstance(method, Mapping):
-                        continue
-                    qualified = f"{root}.{method.get('alias')}"
-                    if same_slot and qualified == str(exclude_proxy or ""):
-                        continue
-                    contracts.pop(qualified, None)
-                    add(
-                        qualified,
-                        binding=method,
-                        params=dict(method.get("params") or {}),
-                        fixed_arguments=dict(method.get("fixed_arguments") or {}),
-                        argument_envelope=bool(method.get("argument_envelope")),
-                        slot_id=str(method.get("slot_id") or ""),
-                        slot_version=int(method.get("slot_version") or 0),
-                        effect_class=str(method.get("effect_class") or ""),
-                    )
-            else:
-                contracts.pop(f"tools.{descriptor.get('alias')}", None)
-                add(
-                    f"tools.{descriptor.get('alias')}",
-                    binding=descriptor,
-                    params=dict(descriptor.get("params") or {}),
-                    fixed_arguments=dict(descriptor.get("fixed_arguments") or {}),
-                    argument_envelope=bool(descriptor.get("argument_envelope")),
-                    slot_id=str(descriptor.get("slot_id") or ""),
-                    slot_version=int(descriptor.get("slot_version") or 0),
-                    effect_class=str(descriptor.get("effect_class") or ""),
-                )
-
-        # Remote handles remain host-owned and opaque inside the disposable
-        # mutation worker.  Give the worker one private broker route so a
-        # handle returned by any normal proxy can dispatch its declared
-        # methods without exposing connector credentials or live leases.
         hidden_dispatch = self.registry.get("remote_handle_dispatch")
-        if (
-            hidden_dispatch is not None
-            and "remote_handle_dispatch" in enabled
-        ):
-            add(
-                MUTATION_REMOTE_HANDLE_PROXY,
-                binding=hidden_dispatch.broker_metadata(),
-                params=dict(hidden_dispatch.params or {}),
-                effect_class="external_side_effect",
-            )
-            contracts[MUTATION_REMOTE_HANDLE_PROXY]["internal_role"] = (
-                MUTATION_REMOTE_HANDLE_ROLE
-            )
-        return contracts
-
-    @staticmethod
-    def _draft_target_proxy(
-        loaded: LoadedCatalog, draft: Mapping[str, Any],
-    ) -> str:
-        if str(draft.get("declared_kind") or "") != "method":
-            return ""
-        _category, _position, slot = _slot(
-            loaded, str(draft.get("slot_id") or "")
-        )
-        return (
-            f"{slot.get('bundle')}.{draft.get('alias')}"
-            if slot.get("bundle") and draft.get("alias")
-            else ""
+        return build_proxy_contracts(
+            loaded,
+            enabled=enabled,
+            overlays=overlays,
+            hidden_dispatch=(
+                hidden_dispatch if "remote_handle_dispatch" in enabled else None
+            ),
+            exclude_slot_id=exclude_slot_id,
+            exclude_proxy=exclude_proxy,
         )
 
-    @staticmethod
-    def _worker_proxy_contracts(
-        contracts: Mapping[str, Mapping[str, Any]],
-    ) -> dict[str, dict[str, Any]]:
-        return {
-            str(name): {
-                "parameters": list(dict(contract).get("parameters") or ()),
-                **(
-                    {"internal_role": str(dict(contract).get("internal_role"))}
-                    if dict(contract).get("internal_role")
-                    else {}
-                ),
-            }
-            for name, contract in contracts.items()
-        }
-
-    @staticmethod
-    def _source_dependencies(
-        source: str,
-        contracts: Mapping[str, Mapping[str, Any]],
-    ) -> list[dict[str, Any]]:
-        try:
-            tree = ast.parse(str(source), filename="<session-mutation>", mode="exec")
-        except SyntaxError:
-            return []
-        roots = {name.split(".", 1)[0] for name in contracts}
-        referenced: set[str] = set()
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            if not isinstance(node.func.value, ast.Name):
-                continue
-            root = str(node.func.value.id)
-            if root not in roots:
-                continue
-            qualified = f"{root}.{node.func.attr}"
-            if qualified not in contracts:
-                raise MutationError(
-                    "unknown_proxy",
-                    f"mutation source calls an unavailable proxy: {qualified}",
-                )
-            referenced.add(qualified)
-        return [dict(contracts[name]) for name in sorted(referenced)]
+    _draft_target_proxy = staticmethod(draft_target_proxy)
+    _worker_proxy_contracts = staticmethod(worker_proxy_contracts)
+    _source_dependencies = staticmethod(source_dependencies)
 
     def propose(
         self, chat_id: str, *, kind: str, slot: str, alias: str, purpose: str,
@@ -1031,8 +712,16 @@ class MutationManager:
         occupied = str(base_slot.get("status") or "") == "seed"
         vacant = str(base_slot.get("status") or "") == "vacant"
         clean_alias = str(alias or "").strip()
-        if not _ALIAS.fullmatch(clean_alias):
-            raise MutationError("invalid_alias", "mutation alias must be a Python identifier")
+        # Synthesized tools mount in ``tools``; seeds and methods keep their
+        # catalog names. A name the kernel cannot mount would stop it booting.
+        problem = proxy_name_problem(
+            clean_alias,
+            TOOLS_RESERVED_NAMES if declared_kind in {"create", "revise"} else frozenset(),
+        )
+        if problem:
+            raise MutationError(
+                "invalid_alias", f"mutation alias {clean_alias!r} {problem}"
+            )
         parent_slot_id = ""
         if declared_kind in {"mutate", "method"}:
             if not occupied:
@@ -1110,15 +799,41 @@ class MutationManager:
                     f"{base_slot.get('bundle')}.{clean_alias} is not a mounted method",
                 )
         clean_source = str(source or "")
-        if not clean_source.strip() or len(clean_source.encode("utf-8")) > 64 * 1024:
-            raise MutationError("source_quota", "mutation source must be 1..65536 bytes")
+        if (
+            not clean_source.strip()
+            or len(clean_source.encode("utf-8")) > MAX_SOURCE_BYTES
+        ):
+            raise MutationError(
+                "source_quota", f"mutation source must be 1..{MAX_SOURCE_BYTES} bytes"
+            )
         clean_purpose = str(purpose or "").strip()
-        if not clean_purpose or len(clean_purpose) > 2000:
-            raise MutationError("invalid_purpose", "mutation purpose must be 1..2000 characters")
+        if not clean_purpose or len(clean_purpose) > MAX_PURPOSE_CHARS:
+            raise MutationError(
+                "invalid_purpose",
+                f"mutation purpose must be 1..{MAX_PURPOSE_CHARS} characters",
+            )
         normalized_schema, params = _public_schema(schema)
+        # Positional calls follow the helper's own order, else the contract
+        # it replaces or revises; explicit run(arguments) sources keep sorted.
+        declared_order = _wrapped_helper_order(clean_source)
+        if not declared_order and declared_kind in {"mutate", "method"}:
+            declared_order = _slot_parameter_order(base_slot, clean_alias, declared_kind)
+        if not declared_order and declared_kind == "revise":
+            parent_draft = self._active_slot_draft(chat_id, slot_id) or {}
+            declared_order = list(parent_draft.get("parameter_order") or ())
+        parameter_order = (
+            _parameter_order(params, declared_order) if declared_order else []
+        )
         clean_tests = list(tests or ())
-        if len(clean_tests) > 20 or len(canonical_bytes(clean_tests)) > 64 * 1024:
-            raise MutationError("test_quota", "mutation tests exceed the session draft quota")
+        if (
+            len(clean_tests) > MAX_EXAMPLE_CASES
+            or len(canonical_bytes(clean_tests)) > MAX_EXAMPLE_BYTES
+        ):
+            raise MutationError(
+                "test_quota",
+                f"examples are limited to {MAX_EXAMPLE_CASES} cases and "
+                f"{MAX_EXAMPLE_BYTES} bytes per registration",
+            )
         proxy_contracts = self._proxy_contracts(
             loaded,
             str(chat_id),
@@ -1138,28 +853,10 @@ class MutationManager:
             "schema": normalized_schema,
             "dependencies": dependencies,
         })
-        with self._lock, self._connect() as conn:
-            repeated = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_failure WHERE chat_id=? "
-                "AND proposal_fingerprint=?",
-                (str(chat_id), proposal_fingerprint),
-            ).fetchone()[0])
-        if repeated >= IDENTICAL_FAILURE_BREAKER:
-            raise MutationError(
-                "identical_failure_breaker",
-                "this exact failed mutation proposal is circuit-broken for the session",
-            )
         source_artifact = self.artifact_store.put_text(
             clean_source, kind="mutation_source", scope=str(chat_id)
         )
         with self._lock, self._connect() as conn:
-            active = int(conn.execute(
-                "SELECT COUNT(*) FROM mutation_draft WHERE chat_id=? "
-                "AND status IN ('draft','validated','tested','probation')",
-                (str(chat_id),),
-            ).fetchone()[0])
-            if active >= 8:
-                raise MutationError("draft_quota", "session has eight active mutation drafts")
             draft_id = "draft_" + uuid.uuid4().hex
             now = _now()
             conn.execute("BEGIN IMMEDIATE")
@@ -1170,15 +867,16 @@ class MutationManager:
                 "INSERT INTO mutation_draft(draft_id, chat_id, catalog_release_id, "
                 "category_id, position, slot_id, declared_kind, parent_slot_id, alias, "
                 "purpose, schema_json, params_json, source_ref, source_sha256, "
-                "proposal_fingerprint, dependencies_json, tests_json, "
-                "status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                "proposal_fingerprint, parameter_order_json, dependencies_json, "
+                "tests_json, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
                 "'draft', ?, ?)",
                 (
                     draft_id, str(chat_id), loaded.release_id, category_id, position,
                     slot_id, declared_kind, parent_slot_id, clean_alias, clean_purpose,
                     _stable(normalized_schema), _stable(params), source_artifact.ref,
                     source_artifact.sha256, proposal_fingerprint,
+                    json.dumps(parameter_order) if parameter_order else "",
                     _stable(dependencies), _stable(clean_tests), now, now,
                 ),
             )
@@ -1217,10 +915,17 @@ class MutationManager:
     ) -> dict[str, Any]:
         del arguments, request_id
         fallback_name = name.split(".", 1)[-1]
-        result = mocks.get(
-            name,
-            mocks.get(fallback_name, {"mock_proxy": name}),
-        )
+        if name not in mocks and fallback_name not in mocks:
+            # Optional examples report a missing mock instead of manufacturing
+            # a successful placeholder result.
+            return {
+                "ok": False,
+                "error": {
+                    "code": "unmocked_proxy",
+                    "message": f"example calls {name} without a mocked result",
+                },
+            }
+        result = mocks.get(name, mocks.get(fallback_name))
         if (
             isinstance(result, Mapping)
             and set(result) == {"$sequence"}
@@ -1313,17 +1018,9 @@ class MutationManager:
             exclude_slot_id=str(draft.get("slot_id") or ""),
             exclude_proxy=self._draft_target_proxy(loaded, draft),
         )
+        del contracts  # validation never runs candidate code or calls proxies
         try:
-            report = await self.worker.run(
-                {
-                    "mode": "validate",
-                    "source": source,
-                    "proxy_contracts": self._worker_proxy_contracts(contracts),
-                },
-                proxy_call=lambda name, args, rid: self._mock_call(
-                    {}, name, args, rid
-                ),
-            )
+            report = await self._check_source(source)
             status = "validated"
         except MutationWorkerError as exc:
             report = {"ok": False, "error": {"code": exc.code, "message": str(exc)}}
@@ -1366,6 +1063,11 @@ class MutationManager:
                 details={"message": str(failure)},
             )
         return receipt
+
+    async def _check_source(self, source: str) -> dict[str, Any]:
+        """Syntax and ``run(arguments)`` contract check, off the event loop."""
+
+        return await asyncio.to_thread(_source_check_report, source)
 
     async def test(
         self, chat_id: str, draft_id: str, cases: list[Any] | None = None,
@@ -1462,7 +1164,7 @@ class MutationManager:
                     "WHERE chat_id=? AND draft_id=? "
                     "AND status IN ('draft','validated','tested')",
                     (
-                        "tested" if ok else "rejected",
+                        "tested",
                         _stable(receipt) if authority == "host" else draft.get("host_test_json") or "",
                         _now(), str(chat_id), str(draft_id),
                     ),
@@ -1486,57 +1188,6 @@ class MutationManager:
                 chat_id, draft_id, stage="host_test", code="case_failure",
                 details={"cases_sha256": payload["cases_sha256"]},
             )
-        return receipt
-
-    async def _host_contract_gate(
-        self,
-        chat_id: str,
-        draft_id: str,
-        *,
-        expected_authority_revision: int,
-    ) -> dict[str, Any]:
-        """Verify the isolated worker contract independently of candidate tests."""
-        _record, _loaded, authority = self._require_write_authority(
-            chat_id, expected_revision=expected_authority_revision
-        )
-        full_python = (
-            "import os\n"
-            "from pathlib import Path\n"
-            "def run(arguments):\n"
-            "    return {'cwd': os.getcwd(), 'path_type': Path('.').name}\n"
-        )
-        invalid = "def helper(arguments):\n    return arguments\n"
-        full_report = await self.worker.run(
-            {"mode": "validate", "source": full_python},
-            proxy_call=lambda n, a, r: self._mock_call({}, n, a, r),
-        )
-        invalid_blocked = False
-        try:
-            await self.worker.run(
-                {"mode": "validate", "source": invalid},
-                proxy_call=lambda n, a, r: self._mock_call({}, n, a, r),
-            )
-        except MutationWorkerError as exc:
-            invalid_blocked = exc.code == "candidate_contract_error"
-        if not full_report.get("ok") or not invalid_blocked:
-            raise MutationError(
-                "host_contract_gate_failed", "private worker contract cases failed"
-            )
-        payload = {
-            "draft_id": draft_id, "ok": True,
-            "evaluator_version": "variant1.astb.worker-contract.v2",
-            "full_python_load": True, "invalid_contract_blocked": True,
-            "oracle_exposed": False,
-        }
-        with self._lock, self._connect() as conn:
-            conn.execute("BEGIN IMMEDIATE")
-            self._assert_write_authority_in_conn(
-                conn, chat_id, expected_revision=authority.revision
-            )
-            receipt = self._receipt_in_conn(
-                conn, chat_id, draft_id, "worker_contract_tested", payload
-            )
-            conn.commit()
         return receipt
 
     async def _activate_once(
@@ -1573,16 +1224,8 @@ class MutationManager:
             )
         if validation.get("ok") is not True:
             raise MutationError("validation_failed", "draft validation did not pass")
-        worker_contract = await self._host_contract_gate(
-            chat_id,
-            draft_id,
-            expected_authority_revision=authority.revision,
-        )
-        draft = self._draft(chat_id, draft_id)
-        # Declared examples improve validation but are not an authoring gate.
-        # With the chat toggle on, syntax/contract validation followed by live
-        # probation is sufficient. This keeps repair and thin-tool creation a
-        # one-call model choice instead of forcing mocked-test ceremony.
+        # Examples are optional and only run when the model supplied them. Their
+        # outcomes are reported with the activation; they never block it.
         host_test = await self.test(
             chat_id,
             draft_id,
@@ -1590,27 +1233,27 @@ class MutationManager:
             persist_status=True,
             expected_authority_revision=authority.revision,
         )
-        if host_test.get("ok") is not True:
-            diagnostics: list[str] = []
-            for row in host_test.get("results") or ():
-                if not isinstance(row, Mapping) or row.get("ok") is True:
-                    continue
-                index = int(row.get("index") or 0)
-                error = row.get("error")
-                if isinstance(error, Mapping):
-                    code = str(error.get("code") or "candidate_error")
-                    message = str(error.get("message") or "")[:300]
-                else:
-                    code = "expected_mismatch"
-                    message = "candidate return value did not equal expected"
-                diagnostics.append(f"case {index}: {code}: {message}".rstrip(": "))
-            detail = "; ".join(diagnostics[:5])
-            raise MutationError(
-                "candidate_tests_failed",
-                "draft candidate tests did not pass"
-                + (f" ({detail})" if detail else ""),
-                diagnostics=diagnostics[:5],
-            )
+        diagnostics: list[str] = []
+        for row in host_test.get("results") or ():
+            if not isinstance(row, Mapping) or row.get("ok") is True:
+                continue
+            index = int(row.get("index") or 0)
+            error = row.get("error")
+            if isinstance(error, Mapping):
+                code = str(error.get("code") or "candidate_error")
+                message = str(error.get("message") or "")[:300]
+            else:
+                code = "expected_mismatch"
+                message = "candidate return value did not equal expected"
+            diagnostics.append(f"case {index}: {code}: {message}".rstrip(": "))
+        examples = {
+            "cases": int(host_test.get("case_count") or 0),
+            "passed": sum(
+                1 for row in host_test.get("results") or ()
+                if isinstance(row, Mapping) and row.get("ok") is True
+            ),
+            "failures": diagnostics[:5],
+        }
         draft = self._draft(chat_id, draft_id)
         now = _now()
         with self._lock, self._connect() as conn:
@@ -1662,13 +1305,9 @@ class MutationManager:
                 (str(chat_id), draft["slot_id"], draft_id),
             ).fetchone()
             if existing is None:
-                count = int(conn.execute(
-                    "SELECT COUNT(*) FROM astb_slot_version WHERE chat_id=? AND slot_id=? "
-                    "AND status<>'garbage_collected'",
-                    (str(chat_id), draft["slot_id"]),
-                ).fetchone()[0])
-                if count >= 8:
-                    raise MutationError("version_quota", "slot has eight retained versions")
+                self._retire_inactive_versions_in_conn(
+                    conn, chat_id, str(draft["slot_id"]), keep={previous_version},
+                )
                 version = int(conn.execute(
                     "SELECT COALESCE(MAX(version),0)+1 FROM astb_slot_version "
                     "WHERE chat_id=? AND slot_id=?",
@@ -1695,6 +1334,7 @@ class MutationManager:
                     "slot_id": draft["slot_id"], "slot_version": version,
                     "mount_revision": current_mount,
                     "invocation": invocation,
+                    "examples": examples,
                 }
             next_mount = current_mount + 1
             overlay = int(runtime["overlay_revision"] or 0) + 1
@@ -1704,7 +1344,6 @@ class MutationManager:
                 "from_mount_revision": current_mount, "to_mount_revision": next_mount,
                 "validation_receipt_digest": validation["receipt_digest"],
                 "host_test_receipt_digest": host_test["receipt_digest"],
-                "worker_contract_receipt_digest": worker_contract["receipt_digest"],
             }
             receipt = self._receipt_in_conn(conn, chat_id, draft_id, "activated", transition)
             conn.execute(
@@ -1759,7 +1398,50 @@ class MutationManager:
             "mount_revision": next_mount, "overlay_revision": overlay,
             "probation": True, "receipt": receipt,
             "invocation": invocation,
+            "examples": examples,
         }
+
+    @staticmethod
+    def _retire_inactive_versions_in_conn(
+        conn: sqlite3.Connection,
+        chat_id: str,
+        slot_id: str,
+        *,
+        keep: set[int],
+    ) -> None:
+        """Make room for one more version by retiring the oldest inactive ones.
+
+        Rows stay as provenance with their invocation evidence; a retired
+        version is only no longer selectable by explicit rollback. The active
+        version and its probation rollback references are never retired.
+        """
+
+        protected = {int(item) for item in keep if int(item or 0) > 0}
+        probation = conn.execute(
+            "SELECT version, previous_version, lkg_version FROM mutation_probation "
+            "WHERE chat_id=? AND slot_id=?",
+            (str(chat_id), str(slot_id)),
+        ).fetchone()
+        if probation is not None:
+            protected.update(
+                int(probation[key] or 0)
+                for key in ("version", "previous_version", "lkg_version")
+            )
+        rows = conn.execute(
+            "SELECT version FROM astb_slot_version WHERE chat_id=? AND slot_id=? "
+            "AND status<>'garbage_collected' ORDER BY version",
+            (str(chat_id), str(slot_id)),
+        ).fetchall()
+        retained = [int(row["version"]) for row in rows]
+        candidates = [version for version in retained if version not in protected]
+        while len(retained) >= RETAINED_SLOT_VERSIONS and candidates:
+            oldest = candidates.pop(0)
+            conn.execute(
+                "UPDATE astb_slot_version SET status='garbage_collected' "
+                "WHERE chat_id=? AND slot_id=? AND version=?",
+                (str(chat_id), str(slot_id), oldest),
+            )
+            retained.remove(oldest)
 
     @staticmethod
     def _activation_invocation(
@@ -1777,7 +1459,9 @@ class MutationManager:
             if str(base.get("projection") or "seeds") == "object":
                 namespace = str(base.get("bundle") or "tools")
         alias = str(draft.get("alias") or "")
-        signature = binding_signature(alias, dict(draft.get("params") or {}))
+        signature = binding_signature(alias, _ordered_params(
+            dict(draft.get("params") or {}), draft.get("parameter_order")
+        ))
         qualified_name = (
             f"tools.{alias}" if namespace == "tools"
             else f"{namespace}.{alias}"
@@ -1800,7 +1484,6 @@ class MutationManager:
         expected_mount_revision: int | None = None,
         expected_authority_revision: int | None = None,
     ) -> dict[str, Any]:
-        self._assert_activation_allowed(chat_id)
         try:
             result = await self._activate_once(
                 chat_id,
@@ -1939,15 +1622,15 @@ class MutationManager:
         *,
         slot: str,
         source: str,
-        tests: list[Any],
+        tests: list[Any] | None = None,
         purpose: str = "",
     ) -> dict[str, Any]:
-        """Atomically mutate one occupied direct seed with its exact contract."""
+        """Atomically mutate one occupied direct seed with its exact contract.
 
-        if not isinstance(tests, list) or not tests:
-            raise MutationError(
-                "tests_required", "mutate requires at least one test case"
-            )
+        Example cases are optional; when supplied they run and are reported.
+        """
+
+        tests = list(tests or ())
         record, loaded, _authority = self._require_write_authority(chat_id)
         slot_reference = _selected_slot_reference(record, slot)
         _category, _position, base = _slot(loaded, slot_reference)
@@ -1981,8 +1664,9 @@ class MutationManager:
                 )
             raise MutationError(
                 "atomic_contract_unavailable",
-                "mutate requires an occupied direct seed or active synthesized "
-                "direct tool; use staged authoring for a coherent object",
+                "mutate(slot=..., source=...) replaces a direct seed or revises "
+                "a synthesized tool; replace an object method with "
+                "toolbelt.mutate(<object>.<method>, using=helper)",
             )
         binding = dict(bindings[0])
         alias = str(base.get("primary_alias") or binding.get("alias") or "")
@@ -2011,14 +1695,13 @@ class MutationManager:
         purpose: str,
         schema: Any,
         source: str,
-        tests: list[Any],
+        tests: list[Any] | None = None,
     ) -> dict[str, Any]:
-        """Atomically create one tested tool in an explicit vacant slot."""
+        """Atomically register one session tool in an explicit vacant slot.
 
-        if not isinstance(tests, list) or not tests:
-            raise MutationError(
-                "tests_required", "synthesize requires at least one test case"
-            )
+        Example cases are optional; when supplied they run and are reported.
+        """
+
         return await self.propose_activate(
             chat_id,
             kind="create",
@@ -2027,7 +1710,7 @@ class MutationManager:
             purpose=str(purpose),
             schema=schema,
             source=str(source),
-            tests=list(tests),
+            tests=list(tests or ()),
             parent=None,
         )
 
@@ -2248,10 +1931,10 @@ class MutationManager:
     async def _probation_result(
         self, chat_id: str, slot_id: str, version: int, *, ok: bool, mechanical: bool
     ) -> None:
-        # Invocation evidence is persisted by ``invoke`` before this hook. Off
-        # and operator-frozen chats keep serving already activated overlays,
-        # but their probation state machine must not advance until write
-        # authority is effective again.
+        # Invocation evidence is persisted by ``invoke`` before this hook.
+        # Probation only observes: a session tool stays active until the model
+        # or user explicitly rolls it back or resets it. Off and operator-frozen
+        # chats keep serving already activated overlays without advancing it.
         try:
             _record, _loaded, authority = self._require_write_authority(chat_id)
         except MutationError as exc:
@@ -2262,11 +1945,6 @@ class MutationManager:
             }:
                 return
             raise
-        pending_rollback = {
-            "mechanical_failure",
-            "probation_call_quota_failed",
-            "rollback_failed",
-        }
         previous_status = ""
         status = ""
         with self._lock, self._connect() as conn:
@@ -2301,111 +1979,39 @@ class MutationManager:
                 # Rollback remains an explicit recovery operation.
                 conn.rollback()
                 return
-            if str(row["status"]) in pending_rollback:
-                # A prior rollback was paused by Off/freeze or failed visibly.
-                # Re-attempt it below without treating this invocation as new
-                # probation evidence.
-                should_rollback = True
-                conn.rollback()
-            else:
-                calls = int(row["calls"]) + 1
-                successes = int(row["successful_calls"]) + (1 if ok else 0)
-                semantic = int(row["semantic_errors"]) + (1 if not ok and not mechanical else 0)
-                mechanics = int(row["mechanical_errors"]) + (1 if mechanical else 0)
-                should_rollback = False
-                if ok and successes >= 2:
-                    status = "passed"
-                    conn.execute(
-                        "UPDATE astb_slot_version SET status='lkg' WHERE chat_id=? "
-                        "AND slot_id=? AND version=?", (str(chat_id), str(slot_id), int(version)),
-                    )
-                    conn.execute(
-                        "UPDATE mutation_draft SET status='active' WHERE draft_id=?",
-                        (str(row["draft_id"]),),
-                    )
-                elif mechanical:
-                    status = "mechanical_failure"
-                    should_rollback = True
-                elif not ok:
-                    status = "semantic_failure_visible"
-                if status != "passed" and calls >= MAX_PROBATION_CALLS:
-                    status = "probation_call_quota_failed"
-                    should_rollback = True
+            calls = int(row["calls"]) + 1
+            successes = int(row["successful_calls"]) + (1 if ok else 0)
+            semantic = int(row["semantic_errors"]) + (1 if not ok and not mechanical else 0)
+            mechanics = int(row["mechanical_errors"]) + (1 if mechanical else 0)
+            # Statuses from older releases (failure/rollback states) settle back
+            # into ordinary observation.
+            status = "probation"
+            if ok and successes >= 2:
+                status = "passed"
                 conn.execute(
-                    "UPDATE mutation_probation SET status=?, calls=?, successful_calls=?, "
-                    "semantic_errors=?, mechanical_errors=?, updated_at=? WHERE chat_id=? AND slot_id=?",
-                    (status, calls, successes, semantic, mechanics, _now(), str(chat_id), str(slot_id)),
+                    "UPDATE astb_slot_version SET status='lkg' WHERE chat_id=? "
+                    "AND slot_id=? AND version=?", (str(chat_id), str(slot_id), int(version)),
                 )
-                conn.commit()
+                conn.execute(
+                    "UPDATE mutation_draft SET status='active' WHERE draft_id=?",
+                    (str(row["draft_id"]),),
+                )
+            conn.execute(
+                "UPDATE mutation_probation SET status=?, calls=?, successful_calls=?, "
+                "semantic_errors=?, mechanical_errors=?, updated_at=? WHERE chat_id=? AND slot_id=?",
+                (status, calls, successes, semantic, mechanics, _now(), str(chat_id), str(slot_id)),
+            )
+            conn.commit()
         if status != previous_status:
             operational_log(
                 "mutation",
                 "probation_transition",
-                level=(
-                    "info" if status == "passed"
-                    else "error" if status in {
-                        "mechanical_failure", "probation_call_quota_failed",
-                        "rollback_failed",
-                    }
-                    else "warn"
-                ),
+                level="info",
                 chat_id=str(chat_id),
                 slot_id=str(slot_id),
                 slot_version=int(version),
                 status=status,
             )
-        if should_rollback:
-            try:
-                self.rollback(
-                    chat_id,
-                    slot_id,
-                    to_version=int(row["previous_version"]),
-                    expected_authority_revision=authority.revision,
-                )
-            except Exception as exc:
-                if isinstance(exc, MutationError) and exc.code in {
-                    "mutation_write_disabled",
-                    "mutation_authority_changed",
-                    "mutation_frozen",
-                }:
-                    return
-                # A concurrent transition may already have removed the failing
-                # overlay.  Otherwise the rollback failure is safety-critical:
-                # keep it visible instead of reporting a completed probation
-                # transition while the bad version remains mounted.
-                with self._lock, self._connect() as conn:
-                    active = conn.execute(
-                        "SELECT version FROM astb_activation WHERE chat_id=? "
-                        "AND slot_id=? AND active=1",
-                        (str(chat_id), str(slot_id)),
-                    ).fetchone()
-                    failed_version_still_active = (
-                        active is not None and int(active["version"]) == int(version)
-                    )
-                    if failed_version_still_active:
-                        conn.execute(
-                            "UPDATE mutation_probation SET status='rollback_failed', "
-                            "updated_at=? WHERE chat_id=? AND slot_id=? AND version=?",
-                            (_now(), str(chat_id), str(slot_id), int(version)),
-                        )
-                        conn.commit()
-                if not failed_version_still_active:
-                    return
-                self._record_failure(
-                    chat_id, str(row["draft_id"]), stage="probation_rollback",
-                    code="probation_rollback_failed",
-                    details={"slot_id": str(slot_id), "version": int(version)},
-                )
-                operational_log(
-                    "mutation", "probation_rollback_failed", level="error",
-                    chat_id=str(chat_id), slot_id=str(slot_id),
-                    slot_version=int(version), error_type=type(exc).__name__,
-                )
-                raise MutationError(
-                    "probation_rollback_failed",
-                    "candidate probation failed and its overlay could not be rolled back",
-                    slot_id=str(slot_id), version=int(version),
-                ) from exc
 
     def _transition(
         self, chat_id: str, slot_reference: str, target_version: int,
@@ -2645,7 +2251,10 @@ class MutationManager:
         for row in rows:
             if str(row["catalog_release_id"]) != loaded.release_id:
                 continue
-            params = json.loads(row["params_json"])
+            params = _ordered_params(
+                json.loads(row["params_json"]),
+                _stored_order(row["parameter_order_json"]),
+            )
             version = int(row["version"])
             ref = self.broker.ref_for_name(
                 MUTATION_HANDLER,
@@ -2750,12 +2359,17 @@ class MutationManager:
                     if prior_kind == "mutate":
                         methods.clear()
                     prior_alias = str(prior.get("alias") or "")
-                    prior_params = json.loads(str(prior.get("params_json") or "{}"))
+                    prior_params = _ordered_params(
+                        json.loads(str(prior.get("params_json") or "{}")),
+                        _stored_order(prior.get("parameter_order_json")),
+                    )
                     dependencies = json.loads(
                         str(prior.get("dependencies_json") or "[]")
                     )
+                    inherited = methods.get(prior_alias) or {}
                     inherited_effect = str(
-                        (methods.get(prior_alias) or {}).get("effect_class") or "pure"
+                        inherited.get("dependency_effect_class")
+                        or inherited.get("effect_class") or "pure"
                     )
                     prior_effect = max(
                         [inherited_effect] + [
@@ -2776,7 +2390,8 @@ class MutationManager:
                         "capability_id": ref.capability_id,
                         "schema_revision": ref.schema_revision,
                         "handler_revision": ref.handler_revision,
-                        "effect_class": prior_effect,
+                        "effect_class": "external_side_effect",
+                        "dependency_effect_class": prior_effect,
                         "description": str(prior.get("purpose") or ""),
                         "params": prior_params,
                         "signature": binding_signature(prior_alias, prior_params),
@@ -2832,7 +2447,11 @@ class MutationManager:
                 "capability_id": ref.capability_id,
                 "schema_revision": ref.schema_revision,
                 "handler_revision": ref.handler_revision,
-                "effect_class": effect_class,
+                # Session code can do anything ordinary Python can, so it is
+                # disclosed with the class the broker enforces for it. The
+                # mounted-proxy dependencies stay visible separately.
+                "effect_class": "external_side_effect",
+                "dependency_effect_class": effect_class,
                 "description": str(row["purpose"]),
                 "params": params,
                 "signature": binding_signature(str(row["alias"]), params),
@@ -2914,11 +2533,7 @@ class MutationManager:
                 {**dict(row), "details": json.loads(row["details_json"])}
                 for row in failures
             ],
-            "quotas": {
-                "failed_activations": MAX_FAILED_ACTIVATIONS,
-                "identical_failure_breaker": IDENTICAL_FAILURE_BREAKER,
-                "probation_calls": MAX_PROBATION_CALLS,
-            },
+            "retention": {"slot_versions": RETAINED_SLOT_VERSIONS},
             **self.worker.execution_status(),
         }
 

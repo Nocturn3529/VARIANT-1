@@ -1927,7 +1927,8 @@ async def test_frozen_worker_has_no_system_python_dependency(kernel_stack):
             "import os, shutil, sys\n"
             "print('PYTHON=' + str(shutil.which('python') or 'NONE'))\n"
             "print('EXECUTABLE=' + os.path.basename(sys.executable))\n"
-            "print('VENV=' + str(os.environ.get('VIRTUAL_ENV') or 'NONE'))"
+            "print('VENV=' + str(os.environ.get('VIRTUAL_ENV') or 'NONE'))\n"
+            "print('PATH0=' + os.environ.get('PATH', '').split(os.pathsep)[0])"
         ),
         run_id="run-frozen-path",
         outer_tool_call_id="outer-frozen-path",
@@ -1935,9 +1936,21 @@ async def test_frozen_worker_has_no_system_python_dependency(kernel_stack):
     try:
         assert result.ok, result.to_dict()
         text = result.output.text()
-        assert "PYTHON=NONE" in text
-        assert "EXECUTABLE=Variant1Kernel.exe" in text
         assert "VENV=NONE" in text
+        if os.name == "nt":
+            # Packaged Windows workers get a rewritten PATH with no ambient Python.
+            assert "PYTHON=NONE" in text
+            assert "EXECUTABLE=Variant1Kernel.exe" in text
+        else:
+            # POSIX keeps the inherited PATH behind the worker directory
+            # (kernel_runtime/lease.py), so an ambient python may be found;
+            # the worker itself must still be the frozen executable.
+            values = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+            worker_dir = os.path.dirname(
+                os.path.abspath(os.environ["VARIANT1_TEST_KERNEL_EXE"])
+            )
+            assert values["EXECUTABLE"] == "Variant1Kernel"
+            assert os.path.realpath(values["PATH0"]) == os.path.realpath(worker_dir)
     finally:
         await manager.shutdown()
 

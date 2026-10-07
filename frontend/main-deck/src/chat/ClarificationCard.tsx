@@ -1,5 +1,6 @@
 import {useEffect, useMemo, useRef} from "react";
 import {refreshClarification, submitClarification, updateClarificationDraft, useClarificationState} from "../state/clarificationStore";
+import {Icon} from "../ui/Icon";
 
 export function ClarificationCard() {
   const {pending,submitting,connected,error,draft}=useClarificationState();
@@ -23,8 +24,8 @@ export function ClarificationCard() {
     }
     return output;
   },[pending,draft]);
-  if(!pending || !question) return error ? <section className="runtime-clarification" aria-label="Question status">
-    <p role="alert">{error}</p><button type="button" disabled={!connected} onClick={()=>refreshClarification()}>Refresh questions</button>
+  if(!pending || !question) return error ? <section className="runtime-clarification runtime-clarification--status" aria-label="Question status">
+    <Icon name="error"/><p role="alert">{error}</p><button type="button" className="deck-button" disabled={!connected} onClick={()=>refreshClarification()}>Retry</button>
   </section> : null;
   const values=draft.selected[question.id] || [],hasAnswer=values.length>0 || !!String(draft.other[question.id] || "").trim();
   const last=index===pending.questions.length-1;

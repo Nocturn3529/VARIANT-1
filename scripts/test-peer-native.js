@@ -58,7 +58,7 @@ app.whenReady().then(async()=>{
  await capture('transcript.png');
  const count=frames.length;await pause(400);assert.equal(frames.slice(count).filter(row=>row.type.startsWith('peers:')).length,0,'closed peer overlay emits no refresh traffic');
  win.setSize(1180,820);
- await run('document.querySelector(".execution-trace__summary").click()');await run('document.querySelector(".peer-send-trace summary").click()');await capture('peer-chat-and-outgoing-trace.png');
+ await run('document.querySelector(".peer-send-trace summary").click()');await capture('peer-chat-and-outgoing-trace.png');
  await run(${JSON.stringify('document.querySelector(\'[aria-label="Peers"]\').click()')});await click('Grok');
  await wait('document.querySelectorAll(".grok-launch-form select option").length===2 && !!document.querySelector(".grok-delivery-mode")');
  await run(${JSON.stringify('(()=>{const select=document.querySelector(\'[aria-label="Grok session"]\');select.value="saved-field-study";select.dispatchEvent(new Event("change",{bubbles:true}));})()')});

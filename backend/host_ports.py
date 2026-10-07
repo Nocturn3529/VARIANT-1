@@ -19,6 +19,7 @@ from session_catalog import child_worker
 import llm_router
 from observability import system_info
 import tools
+from observability import activity as activity_hub
 from observability.activity import args_preview as _args_preview
 from assistant_turn import AssistantTurn, normalized_stop_reason
 from reasoning_summaries import ReasoningBuffer, SUMMARY_STEP_LIMIT, summary_text
@@ -95,12 +96,17 @@ def child_worker_ports(h) -> child_worker.ChildWorkerPorts:
 
 
 async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
-    """Send to the owner socket, falling through to surviving chat Decks."""
+    """Send to the owner socket, falling through to surviving chat Decks.
+
+    Display delivery never decides a run's outcome: when no Deck can take the
+    frame (a background chat nobody is viewing, a closed window), the frame is
+    dropped and the run continues; its results are committed as usual.
+    """
 
     try:
         await websocket.send_json(payload)
         return
-    except Exception as owner_error:
+    except Exception:
         runtime = h.require_runtime().session_runtimes
         chat_id = str(
             getattr(getattr(session, "active", None), "runtime_chat_id", "")
@@ -108,17 +114,13 @@ async def _send_turn_frame(h, websocket, session, payload: dict) -> None:
             or getattr(session, "viewed_session_id", "")
             or ""
         )
-        delivered = False
         for target in runtime.attached_transports(chat_id) if chat_id else ():
             if target is websocket:
                 continue
             try:
                 await target.send_json(payload)
-                delivered = True
             except Exception:
                 continue
-        if not delivered:
-            raise owner_error
 
 
 def tool_runner_ports(h, websocket, session=None) -> ToolRunnerPorts:
@@ -269,6 +271,10 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             tool_specs=tool_specs,
         )
         attempt_state: dict = {}
+        turn = session.active
+        turn.model_segment = int(getattr(turn, "model_segment", 0) or 0) + 1
+        segment = turn.model_segment
+        segment_started_ms = time.time() * 1000
 
         async def _attempt(call_messages, call_images):
             parts: list[str] = []
@@ -278,6 +284,10 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             )
             routing = chat_pipeline.stream_meta(session)
             active = session.active
+            activity_hub.bind_live_text(
+                segment, parts,
+                admission_id=str(getattr(active, "runtime_admission_id", "") or ""),
+            )
 
             class SummarySink:
                 async def summary_event(self, event):
@@ -296,7 +306,8 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                         await _send_turn_frame(h, websocket, session, {
                             "type": "thinking", "text": row["detail"], "summary_id": identity,
                             "summary_source": "provider_summary", "status": row["status"],
-                            "summary_revision": row["summary_revision"], "ts": row["ts"], **routing,
+                            "summary_revision": row["summary_revision"], "ts": row["ts"],
+                            "segment": segment, **routing,
                         })
                     except Exception:
                         pass  # Canonical metadata remains even if display delivery fails.
@@ -333,7 +344,7 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                         parts.append(tok)
                         # Model tokens remain on the owning chat's transport.
                         await _send_turn_frame(h, websocket, session, {
-                            "type": "token", "token": tok, **routing,
+                            "type": "token", "token": tok, "segment": segment, **routing,
                         })
             except BaseException as error:
                 await reasoning.finish("cancelled" if isinstance(error, (asyncio.CancelledError, GeneratorExit)) else "discarded")
@@ -346,6 +357,17 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                 await summaries.summary_event({"summary_id": "summary_" + uuid.uuid4().hex,
                     "text": summary, "status": "done", "summary_revision": 1, "ts": time.time() * 1000})
             actions = accum.actions() if accum is not None else []
+            if actions and text.strip():
+                # Text from a call that also requests tools is narration between
+                # tool steps; the final call's text stays the reply body.
+                active.text_segments.append({
+                    "id": "text_" + uuid.uuid4().hex[:16], "kind": "text",
+                    "label": "Narration", "detail": text, "segment": segment,
+                    "status": "cancelled" if session.interrupt else "done",
+                    "ts": segment_started_ms,
+                })
+                del active.text_segments[:-SUMMARY_STEP_LIMIT]
+                activity_hub.remember_run_narration(active.text_segments[-1])
             if actions:
                 print(f"[tools] provider tool_calls n={len(actions)} "
                       f"names={[a.get('tool') for a in actions]}", flush=True)
