@@ -15,8 +15,8 @@ const path = require('path');
 const {execFileSync, spawnSync} = require('child_process');
 const {downloadPinnedAsset} = require('./download-pinned-asset');
 
-const VERSION = '0.28.2';
-const TAG = 'cua-driver-rs-v0.28.2';
+const VERSION = '0.34.0';
+const TAG = 'cua-driver-rs-v0.34.0';
 const BASE = 'https://github.com/trycua/cua/releases/download/' + TAG + '/';
 const APP_NAME = 'CuaDriver.app';
 const BUNDLE_ID = 'com.trycua.driver';
@@ -24,28 +24,28 @@ const TEAM_IDS = ['4YEC26S9KF', 'YCK386LBJ7'];
 
 const ASSETS = {
   'win32-x64': {
-    name: 'cua-driver-rs-0.28.2-windows-x86_64-binary.zip',
-    sha256: '1f4bfceeab64cb7f56be7aad774c3dc2d2910d1427e4be1d79939c706e8029ba',
+    name: 'cua-driver-rs-0.34.0-windows-x86_64-binary.zip',
+    sha256: 'bcc520e50861c7092cf775846fec76ae386d7dcd6b5b408608b0ea4423a8b888',
   },
   'win32-arm64': {
-    name: 'cua-driver-rs-0.28.2-windows-arm64-binary.zip',
-    sha256: '578b88ff2dd56f06eb7e984d73aaf5e76f59c6fde9542c967d6a30d00213c680',
+    name: 'cua-driver-rs-0.34.0-windows-arm64-binary.zip',
+    sha256: 'df5786c6e7841d2f0d88f31c627c487181463ed99614b03efc0e907acfc698c3',
   },
   'linux-x64': {
-    name: 'cua-driver-rs-0.28.2-linux-x86_64-binary.tar.gz',
-    sha256: 'a1d99fd04bb4927ef5ffdbe60eb91ed8b51a2bab60e10fc604a75bd59ce69c3e',
+    name: 'cua-driver-rs-0.34.0-linux-x86_64-binary.tar.gz',
+    sha256: '629ac96eff829d4dfd5cf221f3f2165c2d813aed91e5efb7b20777a741cd70a7',
   },
   'linux-arm64': {
-    name: 'cua-driver-rs-0.28.2-linux-arm64-binary.tar.gz',
-    sha256: '55e8a32839a4ac369a773df4dac87b345bd4567779221ade4a5e39223a45a2e8',
+    name: 'cua-driver-rs-0.34.0-linux-arm64-binary.tar.gz',
+    sha256: '9db8b9084add57eb97be8164367b24b6be54ed4f3dc01213e64b72d7fc09fddb',
   },
   'darwin-x64': {
-    name: 'cua-driver-rs-0.28.2-darwin-universal.tar.gz',
-    sha256: 'e273181b26709c88b1d809474deb3c592b4efae3530b11d76318f1887fc3fbb1',
+    name: 'cua-driver-rs-0.34.0-darwin-universal.tar.gz',
+    sha256: '2d0ade531c07b4d16e8078844fe1b63a0dfa0ee19677c9dcc079b4d3460ab387',
   },
   'darwin-arm64': {
-    name: 'cua-driver-rs-0.28.2-darwin-universal.tar.gz',
-    sha256: 'e273181b26709c88b1d809474deb3c592b4efae3530b11d76318f1887fc3fbb1',
+    name: 'cua-driver-rs-0.34.0-darwin-universal.tar.gz',
+    sha256: '2d0ade531c07b4d16e8078844fe1b63a0dfa0ee19677c9dcc079b4d3460ab387',
   },
 };
 
@@ -82,6 +82,18 @@ function findBinary(directory, name, wantDirectory = false) {
   return '';
 }
 
+/**
+ * Windows' own bsdtar, which reads zips and drive-letter paths. A GNU tar
+ * earlier on PATH (Git Bash, MSYS) takes "C:" for a remote host.
+ */
+function tarCommand() {
+  if (process.platform === 'win32') {
+    const systemTar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+    if (fs.existsSync(systemTar)) return systemTar;
+  }
+  return 'tar';
+}
+
 /** Refuse anything but trycua's intact, signed CuaDriver.app. */
 function verifyMacApp(app) {
   execFileSync('codesign', ['--verify', '--deep', '--strict', app], {stdio: 'pipe'});
@@ -116,12 +128,15 @@ async function installCuaDriver(options = {}) {
   fs.mkdirSync(destinationDir, {recursive: true});
   const archive = path.join(destinationDir, asset.name);
   const url = BASE + asset.name;
-  console.log('downloading cua-driver ' + VERSION + ' (' + asset.name + ')');
-  await downloadPinnedAsset(url, archive, {
-    onRetry: ({attempt, attempts, delayMs, error}) => console.warn(
-      `cua-driver download attempt ${attempt}/${attempts} failed (${error.code || error.message}); retrying in ${delayMs}ms`,
-    ),
-  });
+  // An archive left by an interrupted setup is reused only if it matches the pin.
+  if (!fs.existsSync(archive) || sha256(archive) !== asset.sha256) {
+    console.log('downloading cua-driver ' + VERSION + ' (' + asset.name + ')');
+    await downloadPinnedAsset(url, archive, {
+      onRetry: ({attempt, attempts, delayMs, error}) => console.warn(
+        `cua-driver download attempt ${attempt}/${attempts} failed (${error.code || error.message}); retrying in ${delayMs}ms`,
+      ),
+    });
+  }
   const digest = sha256(archive);
   if (digest !== asset.sha256) {
     fs.rmSync(archive, {force: true});
@@ -133,7 +148,7 @@ async function installCuaDriver(options = {}) {
   }
   fs.rmSync(extractDir, {recursive: true, force: true});
   fs.mkdirSync(extractDir, {recursive: true});
-  execFileSync('tar', ['-xf', archive, '-C', extractDir], {stdio: 'inherit'});
+  execFileSync(tarCommand(), ['-xf', archive, '-C', extractDir], {stdio: 'inherit'});
   if (platform === 'darwin') {
     const app = findBinary(extractDir, APP_NAME, true);
     if (!app) throw new Error('cua-driver archive did not contain ' + APP_NAME);

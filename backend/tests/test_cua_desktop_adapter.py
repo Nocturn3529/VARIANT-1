@@ -180,6 +180,28 @@ async def test_right_click_double_click_and_drag_use_the_driver_argument_names()
 
 
 @pytest.mark.asyncio
+async def test_delivery_follows_the_fabric_and_retries_in_the_foreground_when_asked():
+    refusal = CuaDriverError(
+        "Background delivery is not available for target window class 'TkTopLevel' on this event "
+        'kind (text_input). Retry this action with delivery_mode:"foreground"; Cua Driver will '
+        'activate the target for the action and restore the previous foreground afterward.')
+    adapter, client = _adapter([{}, refusal, {"effect": "confirmed"}, refusal])
+    window = _window()
+    await adapter.dispatch(window, action="type_text", delivery="physical", element=None,
+                           arguments={"text": "a"})
+    retried = await adapter.dispatch(window, action="type_text", delivery="auto", element=None,
+                                     arguments={"text": "b"})
+    assert [args["delivery_mode"] for _name, args in client.calls] == [
+        "foreground", "background", "foreground"]
+    assert retried.delivered and retried.metadata["delivery_mode"] == "foreground"
+    # Semantic input never falls back to raising the window.
+    with pytest.raises(DesktopUnavailable, match="foreground"):
+        await adapter.dispatch(window, action="type_text", delivery="semantic", element=None,
+                               arguments={"text": "c"})
+    assert len(client.calls) == 4
+
+
+@pytest.mark.asyncio
 async def test_capture_reads_the_image_content_item():
     png = b"\x89PNG\r\n\x1a\nfake"
     adapter, client = _adapter([unwrap_tool_result({
@@ -193,6 +215,8 @@ async def test_capture_reads_the_image_content_item():
     assert captured.occlusion_independent is True
     assert captured.coordinate_transform["screen_origin"] == [100, 200]
     assert client.calls[0][1]["include_accessibility_tree"] is False
+    # Native resolution: the driver reads x/y in the returned PNG's pixels.
+    assert client.calls[0][1]["max_image_dimension"] == 0
 
 
 @pytest.mark.asyncio

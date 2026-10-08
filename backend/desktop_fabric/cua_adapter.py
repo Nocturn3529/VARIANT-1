@@ -40,6 +40,8 @@ from .models import (
 _UNPROVEN_CAPTURE = "surface_identity_unproven"
 # Optional structured fields some driver versions add to a window state.
 _STATE_CONTEXT_FIELDS = ("focused_element", "selected_text", "document_text")
+# The driver's refusal when a window drops posted (background) input.
+_FOREGROUND_RETRY = 'retry this action with delivery_mode:"foreground"'
 
 
 def linux_started_at_from_stat(stat_text: str, *, btime: int, clk_tck: float) -> float:
@@ -248,6 +250,9 @@ class CuaDesktopAdapter:
             "window_id": int(window.hwnd),
             "include_screenshot": True,
             "include_accessibility_tree": False,
+            # Native resolution: the driver reads x/y in this PNG's pixels,
+            # which then equal window-local pixels.
+            "max_image_dimension": 0,
         }, read_only=True)
         error = state.get("screenshot_error") or {}
         code = str(error.get("code") or "") if isinstance(error, dict) else ""
@@ -294,14 +299,27 @@ class CuaDesktopAdapter:
     ) -> AdapterDispatch:
         self._refuse_locked()
         tool, payload = _action_call(window, action, element, arguments)
-        result = await self._atool(tool, payload)
+        if delivery == "physical" and "delivery_mode" in payload:
+            payload["delivery_mode"] = "foreground"
+        try:
+            result = await self._atool(tool, payload)
+        except DesktopUnavailable as exc:
+            # Some windows drop posted input; the driver refuses before
+            # delivering anything and asks for foreground delivery, which
+            # raises the window for the action and restores focus after.
+            if (delivery == "semantic" or payload.get("delivery_mode") != "background"
+                    or _FOREGROUND_RETRY not in str(exc).casefold()):
+                raise
+            payload["delivery_mode"] = "foreground"
+            result = await self._atool(tool, payload)
         effect = str(result.get("effect") or "").casefold()
         if effect == "refused" or result.get("ok") is False:
             return AdapterDispatch(
                 delivered=False,
                 method=f"cua-driver:{tool}",
                 readback=result.get("value_readback"),
-                metadata={"effect": effect or "refused", "route": result.get("route")},
+                metadata={"effect": effect or "refused", "route": result.get("route"),
+                          "delivery_mode": payload.get("delivery_mode")},
             )
         return AdapterDispatch(
             delivered=True,
@@ -310,6 +328,7 @@ class CuaDesktopAdapter:
             metadata={
                 "effect": effect or "unverifiable",
                 "route": result.get("route"),
+                "delivery_mode": payload.get("delivery_mode"),
             },
         )
 
