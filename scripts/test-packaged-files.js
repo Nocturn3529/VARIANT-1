@@ -195,23 +195,11 @@ const kernelRuntime = effectiveExtraResources('win').find(
 assert.ok(kernelRuntime,
   'the one-directory kernel runtime must remain isolated under backend/kernel');
 
+// The installer ships only the pinned computer-use driver. llama.cpp is not
+// bundled on any platform; the app downloads it on request.
 const WINDOWS_NATIVE_FILTER = [
-  'llama-server.exe',
-  'llama-server-impl.dll',
-  'llama-common.dll',
-  'llama.dll',
-  'mtmd.dll',
-  'ggml.dll',
-  'ggml-base.dll',
-  'ggml-cpu-*.dll',
-  'ggml-cuda.dll',
-  'ggml-rpc.dll',
-  'libomp140.x86_64.dll',
   'cua-driver/cua-driver.exe',
   'cua-driver/VERSION',
-  'cublas64_13.dll',
-  'cublasLt64_13.dll',
-  'cudart64_13.dll',
 ];
 
 const winNative = binResource('win');
@@ -233,14 +221,8 @@ for (const platform of ['linux', 'mac']) {
   const unixNative = binResource(platform);
   assert.ok(unixNative && Array.isArray(unixNative.filter),
     `${platform} native runtime packaging must use an explicit filter`);
-  assert.ok(unixNative.filter.includes('llama-server'),
-    `${platform} native filter must include llama-server`);
-  assert.ok(unixNative.filter.includes('cua-driver/cua-driver'),
-    `${platform} native filter must include the pinned cua-driver binary`);
-  assert.ok(unixNative.filter.includes('cua-driver/VERSION'),
-    `${platform} native filter must include the pinned cua-driver version`);
-  assert.ok(!unixNative.filter.includes('llama-server.exe'),
-    `${platform} native filter must not require Windows llama-server.exe`);
+  assert.deepStrictEqual(unixNative.filter, ['cua-driver/cua-driver', 'cua-driver/VERSION'],
+    `${platform} installer ships only the pinned cua-driver`);
   assert.ok(!unixNative.filter.some(item => String(item).endsWith('.dll')),
     `${platform} native filter must not ship Windows DLLs`);
   assert.ok(!unixNative.filter.some(item => item.includes('**') || item.includes('whisper')),

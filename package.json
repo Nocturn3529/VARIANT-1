@@ -25,7 +25,6 @@
     "dist:electron-only": "node scripts/check-native-runtime.js && electron-builder",
     "test": "node scripts/test.js",
     "clean:artifacts": "node scripts/clean-artifacts.js",
-    "prepare:native": "node scripts/prepare-native-runtime.js",
     "audit:package": "node scripts/audit-package.js"
   },
   "dependencies": {
@@ -111,22 +110,8 @@
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server.exe",
-            "llama-server-impl.dll",
-            "llama-common.dll",
-            "llama.dll",
-            "mtmd.dll",
-            "ggml.dll",
-            "ggml-base.dll",
-            "ggml-cpu-*.dll",
-            "ggml-cuda.dll",
-            "ggml-rpc.dll",
-            "libomp140.x86_64.dll",
             "cua-driver/cua-driver.exe",
-            "cua-driver/VERSION",
-            "cublas64_13.dll",
-            "cublasLt64_13.dll",
-            "cudart64_13.dll"
+            "cua-driver/VERSION"
           ]
         }
       ]
@@ -158,15 +143,8 @@
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server",
             "cua-driver/cua-driver",
-            "cua-driver/VERSION",
-            "libllama*",
-            "libmtmd*",
-            "libggml*",
-            "*.so",
-            "*.so.*",
-            "*.dylib"
+            "cua-driver/VERSION"
           ]
         }
       ]
@@ -184,15 +162,8 @@
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server",
             "cua-driver/cua-driver",
-            "cua-driver/VERSION",
-            "libllama*",
-            "libmtmd*",
-            "libggml*",
-            "*.so",
-            "*.so.*",
-            "*.dylib"
+            "cua-driver/VERSION"
           ]
         }
       ]
