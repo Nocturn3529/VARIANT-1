@@ -13,13 +13,6 @@ from tests.support.model_config import with_test_support
 
 
 # ---- X1: the former desktop run registry was deleted -------------------------
-def test_desktop_driver_has_no_parallel_session_registry():
-    import desktop.session as ds
-    assert not hasattr(ds, "_SESSION_REGISTRY")
-    assert not hasattr(ds, "_DEFAULT_SESSION")
-    assert not hasattr(ds, "register_desktop_session")
-
-
 def test_browser_has_no_parallel_session_registry_or_backend():
     backend_root = Path(__file__).resolve().parents[1]
     assert not (backend_root / "browser" / "session.py").exists()

@@ -62,14 +62,14 @@ for (const required of [
   'lxml.html', 'xlsxwriter', 'mcp.client.session', 'mcp.client.stdio',
   'mcp.client.streamable_http', 'mcp.client.sse',
   'browser_fabric.provisioning', 'speech.assets',
-  {win32: 'mss.windows', darwin: 'mss.darwin'}[process.platform] || 'mss.linux',
+  'desktop_fabric.cua_adapter', 'desktop_fabric.driver_host',
 ]) {
   assert.ok(hasModule(required), `frozen backend is missing runtime module ${required}`);
 }
 for (const forbidden of [
   'kokoro_onnx', 'phonemizer', 'espeakng_loader', 'onnxruntime', 'neutts', 'kittentts', 'piper', 'soundfile',
   'tokenizers', 'fastapi.testclient', 'anyio.pytest_plugin',
-  'mss.__main__', 'openpyxl.utils.dataframe', 'reportlab.graphics.samples',
+  'openpyxl.utils.dataframe', 'reportlab.graphics.samples',
   'reportlab.graphics.barcode.test', 'reportlab.lib.testutils',
   'mcp.cli', 'mcp.client.__main__', 'mcp.client.auth',
   'mcp.client.websocket', 'mcp.server.__main__',

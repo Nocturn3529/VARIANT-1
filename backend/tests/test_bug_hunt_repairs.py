@@ -125,43 +125,6 @@ async def test_pending_cancel_capacity_does_not_forget_an_acknowledged_cancel():
 
 
 @pytest.mark.asyncio
-async def test_cancelled_uia_does_not_hold_input_lock_but_quarantines_pending_com(monkeypatch):
-    from desktop import uia_worker
-    from tools import ToolError
-    release = threading.Event()
-    entered = threading.Event()
-    flushed = []
-    pool = uia_worker._DaemonSingleThreadExecutor(name="bug-hunt-uia")
-    monkeypatch.setattr(uia_worker, "_UIA_EXEC", pool)
-    monkeypatch.setattr(uia_worker, "_COM_STATUS", "")
-    monkeypatch.setattr(uia_worker, "com_begin", lambda: None)
-    monkeypatch.setattr(uia_worker, "_ABANDONED_WORK", [])
-    def com():
-        entered.set()
-        release.wait(5)
-    async def flush():
-        flushed.append(True)
-    task = asyncio.create_task(uia_worker.run(com, timeout_s=5, after_batch=flush))
-    try:
-        assert await asyncio.to_thread(entered.wait, 1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 1)
-        with pytest.raises(ToolError, match="blocked"):
-            await uia_worker.run(lambda: pytest.fail("concurrent input"))
-        assert not flushed
-        release.set()
-        for _ in range(100):
-            if not uia_worker._hung_work_pending():
-                break
-            await asyncio.sleep(.01)
-        assert flushed == [True] and not uia_worker._hung_work_pending()
-    finally:
-        release.set()
-        pool.shutdown(wait=True, cancel_futures=True)
-
-
-@pytest.mark.asyncio
 async def test_idle_semantic_locks_do_not_accumulate(tmp_path):
     from tests.test_desktop_fabric import runtime
     fabric, _ = runtime(tmp_path)

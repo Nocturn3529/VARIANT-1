@@ -21,7 +21,7 @@ class ToolSurface:
     tools_cfg: Any
     messaging_credentials: Any
     gateway: Any
-    desktop_control: Any
+    desktop_surface: Any
 
 
 def build_tool_surface(
@@ -29,7 +29,7 @@ def build_tool_surface(
     app_root: str,
     data_dir: str,
     config_dir: str,
-    desktop_control: Any,
+    desktop_surface: Any,
     router: Any = None,
     token_getter: Callable[[str], Awaitable[str]] | None = None,
 ) -> ToolSurface:
@@ -77,12 +77,12 @@ def build_tool_surface(
         attachment_root=os.path.join(data_dir, "attachments", "messaging"),
     )
 
-    # Desktop control (App Control, Phase A): perception + action tools.
-    desktop_control.register(registry)
+    # The model-facing computer tool; Desktop Fabric binds to this surface.
+    desktop_surface.register(registry)
     return ToolSurface(
         registry=registry,
         tools_cfg=tools_cfg,
         messaging_credentials=credential_store,
         gateway=gateway,
-        desktop_control=desktop_control,
+        desktop_surface=desktop_surface,
     )

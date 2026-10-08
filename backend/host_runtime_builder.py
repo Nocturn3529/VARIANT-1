@@ -24,18 +24,6 @@ def _configure_runtime_adapters(host: "AppHost") -> None:
     from automation import scheduler as agent_scheduler
     from run_context import current_run_context
 
-    desktop_cfg = (host.tools_cfg.data.get("desktop", {}) or {})
-    host.desktop_control.set_recovery_config(desktop_cfg.get("recovery"))
-    host.desktop_control.set_perception_config(desktop_cfg.get("perception"))
-    host.desktop_control.set_observability_config(desktop_cfg.get("observability"))
-
-    async def desktop_perception_activity(event: str, **fields):
-        await host.emit_activity(event, **fields)
-
-    host.desktop_control.set_activity_emitter(desktop_perception_activity)
-    host.desktop_control.set_ctx_getter(
-        lambda: int(host.router.projection_budget_tokens() or 0)
-    )
     def local_gate():
         principal = agent_scheduler.principal_for_context(current_run_context())
         return host.scheduler.slot(principal)
@@ -109,7 +97,6 @@ def install_host_runtime(
     desktop = create_desktop_fabric(
         data_dir=data_root,
         artifact_store=astb.session_artifacts,
-        desktop_control=host.desktop_control,
         backend_instance_id=host.instance_id,
     )
 

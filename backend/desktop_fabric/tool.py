@@ -196,14 +196,14 @@ def _root_params() -> dict[str, dict[str, Any]]:
     return params
 
 
-def register(registry: tools.ToolRegistry, control: Any) -> None:
+def register(registry: tools.ToolRegistry, surface: Any) -> None:
     """Register one broker transport projected as the ``computer`` object."""
 
     async def computer(arguments: Mapping[str, Any]):
         from desktop_fabric.access import current_desktop_host
         from desktop_fabric.capabilities import desktop_computer_operation
 
-        host = current_desktop_host(control)
+        host = current_desktop_host(surface)
         if host is None:
             raise tools.ToolError("Desktop Fabric is unavailable")
         return await desktop_computer_operation(host, dict(arguments or {}))
@@ -229,7 +229,19 @@ def register(registry: tools.ToolRegistry, control: Any) -> None:
     ))
 
 
+class DesktopSurface:
+    """The host's anchor for the model-facing computer tool.
+
+    The composed Desktop Fabric and its host are bound onto this object (see
+    ``desktop_fabric.access``), so a registry built for one host never reaches
+    another host's fabric.
+    """
+
+    def register(self, registry: tools.ToolRegistry) -> None:
+        register(registry, self)
+
+
 __all__ = [
     "COMPUTER_OBJECT_METHODS", "DESKTOP_LOG_TOOLS", "DESKTOP_SURFACE_TOOLS",
-    "DESKTOP_TOOLS", "register", "uses_desktop_surface",
+    "DESKTOP_TOOLS", "DesktopSurface", "register", "uses_desktop_surface",
 ]

@@ -1,6 +1,6 @@
-"""VARIANT-1's durable Windows Desktop Fabric backend foundation.
+"""VARIANT-1's durable Desktop Fabric backend foundation.
 
-Importing this package performs no desktop scan, UIA call, capture, or input.
+Importing this package performs no desktop scan, driver call, capture, or input.
 Use :func:`create_desktop_fabric` for explicit composition.
 """
 
@@ -12,9 +12,9 @@ from .adapter import (
     AdapterFocus,
     AdapterObservation,
     DesktopLiveAdapter,
-    WindowsDesktopAdapter,
 )
 from .unsupported import UnsupportedDesktopAdapter
+from .tool import DesktopSurface
 from .access import (
     bind_desktop_fabric,
     current_desktop_fabric,
@@ -68,7 +68,7 @@ __all__ = [
     "DesktopObservation", "DesktopOperation", "DesktopRecoveryReport",
     "DesktopScopeMismatch",
     "DesktopStaleReference", "DesktopUnavailable", "DesktopValidationError",
-    "WindowsDesktopAdapter", "UnsupportedDesktopAdapter", "ProcessIdentity", "WindowRecord",
+    "DesktopSurface", "UnsupportedDesktopAdapter", "ProcessIdentity", "WindowRecord",
     "create_desktop_fabric",
     "create_child_desktop_binding_snapshot", "desktop_binding_snapshot",
     "ensure_desktop_binding",

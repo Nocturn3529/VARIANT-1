@@ -44,11 +44,6 @@ def _host_with_stream(tokens):
         tool_lines=lambda _specs: "",
         Task=lambda **kwargs: SimpleNamespace(**kwargs),
         new_run=lambda _goal, _model: None,
-        desktop_control=SimpleNamespace(
-            clear_target=lambda: None,
-            install_image_sink=lambda _run: None,
-            consume_ui_change=lambda: None,
-        ),
         active_model_name=lambda: "test-model",
         emit_activity=AsyncMock(),
         hub=SimpleNamespace(broadcast=AsyncMock()),

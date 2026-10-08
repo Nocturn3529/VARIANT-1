@@ -57,7 +57,7 @@ hiddenimports += [
 # Our own sibling modules (imported by name from server.py).
 hiddenimports += [
     "paths", "llm_router", "security.secretstore",
-    "model_runtime.vision", "desktop.vision_capture", "speech.local_stt",
+    "model_runtime.vision", "speech.local_stt",
     "speech.local_tts", "speech.xai", "tools", "builtin_tools",
     "extensions.mcp_v2",
     "model_runtime", "model_runtime.capabilities", "model_runtime.context",

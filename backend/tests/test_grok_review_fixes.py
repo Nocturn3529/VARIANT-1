@@ -8,7 +8,6 @@ import pytest
 
 from chat_finalize import persist_unfinalized_turn
 from chat_session import ConnectionSession, detached_message_error, turn_chat_id
-from desktop import input_primitives as inputs, vision_bridge
 from desktop_fabric.models import DesktopScopeMismatch, DesktopStaleReference, DesktopUnavailable
 from tests.support.conversation_sessions import open_sessions
 from tests.test_desktop_fabric import runtime
@@ -56,50 +55,6 @@ def test_detached_id_alias_is_pinned(kind):
     assert detached_message_error({"type": kind, "id": "other"}, "owner") == "detached_chat_owner_mismatch"
     assert detached_message_error({"type": kind, "id": "owner"}, "owner") == ""
     assert detached_message_error({"type": "terminal:write", "session_id": "owner", "chat_id": "other"}, "owner")
-
-
-def test_literal_typing_stops_before_next_character_on_focus_loss(monkeypatch):
-    delivered = []
-    auto = SimpleNamespace(KeyboardInput=lambda *args: args)
-    monkeypatch.setattr(inputs, "_send_input_batch", lambda events: (delivered.extend(events) or len(events)))
-    monkeypatch.setattr(inputs.time, "sleep", lambda _: None)
-    def guard():
-        if delivered:
-            raise DesktopStaleReference("focus moved")
-    with pytest.raises(DesktopStaleReference):
-        inputs._type_text_direct(auto, "abcd", guard=guard)
-    assert len(delivered) == 2
-    assert delivered[0][1] == ord("a")
-
-
-def test_key_sequence_uses_installed_grammar_and_releases_modifier_on_focus_loss(monkeypatch):
-    auto = pytest.importorskip("uiautomation")
-    parser = sys.modules[auto.SendKeys.__module__]
-    delivered = []
-    monkeypatch.setattr(parser, "keybd_event", lambda key, scan, flags, extra: delivered.append((key, flags)))
-    monkeypatch.setattr(parser, "_VKtoSC", lambda key: key)
-    monkeypatch.setattr(parser.time, "sleep", lambda _: None)
-    def guard():
-        if delivered:
-            raise DesktopStaleReference("focus moved")
-    with pytest.raises(DesktopStaleReference):
-        inputs._send_keys_direct(auto, "CTRL+S", guard=guard)
-    assert len(delivered) == 2
-    assert delivered[0][0] == delivered[1][0] == parser.SpecialKeyNames["CTRL"]
-    assert not delivered[0][1] & 2 and delivered[1][1] & 2
-
-
-def test_failed_bound_capture_never_calls_monitor_capture(monkeypatch):
-    ctx = SimpleNamespace(session=SimpleNamespace(target_window=object(), target_meta={"title": "Editor"}),
-        _locked_target_alive=lambda _: (False, "window_closed"))
-    locked = Mock(side_effect=AssertionError("must not capture monitor"))
-    active = Mock(side_effect=AssertionError("must not capture monitor"))
-    monkeypatch.setattr(vision_bridge.vc, "grab_monitor_for_hwnd_png", locked)
-    monkeypatch.setattr(vision_bridge.vc, "grab_active_monitor_png", active)
-    bundle = vision_bridge.vision_capture_on_uia_thread(ctx)
-    assert bundle.png == b"" and bundle.meta.mode == "unavailable"
-    locked.assert_not_called()
-    active.assert_not_called()
 
 
 @pytest.mark.asyncio

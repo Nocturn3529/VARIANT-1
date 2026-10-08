@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 import chat_commands
-import desktop_control
 from desktop_fabric import tool as desktop_registry
 import host_prompt
 import tools

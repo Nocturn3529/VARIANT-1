@@ -27,6 +27,14 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+Desktop control uses the pinned cua-driver on every platform, below Desktop
+Fabric. The model sees only the `computer` object. The backend starts the driver
+on first use, checks it against the bundled `VERSION` pin, and restarts it after a
+crash without replaying input whose effect is unknown. Each run drives its own
+driver session, ended with the run so later input for it is refused. The driver
+receives an allowlisted environment without provider keys, and its upstream
+telemetry is off unless `VARIANT1_CUA_TELEMETRY=1`.
+
 Provider configuration and live connection evidence are separate. Settings checks
 refresh native OAuth when needed and verify model listings; recent checks expire
 after five minutes. Ollama's local helper and cloud tags do not prove cloud account

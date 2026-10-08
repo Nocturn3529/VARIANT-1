@@ -17,7 +17,6 @@ from .adapter import (
     AdapterFocus,
     AdapterObservation,
     DesktopLiveAdapter,
-    WindowsDesktopAdapter,
 )
 from .fusion import fuse_elements, observation_fingerprint
 from .models import (
@@ -811,7 +810,7 @@ class DesktopFabric:
 def create_desktop_fabric(
     *, path: str | None = None, data_dir: str | None = None,
     artifact_store: Any | None = None, adapter: DesktopLiveAdapter | None = None,
-    desktop_control: Any | None = None, backend_instance_id: str = "",
+    backend_instance_id: str = "",
     reconcile: bool = True,
 ) -> DesktopFabric:
     """Compose Desktop Fabric without scanning or focusing the desktop."""

@@ -114,17 +114,6 @@ def load_fixture(*parts: str) -> str:
     return FIXTURES.joinpath(*parts).read_text(encoding="utf-8")
 
 
-@pytest.fixture(autouse=True)
-def _reset_desktop_control_state():
-    """Bind isolated driver scratch; Desktop Fabric owns durable test state."""
-    import desktop_control as dc
-    from desktop.session import DesktopSessionState, bind_desktop_session
-
-    state = DesktopSessionState(session_id="desktop_test_driver")
-    with bind_desktop_session(state):
-        yield
-
-
 def _loaded_app():
     server = sys.modules.get("server")
     return getattr(server, "APP", None) if server is not None else None
