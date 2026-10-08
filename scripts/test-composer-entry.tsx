@@ -10,6 +10,7 @@ import {__resetSessionStoreForTests, noteDisplayedSession, setSessionConnection,
 import {__resetTurnStoreForTests,turnController} from "../frontend/main-deck/src/state/turnStore";
 import {__resetSessionContextStoreForTests,changeSessionSettings,getContextForSession,ingestSessionContext,setSessionContextConnection,setSessionContextContext} from "../frontend/main-deck/src/sessionContextStore";
 import {ingestChat} from "../frontend/main-deck/src/chat/ingest";
+import {parseMessage} from "../frontend/main-deck/src/chat/messages";
 import {parseChatWsMessage} from "../frontend/main-deck/src/protocol";
 import {applyRuntimeSnapshot} from "../frontend/main-deck/src/chat/session";
 import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
@@ -67,6 +68,10 @@ export async function run() {
     assert.deepEqual(mentioned.references,[{kind:"browser_tab",tab_id:"mention-a",owner_chat_id:"A",title:"Browser",url:"https://example.test/docs"}]);
     assert.deepEqual(getChatState().references,[]);
     assert.deepEqual(getChatState().messages.at(-1)!.references,[{tabId:"mention-a",title:"Browser",url:"https://example.test/docs"}],"the transcript bubble keeps the mention");
+    const stored=parseMessage({role:"user",text:"",references:[{tab_id:"mention-a",title:"Docs",url:"https://example.test/docs"}]})!;
+    assert.deepEqual([stored.text,stored.references],["",[{tabId:"mention-a",title:"Docs",url:"https://example.test/docs"}]],"history keeps mention-only rows and their chips");
+    const live=parseMessage({role:"user",text:"Look",attachments:[{kind:"browser_tab",name:"Docs",tab_id:"mention-a",title:"Docs",url:"https://example.test/docs"},{kind:"text",name:"notes.txt"}]})!;
+    assert.deepEqual([live.attachments!.map(item=>item.name),live.references!.map(item=>item.tabId)],[["notes.txt"],["mention-a"]],"live tab attachments become chips, not files");
     await act(async()=>ingestChat(parseChatWsMessage({type:"done",session_id:"A",text:"Compared"})));
     await act(async()=>{for(const id of ["mention-a","mention-b","mention-foreign"])closePreview(id);setChatState({...getChatState(),messages:[],turnActive:false});});
     commands.length=0;
