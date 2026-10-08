@@ -15,6 +15,7 @@ import {applyRuntimeSnapshot} from "../frontend/main-deck/src/chat/session";
 import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
 import {requestChatPause} from "../frontend/main-deck/src/chat/pause";
 import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
+import {adoptBrowserTab,closePreview,getPreviewState} from "../frontend/main-deck/src/workbench/previewStore";
 
 const pause=(ms=0)=>new Promise(resolve=>setTimeout(resolve,ms));
 const key=(node:Element,key:string,extra:KeyboardEventInit={})=>node.dispatchEvent(new KeyboardEvent("keydown",{key,bubbles:true,cancelable:true,...extra}));
@@ -46,6 +47,29 @@ export async function run() {
     assert.equal(commands.filter(command=>command.type==="chat").length,0);
     await act(async()=>key(textarea,"Escape"));
     assert.equal(host.querySelector("#composer-command-menu"),null);
+
+    // D2: @ lists only this chat's browser tabs; choosing one mentions exactly what was shown.
+    await act(async()=>{adoptBrowserTab("mention-a","https://example.test/docs","A",true,"run-m");adoptBrowserTab("mention-b","https://other.test/","A",true);adoptBrowserTab("mention-foreign","https://example.test/foreign","B",true);});
+    await input(textarea,"Compare @exam");
+    const options=()=>Array.from(host.querySelectorAll<HTMLElement>('#composer-command-menu [role="option"]')).map(node=>node.textContent);
+    assert.equal(host.querySelector("#composer-command-menu")!.getAttribute("aria-label"),"Browser tabs");
+    assert.deepEqual(options(),["Browserhttps://example.test/docs"],"another chat's tabs are never offered");
+    await act(async()=>key(textarea,"Enter"));
+    assert.equal(getChatState().draft,"Compare ","choosing a tab removes the @ query and does not send");
+    assert.deepEqual(getChatState().references,[{tabId:"mention-a",title:"Browser",url:"https://example.test/docs"}]);
+    assert.equal(getPreviewState().tabs.find(tab=>tab.id==="mention-a")?.origin,undefined,"a mentioned agent tab is kept");
+    await input(textarea,"Compare @");
+    assert.deepEqual(options(),["Browserhttps://other.test/"],"a mentioned tab is not offered twice");
+    await act(async()=>key(textarea,"Escape"));
+    await input(textarea,"Compare these");
+    await act(async()=>key(textarea,"Enter"));
+    const mentioned=commands.filter(command=>command.type==="chat").at(-1)!;
+    assert.deepEqual(mentioned.references,[{kind:"browser_tab",tab_id:"mention-a",owner_chat_id:"A",title:"Browser",url:"https://example.test/docs"}]);
+    assert.deepEqual(getChatState().references,[]);
+    assert.deepEqual(getChatState().messages.at(-1)!.references,[{tabId:"mention-a",title:"Browser",url:"https://example.test/docs"}],"the transcript bubble keeps the mention");
+    await act(async()=>ingestChat(parseChatWsMessage({type:"done",session_id:"A",text:"Compared"})));
+    await act(async()=>{for(const id of ["mention-a","mention-b","mention-foreign"])closePreview(id);setChatState({...getChatState(),messages:[],turnActive:false});});
+    commands.length=0;
 
     online=false;
     await act(async()=>setChatState({...getChatState(),connected:false,draft:"Offline draft"}));
@@ -208,6 +232,7 @@ export async function run() {
     assert.equal(commands.filter(command=>command.type==="chat:resume").at(-1)!.admission_id,"reattached-new");
     await act(async()=>pauseEvent({pause_revision:1000,state:"running"}));assert.equal(getChatState().pause?.state,"paused","old admission cannot overwrite reattached authority");
     console.log("Composer: IME confirmation, newline semantics, keyboard command selection, and editable offline drafts passed");
+    console.log("Composer mentions: @ lists this chat's tabs, choosing keeps the tab and strips the query, and the send carries the exact title/URL reference passed");
     console.log("Composer: attachment preparation/cancellation, picker ownership, model identity/ack/reconnect fences, per-chat delivery, retained speech and Stop deduplication passed");
     console.log("Composer steering: ordinary Enter, Steer, voice and Queue never cancel; existing scoped Stop remains separate and deduplicated");
     console.log("Composer pause: boundary-only acknowledgement, Pause/Resume/paused-only Stop, queue/draft preservation, revision/scope/request guards, same-run resume, reconnect snapshots and session isolation passed");

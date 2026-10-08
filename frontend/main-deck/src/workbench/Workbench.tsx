@@ -4,6 +4,10 @@ import {getSessionState,useSessionState} from "../state/sessionStore";
 import {chooseChatProject,useChatProjects} from "../state/chatProjectStore";
 import {chatPaneId,paneOwner} from "./workbenchStore";
 import {openDirectoryPreview} from "./previewStore";
+import {workbenchBrowserTargets} from "./browserBridge";
+import {addBrowserReference} from "../chat/composer";
+import {getChatState} from "../chat/stateCore";
+import {navigateTo} from "../state/appStore";
 import {Icon, type IconName} from "../ui/Icon";
 import {
   Fragment,
@@ -111,6 +115,15 @@ const AGENT_TAB_TITLE: Record<AgentTabState, string> = {
   deliverable: "Kept by the agent",
   handoff: "Kept for the next task",
 };
+
+/** Put a tab in the composer as an @ mention of its own chat. */
+function mentionInChat(tabId: string): void {
+  const tab = workbenchBrowserTargets().find(row => row.id === tabId);
+  if (!tab || !addBrowserReference({tabId, title: tab.title, url: tab.url}, tab.owner_chat_id)) return;
+  keepBrowserTab(tabId);
+  navigateTo("chat");
+  requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>("#composer-input")?.focus());
+}
 
 function agentTabState(tab: PreviewTab): AgentTabState | undefined {
   if (tab.origin !== "agent") return undefined;
@@ -432,6 +445,7 @@ function PaneMenu({menu, close}: {menu: Exclude<MenuState, null>; close: () => v
     {selected?.target.kind === "url" ? <>
       <button role="menuitem" onClick={() => action(() => openBrowser("about:blank", {newTab: true,ownerChatId:selected?.ownerChatId}))}>New browser tab</button>
       <button role="menuitem" disabled={!selected.target.url || selected.target.url === "about:blank"} onClick={() => action(() => window.variant1Deck?.openExternal?.(selected.target.url))}>Open external</button>
+      <button role="menuitem" disabled={(selected.ownerChatId || "") !== (getChatState().sessionId || "")} onClick={() => action(() => mentionInChat(selected.id))}>Mention in chat</button>
       {selected.origin === "agent" ? <button role="menuitem" title="The tab stays open after the agent's task ends" onClick={() => action(() => keepBrowserTab(selected.id))}>Keep tab</button> : null}
       <hr/>
     </> : null}

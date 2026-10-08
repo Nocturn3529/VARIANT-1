@@ -332,6 +332,7 @@ function mergeLocalEnrichment(
           : remote.text,
       ts: remote.ts ?? local.ts,
       attachments: attachments.length ? attachments : undefined,
+      ...(remote.references || local.references ? {references: remote.references || local.references} : {}),
       steps: retainedSteps(remote.steps,local.steps),
       receipt: remote.receipt || local.receipt,
       delivery: remote.delivery || local.delivery,

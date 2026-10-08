@@ -3,7 +3,7 @@
  */
 import type {ChatSendCommand} from "../protocol";
 import {getSessionState} from "../state/sessionStore";
-import type {ChatAttachment, ChatMessage, PendingActiveInput} from "./types";
+import type {ChatAttachment, ChatBrowserReference, ChatMessage, PendingActiveInput} from "./types";
 import {
   beginSharedTurn,
   endSharedTurn,
@@ -79,6 +79,26 @@ export function setChatDraft(value: string, expectedSessionId = getChatState().s
   if(state.sessionId!==expectedSessionId)return;
   if (state.draft === value) return;
   patchChatState({draft: value});
+}
+
+/** The backend reads at most this many tab mentions per message. */
+const MAX_BROWSER_REFERENCES = 8;
+
+/** Mention one of this chat's browser tabs in the next message. */
+export function addBrowserReference(reference: ChatBrowserReference, expectedSessionId = getChatState().sessionId): boolean {
+  const state = getChatState();
+  if (!expectedSessionId || state.sessionId !== expectedSessionId) return false;
+  if (state.turnActive) { notifyChat("Mention browser tabs in your next message, after this task."); return false; }
+  if (state.references.some(item => item.tabId === reference.tabId)) return true;
+  if (state.references.length >= MAX_BROWSER_REFERENCES) { notifyChat(`Mention up to ${MAX_BROWSER_REFERENCES} browser tabs per message.`); return false; }
+  patchChatState({references: [...state.references, {tabId: reference.tabId, title: reference.title, url: reference.url}]});
+  return true;
+}
+
+export function removeBrowserReference(tabId: string, expectedSessionId = getChatState().sessionId): void {
+  const state = getChatState();
+  if (state.sessionId !== expectedSessionId || !state.references.some(item => item.tabId === tabId)) return;
+  patchChatState({references: state.references.filter(item => item.tabId !== tabId)});
 }
 
 export function setChatDelivery(deliveryMode: "steer" | "follow_up", expectedSessionId = getChatState().sessionId) {
@@ -229,6 +249,7 @@ export function rejectOptimisticTurn(error: string): boolean {
     attachments: state.attachments.length
       ? state.attachments
       : retryableAttachments,
+    references: state.references.length ? state.references : user?.references || [],
     turnActive: false,
     stopPending: false,
     pause: null,
@@ -280,12 +301,13 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   const goalCommand=ownsComposer ? parseGoalCommand(value) : null;
   if(goalCommand)return submitComposerGoal(goalCommand.objective);
   const pending = input.source === "composer" ? input.attachments : [];
-  if (!value && !pending.length) return false;
+  const references = ownsComposer ? state.references : [];
+  if (!value && !pending.length && !references.length) return false;
   // The backend owns the active-turn queues. Send steering/follow-up input
   // immediately instead of holding a second client-side work queue.
   if (sharedTurnActive() || state.turnActive) {
-    if (pending.length) {
-      notifyChat("Wait for VARIANT-1 to finish before attaching files");
+    if (pending.length || references.length) {
+      notifyChat(pending.length ? "Wait for VARIANT-1 to finish before attaching files" : "Wait for VARIANT-1 to finish before mentioning browser tabs");
       return false;
     }
     if (!value) return false;
@@ -348,7 +370,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   // Keep attachment-only optimistic text byte-for-byte aligned with the
   // backend's durable transcript label. Attachment metadata remains a second
   // reconciliation key for older/mixed backend versions.
-  const displayText = value || attachmentOnlyDisplayText(pending);
+  const displayText = value || (pending.length ? attachmentOnlyDisplayText(pending) : "");
   if (ownsComposer) invalidatePendingChatAttachments();
   // Transcript bubbles retain display metadata only. Base64/text/path payloads
   // belong to this single send call and must not sit in renderer state for the
@@ -372,6 +394,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     optimisticOwnsComposer: ownsComposer,
     optimisticAttachmentRetry: pending.map(item => ({...item})),
     attachments: bubbleAtts.length ? bubbleAtts : undefined,
+    references: references.length ? references : undefined,
   };
   const wireAttachments = pending.map(a => ({
     name: a.name,
@@ -386,6 +409,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     messages: [...state.messages, userMsg],
     draft: ownsComposer ? "" : state.draft,
     attachments: ownsComposer ? [] : state.attachments,
+    references: ownsComposer ? [] : state.references,
     turnActive: true,
     stopPending: false,
     pause: null,
@@ -411,6 +435,9 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     session_id: input.sessionId!,
   };
   if (wireAttachments.length) payload.attachments = wireAttachments;
+  if (references.length) payload.references = references.map(item => ({
+    kind: "browser_tab", tab_id: item.tabId, owner_chat_id: input.sessionId!, title: item.title, url: item.url,
+  }));
   const ok = sendChat(payload);
   if (!ok) {
     endSharedTurn("error");
@@ -422,6 +449,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
       streaming: false,
       streamText: "",
       attachments: ownsComposer && !cur.attachments.length ? pending : cur.attachments,
+      references: ownsComposer && !cur.references.length ? references : cur.references,
       messages: cur.messages.filter(m => m.localId !== userMsg.localId),
       draft: ownsComposer ? restoreRejectedText(cur.draft, value) : cur.draft,
       activeTurnId: null,

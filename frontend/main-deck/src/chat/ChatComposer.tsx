@@ -33,7 +33,10 @@ import {
 } from "../sessionContextStore";
 import {ClarificationCard} from "./ClarificationCard";
 import {getSessionState,useSessionState} from "../state/sessionStore";
-import {setChatDelivery, submitUserInput} from "./composer";
+import {addBrowserReference, removeBrowserReference, setChatDelivery, submitUserInput} from "./composer";
+import type {ChatBrowserReference} from "./types";
+import {keepBrowserTab, usePreviewState} from "../workbench/previewStore";
+import {workbenchBrowserTargets} from "../workbench/browserBridge";
 import {getComposerRevision,turnApi} from "./stateCore";
 import {currentPause,requestChatPause} from "./pause";
 import {ActivityDock} from "./ActivityDock";
@@ -71,9 +74,24 @@ function chipIcon(item: ChatAttachment): IconName {
   return "file";
 }
 
-function ComposerChips({attachments, disabled}: {attachments: ChatAttachment[]; disabled: boolean}) {
-  if (!attachments.length) return <div className="composer__chips" id="composer-chips" />;
+function ComposerChips({attachments, references, disabled}: {attachments: ChatAttachment[]; references: ChatBrowserReference[]; disabled: boolean}) {
+  if (!attachments.length && !references.length) return <div className="composer__chips" id="composer-chips" />;
   return <div className="composer__chips" id="composer-chips">
+    {references.map(item => (
+      <button
+        key={`tab:${item.tabId}`}
+        type="button"
+        className="context-chip context-chip--tab"
+        onClick={() => { if (!disabled) removeBrowserReference(item.tabId); }}
+        title={disabled ? item.url : `Remove mention of ${item.url}`}
+        disabled={disabled}
+        aria-label={`Remove mention ${item.title || item.url}`}
+      >
+        <Icon className="context-chip__icon" name="browser"/>
+        <span className="context-chip__label">{item.title || item.url}</span>
+        <span className="context-chip__remove" aria-hidden="true">×</span>
+      </button>
+    ))}
     {attachments.map(item => (
       <button
         key={item.id}
@@ -170,35 +188,40 @@ function formatContextTokens(value: number | null): string {
   return String(Math.round(value));
 }
 
+type ComposerMenuItem = {key: string; name: string; description: string};
+
+/** Slash commands, or this chat's browser tabs after @. */
 function ComposerCommandMenu({
-  commands,
+  items,
+  label,
   onChoose,
   activeIndex,
   onHighlight,
 }: {
-  commands: readonly ComposerCommand[];
-  onChoose: (command: ComposerCommand) => void;
+  items: readonly ComposerMenuItem[];
+  label: string;
+  onChoose: (index: number) => void;
   activeIndex: number;
   onHighlight: (index:number) => void;
 }) {
-  if (!commands.length) return null;
+  if (!items.length) return null;
 
   return <div
     className="composer-command-menu"
     id="composer-command-menu"
     role="listbox"
-    aria-label="Commands"
+    aria-label={label}
   >
-    {commands.map((command,index) => (
+    {items.map((command,index) => (
       <button
         type="button"
         role="option"
         id={`composer-command-${index}`}
         aria-selected={index===activeIndex}
         tabIndex={-1}
-        key={command.name}
+        key={command.key}
         onMouseDown={event => event.preventDefault()}
-        onClick={() => onChoose(command)}
+        onClick={() => onChoose(index)}
         onMouseEnter={() => onHighlight(index)}
       >
         <strong>{command.name}</strong>
@@ -333,8 +356,8 @@ function SettingNotice({label, error, onChoose, onDismiss}: {label: string; erro
 export function ChatComposer() {
   const navigating = !!useSessionState().pendingAction;
   const {
-    draft, turnActive, connected, attachments, attachmentsPreparing, deliveryMode, stopPending, queuedFollowUps, sessionId, messages, pendingActiveInputs, runtime, inputQueue,
-  } = useChatSelection(state=>({draft:state.draft,turnActive:state.turnActive,connected:state.connected,attachments:state.attachments,attachmentsPreparing:state.attachmentsPreparing,deliveryMode:state.deliveryMode,stopPending:state.stopPending,queuedFollowUps:state.queuedFollowUps,sessionId:state.sessionId,messages:state.messages,pendingActiveInputs:state.pendingActiveInputs,runtime:state.runtime,inputQueue:state.inputQueue,pause:state.pause}),shallowChatSelection);
+    draft, turnActive, connected, attachments, references, attachmentsPreparing, deliveryMode, stopPending, queuedFollowUps, sessionId, messages, pendingActiveInputs, runtime, inputQueue,
+  } = useChatSelection(state=>({draft:state.draft,turnActive:state.turnActive,connected:state.connected,attachments:state.attachments,references:state.references,attachmentsPreparing:state.attachmentsPreparing,deliveryMode:state.deliveryMode,stopPending:state.stopPending,queuedFollowUps:state.queuedFollowUps,sessionId:state.sessionId,messages:state.messages,pendingActiveInputs:state.pendingActiveInputs,runtime:state.runtime,inputQueue:state.inputQueue,pause:state.pause}),shallowChatSelection);
   const composerRevision = getComposerRevision(sessionId || "");
   const {phase: micPhase, sessionTitle: micChat, error: micError} = useMicState();
   const pendingIds = new Set(pendingActiveInputs.map(input => input.localId));
@@ -369,8 +392,8 @@ export function ChatComposer() {
   const goalCommand=parseGoalCommand(draft);
   const readyToSend=connected && !navigating && !!sessionId && !attachmentsPreparing && !stopPending && !pendingSetting && !queueAdmissionPending()
     && !(goalCommand && (turnActive || !!getChatState().goal.pending));
-  const canActiveInput = readyToSend && turnActive && Boolean(draft.trim()) && !attachments.length;
-  const canSend = readyToSend && Boolean(draft.trim() || attachments.length) && !turnActive;
+  const canActiveInput = readyToSend && turnActive && Boolean(draft.trim()) && !attachments.length && !references.length;
+  const canSend = readyToSend && Boolean(draft.trim() || attachments.length || references.length) && !turnActive;
   const slashQuery = (
     draft.startsWith("/") && !draft.slice(1).includes(" ")
       ? draft.toLowerCase()
@@ -379,6 +402,16 @@ export function ChatComposer() {
   const commandMatches = slashQuery && dismissedCommand!==draft && !modelMenuOpen && !contextMenuOpen
     ? COMPOSER_COMMANDS.filter(command => command.name.startsWith(slashQuery))
     : [];
+  // @ lists this chat's open browser tabs; titles and URLs update live.
+  usePreviewState();
+  const mentionQuery = !slashQuery && !turnActive && sessionId ? /(?:^|\s)@([^\s@]*)$/.exec(draft)?.[1] : undefined;
+  const mentionMatches = mentionQuery !== undefined && dismissedCommand!==draft && !modelMenuOpen && !contextMenuOpen
+    ? workbenchBrowserTargets(sessionId || "").filter(tab => !references.some(item => item.tabId === tab.id)
+      && `${tab.title} ${tab.url}`.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8)
+    : [];
+  const menuItems: ComposerMenuItem[] = commandMatches.length
+    ? commandMatches.map(command => ({key: command.name, name: command.name, description: command.description}))
+    : mentionMatches.map(tab => ({key: tab.id, name: tab.title || tab.url || "Browser tab", description: tab.url}));
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -389,7 +422,7 @@ export function ChatComposer() {
     return ()=>{observer.disconnect();cancelAnimationFrame(frame);};
   }, [draft,sessionId]);
 
-  useEffect(()=>{setCommandIndex(0);},[slashQuery]);
+  useEffect(()=>{setCommandIndex(0);},[slashQuery,mentionQuery]);
   useEffect(()=>{setModelMenuOpen(false);setContextMenuOpen(false);setDismissedCommand("");setDragOver(false);composing.current=false;},[sessionId,navigating,turnActive,connected]);
 
   useEffect(() => {
@@ -446,6 +479,19 @@ export function ChatComposer() {
     setChatDraft(command.insert,sessionId);
     setDismissedCommand(command.insert);
     requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const chooseMention = (tab: {id: string; title: string; url: string}) => {
+    if (!addBrowserReference({tabId: tab.id, title: tab.title, url: tab.url}, sessionId)) return;
+    // A mentioned tab is the user's: it no longer closes with the agent's task.
+    keepBrowserTab(tab.id);
+    setChatDraft(draft.replace(/@[^\s@]*$/, ""), sessionId);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  };
+
+  const chooseItem = (index: number) => {
+    if (commandMatches.length) chooseCommand(commandMatches[index] || commandMatches[0]);
+    else if (mentionMatches.length) chooseMention(mentionMatches[index] || mentionMatches[0]);
   };
 
   const attachFiles = () => {
@@ -514,7 +560,7 @@ export function ChatComposer() {
       /> : null}
       <div className="composer__supplements">
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
-        <ComposerChips attachments={attachments} disabled={turnActive} />
+        <ComposerChips attachments={attachments} references={references} disabled={turnActive} />
         {attachmentsPreparing>0 ? <div className="composer-preparation" role="status"><i className="composer-spinner" aria-hidden="true"/><span>Preparing {attachmentsPreparing} {attachmentsPreparing===1 ? "attachment" : "attachments"}…</span><button type="button" onClick={invalidatePendingChatAttachments}>Cancel</button></div> : null}
         {!inputQueue.snapshot && (queued.length || queuedFollowUps) && turnActive ? <details className="composer-input-queue">
           <summary><Icon name="queue"/>Inputs for this task <span>{Math.max(queued.length, queuedFollowUps)}</span><Icon name="down"/></summary>
@@ -530,7 +576,7 @@ export function ChatComposer() {
         <button type="button" aria-pressed={deliveryMode === "follow_up"} onClick={() => setChatDelivery("follow_up",sessionId)}><Icon name="queue"/>Queue next message</button>
       </div> : null}
       <div className="composer__body">
-        <ComposerCommandMenu commands={commandMatches} activeIndex={commandIndex} onHighlight={setCommandIndex} onChoose={chooseCommand} />
+        <ComposerCommandMenu items={menuItems} label={commandMatches.length ? "Commands" : "Browser tabs"} activeIndex={commandIndex} onHighlight={setCommandIndex} onChoose={chooseItem} />
         <textarea
           id="composer-input"
           ref={textareaRef}
@@ -539,15 +585,15 @@ export function ChatComposer() {
           placeholder={
             turnActive
               ? deliveryMode === "steer" ? "Guide the current task at its next safe step…" : "What should happen after this task?"
-            : (attachments.length
+            : (attachments.length || references.length
               ? "Add a message (optional)…"
               : "Ask VARIANT-1 anything…")
           }
           aria-label="Message VARIANT-1"
           aria-describedby={composerStatus ? "composer-status" : undefined}
-          aria-controls={commandMatches.length ? "composer-command-menu" : undefined}
-          aria-expanded={Boolean(commandMatches.length)}
-          aria-activedescendant={commandMatches.length ? `composer-command-${commandIndex}` : undefined}
+          aria-controls={menuItems.length ? "composer-command-menu" : undefined}
+          aria-expanded={Boolean(menuItems.length)}
+          aria-activedescendant={menuItems.length ? `composer-command-${commandIndex}` : undefined}
           readOnly={navigating}
           value={draft}
           onChange={event => {setDismissedCommand("");setChatDraft(event.target.value,sessionId);}}
@@ -570,15 +616,15 @@ export function ChatComposer() {
           }}
           onKeyDown={event => {
             if(composing.current || event.nativeEvent.isComposing || event.keyCode===229) return;
-            if(commandMatches.length && ["ArrowDown","ArrowUp"].includes(event.key)){
-              event.preventDefault();setCommandIndex(index=>(index+(event.key==="ArrowDown" ? 1 : -1)+commandMatches.length)%commandMatches.length);return;
+            if(menuItems.length && ["ArrowDown","ArrowUp"].includes(event.key)){
+              event.preventDefault();setCommandIndex(index=>(index+(event.key==="ArrowDown" ? 1 : -1)+menuItems.length)%menuItems.length);return;
             }
-            if(commandMatches.length && event.key==="Escape"){
+            if(menuItems.length && event.key==="Escape"){
               event.preventDefault();event.stopPropagation();setDismissedCommand(draft);return;
             }
-            if ((event.key === "Tab" && !event.shiftKey || event.key==="Enter" && !event.shiftKey) && commandMatches.length) {
+            if ((event.key === "Tab" && !event.shiftKey || event.key==="Enter" && !event.shiftKey) && menuItems.length) {
               event.preventDefault();
-              chooseCommand(commandMatches[commandIndex] || commandMatches[0]);
+              chooseItem(commandIndex);
               return;
             }
             if (event.key === "Enter" && !event.shiftKey) {

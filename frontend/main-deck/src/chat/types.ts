@@ -20,6 +20,9 @@ export type ChatAttachment = {
   size: number;
 };
 
+/** A browser tab mentioned with @: the title and URL are what the user picked. */
+export type ChatBrowserReference = {tabId: string; title: string; url: string};
+
 /** File, URL, screen, or command cited by a turn (parsed from tool activity). */
 export type ChatEvidenceKind = "file" | "folder" | "url" | "screen" | "search" | "command";
 
@@ -105,6 +108,8 @@ export type ChatMessage = {
   activeInputState?: "queued" | "delivered";
   /** Local-only attachment previews on the optimistic user bubble. */
   attachments?: ChatAttachment[];
+  /** Browser tabs the user mentioned in this message. */
+  references?: ChatBrowserReference[];
   /** STEPS strip for this reply (persisted + rehydrated when available). */
   steps?: ChatTurnStep[];
   /** How this user row entered an active turn. */
@@ -209,6 +214,8 @@ export type ChatState = {
   draft: string;
   /** Pending composer attachments (cleared on send). */
   attachments: ChatAttachment[];
+  /** Browser tabs mentioned with @ (cleared on send). */
+  references: ChatBrowserReference[];
   /** Files being read/encoded before they can be included in a send. */
   attachmentsPreparing: number;
   deliveryMode: "steer" | "follow_up";
