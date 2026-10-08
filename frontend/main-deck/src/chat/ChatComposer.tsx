@@ -37,6 +37,7 @@ import {addBrowserReference, removeBrowserReference, setChatDelivery, submitUser
 import type {ChatBrowserReference} from "./types";
 import {keepBrowserTab, usePreviewState} from "../workbench/previewStore";
 import {workbenchBrowserTargets} from "../workbench/browserBridge";
+import {openLocalEngine, useLocalEngine} from "../localEngine";
 import {getComposerRevision,turnApi} from "./stateCore";
 import {currentPause,requestChatPause} from "./pause";
 import {ActivityDock} from "./ActivityDock";
@@ -365,6 +366,8 @@ export function ChatComposer() {
   const sessionContext = useSessionContextState();
   const composerContext=getContextForSession(sessionId || "");
   const pendingSetting=composerContext.settingsPending;
+  const engine=useLocalEngine();
+  const engineNote=composerContext.route==="local" && engine.missing;
   const pauseControl=currentPause();
   const paused=pauseControl?.state==="paused" && pauseControl.synced;
   const pauseUnknown=pauseControl?.synced===false;
@@ -560,6 +563,9 @@ export function ChatComposer() {
       /> : null}
       <div className="composer__supplements">
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
+        {engineNote ? <p className="composer-engine" role="status">{engine.installing!==null
+          ? <>Installing the local engine… {engine.installing}%</>
+          : <>Local models need the llama.cpp engine. <button type="button" onClick={openLocalEngine}>Install the local engine</button></>}</p> : null}
         <ComposerChips attachments={attachments} references={references} disabled={turnActive} />
         {attachmentsPreparing>0 ? <div className="composer-preparation" role="status"><i className="composer-spinner" aria-hidden="true"/><span>Preparing {attachmentsPreparing} {attachmentsPreparing===1 ? "attachment" : "attachments"}…</span><button type="button" onClick={invalidatePendingChatAttachments}>Cancel</button></div> : null}
         {!inputQueue.snapshot && (queued.length || queuedFollowUps) && turnActive ? <details className="composer-input-queue">

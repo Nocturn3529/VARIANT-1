@@ -3,6 +3,7 @@ import {requestModelOptions, useSessionContextState, type ComposerModelOption, t
 import {AnchoredPopover} from "../ui/AnchoredPopover";
 import {Icon} from "../ui/Icon";
 import {shortModelName} from "./receipt";
+import {openLocalEngine, useLocalEngine} from "../localEngine";
 
 const EFFORT_LABELS: Readonly<Record<string,string>> = {minimal:"Minimal",low:"Low",medium:"Medium",high:"High",xhigh:"XHigh",max:"Max",ultra:"Ultra"};
 const DEFAULT_VISIBLE_MODELS = 3;
@@ -31,6 +32,7 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
   const [expanded,setExpanded]=useState<Set<string>>(new Set());
   const [collapsed,setCollapsed]=useState<Set<string>>(new Set());
   const [options,setOptions]=useState("");
+  const engine=useLocalEngine();
   const ownsContext=context.sessionId===sessionId;
   const model=ownsContext ? shortModelName(context.model) || (context.route==="cloud" ? "Cloud" : "Local") : "Model";
   const effort=ownsContext ? reasoningEffortLabel(context.reasoningEffort) : "";
@@ -92,6 +94,9 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
             <button type="button" className="model-picker__provider" aria-expanded={!isCollapsed} title={provider.warning||provider.description} onClick={()=>setCollapsed(current=>{const next=new Set(current);if(next.has(groupKey))next.delete(groupKey);else next.add(groupKey);return next;})}>
               <strong>{provider.name}</strong><small>{provider.models.length}</small><Icon name={isCollapsed ? "down" : "up"}/>
             </button>
+            {!isCollapsed&&provider.mode==="local"&&engine.missing ? <button type="button" className="model-picker__engine" onClick={()=>{close();openLocalEngine();}}>
+              {engine.installing!==null ? `Installing the local engine… ${engine.installing}%` : "Install the local engine to run these models"}
+            </button> : null}
             {!isCollapsed&&visible.map(model=>{
               const current=isCurrentModel(context,provider,model),key=`${groupKey}:${model.id}`;
               return <div className="model-picker__row-wrap" key={key}>

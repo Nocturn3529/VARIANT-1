@@ -371,7 +371,7 @@ const messages: FixtureMessage[] = [
     inference_platform: {
       targets: [], install_jobs: [], nodes: {items: []},
       local_runtime: {
-        supported: true, tag: "b10679", recommended_backend: "cuda",
+        supported: true, tag: "b10679", recommended_backend: "cuda", available_backends: ["cuda", "vulkan", "cpu"],
         installed: false, backend: "", version: "", binary: "",
         active_binary: "bin\\llama-server.exe", managed_active: false,
         update_available: false, installed_builds: [],

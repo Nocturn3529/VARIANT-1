@@ -297,6 +297,8 @@ export type LocalRuntimeStatus = {
   supported: boolean;
   tag: string;
   recommended_backend: string;
+  /** Backends this platform can install, best first (older backends omit it). */
+  available_backends?: string[];
   installed: boolean;
   managed_installed: boolean;
   bundled_active: boolean;
