@@ -1,7 +1,7 @@
-"""Desktop live-adapter stub for non-Windows hosts.
+"""Desktop live-adapter stub for hosts without a usable desktop driver.
 
-Win32/UIA remains in ``WindowsDesktopAdapter``. macOS/Linux get an explicit
-unsupported driver so fabric composition does not import or call windll/UIA.
+Fabric composition stays valid; every live call explains why desktop control
+is unavailable instead of failing somewhere deeper.
 """
 
 from __future__ import annotations
@@ -26,14 +26,16 @@ from .models import (
 class UnsupportedDesktopAdapter:
     """Clear no-op seam: every live call raises DesktopUnavailable."""
 
-    def __init__(self, *, platform: str | None = None) -> None:
+    def __init__(self, *, platform: str | None = None, reason: str = "") -> None:
         self.platform = platform or sys.platform
+        self.reason = str(reason or "")
 
     def _reason(self) -> str:
-        return (
-            "Desktop automation is not supported on "
-            f"{self.platform}: no window or input driver is available for this host."
-        )
+        detail = self.reason or "no window or input driver is available for this host"
+        return f"Desktop automation is not available on {self.platform}: {detail}."
+
+    def end_run(self, run_id: str) -> None:
+        return None
 
     def catalog(self, *, backend_instance_id: str) -> tuple[list[AppRecord], list[WindowRecord]]:
         raise DesktopUnavailable(self._reason())

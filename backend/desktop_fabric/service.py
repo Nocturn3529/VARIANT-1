@@ -800,6 +800,13 @@ class DesktopFabric:
         self.adapter.close()
         self._semantic_locks.clear()
 
+    def end_run(self, run_id: str) -> None:
+        """End a finished run's driver session; its late input is refused."""
+
+        end = getattr(self.adapter, "end_run", None)
+        if callable(end) and run_id:
+            end(str(run_id))
+
 
 def create_desktop_fabric(
     *, path: str | None = None, data_dir: str | None = None,
@@ -834,11 +841,9 @@ def create_desktop_fabric(
     )
     if adapter is not None:
         live_adapter = adapter
-    elif sys.platform.startswith("win"):
-        live_adapter = WindowsDesktopAdapter(desktop_control=desktop_control)
     else:
-        from .cua_adapter import select_non_windows_adapter
-        live_adapter = select_non_windows_adapter(sys.platform)
+        from .cua_adapter import select_cua_adapter
+        live_adapter = select_cua_adapter(sys.platform)
     return DesktopFabric(
         repository=repository, artifact_store=artifact_store,
         adapter=live_adapter, backend_instance_id=instance_id,
