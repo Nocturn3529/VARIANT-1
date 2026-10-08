@@ -20,8 +20,9 @@ const PLATFORM_ASSETS = {
   'win32-arm64': 'windows-arm64-binary.zip',
   'linux-x64': 'linux-x86_64-binary.tar.gz',
   'linux-arm64': 'linux-arm64-binary.tar.gz',
-  'darwin-x64': 'darwin-universal-binary.tar.gz',
-  'darwin-arm64': 'darwin-universal-binary.tar.gz',
+  // macOS ships the signed CuaDriver.app, which only this archive carries.
+  'darwin-x64': 'darwin-universal.tar.gz',
+  'darwin-arm64': 'darwin-universal.tar.gz',
 };
 
 function gh(args) {

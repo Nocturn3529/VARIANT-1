@@ -24,6 +24,7 @@ from .adapter import (
 )
 from .cua_client import (
     CuaDriverError,
+    cua_driver_env,
     resolve_cua_driver_command,
 )
 from .driver_host import CuaDriverHost, CuaRunEnded
@@ -442,6 +443,21 @@ def select_cua_adapter(platform: str | None = None) -> Any:
             platform=system,
             reason="the bundled cua-driver is missing; repair or reinstall VARIANT-1",
         )
+    if system == "darwin":
+        from .cua_macos import MacDriverClient, MacPermissionRequest, app_bundle_for
+
+        if not app_bundle_for(command[0]):
+            return UnsupportedDesktopAdapter(
+                platform=system,
+                reason="macOS desktop control needs CuaDriver.app; repair or reinstall VARIANT-1",
+            )
+        # One permission request per backend, shared by every driver restart.
+        permissions = MacPermissionRequest(command[0], env=cua_driver_env())
+        host = CuaDriverHost(
+            command,
+            client_factory=lambda argv: MacDriverClient(argv, permissions=permissions),
+        )
+        return CuaDesktopAdapter(host=host, platform=system)
     return CuaDesktopAdapter(host=CuaDriverHost(command), platform=system)
 
 

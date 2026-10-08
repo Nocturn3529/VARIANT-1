@@ -39,7 +39,7 @@ jobs:
           set -euo pipefail
           node --test scripts/install-cua-driver.test.js
           node scripts/install-cua-driver.js
-          DO_NOT_TRACK=1 bin/cua-driver/cua-driver --version | grep -F "${{ steps.bump.outputs.version }}"
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 bin/cua-driver/cua-driver --version | grep -F "${{ steps.bump.outputs.version }}"
       - name: Open or refresh the draft PR
         if: steps.bump.outputs.changed == 'true'
         env:

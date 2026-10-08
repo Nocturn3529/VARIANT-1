@@ -128,7 +128,8 @@ p5.js 2.3.2 is used for the code-generated kernel symbol and is bundled without 
 
 The installer retains per-component licenses; the application MIT declaration
 is not a license grant for other third-party software. The only bundled native
-program is the pinned cua-driver desktop driver (trycua/cua, MIT).
+program is the pinned cua-driver desktop driver (trycua/cua, MIT); on macOS it
+ships as trycua's signed CuaDriver.app, unmodified.
 
 llama.cpp is not bundled. When a user installs the local engine from the app,
 VARIANT-1 downloads the official llama.cpp release archive for that platform,

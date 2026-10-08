@@ -8,7 +8,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const {spawnSync} = require('child_process');
-const {VERSION} = require('./install-cua-driver');
+const {VERSION, driverEntry} = require('./install-cua-driver');
 
 const root = path.join(__dirname, '..');
 
@@ -29,10 +29,18 @@ const entries = fs.readdirSync(runtime, {withFileTypes: true});
 assert.deepStrictEqual(entries.map(entry => entry.name).sort(), ['cua-driver'],
   'only the desktop driver may ship in resources/bin; llama.cpp is installed in the app');
 
-const name = process.platform === 'win32' ? 'cua-driver.exe' : 'cua-driver';
+const name = driverEntry(process.platform);
 const driverDir = path.join(runtime, 'cua-driver');
-assert.deepStrictEqual(fs.readdirSync(driverDir).sort(), ['VERSION', name].sort(),
+assert.deepStrictEqual(fs.readdirSync(driverDir).sort(), ['VERSION', name.split(path.sep)[0]].sort(),
   'desktop driver must exclude additional tools, caches, and private state');
+if (process.platform === 'darwin') {
+  // Packaging must not re-sign trycua's app: macOS grants belong to its identity.
+  const shown = spawnSync('codesign', ['-dv', path.join(driverDir, 'CuaDriver.app')], {encoding: 'utf8'});
+  assert.match(String(shown.stderr || ''), /^Identifier=com\.trycua\.driver$/m, 'CuaDriver.app lost its identity');
+  assert.match(String(shown.stderr || ''), /^TeamIdentifier=(4YEC26S9KF|YCK386LBJ7)$/m, 'CuaDriver.app lost trycua\'s signature');
+  const intact = spawnSync('codesign', ['--verify', '--deep', '--strict', path.join(driverDir, 'CuaDriver.app')], {encoding: 'utf8'});
+  assert.strictEqual(intact.status, 0, `CuaDriver.app signature is broken: ${intact.stderr}`);
+}
 assert.strictEqual(fs.readFileSync(path.join(driverDir, 'VERSION'), 'utf8').trim(), VERSION);
 
 const result = spawnSync(path.join(driverDir, name), ['--version'], {

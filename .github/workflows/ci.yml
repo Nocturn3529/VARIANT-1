@@ -129,11 +129,19 @@ jobs:
         run: npm ci
       - name: Backend setup, including pinned cua-driver
         run: npm run setup:backend
-      - name: Pinned cua-driver is installed
+      - name: Pinned CuaDriver.app is installed with trycua's signature
         run: |
-          test -x bin/cua-driver/cua-driver
+          test -x bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver
           grep -qx "$(node -p "require('./scripts/install-cua-driver').VERSION")" bin/cua-driver/VERSION
-          file bin/cua-driver/cua-driver
+          file bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver
+          codesign --verify --deep --strict bin/cua-driver/CuaDriver.app
+          codesign -dv bin/cua-driver/CuaDriver.app 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -qx 'Identifier=com.trycua.driver' "$RUNNER_TEMP/codesign.txt"
+          grep -qE '^TeamIdentifier=(4YEC26S9KF|YCK386LBJ7)$' "$RUNNER_TEMP/codesign.txt"
+          # Informational: Gatekeeper's view of trycua's notarization.
+          spctl --assess -vv --type execute bin/cua-driver/CuaDriver.app || true
+      - name: CuaDriver.app starts through LaunchServices and serves MCP
+        run: backend/.venv/bin/python scripts/ci-macos-desktop.py
       # These three steps were missing here while linux-package had them. The
       # app packaged without a Deck bundle and without a frozen backend, so
       # macos-qualify launched an app that could never reach a connected
@@ -289,7 +297,7 @@ jobs:
           # llama.cpp is installed in the app, never shipped.
           test ! -e /opt/VARIANT-1/resources/bin/llama-server
           test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
-          DO_NOT_TRACK=1 /opt/VARIANT-1/resources/bin/cua-driver/cua-driver --version
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 /opt/VARIANT-1/resources/bin/cua-driver/cua-driver --version
           test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Display server libraries for Electron
         run: |
@@ -399,8 +407,12 @@ jobs:
           test -x "$EXE"
           # llama.cpp is installed in the app, never shipped.
           test ! -e "$APP/Contents/Resources/bin/llama-server"
-          test -x "$APP/Contents/Resources/bin/cua-driver/cua-driver"
-          DO_NOT_TRACK=1 "$APP/Contents/Resources/bin/cua-driver/cua-driver" --version
+          # Packaging must not re-sign trycua's app: macOS grants belong to it.
+          CUA="$APP/Contents/Resources/bin/cua-driver/CuaDriver.app"
+          test -x "$CUA/Contents/MacOS/cua-driver"
+          codesign --verify --deep --strict "$CUA"
+          codesign -dv "$CUA" 2>&1 | grep -qE '^TeamIdentifier=(4YEC26S9KF|YCK386LBJ7)$'
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 "$CUA/Contents/MacOS/cua-driver" --version
           test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Packaged Main Deck smoke (unpacked app)
         env:
@@ -551,6 +563,7 @@ jobs:
           $cua = Join-Path $bin 'cua-driver\cua-driver.exe'
           if (-not (Test-Path $cua)) { throw "cua-driver.exe missing under $bin" }
           $env:DO_NOT_TRACK = '1'
+          $env:CUA_DRIVER_RS_TELEMETRY_ENABLED = '0'
           & $cua --version
           if ($LASTEXITCODE -ne 0) { throw "cua-driver exited $LASTEXITCODE" }
           if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne (node -p "require('./scripts/install-cua-driver').VERSION")) { throw 'unexpected cua-driver VERSION' }

@@ -6,11 +6,11 @@
  */
 const fs = require('node:fs');
 const path = require('node:path');
-const {VERSION} = require('./install-cua-driver');
+const {VERSION, driverEntry} = require('./install-cua-driver');
 
 const root = path.resolve(__dirname, '..');
 const driverDir = path.join(root, 'bin', 'cua-driver');
-const binary = path.join(driverDir, process.platform === 'win32' ? 'cua-driver.exe' : 'cua-driver');
+const binary = path.join(driverDir, driverEntry(process.platform));
 const stamp = path.join(driverDir, 'VERSION');
 
 if (!fs.existsSync(binary) || !fs.existsSync(stamp)) {

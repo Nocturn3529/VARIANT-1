@@ -61,8 +61,12 @@ def bundled_cua_driver_path() -> str | None:
 
     from paths import APP_ROOT
 
-    name = "cua-driver.exe" if os.name == "nt" else "cua-driver"
-    candidate = os.path.join(APP_ROOT, "bin", "cua-driver", name)
+    root = os.path.join(APP_ROOT, "bin", "cua-driver")
+    if sys.platform == "darwin":
+        # macOS ships trycua's signed app bundle, never a bare binary.
+        candidate = os.path.join(root, "CuaDriver.app", "Contents", "MacOS", "cua-driver")
+    else:
+        candidate = os.path.join(root, "cua-driver.exe" if os.name == "nt" else "cua-driver")
     if os.path.isfile(candidate):
         return candidate
     return None
@@ -71,7 +75,11 @@ def bundled_cua_driver_path() -> str | None:
 def pinned_cua_driver_version(binary: str) -> str:
     """The VERSION stamp setup writes next to the bundled driver, if any."""
 
-    stamp = os.path.join(os.path.dirname(os.path.abspath(binary)), "VERSION")
+    path = os.path.abspath(binary)
+    bundle, marker, _ = path.partition(os.path.join(".app", "Contents", "MacOS", ""))
+    # Inside CuaDriver.app the stamp sits next to the bundle.
+    directory = os.path.dirname(bundle + ".app") if marker else os.path.dirname(path)
+    stamp = os.path.join(directory, "VERSION")
     try:
         with open(stamp, encoding="utf-8") as handle:
             return handle.read().strip()
@@ -177,6 +185,11 @@ class CuaDriverClient:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
+
+    def list_tools(self) -> list[str]:
+        result = self._request("tools/list", {})
+        tools = result.get("tools") if isinstance(result, dict) else None
+        return [str(tool.get("name")) for tool in tools or () if isinstance(tool, dict)]
 
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         result = self._request("tools/call", {

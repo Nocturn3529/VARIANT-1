@@ -35,6 +35,15 @@ driver session, ended with the run so later input for it is refused. The driver
 receives an allowlisted environment without provider keys, and its upstream
 telemetry is off unless `VARIANT1_CUA_TELEMETRY=1`.
 
+On macOS the driver ships as trycua's signed `CuaDriver.app`, because macOS gives
+Accessibility and Screen Recording to the responsible app and VARIANT-1 has no
+Developer ID. The backend checks the bundle's signature (`com.trycua.driver`,
+trycua's team) before each launch, starts a private daemon through LaunchServices
+so CuaDriver holds the grants across VARIANT-1 updates, and talks MCP to it
+through `cua-driver mcp --embedded --socket`. When the daemon reports missing
+grants, the backend launches CuaDriver once with its permission gate, which asks
+macOS for them, and restarts the daemon after they are given.
+
 Provider configuration and live connection evidence are separate. Settings checks
 refresh native OAuth when needed and verify model listings; recent checks expire
 after five minutes. Ollama's local helper and cloud tags do not prove cloud account

@@ -11,7 +11,8 @@ from source should follow [Setup](SETUP.md).
 2. Install the locked npm/Python dependencies and build lock in an isolated
    Windows candidate workspace with Python 3.13.
 3. Backend setup installs the pinned cua-driver into `bin/cua-driver`, the
-   only bundled native program. llama.cpp is not bundled: users install it from
+   only bundled native program (on macOS, trycua's signed `CuaDriver.app`,
+   which packaging must never re-sign). llama.cpp is not bundled: users install it from
    Settings > Providers > Local models, against pinned SHA-256 digests.
 4. Run the frontend/backend tests, build the backend and kernel, then run the
    frozen checks. See [Validation](VALIDATION.md) for commands and coverage limits.

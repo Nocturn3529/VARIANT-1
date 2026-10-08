@@ -62,7 +62,7 @@ for (const required of [
   'lxml.html', 'xlsxwriter', 'mcp.client.session', 'mcp.client.stdio',
   'mcp.client.streamable_http', 'mcp.client.sse',
   'browser_fabric.provisioning', 'speech.assets',
-  'desktop_fabric.cua_adapter', 'desktop_fabric.driver_host',
+  'desktop_fabric.cua_adapter', 'desktop_fabric.driver_host', 'desktop_fabric.cua_macos',
 ]) {
   assert.ok(hasModule(required), `frozen backend is missing runtime module ${required}`);
 }

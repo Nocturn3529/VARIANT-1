@@ -258,7 +258,8 @@ def test_every_platform_selects_cua_without_starting_the_driver(monkeypatch):
         "desktop_fabric.cua_adapter.resolve_cua_driver_command",
         lambda: ["cua-driver", "mcp"],
     )
-    for platform in ("win32", "linux", "darwin"):
+    # macOS needs CuaDriver.app; tests/test_cua_macos.py covers it.
+    for platform in ("win32", "linux"):
         adapter = select_cua_adapter(platform)
         assert isinstance(adapter, CuaDesktopAdapter)
         assert adapter.host.status()["running"] is False
