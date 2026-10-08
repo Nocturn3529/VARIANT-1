@@ -403,7 +403,12 @@ class LlamaServer:
     def preflight(self) -> None:
         """Validate the binary + model exist before spawning."""
         if not os.path.isfile(self.binary):
-            raise LocalEngineError(f"llama-server binary not found: {self.binary}")
+            # llama.cpp is not bundled; the user installs it once in the app.
+            raise LocalEngineError(
+                "The local llama.cpp engine is not installed. Download it in "
+                "Settings > Providers > Local models, or choose your own "
+                f"llama-server (looked for {self.binary})."
+            )
         if not self.model or not os.path.isfile(self.model):
             raise LocalEngineError(f"model file not found: {self.model}")
 

@@ -1,66 +1,47 @@
 'use strict';
 
-/** Validate and execute the native runtime from a freshly unpacked installer. */
+/**
+ * Validate the native programs in a freshly unpacked installer: exactly the
+ * pinned cua-driver, and no bundled llama.cpp (installed in the app instead).
+ */
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const {spawnSync, execFileSync} = require('child_process');
+const {spawnSync} = require('child_process');
+const {VERSION} = require('./install-cua-driver');
 
 const root = path.join(__dirname, '..');
-const runtime = path.join(root, 'dist', 'win-unpacked', 'resources', 'bin');
+
+function packagedBin() {
+  const dist = path.join(root, 'dist');
+  if (process.platform === 'win32') return path.join(dist, 'win-unpacked', 'resources', 'bin');
+  if (process.platform === 'linux') return path.join(dist, 'linux-unpacked', 'resources', 'bin');
+  for (const entry of fs.existsSync(dist) ? fs.readdirSync(dist) : []) {
+    const app = path.join(dist, entry, 'VARIANT-1.app');
+    if (entry.startsWith('mac') && fs.existsSync(app)) return path.join(app, 'Contents', 'Resources', 'bin');
+  }
+  return path.join(dist, 'mac', 'VARIANT-1.app', 'Contents', 'Resources', 'bin');
+}
+
+const runtime = packagedBin();
 assert.ok(fs.existsSync(runtime), `missing packaged native runtime: ${runtime}`);
+const entries = fs.readdirSync(runtime, {withFileTypes: true});
+assert.deepStrictEqual(entries.map(entry => entry.name).sort(), ['cua-driver'],
+  'only the desktop driver may ship in resources/bin; llama.cpp is installed in the app');
 
-const expectedExact = [
-  'llama-server.exe', 'llama-server-impl.dll', 'llama-common.dll',
-  'llama.dll', 'mtmd.dll', 'ggml.dll', 'ggml-base.dll',
-  'ggml-cuda.dll', 'ggml-rpc.dll', 'libomp140.x86_64.dll',
-  'cublas64_13.dll', 'cublasLt64_13.dll', 'cudart64_13.dll',
-];
-for (const name of expectedExact) {
-  assert.ok(fs.existsSync(path.join(runtime, name)), `missing native runtime file ${name}`);
-}
-const cpuBackends = fs.readdirSync(runtime).filter(name => /^ggml-cpu-.+\.dll$/i.test(name));
-assert.strictEqual(cpuBackends.length, 14, 'packaged runtime must retain all CPU dispatch backends');
-
-const packagedFiles = fs.readdirSync(runtime, {withFileTypes: true});
-assert.deepStrictEqual(packagedFiles.filter(entry => entry.isDirectory()).map(entry => entry.name).sort(), ['cua-driver'],
-  'only the supported desktop driver directory may accompany the native runtime');
-const desktopDriver = path.join(runtime, 'cua-driver');
-assert.deepStrictEqual(fs.readdirSync(desktopDriver).sort(), ['VERSION', 'cua-driver.exe'],
+const name = process.platform === 'win32' ? 'cua-driver.exe' : 'cua-driver';
+const driverDir = path.join(runtime, 'cua-driver');
+assert.deepStrictEqual(fs.readdirSync(driverDir).sort(), ['VERSION', name].sort(),
   'desktop driver must exclude additional tools, caches, and private state');
-assert.equal(fs.readFileSync(path.join(desktopDriver, 'VERSION'), 'utf8').trim(), '0.28.2');
-assert.strictEqual(packagedFiles.filter(entry => entry.isFile()).length, 27,
-  'native runtime manifest must stay at 27 files');
-for (const forbidden of [
-  'llama-cli.exe', 'llama-bench.exe', 'llama-quantize.exe',
-  'llama-perplexity.exe', 'ggml-rpc-server.exe',
-]) {
-  assert.ok(!fs.existsSync(path.join(runtime, forbidden)),
-    `packaged runtime retained ${forbidden}`);
-}
+assert.strictEqual(fs.readFileSync(path.join(driverDir, 'VERSION'), 'utf8').trim(), VERSION);
 
-const server = path.join(runtime, 'llama-server.exe');
-function runServer(args) {
-  const result = spawnSync(server, args, {
-    cwd: runtime, encoding: 'utf8', windowsHide: true,
-  });
-  assert.strictEqual(result.status, 0,
-    `packaged llama-server ${args.join(' ')} failed: ${result.error || result.stderr}`);
-  return String(result.stdout || '') + String(result.stderr || '');
-}
-const version = runServer(['--version']);
-assert.match(version, /version:/i, 'packaged llama-server did not load its DLL closure');
-const devices = runServer(['--list-devices']);
-assert.match(devices, /CUDA0:/, 'packaged llama-server did not load the CUDA backend');
-execFileSync(path.join(root, 'backend/.venv/Scripts/python.exe'),
-  [path.join(root, 'scripts/test-native-matrix.py'), '--runtime', runtime],
-  {cwd: root, stdio: 'inherit', windowsHide: true});
+const result = spawnSync(path.join(driverDir, name), ['--version'], {
+  cwd: driverDir, encoding: 'utf8', windowsHide: true, timeout: 30000,
+  env: {...process.env, DO_NOT_TRACK: '1', CUA_DRIVER_RS_TELEMETRY_ENABLED: '0'},
+});
+assert.strictEqual(result.status, 0, `packaged cua-driver --version failed: ${result.error || result.stderr}`);
+assert.match(String(result.stdout || ''), new RegExp(`\\b${VERSION.replace(/\./g, '\\.')}\\b`),
+  'packaged cua-driver reports a different version than its pin');
 
-const bytes = packagedFiles.filter(entry => entry.isFile()).reduce(
-  (total, entry) => total + fs.statSync(path.join(runtime, entry.name)).size,
-  0,
-);
-console.log(
-  `packaged native runtime: 27 files / ${(bytes / 1024 / 1024).toFixed(2)} MiB, ` +
-  'llama-server DLL closure + CUDA device ok',
-);
+const bytes = fs.statSync(path.join(driverDir, name)).size;
+console.log(`packaged native runtime: cua-driver ${VERSION} (${(bytes / 1024 / 1024).toFixed(2)} MiB); no bundled llama.cpp`);

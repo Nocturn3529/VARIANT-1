@@ -209,7 +209,7 @@ class RuntimeInstaller:
             "version": llama["version"],
             "active": llama["managed_active"],
             "update_available": llama["update_available"],
-            "reason": "" if llama["supported"] else "Managed download requires Windows.",
+            "reason": "" if llama["supported"] else "llama.cpp has no managed build for this platform.",
         }]
         if configured_binary and not llama["managed_active"]:
             targets.append({

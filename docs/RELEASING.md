@@ -10,12 +10,9 @@ from source should follow [Setup](SETUP.md).
 1. Choose an exact source commit and a unique application version/tag.
 2. Install the locked npm/Python dependencies and build lock in an isolated
    Windows candidate workspace with Python 3.13.
-3. Run `npm run prepare:native` after backend setup. The pinned manifest in
-   `config/native-runtime.json` verifies upstream archives and every output DLL.
-   It retains the CPU/CUDA runtime and uses official LLVM OpenMP bytes under
-   ggml's required import filename, never the Microsoft `debug_nonredist` binary.
-   Use `-- --replace` only to replace existing manifest-listed build inputs.
-   Supply a build cache with `-- --cache PATH` when needed.
+3. Backend setup installs the pinned cua-driver into `bin/cua-driver`, the
+   only bundled native program. llama.cpp is not bundled: users install it from
+   Settings > Providers > Local models, against pinned SHA-256 digests.
 4. Run the frontend/backend tests, build the backend and kernel, then run the
    frozen checks. See [Validation](VALIDATION.md) for commands and coverage limits.
 5. Package the already-tested outputs with
@@ -30,7 +27,7 @@ from source should follow [Setup](SETUP.md).
 
 ## What the packaging checks establish
 
-`dist:electron-only` verifies native input hashes and notices before NSIS runs.
+`dist:electron-only` checks that `bin/` holds the pinned cua-driver before packaging.
 The renderer build collects license texts for the modules actually bundled by
 esbuild. The frozen backend build includes locked Python/CPython notices.
 
@@ -38,10 +35,9 @@ Offline speech engines and weights are excluded. The frozen backend smoke test
 checks unconfigured speech and WAV transport through a configured HTTP fixture;
 it does not require private speech model files or validate real synthesis quality.
 
-Native verification includes a CPU matrix calculation at one and four threads
-without loading an LLM model. The packaged native test also requires CUDA device
-enumeration. Neither check replaces full CPU/no-NVIDIA testing, and enumeration
-is not proof of compatibility with every GPU/model combination.
+The packaged native test checks that `resources/bin` holds only the pinned
+cua-driver and that it reports its pinned version. Local inference is covered by
+the in-app llama.cpp install on each platform, which is not part of the package.
 
 ## Publish and update responsibly
 

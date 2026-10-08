@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.request
 import uuid
@@ -24,7 +25,9 @@ import zipfile
 from typing import Callable
 
 
-DEFAULT_LLAMA_TAG = "b10679"
+from model_runtime.llama_runtime_pins import LLAMA_ASSET_PINS, LLAMA_TAG
+
+DEFAULT_LLAMA_TAG = LLAMA_TAG
 RELEASE_URL = "https://github.com/ggml-org/llama.cpp/releases/download/{tag}/{asset}"
 WINDOWS_CUDA_VERSION = "13.3"
 WINDOWS_ARM64_CUDA_VERSION = "13.4"
@@ -48,15 +51,60 @@ def _host_arch() -> str:
     return "arm64" if machine in {"arm64", "aarch64"} or "armv8" in ident else "x64"
 
 
-def recommended_backend() -> str:
-    if not sys.platform.startswith("win"):
+def _host_platform(system: str | None = None) -> str:
+    current = system or sys.platform
+    if current.startswith("win"):
+        return "windows"
+    if current.startswith("linux"):
+        return "linux"
+    if current == "darwin":
+        return "macos"
+    return ""
+
+
+def available_backends(system: str | None = None, arch: str | None = None) -> list[str]:
+    """Compute backends VARIANT-1 can install on this platform, best first."""
+
+    host = _host_platform(system)
+    architecture = arch or _host_arch()
+    if host == "windows":
+        return ["cuda", "vulkan", "cpu"] if architecture == "x64" else ["cuda", "cpu"]
+    if host == "linux":
+        return ["vulkan", "cpu"]
+    if host == "macos":
+        return ["metal"] if architecture == "arm64" else ["cpu"]
+    return []
+
+
+def _linux_has_vulkan() -> bool:
+    import ctypes.util
+
+    if ctypes.util.find_library("vulkan"):
+        return True
+    return any(os.path.isfile(path) for path in (
+        "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+        "/usr/lib/aarch64-linux-gnu/libvulkan.so.1",
+        "/usr/lib64/libvulkan.so.1",
+        "/usr/lib/libvulkan.so.1",
+    ))
+
+
+def recommended_backend(system: str | None = None, arch: str | None = None) -> str:
+    host = _host_platform(system)
+    architecture = arch or _host_arch()
+    if host == "macos":
+        return "metal" if architecture == "arm64" else "cpu"
+    if host == "linux":
+        # Vulkan covers NVIDIA, AMD and Intel GPUs with the vendor driver.
+        return "vulkan" if _linux_has_vulkan() else "cpu"
+    if host != "windows":
         return "cpu"
     if shutil.which("nvidia-smi.exe") or shutil.which("nvidia-smi"):
         return "cuda"
     # A present Vulkan loader is a useful non-invasive signal for Intel/AMD
     # graphics.  If it is absent, the CPU package is the reliable baseline.
     system_root = os.environ.get("SystemRoot", r"C:\Windows")
-    if os.path.isfile(os.path.join(system_root, "System32", "vulkan-1.dll")):
+    if architecture == "x64" and os.path.isfile(os.path.join(system_root, "System32", "vulkan-1.dll")):
         return "vulkan"
     return "cpu"
 
@@ -66,30 +114,38 @@ def resolve_assets(
     backend: str = "auto",
     *,
     arch: str | None = None,
+    system: str | None = None,
 ) -> tuple[str, list[str]]:
-    if not sys.platform.startswith("win"):
-        raise LlamaRuntimeError("managed llama.cpp download currently supports Windows")
-    selected = str(backend or "auto").strip().lower()
-    if selected == "auto":
-        selected = recommended_backend()
+    host = _host_platform(system)
+    if not host:
+        raise LlamaRuntimeError("managed llama.cpp download is not available on this platform")
     architecture = arch or _host_arch()
     if architecture not in {"x64", "arm64"}:
-        raise LlamaRuntimeError(f"unsupported Windows architecture: {architecture}")
-    if selected == "cuda":
-        cuda = WINDOWS_ARM64_CUDA_VERSION if architecture == "arm64" else WINDOWS_CUDA_VERSION
-        assets = [
-            f"llama-{tag}-bin-win-cuda-{cuda}-{architecture}.zip",
-            f"cudart-llama-bin-win-cuda-{cuda}-{architecture}.zip",
-        ]
-    elif selected == "vulkan":
-        if architecture == "arm64":
-            raise LlamaRuntimeError("llama.cpp does not publish a Windows Vulkan ARM64 package")
-        assets = [f"llama-{tag}-bin-win-vulkan-x64.zip"]
-    elif selected == "cpu":
-        assets = [f"llama-{tag}-bin-win-cpu-{architecture}.zip"]
-    else:
-        raise LlamaRuntimeError("llama.cpp backend must be auto, cuda, vulkan, or cpu")
-    return selected, assets
+        raise LlamaRuntimeError(f"unsupported architecture: {architecture}")
+    selected = str(backend or "auto").strip().lower()
+    if selected == "auto":
+        selected = recommended_backend(system, architecture)
+    if selected not in available_backends(system, architecture):
+        raise LlamaRuntimeError(
+            f"llama.cpp has no {selected} build for {host} {architecture}; "
+            f"choose one of: {', '.join(available_backends(system, architecture))}"
+        )
+    if host == "windows":
+        if selected == "cuda":
+            cuda = WINDOWS_ARM64_CUDA_VERSION if architecture == "arm64" else WINDOWS_CUDA_VERSION
+            return selected, [
+                f"llama-{tag}-bin-win-cuda-{cuda}-{architecture}.zip",
+                f"cudart-llama-bin-win-cuda-{cuda}-{architecture}.zip",
+            ]
+        if selected == "vulkan":
+            return selected, [f"llama-{tag}-bin-win-vulkan-x64.zip"]
+        return selected, [f"llama-{tag}-bin-win-cpu-{architecture}.zip"]
+    if host == "linux":
+        if selected == "vulkan":
+            return selected, [f"llama-{tag}-bin-ubuntu-vulkan-{architecture}.tar.gz"]
+        return selected, [f"llama-{tag}-bin-ubuntu-{architecture}.tar.gz"]
+    # macOS: the arm64 build includes Metal; the Intel build runs on the CPU.
+    return selected, [f"llama-{tag}-bin-macos-{architecture}.tar.gz"]
 
 
 def server_binary(folder: Path) -> Path:
@@ -154,6 +210,22 @@ def _download(
             pass
 
 
+def _verify_pin(archive: Path, asset: str, pins: dict[str, tuple[str, int]]) -> str:
+    """Check a downloaded archive against its pinned digest before extraction."""
+
+    pin = pins.get(asset)
+    if pin is None:
+        raise LlamaRuntimeError(f"{asset} is not a pinned llama.cpp asset; refusing it")
+    digest = _sha256(archive)
+    if digest != pin[0]:
+        try:
+            archive.unlink()
+        except OSError:
+            pass
+        raise LlamaRuntimeError(f"{asset} does not match its pinned SHA-256; the download was discarded")
+    return digest
+
+
 def _safe_extract(
     archive: Path,
     destination: Path,
@@ -163,6 +235,9 @@ def _safe_extract(
     label: str,
 ) -> None:
     root = destination.resolve()
+    if archive.name.endswith((".tar.gz", ".tgz")):
+        _safe_extract_tar(archive, root, progress=progress, cancelled=cancelled, label=label)
+        return
     with zipfile.ZipFile(archive) as bundle:
         members = bundle.infolist()
         total = sum(max(0, int(item.file_size)) for item in members)
@@ -174,6 +249,35 @@ def _safe_extract(
                 raise LlamaRuntimeError(f"unsafe path in runtime archive: {member.filename}")
             bundle.extract(member, root)
             done += max(0, int(member.file_size))
+            if progress is not None:
+                progress("extract", done, total, label)
+
+
+def _safe_extract_tar(
+    archive: Path,
+    root: Path,
+    *,
+    progress: Progress | None,
+    cancelled: Cancelled | None,
+    label: str,
+) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive, "r:gz") as bundle:
+        members = bundle.getmembers()
+        total = sum(max(0, int(item.size)) for item in members)
+        done = 0
+        for member in members:
+            _cancelled(cancelled)
+            target = (root / member.name).resolve()
+            if os.path.commonpath([str(root), str(target)]) != str(root):
+                raise LlamaRuntimeError(f"unsafe path in runtime archive: {member.name}")
+            # The "data" filter refuses absolute paths, links that leave the
+            # destination, and device files; it keeps the executable bit.
+            try:
+                bundle.extract(member, root, filter="data")
+            except tarfile.FilterError as exc:
+                raise LlamaRuntimeError(f"unsafe entry in runtime archive: {member.name}") from exc
+            done += max(0, int(member.size))
             if progress is not None:
                 progress("extract", done, total, label)
 
@@ -253,10 +357,12 @@ def status(
     )
     custom_active = bool(active and os.path.isfile(active) and not managed_active and not bundled_active)
     managed_installed = selected is not None
+    backends = available_backends()
     return {
-        "supported": sys.platform.startswith("win"),
+        "supported": bool(backends),
         "tag": tag,
-        "recommended_backend": recommended_backend(),
+        "recommended_backend": recommended_backend() if backends else "",
+        "available_backends": backends,
         "installed": managed_installed or bundled_active or custom_active,
         "managed_installed": managed_installed,
         "bundled_active": bundled_active,
@@ -289,8 +395,10 @@ def install_runtime(
     backend: str = "auto",
     progress: Progress | None = None,
     cancelled: Cancelled | None = None,
+    pins: dict[str, tuple[str, int]] | None = None,
 ) -> dict:
     selected, assets = resolve_assets(tag, backend)
+    pinned = LLAMA_ASSET_PINS if pins is None else pins
     root = runtime_root(data_dir)
     final = root / tag / selected
     manifest_path = final / "manifest.json"
@@ -324,7 +432,7 @@ def install_runtime(
                 )
             if progress is not None:
                 progress("verify", 0, 0, label)
-            recorded[asset] = _sha256(archive)
+            recorded[asset] = _verify_pin(archive, asset, pinned)
             _safe_extract(
                 archive, staging,
                 progress=progress,
@@ -359,6 +467,7 @@ def install_runtime(
 __all__ = [
     "DEFAULT_LLAMA_TAG",
     "LlamaRuntimeError",
+    "available_backends",
     "install_runtime",
     "installed_builds",
     "recommended_backend",

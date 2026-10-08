@@ -127,17 +127,14 @@ p5.js 2.3.2 is used for the code-generated kernel symbol and is bundled without 
 ## Native and generated runtime notices
 
 The installer retains per-component licenses; the application MIT declaration
-is not a license grant for NVIDIA SDK libraries or other third-party software.
-The build manifest pins llama.cpp b10289 (f9e832c10e9444cb168ddcb579cc62c154f3068b)
-and its CPU/CUDA DLLs. NVIDIA CUDA 13.3 redistribution terms and the llama.cpp,
-cpp-httplib and json.hpp MIT notices are in assets/licenses/native.
+is not a license grant for other third-party software. The only bundled native
+program is the pinned cua-driver desktop driver (trycua/cua, MIT).
 
-The loader filename libomp140.x86_64.dll contains the official LLVM20.1.8
-libomp.dll bytes (SHA256 a12116ba72d1d6820407cf30be23da04ce79d6bb8a71a5ee71759c5a1faa6f1c),
-under Apache-2.0 WITH LLVM-exception. It is not the Microsoft debug_nonredist
-binary from the original upstream Windows package. Its imported/exported ABI
-and CPU graph execution are tested before release. Source and archive provenance
-are recorded in config/native-runtime.json and the included LLVM notice.
+llama.cpp is not bundled. When a user installs the local engine from the app,
+VARIANT-1 downloads the official llama.cpp release archive for that platform,
+checks it against a pinned SHA-256 digest, and keeps it in user data with the
+licenses and notices the archive itself carries (including NVIDIA CUDA
+redistribution terms for the CUDA build).
 
 The renderer bundle carries THIRD_PARTY_LICENSES.txt for its compiled modules.
 The frozen backend's _internal/THIRD_PARTY_LICENSES.txt records locked Python and

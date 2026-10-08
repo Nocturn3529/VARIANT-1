@@ -130,12 +130,8 @@ jobs:
       - name: Pinned cua-driver is installed
         run: |
           test -x bin/cua-driver/cua-driver
-          grep -qx 0.28.2 bin/cua-driver/VERSION
+          grep -qx "$(node -p "require('./scripts/install-cua-driver').VERSION")" bin/cua-driver/VERSION
           file bin/cua-driver/cua-driver
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        run: bin/llama-server --version
       # These three steps were missing here while linux-package had them. The
       # app packaged without a Deck bundle and without a frozen backend, so
       # macos-qualify launched an app that could never reach a connected
@@ -191,11 +187,7 @@ jobs:
       - name: Pinned cua-driver is installed
         run: |
           test -x bin/cua-driver/cua-driver
-          grep -qx 0.28.2 bin/cua-driver/VERSION
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        run: bin/llama-server --version
+          grep -qx "$(node -p "require('./scripts/install-cua-driver').VERSION")" bin/cua-driver/VERSION
       - name: Build the main deck
         run: npm run build:deck
       - name: Build the frozen backend
@@ -266,9 +258,11 @@ jobs:
           # executable from package.json "name" (variant1), not productName
           # (VARIANT-1). Assert the names the package actually produces.
           test -x /opt/VARIANT-1/variant1
-          /opt/VARIANT-1/resources/bin/llama-server --version
+          # llama.cpp is installed in the app, never shipped.
+          test ! -e /opt/VARIANT-1/resources/bin/llama-server
           test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
-          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
+          DO_NOT_TRACK=1 /opt/VARIANT-1/resources/bin/cua-driver/cua-driver --version
+          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Display server libraries for Electron
         run: |
           # libasound2 is a virtual package on Ubuntu 24.04 (noble) after the
@@ -375,10 +369,11 @@ jobs:
         run: |
           set -eu
           test -x "$EXE"
-          test -x "$APP/Contents/Resources/bin/llama-server"
-          "$APP/Contents/Resources/bin/llama-server" --version
+          # llama.cpp is installed in the app, never shipped.
+          test ! -e "$APP/Contents/Resources/bin/llama-server"
           test -x "$APP/Contents/Resources/bin/cua-driver/cua-driver"
-          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "0.28.2"
+          DO_NOT_TRACK=1 "$APP/Contents/Resources/bin/cua-driver/cua-driver" --version
+          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Packaged Main Deck smoke (unpacked app)
         env:
           VARIANT1_E2E_EXECUTABLE: ${{ env.EXE }}
@@ -422,15 +417,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path bin\cua-driver\cua-driver.exe)) { throw 'cua-driver.exe missing' }
-          if ((Get-Content bin\cua-driver\VERSION -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & bin\llama-server.exe --version
-          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+          if ((Get-Content bin\cua-driver\VERSION -Raw).Trim() -ne (node -p "require('./scripts/install-cua-driver').VERSION")) { throw 'unexpected cua-driver VERSION' }
       - name: Build the main deck
         run: npm run build:deck
       - name: Build the frozen backend
@@ -518,13 +505,14 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path $env:APPEXE)) { throw "missing $env:APPEXE" }
           $bin = Join-Path (Split-Path $env:APPEXE -Parent) 'resources\bin'
-          $llama = Get-ChildItem $bin -Filter 'llama-server.exe' -ErrorAction SilentlyContinue
-          if (-not $llama) { throw "llama-server.exe missing under $bin" }
-          & $llama.FullName --version
-          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+          # llama.cpp is installed in the app, never shipped.
+          if (Get-ChildItem $bin -Filter 'llama-server*' -ErrorAction SilentlyContinue) { throw "llama.cpp must not ship under $bin" }
           $cua = Join-Path $bin 'cua-driver\cua-driver.exe'
           if (-not (Test-Path $cua)) { throw "cua-driver.exe missing under $bin" }
-          if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
+          $env:DO_NOT_TRACK = '1'
+          & $cua --version
+          if ($LASTEXITCODE -ne 0) { throw "cua-driver exited $LASTEXITCODE" }
+          if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne (node -p "require('./scripts/install-cua-driver').VERSION")) { throw 'unexpected cua-driver VERSION' }
           $frozen = Get-ChildItem (Split-Path $env:APPEXE -Parent) -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
           if (-not $frozen) { throw 'frozen backend missing from the installed payload' }
       - name: Packaged Main Deck smoke (installed binary)

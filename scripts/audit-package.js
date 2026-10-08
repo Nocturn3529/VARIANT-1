@@ -1,5 +1,5 @@
 'use strict';
-const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path'), crypto = require('node:crypto');
+const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
 const asar = require('@electron/asar');
 const root = path.resolve(__dirname, '..');
 const folder = path.resolve(process.argv[2] || path.join(root, 'dist/win-unpacked'));
@@ -13,11 +13,15 @@ const forbiddenAsar = entries.filter(name => /^\/(artifacts|data|logs|attachment
 assert.deepEqual(forbiddenAsar, [], 'private/development/retired files in app.asar');
 assert.ok(entries.includes('/LICENSE') && entries.some(name => name.endsWith('/THIRD_PARTY_LICENSES.txt')),
   'application and renderer dependency notices must ship');
-const runtime = JSON.parse(fs.readFileSync(path.join(root, 'config/native-runtime.json'), 'utf8'));
-for (const row of runtime.files) {
-  const actual = fs.readFileSync(path.join(folder, 'resources/bin', row.file));
-  assert.equal(crypto.createHash('sha256').update(actual).digest('hex'), row.sha256, row.file);
-}
+// The pinned cua-driver is the only bundled native program; llama.cpp is
+// installed in the app against pinned digests, never shipped.
+const {VERSION: CUA_DRIVER_VERSION} = require('./install-cua-driver');
+const nativeFiles = fs.readdirSync(path.join(folder, 'resources/bin'), {recursive: true})
+  .map(name => String(name).replaceAll(path.sep, '/')).sort();
+assert.deepEqual(nativeFiles, ['cua-driver', 'cua-driver/VERSION', 'cua-driver/cua-driver.exe'],
+  'resources/bin must hold only the pinned cua-driver');
+assert.equal(fs.readFileSync(path.join(folder, 'resources/bin/cua-driver/VERSION'), 'utf8').trim(),
+  CUA_DRIVER_VERSION);
 const files = [];
 function walk(dir) {
   for (const item of fs.readdirSync(dir, {withFileTypes: true})) {
@@ -39,5 +43,5 @@ assert.equal(defaults.local.model, '');
 assert.equal(defaults.voice.auto_tts, false);
 assert.deepEqual(defaults.voice.tts, {}, 'fresh installs must not inherit test speech endpoints');
 console.log(JSON.stringify({passed: true, asar_entries: entries.length, resource_files: files.length,
-  bytes: files.reduce((sum, row) => sum + row.bytes, 0), native_files_verified: runtime.files.length,
+  bytes: files.reduce((sum, row) => sum + row.bytes, 0), native_files_verified: nativeFiles.length,
   largest_files: [...files].sort((a, b) => b.bytes - a.bytes).slice(0, 12)}, null, 2));

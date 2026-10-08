@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
+import tarfile
 import zipfile
 
 import pytest
@@ -54,11 +56,12 @@ def test_runtime_install_is_verified_manifested_and_idempotent(
         lambda _folder, tag: f"version {tag.lstrip('b')}",
     )
 
+    pins = {"llama-b10679-test.zip": (hashlib.sha256(archive).hexdigest(), len(archive))}
     installed = llama_runtime.install_runtime(
-        str(tmp_path), tag="b10679", backend="cpu",
+        str(tmp_path), tag="b10679", backend="cpu", pins=pins,
     )
     again = llama_runtime.install_runtime(
-        str(tmp_path), tag="b10679", backend="cpu",
+        str(tmp_path), tag="b10679", backend="cpu", pins=pins,
     )
 
     assert installed["binary"].endswith("llama-server.exe")
@@ -71,6 +74,68 @@ def test_runtime_install_is_verified_manifested_and_idempotent(
     )
     assert manifest["tag"] == "b10679"
     assert len(next(iter(manifest["assets"].values()))) == 64
+
+
+def test_download_that_misses_its_pin_is_discarded_before_extraction(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        llama_runtime, "resolve_assets",
+        lambda tag, backend: ("cpu", [f"llama-{tag}-test.zip"]),
+    )
+    archive = _runtime_zip()
+    monkeypatch.setattr(
+        llama_runtime, "_download",
+        lambda _url, destination, **_kwargs: destination.write_bytes(archive),
+    )
+    with pytest.raises(llama_runtime.LlamaRuntimeError, match="does not match its pinned SHA-256"):
+        llama_runtime.install_runtime(
+            str(tmp_path), tag="b10679", backend="cpu",
+            pins={"llama-b10679-test.zip": ("0" * 64, len(archive))},
+        )
+    downloads = tmp_path / "runtime" / "llamacpp" / "downloads"
+    assert not (downloads / "llama-b10679-test.zip").exists()
+    with pytest.raises(llama_runtime.LlamaRuntimeError, match="not a pinned llama.cpp asset"):
+        llama_runtime.install_runtime(str(tmp_path), tag="b10679", backend="cpu", pins={})
+
+
+def test_every_platform_resolves_to_pinned_release_assets():
+    from model_runtime.llama_runtime_pins import LLAMA_ASSET_PINS, LLAMA_TAG
+
+    hosts = [("win32", "x64"), ("win32", "arm64"), ("linux", "x64"),
+             ("linux", "arm64"), ("darwin", "arm64"), ("darwin", "x64")]
+    for system, arch in hosts:
+        backends = llama_runtime.available_backends(system, arch)
+        assert backends
+        for backend in backends:
+            _selected, assets = llama_runtime.resolve_assets(
+                LLAMA_TAG, backend, arch=arch, system=system,
+            )
+            assert all(asset in LLAMA_ASSET_PINS for asset in assets), (system, arch, backend)
+    assert llama_runtime.available_backends("darwin", "arm64") == ["metal"]
+    assert llama_runtime.available_backends("linux", "x64") == ["vulkan", "cpu"]
+    with pytest.raises(llama_runtime.LlamaRuntimeError, match="no cuda build for linux"):
+        llama_runtime.resolve_assets(LLAMA_TAG, "cuda", arch="x64", system="linux")
+
+
+def test_tar_runtime_keeps_the_server_executable_and_refuses_escaping_links(tmp_path):
+    good = tmp_path / "good.tar.gz"
+    with tarfile.open(good, "w:gz") as bundle:
+        data = b'#!/bin/sh' + bytes([10]) + b'echo version: 10679' + bytes([10])
+        info = tarfile.TarInfo("build/bin/llama-server")
+        info.size, info.mode = len(data), 0o755
+        bundle.addfile(info, io.BytesIO(data))
+        link = tarfile.TarInfo("build/bin/libllama.so")
+        link.type, link.linkname = tarfile.SYMTYPE, "libllama.so.0"
+        bundle.addfile(link)
+    llama_runtime._safe_extract(good, tmp_path / "ok", progress=None, cancelled=None, label="")
+    server = tmp_path / "ok" / "build" / "bin" / "llama-server"
+    assert server.read_bytes().startswith(b"#!")
+    bad = tmp_path / "bad.tar.gz"
+    with tarfile.open(bad, "w:gz") as bundle:
+        link = tarfile.TarInfo("build/bin/evil")
+        link.type, link.linkname = tarfile.SYMTYPE, "../../../../outside"
+        bundle.addfile(link)
+    with pytest.raises(llama_runtime.LlamaRuntimeError, match="unsafe"):
+        llama_runtime._safe_extract(bad, tmp_path / "bad", progress=None, cancelled=None, label="")
 
 
 def test_runtime_archive_cannot_escape_staging_root(tmp_path):
