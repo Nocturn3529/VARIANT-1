@@ -22,8 +22,12 @@ from source should follow [Setup](SETUP.md).
    system, test installation as an ordinary user, startup, updates and data
    preservation, and uninstallation. Include CPU/no-NVIDIA coverage and the
    connections advertised for that release.
-7. Upload a versioned installer, checksums, release notes, and required notices
-   to a draft GitHub prerelease. Publish only after review, then update website links.
+7. Push the tag `v<version>` (it must equal `package.json`'s version). CI builds
+   and qualifies every platform, then drafts a GitHub release with the installers,
+   the update metadata (`preview*.yml`/`latest*.yml` and blockmaps) and
+   `SHA256SUMS`. A prerelease version drafts a prerelease. Review the draft, add
+   release notes, publish it, then update website links. CI never publishes and
+   refuses to replace an existing release.
 
 ## What the packaging checks establish
 
@@ -43,9 +47,22 @@ the in-app llama.cpp install on each platform, which is not part of the package.
 
 Do not commit release binaries or replace published bytes under the same version.
 The website links to GitHub Releases; it does not need to host the installer.
-Manual updates are acceptable initially. An automatic update feed requires its
-own tested channel, metadata, signature, and migration behavior.
+Installed apps check this repository's published GitHub releases at start and
+every 24 hours, and the user can check from Settings > About. Drafts are not
+visible to them. Downloading and installing happen only when the user presses
+the update buttons. Without a code-signing identity, macOS shows the release page
+instead of installing in place.
 
 The Live2D cat and its overlay have been removed, including the model, vendor
 libraries, configuration, and tray controls. Do not reintroduce those payloads.
 Do not ship a developer's model weights, accounts, profiles, test data, or logs.
+
+## Keep cua-driver current
+
+The `cua-driver bump` workflow runs every Monday. When trycua/cua has a newer
+`cua-driver-rs` release, it pins that version in `scripts/install-cua-driver.js`
+from GitHub's published digests, checks that the Linux binary reports the version,
+and opens or refreshes one draft pull request. Run it by hand from the Actions
+tab to pin an exact version. It needs the repository setting that lets GitHub
+Actions create pull requests, and pull requests it opens do not start CI on their
+own: run CI on the branch, check desktop control on each platform, then merge.

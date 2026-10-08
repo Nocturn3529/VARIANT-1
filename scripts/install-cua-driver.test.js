@@ -2,7 +2,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
-const {assetFor, VERSION} = require('./install-cua-driver');
+const {ASSETS, assetFor, VERSION} = require('./install-cua-driver');
 const fs = require('node:fs/promises');
 const http = require('node:http');
 const os = require('node:os');
@@ -29,14 +29,33 @@ async function fixture(t, handle) {
 }
 
 test('pinned cua-driver covers the install platforms', () => {
-  assert.equal(VERSION, '0.28.2');
+  assert.match(VERSION, /^\d+\.\d+\.\d+$/);
   for (const key of ['win32-x64', 'win32-arm64', 'linux-x64', 'linux-arm64', 'darwin-x64', 'darwin-arm64']) {
     const asset = assetFor(...key.split('-'));
     assert.ok(asset, key);
     assert.equal(asset.sha256.length, 64);
   }
   assert.equal(assetFor('darwin', 'arm64').name, assetFor('darwin', 'x64').name);
+  for (const asset of Object.values(ASSETS)) {
+    assert.ok(asset.name.startsWith('cua-driver-rs-' + VERSION + '-'), asset.name);
+  }
   assert.equal(assetFor('freebsd', 'x64'), null);
+});
+
+test('the weekly bump rewrites every pin and never downgrades on its own', async () => {
+  const {PLATFORM_ASSETS, newer, rewrite, semver} = require('./bump-cua-driver');
+  assert.deepEqual(Object.keys(PLATFORM_ASSETS).sort(), Object.keys(ASSETS).sort());
+  const source = (await fs.readFile(path.join(__dirname, 'install-cua-driver.js'), 'utf8')).replace(/\r\n/g, '\n');
+  const pins = {};
+  for (const key of Object.keys(ASSETS)) pins[key] = {name: 'cua-driver-rs-9.9.9-' + key, sha256: 'a'.repeat(64)};
+  const text = rewrite(source, '9.9.9', pins);
+  assert.match(text, /^const VERSION = '9\.9\.9';$/m);
+  assert.match(text, /^const TAG = 'cua-driver-rs-v9\.9\.9';$/m);
+  assert.equal(text.split('a'.repeat(64)).length - 1, Object.keys(ASSETS).length);
+  assert.equal(text.includes(VERSION), false);
+  assert.equal(newer(semver('0.34.0'), semver('0.28.2')), true);
+  assert.equal(newer(semver('0.28.2'), semver('0.28.2')), false);
+  assert.equal(semver('0.34.0-rc.1'), null);
 });
 
 test('a timed-out partial download retries without publishing its bytes', async t => {
