@@ -137,6 +137,14 @@ export async function run() {
   await runWorkbenchBrowserCommand({action:"reload",tab_id:"e11-recovery"}); assert.equal(reloads,1);
   recoveryGuest.loadURL=async()=>{recoveryGuest.dispatchEvent(new Event("dom-ready"));};
   assert.equal((await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/"})).ok,true);
+  // Navigating to the page already shown reports it instead of reloading.
+  let loads=0; recoveryGuest.loadURL=async()=>{loads++;recoveryGuest.dispatchEvent(new Event("dom-ready"));};
+  recoveryGuest.getURL=()=>"https://recovered.test/";
+  const same=await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/"});
+  assert.deepEqual([same.navigated,same.already_current,loads],[false,true,0],"the current URL is not reloaded");
+  await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/",reload:true});
+  await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/next"});
+  assert.equal(loads,2,"an explicit reload and a different URL still load");
   retained=deferred<unknown>(); startNavigation(); recoveryGuest.dispatchEvent(new Event("did-stop-loading"));
   unregisterRecovery(); recoveryGuest.remove();retained.resolve({url:"https://retained.test/",ready:"complete"});await pause();
   assert.equal(recoveryGuest.dataset.browserReady,"false","a disposed guest cannot be revived by its old readiness probe");

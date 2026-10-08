@@ -351,6 +351,8 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
   if (action === "state" || action === "tabs") return {ok: true, state: current(), tabs: workbenchBrowserTargets(typeof command.owner_chat_id === "string" ? command.owner_chat_id : undefined)};
   if (action === "navigate" || action === "open") {
     const url = normalizedUrl(command.url);
+    // Already there: report the page rather than reload it and lose its state.
+    if (handle.ready && command.reload !== true && webview.getURL?.() === url) return {ok: true, navigated: false, already_current: true, state: current()};
     if (!webview.loadURL) throw new Error("Browser tab is not ready");
     const started = Date.now();
     try { await browserDeadline(webview.loadURL(url), 20000, "navigation", signal); }
