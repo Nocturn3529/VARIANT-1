@@ -951,6 +951,16 @@ class SessionRuntimeRegistry:
                 return False
             return True
 
+    def active_runs(self) -> list[dict[str, str]]:
+        """Runs admitted right now, for observers that reconcile run-owned state."""
+        with self._guard:
+            return [
+                {"chat_id": chat_id, "run_id": live.admission.run_id,
+                 "admission_id": live.admission.admission_id}
+                for chat_id, live in self._live.items()
+                if live.admission is not None and live.admission.run_id
+            ]
+
     def active_admission(self, chat_id: str) -> str:
         clean = self._chat_id(chat_id)
         with self._guard:

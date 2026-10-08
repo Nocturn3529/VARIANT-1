@@ -791,6 +791,36 @@ async def test_tab_lifecycle_uses_durable_page_handles(browser_runtime):
 
 
 @pytest.mark.asyncio
+async def test_tabs_take_marks_and_show_only_where_the_deck_supports_it(browser_runtime):
+    fabric, adapters = browser_runtime
+    scope = WorkScope(chat_id="chat-marks")
+    session = await fabric.open_session(scope=scope)
+    page = fabric.page_ref(session.session_id)
+
+    with pytest.raises(BrowserValidationError):
+        await fabric.mark_page(page, "forever", scope=scope)
+    assert (await fabric.mark_page(page, "deliverable", scope=scope))["applied"] is False
+    assert (await fabric.show_page(page, scope=scope))["shown"] is False
+
+    calls = []
+
+    async def mark_page(target, mark):
+        calls.append(("mark", target, mark))
+
+    async def show_page(target):
+        calls.append(("show", target))
+
+    adapters[0].mark_page = mark_page
+    adapters[0].show_page = show_page
+    target = fabric.targets(session.session_id)[0]
+    assert (await fabric.mark_page(page, " Handoff ", scope=scope))["applied"] is True
+    assert (await fabric.show_page(page, scope=scope))["shown"] is True
+    assert calls == [("mark", target.backend_target_id, "handoff"), ("show", target.backend_target_id)]
+    with pytest.raises(BrowserScopeMismatch):
+        await fabric.show_page(page, scope=WorkScope(chat_id="chat-other"))
+
+
+@pytest.mark.asyncio
 async def test_download_and_trace_payloads_are_cas_artifacts(browser_runtime):
     fabric, _adapters = browser_runtime
     scope = WorkScope(chat_id="chat-artifacts")

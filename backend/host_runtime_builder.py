@@ -112,6 +112,13 @@ def install_host_runtime(
             desktop.end_run(run_id)
 
     astb.session_runtimes.register_run_end_listener(end_desktop_run)
+
+    def end_browser_run(chat_id: str, run_id: str, _admission_id: str) -> None:
+        from browser_fabric.deck_tabs import schedule_run_cleanup
+
+        schedule_run_cleanup(chat_id, run_id)
+
+    astb.session_runtimes.register_run_end_listener(end_browser_run)
     extensions = host._pending_extensions
     if extensions is None:
         os.makedirs(os.path.join(host.config_dir, "plugins"), exist_ok=True)

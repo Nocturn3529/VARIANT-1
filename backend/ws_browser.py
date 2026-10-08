@@ -81,9 +81,19 @@ def register(on):
     @on("browser:host:register")
     async def _register_host(srv, websocket, session, msg):
         await interactive.register_host(websocket)
+        try:
+            active = srv.require_runtime().session_runtimes.active_runs()
+        except Exception:
+            active = None
+        # The Deck closes temporary tabs of runs that ended while it was away.
+        # None means unknown, so it must not close anything.
         await websocket.send_json({
             "type": "browser:host:registered",
             "available": True,
+            "active_runs": (
+                [{"owner_chat_id": row["chat_id"], "run_id": row["run_id"]} for row in active]
+                if active is not None else None
+            ),
         })
 
     @on("browser:host:result")

@@ -377,6 +377,13 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
         await websocket.send_json({"type":"chat:rejected", "error":"attachment_preparation_failed",
                                    "text":str(exc), **_input_reply_fields(msg, bound_sid)})
         return
+    if msg.get("references"):
+        # Browser tabs the user mentioned resolve fail-closed to that exact tab.
+        from browser_fabric.deck_tabs import resolve_tab_references
+
+        notes = await resolve_tab_references(msg.get("references"), bound_sid)
+        if notes:
+            attachment_text = (attachment_text + "\n\n" + notes) if attachment_text else notes
     if not resume_requested and not (str(msg.get("text") or "").strip() or images or attachment_text or msg.get("image")):
         await websocket.send_json({"type":"chat:rejected", "error":"empty_input",
                                    **_input_reply_fields(msg, bound_sid)})
