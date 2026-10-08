@@ -171,9 +171,7 @@ async function workbenchGitStatus(startPath) {
  * @param {(msg: string) => void} deps.log
  * @param {() => string[]} [deps.getLogBuffer]
  * @param {() => string[]} [deps.clearLogBuffer]
- * @param {() => boolean} deps.updateFeedConfigured
- * @param {() => string} deps.updateFeedUrl
- * @param {() => any} deps.getAutoUpdater
+ * @param {ReturnType<typeof import('./electron-updates').createUpdateService>} deps.updates
  */
 function registerDeckIpc(deps) {
   const {
@@ -191,9 +189,7 @@ function registerDeckIpc(deps) {
     log,
     getLogBuffer,
     clearLogBuffer,
-    updateFeedConfigured,
-    updateFeedUrl,
-    getAutoUpdater,
+    updates,
   } = deps;
 
   const deckWin = () => getDeckWindow();
@@ -298,8 +294,6 @@ function registerDeckIpc(deps) {
       platform: process.platform,
       arch: process.arch,
       packaged: app.isPackaged,
-      updateFeedConfigured: updateFeedConfigured(),
-      updateFeedUrl: updateFeedConfigured() ? updateFeedUrl() : '',
       paths: {
         appRoot,
         userData: app.getPath('userData'),
@@ -311,7 +305,7 @@ function registerDeckIpc(deps) {
         plugins: path.join(dataDir, 'config', 'plugins'),
         portFile: getPortFile(),
       },
-      updaterAvailable: !!getAutoUpdater(),
+      update: updates.getState(),
     };
   });
 
@@ -608,24 +602,30 @@ function registerDeckIpc(deps) {
     }
   });
 
+  // Updates install only from these explicit Deck requests.
+  const updateAction = (name, run) => ipcMain.handle(name, async (event) => {
+    if (!isTrustedIpcSender(event, deckWin())) return { ok: false, reason: 'untrusted_sender' };
+    return run();
+  });
+  updateAction('update:getState', () => updates.getState());
+  updateAction('update:download', () => updates.download());
+  updateAction('update:cancel', () => updates.cancel());
+  updateAction('update:install', () => updates.install());
+  updateAction('update:openRelease', () => updates.openRelease());
+
   ipcMain.handle('update:check', async (event) => {
     if (!isTrustedIpcSender(event, deckWin())) {
       return { ok: false, reason: 'untrusted_sender' };
     }
-    if (!updateFeedConfigured()) return { ok: false, reason: 'updater_unconfigured' };
-    const up = getAutoUpdater();
-    if (!up) return { ok: false, reason: 'updater_unavailable' };
-    if (!app.isPackaged) return { ok: false, reason: 'dev_mode' };
-    try {
-      const r = await up.checkForUpdates();
-      return {
-        ok: true,
-        available: !!(r && r.isUpdateAvailable),
-        version: r && r.updateInfo ? r.updateInfo.version : null,
-      };
-    } catch (err) {
-      return { ok: false, reason: String(err && err.message || err) };
-    }
+    const state = await updates.check();
+    if (state.status === 'unavailable') return { ok: false, reason: state.reason, state };
+    if (state.status === 'error') return { ok: false, reason: state.error, state };
+    return {
+      ok: true,
+      available: ['available', 'downloading', 'downloaded'].includes(state.status),
+      version: state.version || null,
+      state,
+    };
   });
 
   ipcMain.on('deck:minimize', (event) => {

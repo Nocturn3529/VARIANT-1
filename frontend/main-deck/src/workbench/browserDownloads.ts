@@ -10,6 +10,7 @@ export type BrowserDownload = Readonly<{
 const store = createExternalStore<readonly BrowserDownload[]>([]);
 export const useBrowserDownloads = store.useStore;
 export const downloadsForTab = (id: string) => store.getState().filter(row => row.tab_id === id);
+export const activeBrowserDownloads = () => store.getState().filter(row => row.status === "in_progress").length;
 function ingest(rows: unknown): void {
   if (!Array.isArray(rows)) return;
   store.replaceState(rows.flatMap(value => {

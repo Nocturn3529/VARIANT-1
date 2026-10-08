@@ -63,6 +63,17 @@ contextBridge.exposeInMainWorld('variant1Deck', {
   openLocalPath: (localPath) => ipcRenderer.invoke('localPath:open', localPath),
   openExternal: (url) => ipcRenderer.invoke('external:open', String(url || '')),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  // Updates download and install only when the user asks.
+  getUpdateState: () => ipcRenderer.invoke('update:getState'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  cancelUpdateDownload: () => ipcRenderer.invoke('update:cancel'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  openUpdateRelease: () => ipcRenderer.invoke('update:openRelease'),
+  onUpdateState: callback => {
+    const listener = (_event, value) => callback(value);
+    ipcRenderer.on('update:state', listener);
+    return () => ipcRenderer.removeListener('update:state', listener);
+  },
 
   // IDE-style workbench filesystem and Git surfaces.
   getWorkbenchRoot: () => ipcRenderer.invoke('workbench:root'),

@@ -1,6 +1,7 @@
 import {useLayoutEffect, useRef, useState} from "react";
 import {Icon, type IconName} from "../ui/Icon";
-import {navigateTo, revealHistory, useAppState} from "../state/appStore";
+import {navigateTo, revealHistory, selectSettingsCategory, useAppState} from "../state/appStore";
+import {useAboutState} from "../aboutStore";
 import {useQuestionChatIds} from "../state/clarificationStore";
 import {useSessionState} from "../state/sessionStore";
 import {openBrowser, usePreviewState} from "../workbench/previewStore";
@@ -25,6 +26,10 @@ export function HeaderTools() {
   const previews = usePreviewState();
   const chatId = useSessionState().displayedSessionId || "";
   const browserTabs = previews.tabs.filter(tab => tab.target.kind === "url" && (tab.ownerChatId || "") === chatId);
+  const update = useAboutState().update;
+  const updatePill = update?.status === "available" ? "Update available"
+    : update?.status === "downloading" ? `Update ${Math.round(update.percent)}%`
+    : update?.status === "downloaded" ? "Update ready" : "";
 
   function pressed(kind: PanelTool): boolean {
     if (kind === "browser") return browserTabs.some(tab => isWorkbenchPaneVisible(`preview:${tab.id}`, workbench));
@@ -42,6 +47,8 @@ export function HeaderTools() {
   }
 
   return <div className="titlebar-thread-tools" role="toolbar" aria-label="Thread tools">
+    {updatePill ? <button type="button" className="titlebar-thread-tools__update" title={`VARIANT-1 ${update?.version} · open Settings › About`}
+      onClick={() => { selectSettingsCategory("about"); navigateTo("settings"); }}>{updatePill}</button> : null}
     {questionChats.length ? <button type="button" className="titlebar-thread-tools__question" aria-label="Chats needing answers" title="Chats needing answers" onClick={revealHistory}>?<span>{questionChats.length}</span></button> : null}
     {PANEL_TOOLS.map(item => {
       const active = pressed(item.id);

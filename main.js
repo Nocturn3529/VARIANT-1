@@ -6,7 +6,7 @@
  * Bodies live in electron-* modules; this file only wires deps and starts the app.
  */
 
-const { app, ipcMain, protocol } = require('electron');
+const { app, ipcMain, protocol, session, shell } = require('electron');
 const path = require('path');
 const { createBackendManager, registerBackendIpc } = require('./electron-backend');
 const { createLogger } = require('./electron-logging');
@@ -18,6 +18,7 @@ const { registerBrowserCapture } = require('./electron-browser-capture');
 const { registerBrowserDownloads } = require('./electron-browser-downloads');
 const { createBrowserViewManager } = require('./electron-browser-views');
 const { createNativePopoutManager } = require('./electron-native-popouts');
+const { createUpdateService } = require('./electron-updates');
 const {
   applyGpuFlags,
   registerVariant1Scheme,
@@ -72,48 +73,23 @@ function rebindSettingsStore() {
 }
 rebindSettingsStore();
 
-// electron-updater is optional in dev. Production builds must set a real feed
-// via VARIANT1_UPDATE_URL or package.json build.publish[0].url. Placeholder /
-// empty URLs keep the updater disabled (no network calls).
-let autoUpdater = null;
-function updateFeedUrl() {
-  const fromEnv = String(process.env.VARIANT1_UPDATE_URL || '').trim();
-  if (fromEnv) return fromEnv;
-  try {
-    const pkg = require(path.join(APP_ROOT, 'package.json'));
-    const pub = (((pkg || {}).build || {}).publish || [])[0] || {};
-    return String(pub.url || pub.path || '').trim();
-  } catch (_) {
-    return '';
-  }
-}
-function updateFeedConfigured() {
-  const url = updateFeedUrl();
-  if (!url) return false;
-  // Explicit placeholders and non-https feeds stay off.
-  if (/REPLACE-ME|example\.com|localhost|127\.0\.0\.1/i.test(url)) return false;
-  if (!/^https:\/\//i.test(url)) return false;
-  return true;
-}
-function getAutoUpdater() {
-  if (autoUpdater !== null) return autoUpdater || null;
-  if (!updateFeedConfigured()) {
-    autoUpdater = false;
-    return null;
-  }
-  try {
-    autoUpdater = require('electron-updater').autoUpdater;
-    // electron-updater otherwise reads only the packaged app-update.yml. Apply
-    // the runtime override (and keep package metadata behavior deterministic)
-    // before the first check creates its provider client.
-    autoUpdater.setFeedURL({ provider: 'generic', url: updateFeedUrl() });
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = false;
-  } catch (_) {
-    autoUpdater = false;
-  }
-  return autoUpdater || null;
-}
+// Updates: detected from GitHub releases, installed only on the user's request.
+// Development runs and builds without a release feed stay off (no network calls).
+const updates = createUpdateService({
+  app,
+  shell,
+  appRoot: APP_ROOT,
+  log: logToFile,
+  broadcast: (state) => {
+    if (deckWindow && !deckWindow.isDestroyed()) deckWindow.webContents.send('update:state', state);
+  },
+  prepareInstall: async () => {
+    // Chromium persists the browser tab list and cookies lazily.
+    await Promise.allSettled([session.defaultSession, session.fromPartition('persist:variant1-preview')]
+      .flatMap((store) => [store.flushStorageData(), store.cookies.flushStore()]));
+    await backend.stopBackend();
+  },
+});
 
 // --- Window refs -----------------------------------------------------------
 let deckWindow = null;
@@ -322,9 +298,7 @@ registerDeckIpc({
   log: logToFile,
   getLogBuffer,
   clearLogBuffer,
-  updateFeedConfigured,
-  updateFeedUrl,
-  getAutoUpdater,
+  updates,
 });
 
 // --- Lifecycle (protocol ready path, tray, backend, hotkey, quit) ----------
@@ -344,7 +318,7 @@ registerAppLifecycle({
   installTray,
   startBackend: () => backend.startBackend(),
   stopBackend: () => backend.stopBackend(),
-  getAutoUpdater,
+  startUpdates: () => updates.start(),
   getDeckWindow: () => deckWindow,
   setQuitting: (v) => { isQuitting = !!v; },
   log: logToFile,

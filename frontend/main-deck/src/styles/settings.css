@@ -1038,6 +1038,10 @@
 .provider-runtime__progress > div { display: flex; justify-content: space-between; gap: 10px; color: var(--deck-text-secondary); font-size: var(--deck-text-xs); }
 .provider-runtime__progress progress { width: 100%; accent-color: var(--deck-text-primary); }
 .provider-runtime__progress small { color: var(--deck-text-faint); }
+/* Settings › About: what the last update check found and the next step. */
+.about-card--update .about-update__detail { margin: 12px 0 0; color: var(--deck-text-secondary); font-size: var(--deck-text-compact); line-height: 1.55; overflow-wrap: anywhere; }
+.about-card--update .about-update__progress { width: 100%; margin-top: 10px; accent-color: var(--deck-text-primary); }
+.about-card--update .about-update__actions { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0 16px; }
 
 @container settings (max-width: 830px) {
   .provider-editor-grid,

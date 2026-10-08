@@ -138,8 +138,10 @@
     },
     "publish": [
       {
-        "provider": "generic",
-        "url": ""
+        "provider": "github",
+        "owner": "Nocturn3529",
+        "repo": "VARIANT-1",
+        "releaseType": "prerelease"
       }
     ],
     "linux": {

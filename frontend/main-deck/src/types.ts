@@ -383,6 +383,7 @@ export type AboutState = {
   updateLabel: string;
   updateChecking: boolean;
   updateCheckComplete: boolean;
+  update: UpdateState | null;
   paths: Record<string, string>;
   health: {
     backend: string;
@@ -554,6 +555,7 @@ export type RuntimeApi = {
     version?: string;
     packaged?: boolean;
     paths?: Record<string, string>;
+    update?: UpdateState;
   } | null | undefined>;
   getLaunchAtLogin?: () => Promise<boolean>;
   setLaunchAtLogin?: (on: boolean) => Promise<boolean | {
@@ -574,7 +576,31 @@ export type RuntimeApi = {
     available?: boolean;
     version?: string;
     reason?: string;
+    state?: UpdateState;
   } | null | undefined>;
+  getUpdateState?: () => Promise<UpdateState | null | undefined>;
+  downloadUpdate?: () => Promise<{ok?: boolean; reason?: string} | null | undefined>;
+  cancelUpdateDownload?: () => Promise<{ok?: boolean} | null | undefined>;
+  installUpdate?: () => Promise<{ok?: boolean; reason?: string} | null | undefined>;
+  openUpdateRelease?: () => Promise<{ok?: boolean} | null | undefined>;
+  onUpdateState?: (callback: (state: UpdateState) => void) => () => void;
+};
+
+/** The main process's update state; downloads and installs happen only on request. */
+export type UpdateState = {
+  status: "unavailable" | "idle" | "checking" | "up-to-date" | "available" | "downloading" | "downloaded" | "installing" | "error";
+  reason: string;
+  currentVersion: string;
+  platform: string;
+  version: string;
+  releaseName: string;
+  releaseUrl: string;
+  installMode: "in-app" | "release-page";
+  percent: number;
+  transferred: number;
+  total: number;
+  error: string;
+  checkedAt: number;
 };
 
 export type WorkbenchGitFile = {

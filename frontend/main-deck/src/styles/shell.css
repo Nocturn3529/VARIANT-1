@@ -116,6 +116,8 @@ svg {
 .titlebar-thread-tools button[aria-expanded="true"] { color: var(--deck-text-primary); }
 .titlebar-thread-tools__divider { width: 1px; height: 14px; margin: 0 5px; background: var(--deck-line); }
 .titlebar-thread-tools .titlebar-thread-tools__question { width: auto; padding: 0 7px; gap: 4px; color: var(--deck-text-primary); font: 600 var(--deck-text-xs)/1 var(--font-ui); }
+/* A found update waits quietly here until the user opens it. */
+.titlebar-thread-tools .titlebar-thread-tools__update { width: auto; margin-right: 4px; padding: 0 8px; border: 1px solid var(--deck-line); color: var(--deck-text-secondary); font: 500 var(--deck-text-xs)/1 var(--font-ui); white-space: nowrap; }
 
 .window-actions {
   justify-self: end;
