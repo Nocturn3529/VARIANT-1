@@ -36,7 +36,6 @@ def main() -> None:
         if window_proc.poll() is not None:
             _out, err = window_proc.communicate()
             raise SystemExit(f"xterm exited early: {err.decode('utf-8', 'replace')}")
-        adapter.open()
         deadline = time.monotonic() + 20
         window = None
         last: object = None

@@ -37,6 +37,14 @@ jobs:
         # leave only the last completed -q percentage, obscuring the hold point.
         # Dump all Python thread stacks if one test runs for over five minutes.
         run: node ../scripts/test-python.js tests -vv -o faulthandler_timeout=300
+      - name: Install pinned cua-driver
+        if: ${{ always() && !cancelled() }}
+        working-directory: .
+        run: node scripts/install-cua-driver.js
+      - name: cua-driver list, focus, observe and capture
+        if: ${{ always() && !cancelled() }}
+        working-directory: .
+        run: backend\.venv\Scripts\python.exe scripts\ci-windows-desktop.py
 
   frontend-scripts:
     runs-on: windows-latest

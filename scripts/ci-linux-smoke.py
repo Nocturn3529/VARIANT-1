@@ -25,7 +25,7 @@ def main() -> None:
         adapter.catalog(backend_instance_id="ci-smoke")
     except DesktopUnavailable as exc:
         raised = True
-        assert "not supported" in str(exc).lower() or "Win32/UIA" in str(exc)
+        assert "not available" in str(exc).lower()
     assert raised, "UnsupportedDesktopAdapter must raise DesktopUnavailable"
 
     chunks: list[bytes] = []
