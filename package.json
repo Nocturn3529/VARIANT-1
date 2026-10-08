@@ -156,13 +156,16 @@
       ],
       "category": "public.app-category.developer-tools",
       "icon": "assets/tray/icon_1024.png",
+      "signIgnore": [
+        "/Contents/Resources/bin/cua-driver/CuaDriver\\.app(/|$)"
+      ],
       "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
       "extraResources": [
         {
           "from": "bin",
           "to": "bin",
           "filter": [
-            "cua-driver/cua-driver",
+            "cua-driver/CuaDriver.app/**",
             "cua-driver/VERSION"
           ]
         }

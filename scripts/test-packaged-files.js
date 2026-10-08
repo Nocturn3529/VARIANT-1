@@ -217,15 +217,25 @@ for (const excludedTool of [
     `installer must not retain non-runtime tool ${excludedTool}`);
 }
 
+// electron-builder must not re-sign trycua's app: macOS grants belong to its identity.
+const macSignIgnore = [].concat(packageJson.build.mac.signIgnore || []).map(pattern => new RegExp(pattern));
+assert.ok(macSignIgnore.some(re => re.test('/A.app/Contents/Resources/bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver'))
+  && macSignIgnore.some(re => re.test('/A.app/Contents/Resources/bin/cua-driver/CuaDriver.app'))
+  && !macSignIgnore.some(re => re.test('/A.app/Contents/MacOS/VARIANT-1')),
+  'mac signing skips exactly the bundled CuaDriver.app');
+
 for (const platform of ['linux', 'mac']) {
   const unixNative = binResource(platform);
   assert.ok(unixNative && Array.isArray(unixNative.filter),
     `${platform} native runtime packaging must use an explicit filter`);
-  assert.deepStrictEqual(unixNative.filter, ['cua-driver/cua-driver', 'cua-driver/VERSION'],
+  // macOS ships trycua's signed CuaDriver.app; Linux ships the bare executable.
+  assert.deepStrictEqual(unixNative.filter, platform === 'mac'
+    ? ['cua-driver/CuaDriver.app/**', 'cua-driver/VERSION']
+    : ['cua-driver/cua-driver', 'cua-driver/VERSION'],
     `${platform} installer ships only the pinned cua-driver`);
   assert.ok(!unixNative.filter.some(item => String(item).endsWith('.dll')),
     `${platform} native filter must not ship Windows DLLs`);
-  assert.ok(!unixNative.filter.some(item => item.includes('**') || item.includes('whisper')),
+  assert.ok(!unixNative.filter.some(item => (item.includes('**') && item !== 'cua-driver/CuaDriver.app/**') || item.includes('whisper')),
     `${platform} native runtime must not broaden or rebundle Whisper`);
 }
 
