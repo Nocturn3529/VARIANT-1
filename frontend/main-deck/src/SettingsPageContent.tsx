@@ -9,6 +9,7 @@ import {SettingsPage} from "./ui/Settings";
 import {VoiceSettings} from "./VoiceSettings";
 import {ToolsAndKeysSettings} from "./ToolsAndKeysSettings";
 import {BrowserSettings} from "./BrowserSettings";
+import {DesktopSettings} from "./DesktopSettings";
 import {ExternalContextSettings} from "./ExternalContextSettings";
 import {ProviderRoutingSettings} from "./ProviderRoutingSettings";
 
@@ -23,6 +24,7 @@ export function SettingsPageContent({category}: {category: SettingsCategory}) {
     "tools-keys": <ToolsAndKeysSettings/>,
     search: <AgentToolsSettings/>,
     browser: <BrowserSettings/>,
+    desktop: <DesktopSettings/>,
     voice: <VoiceSettings/>,
     messaging: <PlatformSettings page="messaging"/>,
     plugins: <PluginsSettings/>,

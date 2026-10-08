@@ -68,6 +68,12 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     path: "M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0ZM3 12h18M12 3c5 5 5 13 0 18-5-5-5-13 0-18Z",
   },
   {
+    id: "desktop",
+    label: "Desktop control",
+    description: "CuaDriver status and the permissions this computer needs.",
+    path: "M3 5h18v11H3Zm6 15h6m-3-4v4",
+  },
+  {
     id: "voice",
     label: "Voice",
     description: "Speech input, output, and playback.",

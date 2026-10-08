@@ -50,6 +50,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-external-context-settings": ["external-context:result", "chat:session:deleted"],
   "react-runtime-provider-routing": ["provider-recovery:result"],
   "react-runtime-local-models": ["local-models:result"],
+  "react-runtime-desktop": ["desktop:status"],
   "react-runtime-browser-settings": [
     "browser:settings", "browser:state", "browser:selection:result", "browser:resolve:result", "browser:recordings",
   ],

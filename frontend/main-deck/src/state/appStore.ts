@@ -25,6 +25,7 @@ export type SettingsCategory =
   | "tools-keys"
   | "search"
   | "browser"
+  | "desktop"
   | "voice"
   | "messaging"
   | "plugins"

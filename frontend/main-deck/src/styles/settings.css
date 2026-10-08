@@ -338,6 +338,10 @@
 .browser-readiness strong { font-weight: 500; }
 .browser-readiness p { margin: 5px 0; color: var(--deck-text-secondary); font-size: var(--deck-text-compact); line-height: 1.6; }
 
+.desktop-card > .platform-note { margin: 0; padding: 12px 18px; border-bottom: 1px solid var(--deck-line-soft); }
+.desktop-card .runtime-error { margin: 12px 18px 0; }
+.desktop-card__actions { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px 18px; }
+
 .settings-page-body :is(.gen-card, .about-card) {
   overflow: visible;
   border: 0;

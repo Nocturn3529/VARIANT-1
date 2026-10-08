@@ -64,6 +64,7 @@ import {installBrowserDownloads} from "./workbench/browserDownloads";
 import {installInputModality} from "./ui/inputModality";
 import {ingestBrowserSettings, setBrowserSettingsConnection, setBrowserSettingsContext} from "./browserSettingsStore";
 import {ingestLocalModels, setLocalModelsConnection, setLocalModelsContext} from "./localModelsStore";
+import {ingestDesktop, refreshDesktopStatus, setDesktopConnection, setDesktopContext} from "./desktopStore";
 import {ingestServiceSettings, setServiceSettingsConnection, setServiceSettingsContext} from "./serviceSettingsStore";
 import {ingestExternalContextSettings,setExternalContextSettingsConnection,setExternalContextSettingsContext} from "./externalContextSettingsStore";
 import {ingestProviderRouting,setProviderRoutingConnection,setProviderRoutingContext} from "./providerRoutingStore";
@@ -257,6 +258,11 @@ reg("react-runtime-provider-routing",storeModuleHooks({setContext:setProviderRou
 
 reg("react-runtime-local-models", storeModuleHooks({
   setContext: setLocalModelsContext, setConnection: setLocalModelsConnection, ingest: ingestLocalModels,
+}));
+
+reg("react-runtime-desktop", storeModuleHooks({
+  setContext: setDesktopContext, setConnection: setDesktopConnection, ingest: ingestDesktop,
+  settingsCategory: "desktop", onSettings: refreshDesktopStatus,
 }));
 
 reg("react-runtime-browser-settings", storeModuleHooks({
