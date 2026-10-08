@@ -252,7 +252,7 @@ def _deliver_image(runtime: Any, observation: DesktopObservation) -> None:
     if not observation.image_ref:
         return
     try:
-        from desktop.service import deliver_image
+        from tool_images import deliver_image
         from artifacts.scopes import cas_scope_id
 
         context = _context()

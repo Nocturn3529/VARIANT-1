@@ -204,7 +204,7 @@ def test_browser_effect_methods_offer_consistent_post_action_screenshots():
 
 @pytest.mark.asyncio
 async def test_five_seeds_share_one_fabric_session(tmp_path):
-    import desktop.service as desktop_service
+    import tool_images as desktop_service
 
     fabric, adapters = _seed_fabric(tmp_path)
     binding = BrowserBinding(scope=WorkScope(chat_id="chat-seeds"))
@@ -275,7 +275,7 @@ def test_browser_seed_uses_managed_driver_for_background_kernel():
 
 @pytest.mark.asyncio
 async def test_kernel_seed_returns_fluent_handles_for_absorbed_capabilities(tmp_path):
-    from desktop import service as desktop_service
+    import tool_images as desktop_service
 
     fabric, adapters = _seed_fabric(tmp_path)
     scope = WorkScope(chat_id="chat-kernel", workspace_id="workspace-kernel")

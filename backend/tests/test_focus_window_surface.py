@@ -6,7 +6,7 @@ import pytest
 
 import desktop_control
 import tools
-from desktop import registry as desktop_registry
+from desktop_fabric import tool as desktop_registry
 
 
 @pytest.mark.asyncio

@@ -20,7 +20,7 @@ class ToolActionRuntime:
 
     def _executor_deps(self):
         import action_executor
-        from desktop.catalog import uses_desktop_surface
+        from desktop_fabric.tool import uses_desktop_surface
 
         return action_executor.ActionExecutorDeps(
             registry=self.registry,
@@ -105,7 +105,7 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
 
     from artifacts.store import ContentAddressedArtifactStore
     from capability_broker import CapabilityBroker
-    from desktop.catalog import uses_desktop_surface
+    from desktop_fabric.tool import uses_desktop_surface
 
     session_artifacts = ContentAddressedArtifactStore(
         os.path.join(catalog_root, "artifacts")

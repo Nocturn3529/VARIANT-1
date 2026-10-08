@@ -16,7 +16,6 @@ import desktop.perception_delta as pdelta
 import desktop.perception_flow as dflow
 import desktop.perception_quality as pqual
 import desktop.perception_recovery as prec
-import desktop.registry as dregistry
 import desktop.runtime as druntime
 import desktop.service as dservice
 import desktop.session as dsession
@@ -148,4 +147,6 @@ class DesktopControl:
             return await _capture_raw_b64_async()
 
     def register(self, registry):
-        dregistry.register(registry, self)
+        from desktop_fabric.tool import register
+
+        register(registry, self)

@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 import desktop.action_resolve as dactions
-from desktop.catalog import DESKTOP_LOG_TOOLS, DESKTOP_SURFACE_TOOLS
+from desktop_fabric.tool import DESKTOP_LOG_TOOLS, DESKTOP_SURFACE_TOOLS
 import desktop.constants as dconst
 import desktop.context as dcontext
 import desktop.input_primitives as dinput

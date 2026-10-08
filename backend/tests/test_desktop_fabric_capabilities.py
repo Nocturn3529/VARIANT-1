@@ -8,7 +8,7 @@ import pytest
 import desktop_control
 from artifacts import ContentAddressedArtifactStore
 from capability_broker import CapabilityBroker, InvocationContext
-from desktop import registry as desktop_registry
+from desktop_fabric import tool as desktop_registry
 from desktop_fabric import (
     AdapterCapture,
     AdapterDispatch,

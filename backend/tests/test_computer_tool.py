@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 import desktop_control
-from desktop import registry as desktop_registry
+from desktop_fabric import tool as desktop_registry
 import desktop_fabric.access as desktop_access
 import desktop_fabric.capabilities as desktop_capabilities
 import tools

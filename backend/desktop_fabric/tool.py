@@ -1,4 +1,4 @@
-"""Register VARIANT-1's single model-facing Windows computer-use object.
+"""Register VARIANT-1's single model-facing computer-use object.
 
 Desktop Fabric owns window identity, observation, input routing, and receipts.
 The model sees ordinary task verbs only; driver and verification policy never
@@ -10,6 +10,24 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 import tools
+
+
+# Desktop seeds whose driver work is serialized by the capability broker.
+DESKTOP_TOOLS = frozenset({
+    "computer",
+})
+
+# Tools that share the process-wide physical desktop lock.
+DESKTOP_SURFACE_TOOLS = DESKTOP_TOOLS
+
+# Compact [desktop] outcome log lines (tool_runner).
+DESKTOP_LOG_TOOLS = frozenset({
+    "computer",
+})
+
+
+def uses_desktop_surface(name: str) -> bool:
+    return str(name or "") in DESKTOP_SURFACE_TOOLS
 
 
 COMPUTER_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
@@ -211,4 +229,7 @@ def register(registry: tools.ToolRegistry, control: Any) -> None:
     ))
 
 
-__all__ = ["COMPUTER_OBJECT_METHODS", "register"]
+__all__ = [
+    "COMPUTER_OBJECT_METHODS", "DESKTOP_LOG_TOOLS", "DESKTOP_SURFACE_TOOLS",
+    "DESKTOP_TOOLS", "register", "uses_desktop_surface",
+]

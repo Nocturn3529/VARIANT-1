@@ -34,7 +34,7 @@ class FakeTool:
 
 class CapturingTool(FakeTool):
     async def run(self, args):
-        from desktop import service as desktop_service
+        import tool_images as desktop_service
         desktop_service.deliver_image("image-bytes")
         return await super().run(args)
 
@@ -153,7 +153,7 @@ async def test_plain_or_invalid_outcome_prevents_batch_termination():
 
 @pytest.mark.asyncio
 async def test_tool_capture_is_bound_to_exact_call_id():
-    from desktop import service as desktop_service
+    import tool_images as desktop_service
 
     holder = {"image": None}
     token = desktop_service.install_image_sink(holder)
@@ -178,7 +178,7 @@ async def test_tool_capture_is_bound_to_exact_call_id():
 
 @pytest.mark.asyncio
 async def test_late_capture_from_completed_tool_binding_is_dropped():
-    from desktop import service as desktop_service
+    import tool_images as desktop_service
 
     holder = {"image": None}
     sink_token = desktop_service.install_image_sink(holder)

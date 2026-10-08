@@ -55,7 +55,7 @@ from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
 from tools import BROWSER_OBJECT_METHODS, Tool, ToolRegistry
 from work_fabric.capabilities import register_work_fabric_tools
 from work_fabric.service import WorkService
-from desktop.registry import COMPUTER_OBJECT_METHODS, _root_params as computer_root_params
+from desktop_fabric.tool import COMPUTER_OBJECT_METHODS, _root_params as computer_root_params
 from object_api import dispatcher_params
 
 

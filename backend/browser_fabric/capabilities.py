@@ -203,7 +203,7 @@ def _deliver_image_artifact(
     if not ref:
         return None
     try:
-        from desktop.service import deliver_image
+        from tool_images import deliver_image
 
         payload = runtime.artifact_store.read_bytes(ref)
         deliver_image(

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from desktop import vision
+from model_runtime import vision
 from model_runtime.image_fallback import (
     append_visual_description,
     describe_for_text_retry,

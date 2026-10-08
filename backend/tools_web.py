@@ -936,7 +936,7 @@ async def _run_browser_seed(operation: str, args: dict):
         fabric, session, str(args.get("target_id") or "")
     )
     if operation == "screenshot":
-        from desktop.service import deliver_image
+        from tool_images import deliver_image
 
         result = await fabric.screenshot(
             target.page_ref(session.generation), scope=scope,
