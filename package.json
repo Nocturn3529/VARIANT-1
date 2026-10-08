@@ -54,6 +54,9 @@
   "build": {
     "appId": "app.variant1.desktop",
     "productName": "VARIANT-1",
+    "electronLanguages": [
+      "en-US"
+    ],
     "files": [
       "main.js",
       "electron-*.js",
