@@ -618,6 +618,9 @@ async def execute_tool_batch(
                            capability_receipt.status
                            if capability_receipt is not None else "error"
                        ),
+                       error_code=(capability_receipt.error.code
+                                   if capability_receipt is not None and capability_receipt.error
+                                   else str(getattr(exc, "code", "") or "")),
                        duration_ms=tool_ms,
                        admission_ms=admission_ms,
                        total_duration_ms=int(

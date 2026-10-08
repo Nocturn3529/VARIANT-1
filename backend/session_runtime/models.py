@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from peer_message_contract import LEGACY_PEER_REPLY_HINT, PEER_REPLY_HINT
 
 from session_catalog.profiles import (
     ACTION_SURFACE,
@@ -125,10 +126,6 @@ class ChatRuntimeRecord:
         }
 
 
-# Must match the hint peers/service.py appends to a native peer envelope.
-_PEER_REPLY_HINT = "\n\nReply only when useful with peers.inspect_message(...).reply(...)."
-
-
 @dataclass(frozen=True)
 class InputTicket:
     ticket_id: str
@@ -183,8 +180,11 @@ class InputTicket:
         # The body peers/service.py wraps between its header block and the
         # reply hint; omitted when the envelope does not have that shape.
         header, separator, rest = self.text.partition("\n\n")
-        if separator and "\nExchange ID: " in header and rest.endswith(_PEER_REPLY_HINT):
-            origin["content"] = rest[:-len(_PEER_REPLY_HINT)]
+        if separator and "\nExchange ID: " in header:
+            for hint in (PEER_REPLY_HINT, LEGACY_PEER_REPLY_HINT):
+                if rest.endswith(hint):
+                    origin["content"] = rest[:-len(hint)]
+                    break
         return origin
 
     def to_dict(self) -> dict[str, Any]:

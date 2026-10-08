@@ -228,7 +228,17 @@ async def prepare_chat_turn_stage(
             resume_plan = replace(resume_plan, evidence_ref=reference)
             plan = replace(plan, resume=resume_plan)
 
-    await websocket.send_json({"type": "start", **stream_meta(session)})
+    start = {"type": "start", **stream_meta(session)}
+    project_inputs = getattr(runtimes,"active_input_projection",None)
+    if callable(project_inputs):
+        try:
+            active_inputs = project_inputs(session_id)
+        except Exception as exc:
+            active_inputs = None
+            _LOG.warning("Active input display unavailable: %s", type(exc).__name__)
+        if active_inputs and active_inputs["admission_id"] == start.get("admission_id") and active_inputs["run_id"] == start.get("run_id"):
+            start["active_inputs"] = active_inputs
+    await websocket.send_json(start)
     session.clear_interrupt()
     session.busy = True
     session.active.turn_persisted = False

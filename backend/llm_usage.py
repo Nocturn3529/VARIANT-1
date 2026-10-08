@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import math
 
 
 _USAGE_OBSERVER = ContextVar("variant1_llm_usage_observer", default=None)
@@ -164,6 +165,11 @@ def normalize_manifest_usage(
         _MAX_RECEIPT_TOKEN_COUNT,
         max(reported_total, prompt_token_volume + output_tokens),
     )
+    # Explicit provider cost (including a reported zero) is evidence. Missing
+    # cost stays unknown; token estimates or catalog prices cannot fill it in.
+    reported_cost = raw.get("cost_usd", raw.get("cost"))
+    cost_known = (type(reported_cost) in (int, float) and math.isfinite(reported_cost)
+                  and 0 <= reported_cost < 10**12)
     return {
         "measurement": measurement,
         "provider_reported": provider_reported,
@@ -172,7 +178,8 @@ def normalize_manifest_usage(
             ("input_tokens", input_reported), ("output_tokens", output_reported),
             ("total_tokens", total_reported), ("cached_input_tokens", cached_reported),
             ("reasoning_tokens", reasoning_reported), ("cache_write_input_tokens", cache_write_reported),
-            ("tool_prompt_tokens", tool_prompt_reported)) if present],
+            ("tool_prompt_tokens", tool_prompt_reported), ("cost_usd", cost_known)) if present],
+        **({"cost_usd": float(reported_cost)} if cost_known else {}),
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": reported_total,

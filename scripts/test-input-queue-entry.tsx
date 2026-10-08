@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
+import {ChatMessageList} from "../frontend/main-deck/src/chat/ChatMessageList";
 import {__resetChatStoreForTests} from "../frontend/main-deck/src/chatStore";
 import {activateChatState,getCachedChatState,getChatState,initialChatState,setChatContext,setChatState} from "../frontend/main-deck/src/chat/stateCore";
 import {setChatDraft,submitUserInput} from "../frontend/main-deck/src/chat/composer";
@@ -133,12 +134,65 @@ export async function run() {
     assert.equal(count(activeTicket),0,"canonical undelivered prompt lives in queue only");assert.equal(getChatState().pendingActiveInputs.length,0);
     await ingest({type:"chat:queue_progress",session_id:"B",id:activeTicket,delivery:"steer",queue_size:0,queue:snapshot(3,[item("b-only","parked","B")],"B")});
     assert.equal(count(activeTicket),1,"confirmed delivery adds exactly one visible prompt");
+    // An independent newer queue snapshot may overtake the delivery broadcast.
+    await act(async()=>submitUserInput({source:"voice",sessionId:"B",text:"reordered delivery"},"steer"));
+    const reorderedTicket=String(last("chat").ticket_id),reorderedItem={...item(reorderedTicket,"queued","B"),text:"reordered delivery",delivery:"steer" as const};
+    await ingest(snapshot(4,[item("b-only","parked","B"),reorderedItem],"B"));
+    await ingest(snapshot(6,[item("b-only","parked","B")],"B"));
+    const receipt={type:"chat:queue_progress",...routeOrdinaryB,id:reorderedTicket,delivery:"steer",queue_size:0,
+      queue:snapshot(5,[item("b-only","parked","B")],"B"),
+      input:{...reorderedItem,state:"running",run_id:"ordinary-b",admission_id:"ordinary-b",delivered_at:123}};
+    await ingest({...receipt,admission_id:"stale-admission"});assert.equal(count(reorderedTicket),0);
+    await ingest({...receipt,queue:null});await ingest(receipt);await ingest(receipt);
+    await ingest({...receipt,queue:null});
+    assert.equal(count(reorderedTicket),1,"valid reordered and duplicate delivery produces exactly one bubble");
+    assert.equal(getChatState().inputQueue.snapshot!.revision,6,"delivery never rolls back the queue");
+    assert.equal(getChatState().messages.find(message=>message.ticketId===reorderedTicket)!.ts,123);
+    const durableSteer={role:"user",text:"reordered delivery",ticket_id:reorderedTicket,delivery:"steer",ts:123};
+    await act(async()=>applySession({id:"B",title:"B",messages:[durableSteer],runtime:{busy:true,active_admission_id:"ordinary-b",active_run_id:"ordinary-b",input_queue:snapshot(6,[item("b-only","parked","B")],"B")}}));
+    await ingest(receipt);assert.equal(count(reorderedTicket),1,"hydration and receipt do not duplicate a durable input");
     await ingest({type:"chat:queued",session_id:"B",id:activeTicket,delivery:"steer",queue_size:1,queue:snapshot(2,[activeItem],"B")});assert.equal(count(activeTicket),1);
     await act(async()=>submitUserInput({source:"voice",sessionId:"B",text:"park this after Stop"}));const parkedTicket=String(last("chat").ticket_id);
     await ingest({type:"done",...routeOrdinaryB,cancelled:true,text:"Stopped"});
-    await ingest(snapshot(4,[item("b-only","parked","B"),{...item(parkedTicket,"parked","B"),text:"park this after Stop"}],"B"));
+    await ingest(snapshot(7,[item("b-only","parked","B"),{...item(parkedTicket,"parked","B"),text:"park this after Stop"}],"B"));
     assert.equal(getChatState().turnActive,false);assert.equal(count(parkedTicket),0);assert.equal(getChatState().draft,"");
     assert.equal(buttons(parkedTicket,"Continue").disabled,false,"parked work remains explicit and available after terminal cleanup");
+    const now=Date.now(),cRoute={session_id:"C",run_id:"c-run",admission_id:"c-admission"};
+    const cQueue=snapshot(1,[],"C"),runtime={busy:true,active_run_id:"c-run",active_admission_id:"c-admission",input_queue:cQueue};
+    const projection={schema:"variant1.active-inputs.v1",...cRoute,
+      root:{role:"user",text:"Actual API-started task",run_id:"c-run",ts:(now-5000)/1000},inputs:[]};
+    const step=(id:string,text:string,ts:number)=>({id,kind:"text",detail:text,label:"Narration",status:"done",ts});
+    const runSnapshot={run_id:"c-run",admission_id:"c-admission",revision:1,steps:[step("before","Work before steer",now-3000)],text:""};
+    await act(async()=>{
+      activateChatState("C");noteDisplayedSession("C");
+      ingestChat(parseChatWsMessage({type:"start",...cRoute,active_inputs:projection}));
+      assert.equal(getChatState().messages.filter(message=>message.text==="Actual API-started task").length,1,"external start carries its real root before any reread");
+      applySession({id:"C",title:"C",messages:[],runtime,active_inputs:projection,run_snapshot:runSnapshot});root.render(<ChatMessageList/>);
+    });
+    assert.equal(getChatState().messages.filter(message=>message.text==="Actual API-started task").length,1);
+    const liveGroup=host.querySelector(".chat-turn--live");assert.ok(liveGroup);
+    const steer={...item("c-steer","queued","C"),state:"running",text:"Actual delivered instruction",delivery:"steer",...cRoute,delivered_at:(now-2000)/1000};
+    const hydrated={id:"C",title:"C",messages:[],runtime,active_inputs:{...projection,inputs:[steer]},
+      run_snapshot:{...runSnapshot,revision:2,steps:[...runSnapshot.steps,step("after","Work after steer",now-1000)]}};
+    await act(async()=>{applySession(hydrated);applySession(hydrated);});
+    assert.equal(host.querySelector(".chat-turn--live"),liveGroup,"late root/input hydration preserves the live group's identity");
+    assert.equal(getChatState().messages.filter(message=>message.ticketId==="c-steer").length,1);
+    const displayed=host.textContent!;
+    assert.ok(displayed.indexOf("Actual API-started task")<displayed.indexOf("Work before steer"));
+    assert.ok(displayed.indexOf("Work before steer")<displayed.indexOf("Actual delivered instruction"));
+    assert.ok(displayed.indexOf("Actual delivered instruction")<displayed.indexOf("Work after steer"));
+    await ingest({type:"start",...cRoute,active_inputs:projection});
+    assert.equal(getChatState().turnSteps.length,2,"a delayed start cannot erase hydrated activity");
+    await act(async()=>applySession({...hydrated,active_inputs:{...projection,admission_id:"older",inputs:[steer]}}));
+    assert.equal(getChatState().messages.filter(message=>message.ticketId==="c-steer").length,1,"stale admission projection cannot add input");
+    await ingest({type:"done",...cRoute,text:"Finished API-started work"});
+    const cCommit={type:"chat:appended",...cRoute,client_id:"external-owner",messages:[projection.root,
+      {role:"user",text:steer.text,delivery:"steer",ticket_id:"c-steer",ts:steer.delivered_at},
+      {role:"assistant",text:"Finished API-started work",run_id:"c-run"}]};
+    await ingest(cCommit);await ingest(cCommit);
+    assert.equal(getChatState().messages.filter(message=>message.text==="Actual API-started task").length,1,"external owner commit replaces the active root");
+    assert.equal(getChatState().messages.filter(message=>message.ticketId==="c-steer").length,1,"commit preserves the exact delivered instruction once");
+    assert.equal(getChatState().messages.filter(message=>message.text==="Finished API-started work").length,1,"duplicate external owner commit cannot append again");
     console.log("Input queue: ordered idle/rehydrated retention; normal Send isolation; revision/legacy ordering; exactly-once explicit Continue and committed prompt; eligible Remove, errors/null snapshots, reconnect and session isolation passed");
   } finally {
     await act(async()=>root.unmount());host.remove();resetWireStatus("chat");__resetChatStoreForTests();__resetSessionStoreForTests();__resetTurnStoreForTests();__resetSessionContextStoreForTests();

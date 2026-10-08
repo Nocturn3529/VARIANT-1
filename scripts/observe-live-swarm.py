@@ -62,6 +62,44 @@ def process_snapshot(owners):
             'rss_basis': 'sum_of_process_rss_includes_shared_pages'}
 
 
+def engagement_snapshot(data_root, session_ids):
+    """Read bounded, indexed durable facts; process survival is not agent work.
+
+    A SQLite snapshot cannot establish the live admission's busy flag. Keep
+    that unavailable rather than inferring it from a pending physical request.
+    Never select prompt, message body, objective, code or credential columns.
+    """
+    sessions = {identity: {'session_id': identity, 'live_turn_state': None,
+                          'last_model_request': None, 'last_settlement': None,
+                          'goal': None, 'peer_exchange_tail': []} for identity in session_ids}
+    available = []
+    for path in sorted(Path(data_root).rglob('*.sqlite3')):
+        if path.is_symlink():
+            continue
+        with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2) as conn:
+            conn.row_factory=sqlite3.Row
+            tables={row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            available.extend(sorted(tables & {'model_usage_request','astb_run_settlement','workflow_goal','peer_message'}))
+            for identity,row in sessions.items():
+                if 'model_usage_request' in tables:
+                    last=conn.execute('SELECT manifest_id,run_id,started_at,finished_at,outcome FROM model_usage_request WHERE session_id=? ORDER BY ordinal DESC LIMIT 1',(identity,)).fetchone()
+                    row['last_model_request']=dict(last) if last else None
+                if 'astb_run_settlement' in tables:
+                    last=conn.execute('SELECT run_id,admission_id,sequence,settled_at FROM astb_run_settlement WHERE chat_id=? ORDER BY sequence DESC LIMIT 1',(identity,)).fetchone()
+                    row['last_settlement']=dict(last) if last else None
+                if 'workflow_goal' in tables:
+                    last=conn.execute('SELECT goal_id,status,version,updated_at FROM workflow_goal WHERE owner_chat_id=? ORDER BY updated_at DESC LIMIT 1',(identity,)).fetchone()
+                    row['goal']=dict(last) if last else None
+                if 'peer_message' in tables:
+                    peer='chat:'+identity
+                    # Two indexed tails avoid an OR/full-history query.
+                    sent=conn.execute('SELECT sequence,message_id,exchange_id,in_reply_to,message_kind,state,created_at FROM peer_message WHERE sender_peer_id=? ORDER BY sequence DESC LIMIT 16',(peer,)).fetchall()
+                    received=conn.execute('SELECT sequence,message_id,exchange_id,in_reply_to,message_kind,state,created_at FROM peer_message WHERE target_peer_id=? ORDER BY sequence DESC LIMIT 16',(peer,)).fetchall()
+                    row['peer_exchange_tail']=sorted({item['message_id']:dict(item) for item in [*sent,*received]}.values(),key=lambda item:item['sequence'])[-16:]
+    return {'basis':'read_only_durable_metadata; live_busy_state_not_observed',
+            'available_sources':sorted(set(available)), 'sessions':list(sessions.values())}
+
+
 def database_sizes(root):
     files = {}
     for pattern in ('*.sqlite3', '*.sqlite3-wal', '*.sqlite3-shm', '*.db', '*.db-wal'):
@@ -99,6 +137,7 @@ def run(phase, interval):
                 sample['usage'] = usage_snapshot(root/'data/model-usage.sqlite3',
                     [row['id'] for row in current.get('sessions', [])])
                 sample['database_bytes'] = database_sizes(root/'data')
+                sample['engagement'] = engagement_snapshot(root/'data',[row['id'] for row in current.get('sessions',[])])
                 if sample['resources']['missing_owners']:
                     sample['status'] = 'owner_changed_or_exited; inspect_before_continuing'
             except Exception as error:

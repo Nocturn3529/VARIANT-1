@@ -10,6 +10,15 @@ from copy import deepcopy
 
 from .base import ProviderProfile
 
+# Model wire endpoints declared by OpenCode, reviewed 2026-10-08:
+# https://opencode.ai/docs/zen/#endpoints and /docs/go/#endpoints.
+_OPENCODE_COMMON_WIRES = (
+    {"patterns": ("gpt-*", "grok-*", "muse-spark-*"), "api_style": "openai", "wire_transport": "responses"},
+    {"patterns": ("claude-*",), "api_style": "anthropic"},
+    {"patterns": ("gemini-*",), "api_style": "gemini"},
+)
+_OPENCODE_QWEN_MESSAGES = ("qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen3.6-plus", "qwen3.5-plus")
+
 
 # Capabilities, not task/model special cases in the transport. Exact named
 # families are intentional: future/custom models must declare their own floor.
@@ -58,7 +67,7 @@ def _o(name: str, display: str, base: str, env: tuple[str, ...], model: str,
            "temperature",
        ), completion_token_field: str = "max_tokens",
        max_completion_patterns: tuple[str, ...] = (),
-       sampling_forbidden_patterns: tuple[str, ...] = ()) -> ProviderProfile:
+       sampling_forbidden_patterns: tuple[str, ...] = (), wire_model_rules: tuple[dict, ...] = ()) -> ProviderProfile:
     return ProviderProfile(
         name=name, display_name=display, aliases=aliases, base_url=base,
         models_url=models_url, env_vars=env, auth_style=auth,
@@ -76,6 +85,7 @@ def _o(name: str, display: str, base: str, env: tuple[str, ...], model: str,
         sampling_forbidden_model_patterns=sampling_forbidden_patterns,
         prompt_cache_body_field=prompt_cache_body_field,
         prompt_cache_header=prompt_cache_header,
+        wire_model_rules=deepcopy(wire_model_rules),
     )
 
 
@@ -326,35 +336,28 @@ def builtin_profiles() -> list[ProviderProfile]:
         _o(
             "opencode-zen", "OpenCode Zen", "https://opencode.ai/zen/v1",
             ("OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"),
-            "x-preview-f-free",
+            "",
             aliases=("opencode", "zen"),
-            auth="optional",
+            auth="bearer",
             reasoning=True,
             vision=True,
             models_url="https://opencode.ai/zen/v1/models",
-            fallback=(
-                "big-pickle",
-                "deepseek-v4-flash-free",
-                "mimo-v2.5-free",
-                "nemotron-3-ultra-free",
-                "nemotron-3.5-lightning-free",
-                "laguna-s-2.1-free",
-                "muse-spark-1.2-contributor-free",
-                "hy3-free",
-            ),
+            headers={"User-Agent": "VARIANT-1"}, prompt_cache_header="x-opencode-session",
+            sampling_forbidden_patterns=("gpt-*", "muse-spark-*"),
+            wire_model_rules=(*_OPENCODE_COMMON_WIRES,{"patterns":_OPENCODE_QWEN_MESSAGES,"api_style":"anthropic"}),
             description=(
-                "OpenCode Zen's OpenAI-compatible route. Explicit free model IDs "
-                "work anonymously; an optional OpenCode API key may unlock account "
-                "models."
+                "OpenCode Zen API-key inference. Choose a model from its live catalog; "
+                "free access depends on the provider's current account/client restrictions. "
+                "A catalog listing does not verify inference access."
             ),
         ),
         _o("opencode-go", "OpenCode Go", "https://opencode.ai/zen/go/v1",
            ("OPENCODE_GO_API_KEY",), "", reasoning=True, vision=True,
-           description="OpenCode Go compatible inference."),
-        _o("opencode-free", "OpenCode Free", "https://opencode.ai/zen/v1",
-           (), "big-pickle", auth="optional", reasoning=True, vision=True,
-           models_url="https://opencode.ai/zen/v1/models",
-           description="OpenCode's keyless free-model route."),
+           models_url="https://opencode.ai/zen/go/v1/models",
+           headers={"User-Agent":"VARIANT-1"}, prompt_cache_header="x-opencode-session",
+           sampling_forbidden_patterns=("gpt-*", "muse-spark-*"),
+           wire_model_rules=(*_OPENCODE_COMMON_WIRES,{"patterns":(*_OPENCODE_QWEN_MESSAGES,"qwen3.8-max","minimax-m3","minimax-m2.7"),"api_style":"anthropic"}),
+           description="OpenCode Go subscription-backed API-key inference; choose a model from its live catalog."),
         _o("qwen", "Qwen Portal", "https://portal.qwen.ai/v1", ("QWEN_API_KEY",),
            "qwen3-coder-plus", aliases=("qwen-portal",)),
         _o("stepfun", "StepFun", "https://api.stepfun.ai/step_plan/v1", ("STEPFUN_API_KEY",),

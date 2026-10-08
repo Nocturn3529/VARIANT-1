@@ -3,7 +3,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-from kernel_runtime.worker_bridge import install_document
+from kernel_runtime.worker_bridge import MountedSeedObject, install_document
 
 
 def _method(alias: str, *, operation: str | None = None) -> dict:
@@ -38,6 +38,22 @@ def _context() -> SimpleNamespace:
         document={},
         protected_globals={},
     )
+
+
+def test_unknown_object_method_explains_exact_mounted_contract_without_dispatch():
+    from unittest.mock import Mock
+    bridge = Mock()
+    peers = MountedSeedObject(_object("peers", _method("inspect_message"), _method("reply")), bridge)
+    with pytest.raises(AttributeError, match="Available methods: inspect_message, reply") as failed:
+        peers.inspect_peer_message
+    assert "peers.describe('method')" in str(failed.value)
+    assert "toolbelt.search(query=...)" in str(failed.value)
+    assert not hasattr(peers, "inspect_peer_message")
+    with pytest.raises(KeyError, match="not in this mounted contract"):
+        peers.describe("inspect_peer_message")
+    assert peers.methods() == ["inspect_message", "reply"]
+    assert "inspect_peer_message" not in dir(peers)
+    bridge.invoke.assert_not_called()
 
 
 def test_catalog_installs_direct_namespaces_without_toolbelt_duplicates(monkeypatch):

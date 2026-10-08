@@ -105,6 +105,9 @@ def _reasoning_route_fields(
 ) -> dict:
     profile_for = getattr(router, "provider_profile", None)
     profile = profile_for(provider) if callable(profile_for) else None
+    resolve = getattr(profile, "for_model", None)
+    if callable(resolve):
+        profile = resolve(model)
     declared = tuple(getattr(profile, "reasoning_efforts", ()) or ())
     resolver = getattr(router, "reasoning_efforts", None)
     if callable(resolver):
@@ -234,6 +237,9 @@ def model_route_support_coordinates(router: Any, route: dict | None = None) -> d
     provider = str(selected.get("provider") or "")
     profile_for = getattr(router, "provider_profile", None)
     profile = profile_for(provider) if callable(profile_for) else None
+    resolve = getattr(profile,"for_model",None)
+    if callable(resolve):
+        profile = resolve(str(selected.get("model") or ""))
     adapter = f"{getattr(profile, 'api_style', 'unknown')}.*"
     if provider == "openai-codex":
         adapter = "openai_codex.responses"

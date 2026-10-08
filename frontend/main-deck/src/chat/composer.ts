@@ -304,6 +304,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
       activeInputAccepted: false,
       optimisticOwnsComposer: ownsComposer,
       delivery,
+      inputBoundary:true,
     };
     const pendingInput: PendingActiveInput = {
       ownsComposer,

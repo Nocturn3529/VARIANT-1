@@ -1,7 +1,8 @@
-"""xAI Subscription inference via OpenAI-compatible Responses API.
+"""Native inference through the OpenAI-compatible Responses API.
 
-Personal SuperGrok / OAuth path (Hermes-aligned). API-key xAI traffic still
-uses chat/completions in ``llm_cloud_stream.call_openai``.
+The historical entry point serves xAI subscription inference and explicitly
+declared Responses gateway profiles. Ordinary xAI API-key traffic still uses
+chat/completions unless its profile selects Responses.
 
 POST ``{base}/responses`` with streamed SSE; map text + function_call events
 into VARIANT-1's existing sinks.
@@ -27,7 +28,7 @@ from model_runtime.request_manifest import (
     provider_response_identity,
 )
 from model_runtime.prompt_cache import apply_prompt_cache_identity
-from model_runtime.request_policy import project_reasoning_policy
+from model_runtime.request_policy import project_reasoning_policy, resolve_cloud_request_policy
 from model_runtime.context import context_limit_tokens as _context_limit_tokens
 from model_runtime.responses_protocol import (
     ResponsesSSEDecoder,
@@ -57,7 +58,7 @@ async def call_xai_responses(
     prompt_cache_identity=None,
     reasoning_budget: int | None = None,
 ):
-    """Stream assistant text from xAI ``/v1/responses`` (OAuth subscription)."""
+    """Stream text and native calls from the declared ``/v1/responses`` route."""
     from llm_cloud_stream import (
         _embedded_error_status,
         _embedded_retry_after_seconds,
@@ -66,7 +67,8 @@ async def call_xai_responses(
 
     requested_images = image_b64
     profile = profile or router.provider_profile("xai")
-    model = model or router.get_cloud_model("xai") or (
+    label = profile.name if profile else "xai"
+    model = model or router.get_cloud_model(label) or (
         profile.default_model if profile else "grok-4.5")
     graph = build_message_graph(messages, image_b64)
     instructions, input_items, has_images = render_openai_responses(graph)
@@ -90,9 +92,7 @@ async def call_xai_responses(
         router, profile, model, payload, reasoning_budget,
         effort_field="reasoning.effort", default_effort="low",
     )
-    temp = sampling.get("temperature")
-    if temp is not None and not (profile and profile.omit_temperature):
-        payload["temperature"] = float(temp)
+    payload.update(resolve_cloud_request_policy(profile, model, sampling).sampling)
     rtools = responses_tools(tools)
     if rtools:
         payload["tools"] = rtools
@@ -102,10 +102,10 @@ async def call_xai_responses(
         payload["text"] = {"format": {"type": "json_object"}}
     prepare_payload = getattr(router, "prepare_cloud_payload", None)
     if callable(prepare_payload):
-        payload = prepare_payload(payload, provider="xai", model=model)
+        payload = prepare_payload(payload, provider=label, model=model)
 
     headers = {
-        "Authorization": f"Bearer {key}",
+        **(router._provider_headers(profile, key) if profile and label != "xai" else {"Authorization": f"Bearer {key}"}),
         "Content-Type": "application/json",
         "Accept": "text/event-stream",
     }
@@ -120,7 +120,7 @@ async def call_xai_responses(
     b = (base or "https://api.x.ai/v1").rstrip("/")
     url = f"{b}/responses" if b.endswith("/v1") else f"{b}/v1/responses"
     request_started = time.perf_counter()
-    print(f"[cloud] xai transport=responses model={model} reasoning_effort={effort}",
+    print(f"[cloud] {label} transport=responses model={model} reasoning_effort={effort}",
           flush=True)
 
     try:
@@ -128,10 +128,10 @@ async def call_xai_responses(
         response_identity = {}
         event_hooks = model_request_event_hooks(
             router,
-            provider="xai",
+            provider=label,
             api_style="openai",
             transport="responses",
-            adapter="xai.responses",
+            adapter="xai.responses" if label == "xai" else "openai.responses",
             adapter_version="2",
             model=model,
             payload=payload,
@@ -141,23 +141,23 @@ async def call_xai_responses(
             endpoint_path="/v1/responses",
             prompt_cache=prompt_cache,
             context_limit_tokens=_context_limit_tokens(router, {
-                "mode": "cloud", "provider": "xai", "model": model,
+                "mode": "cloud", "provider": label, "model": model,
             }),
         )
         async with httpx.AsyncClient(
                 timeout=STREAM_TIMEOUT, trust_env=False, event_hooks=event_hooks) as client:
             async with client.stream("POST", url, headers=headers, json=payload) as resp:
                 try:
-                    router._observe_cloud_response("xai", model, resp)
+                    router._observe_cloud_response(label, model, resp)
                 except Exception:
                     pass
                 if resp.status_code != 200:
                     body = await resp.aread()
-                    print(f"[cloud] xai responses {resp.status_code}: {body[:300]!r}",
+                    print(f"[cloud] {label} responses {resp.status_code}: {body[:300]!r}",
                           flush=True)
                     raise ProviderRequestError(
-                        "xai",
-                        f"xai responses {resp.status_code}: {body[:200]!r}",
+                        label,
+                        f"{label} responses {resp.status_code}: {body[:200]!r}",
                         status_code=resp.status_code,
                         retry_after_seconds=_response_retry_after_seconds(resp.headers),
                     )
@@ -178,8 +178,8 @@ async def call_xai_responses(
                         raw = obj.get("error") or obj
                         err = raw if isinstance(raw, dict) else {"message": str(raw)}
                         raise ProviderRequestError(
-                            "xai",
-                            f"xai responses error: {err!r}",
+                            label,
+                            f"{label} responses error: {err!r}",
                             status_code=_embedded_error_status(err) or 400,
                             retry_after_seconds=_embedded_retry_after_seconds(err),
                         )
@@ -249,8 +249,8 @@ async def call_xai_responses(
                                 "message": str(raw or "response failed")
                             }
                             raise ProviderRequestError(
-                                "xai",
-                                f"xai responses failed: {err!r}",
+                                label,
+                                f"{label} responses failed: {err!r}",
                                 status_code=_embedded_error_status(err) or 400,
                                 retry_after_seconds=_embedded_retry_after_seconds(err),
                             )
@@ -262,8 +262,8 @@ async def call_xai_responses(
 
                 if not decoder.saw_terminal:
                     raise ProviderRequestError(
-                        "xai",
-                        "xai responses stream ended without a terminal event",
+                        label,
+                        f"{label} responses stream ended without a terminal event",
                         status_code=503,
                     )
                 if not got_content and fc_index == 0:
@@ -280,7 +280,7 @@ async def call_xai_responses(
             if not comp and out_chars:
                 comp = out_chars // 4
             router._record_usage(
-                "xai", prompt, comp, usage.get("total_tokens"),
+                label, prompt, comp, usage.get("total_tokens"),
                 model=model, raw_usage=dict(usage) if usage else {},
                 inference_time_s=time.perf_counter() - request_started,
                 manifest_ref=event_hooks.request_ref,
@@ -291,7 +291,7 @@ async def call_xai_responses(
         raise
     except (httpx.TimeoutException, httpx.TransportError) as e:
         raise ProviderRequestError(
-            "xai", f"xai responses transport failed: {e}", status_code=503,
+            label, f"{label} responses transport failed: {e}", status_code=503,
         ) from e
     except Exception as e:
-        raise ProviderRequestError("xai", f"xai responses request failed: {e}") from e
+        raise ProviderRequestError(label, f"{label} responses request failed: {e}") from e

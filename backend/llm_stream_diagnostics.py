@@ -10,6 +10,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+def sanitize_openai_stream_diagnostics(value: dict) -> dict:
+    """Closed metadata schema: never retain frames, URLs, errors or prose."""
+    if not isinstance(value, dict) or value.get("schema") != "variant1.openai-stream.v1":
+        return {}
+    reasons = {"terminal", "incomplete_eof", "transport_error", "cancelled", "closed",
+               "oversized_event", "provider_error", "request_error", "reading"}
+    result = {"schema": "variant1.openai-stream.v1",
+              "end_reason": value.get("end_reason") if value.get("end_reason") in reasons else "request_error",
+              "saw_terminal": value.get("saw_terminal") is True,
+              "terminal_kind": value.get("terminal_kind") if value.get("terminal_kind") in {"done", "finish_reason"} else ""}
+    for key in ("data_lines", "json_events", "malformed_events"):
+        result[key] = min(10**9, max(0, value[key])) if type(value.get(key)) is int else 0
+    result["http_status"] = value.get("http_status") if type(value.get("http_status")) is int and 100 <= value["http_status"] <= 599 else 0
+    return result
+
+
 @dataclass
 class StreamDiagnostics:
     finish_reason: str = ""

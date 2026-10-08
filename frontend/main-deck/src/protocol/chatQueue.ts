@@ -6,6 +6,21 @@ export type InputQueueItem = Readonly<{
   origin?:InputQueueOrigin;
 }>;
 export type InputQueueOrigin = Readonly<{kind:"peer"; peer_id:string; message_id:string; display_name:string; content?:string}>;
+/** A delivered ticket is a receipt, independent of the mutable queue revision. */
+export type DeliveredInput = Omit<InputQueueItem,"state"> & Readonly<{
+  state:"running"; run_id:string; admission_id:string; delivered_at:number;
+}>;
+export function parseDeliveredInput(value:unknown,sessionId:string,ticketId:string):DeliveredInput|undefined {
+  if(!value || typeof value!=="object")return;
+  const row=value as Record<string,unknown>;
+  if(row.state!=="running" || row.chat_id!==sessionId || row.ticket_id!==ticketId
+    || typeof row.run_id!=="string" || !row.run_id || typeof row.admission_id!=="string" || !row.admission_id
+    || typeof row.delivered_at!=="number" || !Number.isFinite(row.delivered_at) || row.delivered_at<=0)return;
+  const queue=parseInputQueueSnapshot({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:sessionId,
+    revision:0,items:[{...row,state:"preparing"}]});
+  if(!queue)return;
+  return {...queue.items[0],state:"running",run_id:row.run_id,admission_id:row.admission_id,delivered_at:row.delivered_at};
+}
 function parseOrigin(value:unknown):InputQueueOrigin|undefined {
   if(!value || typeof value!=="object")return undefined;
   const row=value as Record<string,unknown>;

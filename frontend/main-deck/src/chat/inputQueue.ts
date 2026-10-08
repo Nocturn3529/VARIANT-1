@@ -1,6 +1,7 @@
-import type {InputQueueItem,InputQueueResult,InputQueueSnapshot} from "../protocol/chatQueue";
-import type {StreamRouting} from "../protocol/chatEvents";
-import {getChatState,getChatContext,patchChatState,sendChat,sharedTurnActive,notifyChat} from "./stateCore";
+import {parseDeliveredInput,type InputQueueItem,type InputQueueResult,type InputQueueSnapshot} from "../protocol/chatQueue";
+import {parseMessage,chatMessagesMatch} from "./messages";
+import type {ChatQueueProgressMessage,StreamRouting} from "../protocol/chatEvents";
+import {getChatState,getChatContext,patchChatState,sendChat,sharedTurnActive,notifyChat,turnApi} from "./stateCore";
 import {getSessionState} from "../state/sessionStore";
 import {getContextForSession} from "../sessionContextStore";
 import {flushNarration,pushTurnStep} from "./turn";
@@ -140,23 +141,62 @@ export function finishQueueContinuation(message?:StreamRouting):void {
   if(continuation && (continuation.started || matched))patchChatState({inputQueue:{...state.inputQueue,continuation:{...continuation,finished:true}}});
 }
 
-export function markQueuedPromptDelivered(ticketId:string,item?:InputQueueItem):void {
+export function ingestInputDelivery(message:ChatQueueProgressMessage):void {
+  const state=getChatState(),turn=turnApi().snapshot();
+  if(message.session_id!==state.sessionId || (message.queue && message.queue.session_id!==state.sessionId))return;
+  if(message.admission_id && (!turn.active || message.admission_id!==turn.admissionId))return;
+  if(message.run_id && (!turn.active || message.run_id!==turn.runId))return;
+  if(message.input && (message.input.admission_id!==message.admission_id || message.input.run_id!==message.run_id))return;
+  const item=message.input || queueItem(message.id);
+  // Queue snapshots are revision-fenced; a valid delivery receipt has its own
+  // run/ticket fence and must not be discarded with an older snapshot.
+  if(message.queue)applyInputQueue(message.queue);else refreshInputQueue();
+  if(!item || item.chat_id!==state.sessionId)return;
+  markQueuedPromptDelivered(message.id,item,message.input?.delivered_at,turn.runId,turn.admissionId);
+}
+
+export function hydrateActiveInputs(value:unknown):void {
+  if(!value || typeof value!=="object")return;
+  const projection=value as Record<string,unknown>,state=getChatState(),turn=turnApi().snapshot();
+  if(projection.schema!=="variant1.active-inputs.v1" || projection.session_id!==state.sessionId || !turn.active
+    || projection.run_id!==turn.runId || projection.admission_id!==turn.admissionId)return;
+  const root=parseMessage(projection.root);
+  if(root?.role==="user") {
+    const rootId=state.activeTurnId || `active-root-${turn.admissionId}`;
+    const matches=(row:import("./types").ChatMessage)=>row.role==="user" && chatMessagesMatch(row,root)
+      && (row.runId===turn.runId || (!!state.activeTurnId && row.optimisticTurnId===state.activeTurnId));
+    if(state.messages.some(matches))patchChatState({messages:state.messages.map(row=>matches(row)?{...row,runId:turn.runId,admissionId:turn.admissionId}:row)});
+    else patchChatState({activeTurnId:rootId,messages:[...state.messages,{...root,localId:rootId,optimisticTurnId:rootId,
+      runId:turn.runId,admissionId:turn.admissionId,activeInputAccepted:true,activeInputState:"delivered",inputBoundary:false}]});
+  }
+  if(Array.isArray(projection.inputs))for(const value of projection.inputs.slice(-64)) {
+    const id=value && typeof value==="object" ? String((value as Record<string,unknown>).ticket_id || "") : "";
+    const item=parseDeliveredInput(value,state.sessionId || "",id);
+    if(item && item.run_id===turn.runId && item.admission_id===turn.admissionId)
+      markQueuedPromptDelivered(id,item,item.delivered_at,turn.runId,turn.admissionId);
+  }
+}
+
+export function markQueuedPromptDelivered(ticketId:string,item?:InputQueueItem|import("../protocol/chatQueue").DeliveredInput,deliveredAt?:number,runId?:string,admissionId?:string):void {
   const state=getChatState();
-  if(state.inputQueue.snapshot?.items.some(row=>row.ticket_id===ticketId))return;
   if(state.messages.some(message=>message.role==="user" && message.ticketId===ticketId)){
-    patchChatState({messages:state.messages.map(message=>message.role==="user"&&message.ticketId===ticketId?{...message,activeInputAccepted:true,activeInputState:"delivered"}:message),
+    patchChatState({messages:state.messages.map(message=>message.role==="user"&&message.ticketId===ticketId?{...message,activeInputAccepted:true,activeInputState:"delivered",runId,admissionId,
+      inputBoundary:message.optimisticTurnId!==state.activeTurnId,ts:deliveredAt || message.ts}:message),
       pendingActiveInputs:state.pendingActiveInputs.filter(item=>item.optimisticTurnId!==ticketId)});return;
   }
   if(!item)return;
   const origin=item.origin;
   // Another agent steered into the running turn: show it where it landed.
   if(origin && item.delivery==="steer" && sharedTurnActive()){
+    if(state.turnSteps.some(step=>step.peerInbound?.message_id===origin.message_id))return;
     flushNarration();
     pushTurnStep({kind:"step",label:`Message from ${origin.display_name || "another agent"}`,key:`peer-in:${origin.message_id}`,status:"done",
+      ...(deliveredAt?{startedAt:deliveredAt*1000,completedAt:deliveredAt*1000}:{}),
       peerInbound:{peer_id:origin.peer_id,message_id:origin.message_id,display_name:origin.display_name,...(origin.content!==undefined?{content:origin.content}:{})}});
     return;
   }
   patchChatState({messages:[...state.messages,{role:"user",text:item.text,ticketId,optimisticTurnId:ticketId,activeInputAccepted:true,activeInputState:"delivered",delivery:item.delivery,
+    runId,admissionId,inputBoundary:ticketId!==state.activeTurnId,ts:deliveredAt || Date.now()/1000,
     // The queue text is the model's envelope; a peer card shows the message itself.
     ...(origin?{origin:{kind:"peer" as const,peer_id:origin.peer_id,message_id:origin.message_id},
       ...(origin.content!==undefined?{peerDisplay:{display_name:origin.display_name,content:origin.content}}:{})}:{})}]});

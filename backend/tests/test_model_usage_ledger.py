@@ -40,6 +40,34 @@ def test_duplicate_receipts_and_usage_corrections_do_not_double_count(tmp_path):
     assert totals["reasoning_tokens"] == 20  # Subset, not added to total.
 
 
+def test_stream_diagnostics_keep_identity_and_unknown_usage_without_payloads(tmp_path):
+    ledger = ModelUsageLedger(tmp_path / "usage.sqlite3")
+    ledger.record(request())
+    ledger.patch_response("mreq-a", {"provider_generation_id": "generation-a"})
+    ledger.patch_stream_diagnostics("mreq-a", {"schema": "variant1.openai-stream.v1",
+        "end_reason": "incomplete_eof", "saw_terminal": False, "data_lines": 2,
+        "json_events": 1, "malformed_events": 1, "prompt": "private prompt", "url": "private URL"})
+    row = ModelUsageLedger(tmp_path / "usage.sqlite3").get("mreq-a")
+    assert row["response"]["provider_generation_id"] == "generation-a"
+    assert row["response"]["stream"]["end_reason"] == "incomplete_eof"
+    assert row["response"]["stream"]["malformed_events"] == 1
+    assert row["usage"] is None
+    assert ledger.totals()["total_tokens"] is None
+    assert "private" not in json.dumps(row)
+
+
+@pytest.mark.parametrize("cost", [0, 0.0125, None, -1, float("nan"), True])
+def test_provider_cost_is_preserved_only_when_explicit_and_valid(tmp_path,cost):
+    from llm_usage import normalize_manifest_usage
+    ledger = ModelUsageLedger(tmp_path / "cost.sqlite3")
+    ledger.record(request())
+    usage = normalize_manifest_usage("openrouter",raw_usage={"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"cost":cost})
+    ledger.patch_usage("mreq-a",usage)
+    known = type(cost) in (int,float) and cost in (0,0.0125)
+    assert ledger.totals()["cost_usd"] == (cost if known else None)
+    assert ledger.totals()["cost_usd_reported_requests"] == (1 if known else 0)
+
+
 def test_token_rollups_use_exact_integer_arithmetic_beyond_float_precision(tmp_path):
     ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
     ledger.record(request())

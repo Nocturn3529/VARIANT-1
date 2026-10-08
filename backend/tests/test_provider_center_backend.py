@@ -113,7 +113,9 @@ def test_provider_catalog_exposes_hermes_style_auth_metadata(tmp_path):
     assert {"oauth", "api_key"} <= set(providers["xai"]["auth_methods"])
     assert providers["openai-codex"]["auth_methods"] == ["oauth"]
     assert providers["ollama"]["auth_methods"] == ["external"]
-    assert providers["opencode-free"]["auth_methods"] == []
+    assert "opencode-free" not in providers
+    assert providers["opencode-zen"]["auth_methods"] == ["api_key"]
+    assert providers["opencode-go"]["auth_methods"] == ["api_key"]
     assert providers["fireworks"]["credential_env_vars"] == [
         "FIREWORKS_API_KEY",
     ]

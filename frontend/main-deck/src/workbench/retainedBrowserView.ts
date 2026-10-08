@@ -40,6 +40,8 @@ export function retainedBrowser(id:string,url:string,api:RuntimeApi,navigationRe
   guest.getURL=()=>String(browser.state.url || url);guest.getTitle=()=>String(browser.state.title || "");
   guest.canGoBack=()=>browser.state.canGoBack===true;guest.canGoForward=()=>browser.state.canGoForward===true;
   guest.getWebContentsId=()=>Number(browser.state.guestId)||0;guest.getZoomFactor=()=>Number(browser.state.zoomFactor)||1;
+  guest.getBrowserPresentation=()=>({visible:browser.state.visible===true,attached:!!browser.state.attachmentId,
+    viewport:browser.state.viewport as {width:number;height:number}|undefined});
   guest.isDevToolsOpened=()=>browser.state.devToolsOpened===true;
   guest.flushLayout=async()=>{browser.attachment?.sync();await browser.update;if(browser.layoutError)throw new Error(browser.layoutError);};
   guest.loadURL=async value=>{await call("loadURL",[value]);};

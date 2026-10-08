@@ -9,6 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 from background_tasks import OwnedTaskSet
+from peer_message_contract import PEER_REPLY_HINT
 
 from .repository import MESSAGE_DIRECTIONS, PeerRepository
 from .delivery import MESSAGE_KINDS, requests_work, grok_delivery_status
@@ -479,7 +480,7 @@ class PeerCommunicationService:
             f"Message ID: {row.get('message_id')}\n"
             f"Exchange ID: {row.get('exchange_id')}\n\n"
             + str(row.get("content") or "")
-            + "\n\nReply only when useful with peers.inspect_message(...).reply(...)."
+            + PEER_REPLY_HINT
         )
 
     def _sync_native_state(self, row: Mapping[str, Any]) -> dict[str, Any]:

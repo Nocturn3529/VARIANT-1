@@ -130,6 +130,7 @@ def _profile(
 ):
     values = dict(
         name=name,
+        auth_style="query" if name == "gemini" else "bearer",
         base_url=base_url,
         default_model=default_model,
         omit_temperature=False,

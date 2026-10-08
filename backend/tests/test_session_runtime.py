@@ -749,6 +749,43 @@ def test_ticket_lifecycle_and_transcript_proof(tmp_path):
     assert terminal.proof["ticket_id"] == ticket.ticket_id
 
 
+def test_active_input_projection_is_exact_bounded_and_not_history(tmp_path):
+    registry, repository = _runtime(tmp_path)
+    sid = "active-projection"
+    session = ConnectionSession(viewed_session_id=sid)
+    registry.attach(sid, session.attachment_id, session)
+    admission = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(admission, run_id="projection-run", thread_id="projection-run")
+    session.active.runtime_admission_id = admission
+    session.active.turn_display_user_text = "real root task"
+    pending = registry.enqueue_input(sid, "not delivered", delivery="follow_up")
+    for index in range(66):
+        ticket = registry.enqueue_input(sid, f"instruction {index}", delivery="steer")
+        row = registry.claim_input(sid, "steer", run_id="projection-run")
+        receipt = registry.record_input_delivery(sid, session, row, None)
+        assert receipt["ticket_id"] == ticket.ticket_id
+        assert receipt["run_id"] == "projection-run"
+        assert receipt["admission_id"] == admission
+        assert repository.get_ticket(ticket.ticket_id).proof["delivered_at"] == receipt["delivered_at"]
+    projected = registry.active_input_projection(sid)
+    assert projected["root"]["text"] == "real root task"
+    assert projected["omitted_inputs"] == 2
+    assert len(projected["inputs"]) == 64
+    assert projected["inputs"][-1]["text"] == "instruction 65"
+    assert pending.ticket_id not in {row["ticket_id"] for row in projected["inputs"]}
+    assert registry.active_input_projection("another-chat") is None
+    queued = registry.enqueue_input(sid,"stale callback",delivery="steer")
+    stale = registry.claim_input(sid,"steer",run_id="projection-run")
+    session.active.runtime_admission_id = "old-admission"
+    assert registry.active_input_projection(sid) is None
+    with pytest.raises(RuntimeError,match="stale admission"):
+        registry.record_input_delivery(sid,session,stale,None)
+    assert repository.get_ticket(queued.ticket_id).state == "preparing"
+    session.active.runtime_admission_id = admission
+    registry.finish_run(admission, status="test-complete")
+    assert registry.active_input_projection(sid) is None
+
+
 def test_transcript_append_if_absent_is_idempotent(tmp_path):
     store = open_sessions(tmp_path / "chats")
     sid = store.create_session()

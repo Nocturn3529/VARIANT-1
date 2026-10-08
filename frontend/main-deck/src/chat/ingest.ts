@@ -30,7 +30,7 @@ import {
 import {beginTurnReceipt} from "./receipt";
 import {acknowledgeTrace} from "./annotations";
 import {ingestPauseState,currentPause} from "./pause";
-import {applyInputQueue,ingestInputQueueResult,refreshInputQueue,queueItem,markQueuedPromptDelivered,isQueueContinueStart,canAdoptQueueStart,startQueueContinuation,finishQueueContinuation} from "./inputQueue";
+import {applyInputQueue,ingestInputQueueResult,refreshInputQueue,ingestInputDelivery,hydrateActiveInputs,isQueueContinueStart,canAdoptQueueStart,startQueueContinuation,finishQueueContinuation} from "./inputQueue";
 import {activeTurnSessionIds,isSettledTurnEvent} from "../state/turnStore";
 import {ingestComposerGoal,invalidateComposerGoal} from "./goals";
 import {recordRecoveryNotice,dismissRecoveryNotice} from "./recovery";
@@ -258,7 +258,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
     case "chat:queue_progress": {
       if (state.sessionId && message.session_id
           && state.sessionId !== message.session_id) return;
-      if(message.queue){const item=queueItem(message.id);if(applyInputQueue(message.queue))markQueuedPromptDelivered(message.id,item);return;}
+      if(message.queue || message.input || message.admission_id){ingestInputDelivery(message);return;}
       refreshInputQueue();if(getChatState().inputQueue.snapshot)return;
       markActiveInputDelivered(message.id);
       patchChatState({queuedFollowUps: Math.max(0, message.queue_size)});
@@ -349,6 +349,12 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "start": {
+      const followed=turn.snapshot();
+      if(followed.active && message.admission_id && message.admission_id===followed.admissionId
+        && message.run_id===followed.runId) {
+        hydrateActiveInputs(message.active_inputs);
+        return; // A delayed/duplicate start cannot erase an already observed run.
+      }
       // Only adopt unowned streams for our own chat client (mic / multi-window).
       const eventClient = message.client_id || "";
       if (!sharedTurnActive()) {
@@ -376,6 +382,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
         runtime:getChatState().runtime ? {...getChatState().runtime!,busy:true,activeAdmissionId:message.admission_id || "",activeRunId:message.run_id || ""} : null,
       });
       beginTurnReceipt();
+      hydrateActiveInputs(message.active_inputs);
       requestSessionContext(getChatState().sessionId, getChatState().sessionId === getDisplayedChatState().sessionId);
       setSubtitle("VARIANT-1 is responding", "working");
       emit();

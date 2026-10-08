@@ -1028,6 +1028,54 @@ class SessionRuntimeRegistry:
                 return None
             return attachment.session, attachment.transport
 
+    def active_input_projection(self, chat_id: str) -> dict | None:
+        """Bounded display of real admitted input, before transcript commit.
+
+        This is an observation of the exact live owner, never a history write
+        or a queue resume. Terminal/parked inputs are not guessed as delivered.
+        """
+        clean = self._chat_id(chat_id)
+        with self._guard:
+            live = self._live.get(clean)
+            admission = live.admission if live else None
+            owner = self.active_run_owner(clean)
+            if admission is None or owner is None or not admission.run_id:
+                return None
+            active = getattr(owner[0], "active", None)
+            if active is None or getattr(active, "runtime_admission_id", "") != admission.admission_id:
+                return None
+            text = getattr(active, "turn_display_user_text", None)
+            root = None
+            if text is not None and not getattr(active, "turn_persisted", False):
+                root = {"role": "user", "text": str(text), "ts": admission.reserved_at,
+                        "run_id": admission.run_id,
+                        "attachments": getattr(active, "turn_display_attachments", None) or []}
+                ticket_id = str(getattr(active, "turn_ticket_id", "") or "")
+                ticket = self.repository.get_ticket(ticket_id) if ticket_id else None
+                if ticket and ticket.chat_id == clean:
+                    root["ticket_id"] = ticket_id
+                    origin = ticket.origin()
+                    if origin:
+                        root["origin"] = origin
+                        if "content" in origin:
+                            root["peer_display"] = {"display_name": origin["display_name"], "content": origin["content"]}
+            delivered = getattr(active, "delivered_inputs", ()) or ()
+            tail = delivered[-64:]
+            tickets = self.repository.display_tickets(clean, [str(row.get("id") or "") for row in tail])
+            inputs = []
+            for row in tail:
+                ticket = tickets.get(str(row.get("id") or ""))
+                if ticket is None or ticket.chat_id != clean:
+                    continue
+                if row.get("run_id") and row["run_id"] != admission.run_id:
+                    continue
+                inputs.append({**ticket.to_dict(), "state": "running", "run_id": admission.run_id,
+                               "admission_id": admission.admission_id,
+                               "delivered_at": float(row.get("delivered_at") or ticket.proof.get("delivered_at") or ticket.updated_at)})
+            return {"schema": "variant1.active-inputs.v1", "session_id": clean,
+                    "run_id": admission.run_id, "admission_id": admission.admission_id,
+                    "root": root, "inputs": inputs, "omitted_inputs": max(0, len(delivered) - 64)}
+
     def cancel_active_run(self, chat_id: str, *, expected_admission_id: str = "") -> asyncio.Task | None:
         """Cancel the one run owned by this durable chat, if any."""
         clean = self._chat_id(chat_id)
@@ -1185,17 +1233,37 @@ class SessionRuntimeRegistry:
         session: Any,
         row: dict,
         assistant_text: str | None,
-    ) -> None:
+    ) -> dict | None:
+        clean = self._chat_id(chat_id)
+        identity = self.pause_snapshot(clean)
+        ticket_id = str((row or {}).get("id") or "")
+        ticket = self.repository.get_ticket(ticket_id) if ticket_id else None
+        if ticket is not None and ticket.chat_id != clean:
+            raise RuntimeError("active input ticket belongs to another chat")
+        active = getattr(session,"active",None)
+        if identity["admission_id"] and getattr(active,"runtime_admission_id","") != identity["admission_id"]:
+            raise RuntimeError("active input delivery belongs to a stale admission")
+        if ticket and ticket.run_id and identity["run_id"] and ticket.run_id != identity["run_id"]:
+            raise RuntimeError("active input delivery belongs to another run")
+        delivered_at = time.time()
+        delivery = {**row, "run_id": identity["run_id"],
+                    "admission_id": identity["admission_id"], "delivered_at": delivered_at}
         recorder = getattr(session, "record_active_input", None)
         if callable(recorder):
-            recorder(row, assistant_text)
-        ticket_id = str((row or {}).get("id") or "")
+            recorder(delivery, assistant_text)
         if ticket_id:
-            self.repository.transition_ticket(
+            updated = self.repository.transition_ticket(
                 ticket_id,
                 "running",
                 expected=("selected", "preparing"),
+                proof={**(ticket.proof if ticket else {}), "chat_id": clean,
+                       "run_id": identity["run_id"], "admission_id": identity["admission_id"],
+                       "delivered_at": delivered_at},
             )
+            if updated is not None and updated.state == "running":
+                return {**updated.to_dict(), "run_id": identity["run_id"],
+                        "admission_id": identity["admission_id"], "delivered_at": delivered_at}
+        return None
 
     def begin_transcript_commit(self, delivered: Iterable[dict]) -> None:
         for row in delivered or ():

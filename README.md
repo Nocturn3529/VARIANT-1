@@ -38,6 +38,7 @@ Use the release notes for the behavior and qualification of a downloaded build.
 - **Combine code and tools.** Work with files, processes, browser/desktop
   operations, and connectors through Python, with inspectable results. The ASTB
   tool-discovery layer exposes capabilities as needed through shared backend services.
+  Search by method name to find its owning capability, category, and call signature.
 - **Inspect execution and changes.** Activity distinguishes failures, stopped
   work, and uncertain outcomes. Bounded previews redact managed or recognized
   credentials and mark omitted content. Review Git changes in collapsible file
@@ -72,12 +73,18 @@ Use the release notes for the behavior and qualification of a downloaded build.
   is durably recorded off the event loop before terminal budget reconciliation.
   Restart recovery surfaces consumed peer work without a settlement as uncertain,
   preserving its evidence for inspection.
+  Delivered steering appears between the work before and after it. Opening an
+  active chat restores its admitted task and delivered inputs before the final
+  transcript is committed. Older evidence is accessible from the activity trace.
 
 ## Costs and model access
 
 The app requires no VARIANT subscription. You supply the inference: local models
 use your hardware, while cloud providers set their own costs, quotas, and account
 requirements. OAuth authorizes access; it does not promise free inference.
+OpenCode Zen and Go use API keys and an explicitly selected model. Their public
+catalogs do not certify inference access; the retired anonymous Free connection
+is no longer offered.
 
 Model weights and native inference binaries are not stored in this repository.
 Google subscription OAuth also requires an authorized client configuration that

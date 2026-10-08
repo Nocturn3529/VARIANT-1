@@ -131,6 +131,21 @@ class ModelUsageLedger:
             conn.execute("UPDATE model_usage_request SET response_json=? WHERE manifest_id=?", (json.dumps(response), _text(identity, 160)))
         return True
 
+    def patch_stream_diagnostics(self, identity, value):
+        from llm_stream_diagnostics import sanitize_openai_stream_diagnostics
+        cleaned = sanitize_openai_stream_diagnostics(value)
+        if not cleaned:
+            return False
+        with self._connect() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT response_json FROM model_usage_request WHERE manifest_id=?', (_text(identity, 160),)).fetchone()
+            if row is None:
+                return False
+            response = json.loads(row[0])
+            response['stream'] = cleaned
+            conn.execute('UPDATE model_usage_request SET response_json=? WHERE manifest_id=?', (json.dumps(response), _text(identity, 160)))
+        return True
+
     def get(self, identity):
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM model_usage_request WHERE manifest_id=?", (_text(identity, 160),)).fetchone()

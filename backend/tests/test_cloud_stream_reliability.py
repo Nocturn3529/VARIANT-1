@@ -23,6 +23,64 @@ def _router() -> LLMRouter:
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["terminal", "incomplete_eof", "transport_error", "malformed", "oversized_event", "cancelled"])
+async def test_openai_stream_retains_structural_end_diagnostics(monkeypatch, kind):
+    from model_runtime.openai_sse import OpenAIChatSSEDecoder
+    import asyncio
+    import httpx
+    rows = ['data: {"choices":[{"delta":{"content":"visible fixture"}}]}']
+    if kind == "terminal":
+        rows.append("data: [DONE]")
+    elif kind == "malformed":
+        rows.append("data: not JSON")
+    elif kind == "oversized_event":
+        rows.append("data: " + "x" * 200)
+        monkeypatch.setattr(cloud,"OpenAIChatSSEDecoder",lambda:OpenAIChatSSEDecoder(max_frame_chars=100))
+    class Response(_StreamResponse):
+        async def aiter_lines(self):
+            for line in self.lines:
+                yield line
+            if kind == "transport_error":
+                raise httpx.ReadError("fixture broken transport")
+            if kind == "cancelled":
+                raise asyncio.CancelledError()
+    monkeypatch.setattr(cloud.httpx,"AsyncClient",_client_for(Response(rows)))
+    router = _router()
+    observed = []
+    monkeypatch.setattr(router,"_patch_model_request_stream",lambda ref,value:observed.append(value))
+    async def consume():
+        return [token async for token in cloud.call_openai(router,[{"role":"user","content":"fixture"}],{"max_tokens":32},"dummy-test-key",model="test-model")]
+    if kind == "terminal":
+        assert await consume() == ["visible fixture"]
+    elif kind == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await consume()
+    else:
+        with pytest.raises(ProviderRequestError):
+            await consume()
+    assert len(observed) == 1
+    assert observed[0]["end_reason"] == ("incomplete_eof" if kind == "malformed" else kind)
+    assert observed[0]["saw_terminal"] == (kind == "terminal")
+    assert observed[0]["http_status"] == 200
+    assert observed[0]["malformed_events"] == (1 if kind == "malformed" else 0)
+    assert "visible fixture" not in json.dumps(observed)
+
+
+def test_openai_decoder_preserves_split_unicode_and_bounds_pending_frames():
+    from model_runtime.openai_sse import OpenAIChatSSEDecoder
+    decoder = OpenAIChatSSEDecoder()
+    encoded = ('data: ' + json.dumps({"choices":[{"delta":{"content":"zażółć"}}]},ensure_ascii=False) + '\n').encode()
+    events = []
+    for byte in encoded:
+        events.extend(decoder.feed_text(bytes([byte])))
+    assert events[0].payload["choices"][0]["delta"]["content"] == "zażółć"
+    bounded = OpenAIChatSSEDecoder(max_frame_chars=32)
+    with pytest.raises(ValueError,match="bounded frame"):
+        bounded.feed_text("data: " + "x"*64)
+    assert bounded.diagnostics()["end_reason"] == "oversized_event"
+
+
 class _StreamResponse:
     def __init__(self, lines, *, status_code=200, headers=None, body=b""):
         self.lines = list(lines)
@@ -91,9 +149,60 @@ def _capturing_client_for(response, captured):
 
         def stream(self, *_args, **kwargs):
             captured["payload"] = kwargs.get("json")
+            captured["url"] = _args[1]
+            captured["headers"] = kwargs.get("headers")
             return response
 
     return _Client
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,model,path",[
+    ("opencode-zen","gpt-6.1-sol","responses"),
+    ("opencode-go","grok-4.7","responses"),
+    ("opencode-zen","claude-sonnet-4-6","messages"),
+    ("opencode-go","qwen3.8-max","messages"),
+    ("opencode-zen","qwen3.8-max","chat/completions"),
+    ("opencode-go","minimax-m2.7","messages"),
+    ("opencode-zen","minimax-m2.7","chat/completions"),
+    ("opencode-zen","gemini-3.8-flash","models/gemini-3.8-flash:streamGenerateContent?alt=sse"),
+])
+async def test_opencode_wire_endpoint_headers_and_session_identity(monkeypatch,provider,model,path):
+    from model_runtime.prompt_cache import resolve_prompt_cache_identity
+    router = _router()
+    profile = router.provider_profile(provider)
+    rows = {
+        "responses": ['data: {"type":"response.output_text.delta","delta":"done"}',
+                      'data: {"type":"response.completed","response":{"status":"completed"}}'],
+        "messages": ['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"done"}}',
+                     'data: {"type":"message_stop"}'],
+        "chat/completions": ['data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}'],
+    }
+    if path.startswith("models/"):
+        stream=['data: {"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}']
+    else:
+        stream=rows[path]
+    captured={}
+    monkeypatch.setattr(cloud.httpx,"AsyncClient",_capturing_client_for(_StreamResponse(stream),captured))
+    identity=resolve_prompt_cache_identity("same-durable-test-chat")
+    for _purpose in ("main","auxiliary"):
+        output=[token async for token in cloud.call_cloud_once(router,profile,
+            CredentialLease(provider,"test","Test","dummy-test-key"),model,[{"role":"user","content":"fixture"}],
+            {"max_tokens":32},False,None,None,prompt_cache_identity=identity,tools=[IPYTHON_PROVIDER_SPEC])]
+        assert output == ["done"]
+        assert captured["url"] == profile.base_url+"/"+path
+        assert captured["headers"]["Authorization"] == "Bearer dummy-test-key"
+        assert captured["headers"]["User-Agent"] == "VARIANT-1"
+        assert captured["headers"]["x-opencode-session"] == identity.key
+        assert "dummy-test-key" not in captured["url"]
+        if path == "responses":
+            assert captured["payload"]["tools"][0]["name"] == "ipython"
+        elif path == "messages":
+            assert captured["payload"]["tools"][0]["name"] == "ipython"
+        elif path == "chat/completions":
+            assert captured["payload"]["tools"][0]["function"]["name"] == "ipython"
+        else:
+            assert captured["payload"]["tools"][0]["functionDeclarations"][0]["name"] == "ipython"
 
 
 @pytest.mark.asyncio

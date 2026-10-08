@@ -46,16 +46,19 @@ export function applyBrowserViewport(guest: HTMLElement, requested?: ViewportSiz
   guest.dataset.viewportMode = requested ? "fixed" : "auto";
 }
 
-export function measureBrowserViewport(guest: HTMLElement) {
+export function measureBrowserViewport(guest: HTMLElement & {getBrowserPresentation?:()=>{visible:boolean;viewport?:ViewportSize}}) {
   const rect = guest.getBoundingClientRect();
   const container = guest.parentElement?.parentElement;
   const surface = container?.getBoundingClientRect() || rect;
   const right = container?.clientWidth ? surface.left + container.clientWidth : surface.right;
   const bottom = container?.clientHeight ? surface.top + container.clientHeight : surface.bottom;
+  const retained=guest.getBrowserPresentation?.();
+  const hidden=retained && !retained.visible;
   return {
-    width: Math.round(rect.width), height: Math.round(rect.height),
-    visible_width: Math.round(Math.max(0, Math.min(rect.right, right) - Math.max(rect.left, surface.left))),
-    visible_height: Math.round(Math.max(0, Math.min(rect.bottom, bottom) - Math.max(rect.top, surface.top))),
+    width: Math.round(hidden && retained.viewport ? retained.viewport.width : rect.width),
+    height: Math.round(hidden && retained.viewport ? retained.viewport.height : rect.height),
+    visible_width: hidden ? 0 : Math.round(Math.max(0, Math.min(rect.right, right) - Math.max(rect.left, surface.left))),
+    visible_height: hidden ? 0 : Math.round(Math.max(0, Math.min(rect.bottom, bottom) - Math.max(rect.top, surface.top))),
     device_scale_factor: guest.ownerDocument.defaultView?.devicePixelRatio || 1,
     mode: guest.dataset.viewportMode === "fixed" ? "fixed" : "auto",
   };

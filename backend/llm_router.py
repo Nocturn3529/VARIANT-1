@@ -474,6 +474,9 @@ class LLMRouter:
         self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
             identity, normalized, partial=True))
 
+    def _patch_model_request_stream(self, manifest_ref, value):
+        self._manifest_bus.patch_stream_diagnostics(manifest_ref, value)
+
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,
     ) -> None:
@@ -1582,7 +1585,7 @@ class LLMRouter:
         headers = dict(profile.default_headers or {})
         if profile.auth_style == "x-api-key" and key:
             headers["x-api-key"] = key
-        elif profile.auth_style == "bearer" and key:
+        elif profile.auth_style in {"bearer", "optional"} and key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
 

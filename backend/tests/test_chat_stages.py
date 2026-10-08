@@ -225,3 +225,39 @@ async def test_setup_admits_images_when_selected_model_is_not_prequalified_for_v
 
     assert isinstance(outcome, ChatStageContinue)
     assert websocket.send_json.await_args.args[0]["type"] == "start"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("display_failure", [False, True])
+async def test_external_start_projects_its_real_root_without_making_display_a_gate(tmp_path,display_failure):
+    from run_context import Variant1RunContext, bind_run_context
+    from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
+    sid, _store, ports = _setup_terminal_ports(tmp_path,engine_ready=True,vision_ready=True)
+    session = ConnectionSession(viewed_session_id=sid)
+    websocket = SimpleNamespace(send_json=AsyncMock())
+    registry = SessionRuntimeRegistry(SessionRuntimeRepository(str(tmp_path/'runtime.sqlite3')))
+    registry.attach(sid,session.attachment_id,session,websocket)
+    admission = registry.try_reserve_run(sid,attachment_id=session.attachment_id)
+    registry.begin_run(admission,run_id="external-start",thread_id="external-start")
+    session.active.runtime_admission_id=admission
+    session.active.runtime_chat_id=sid
+    ports.io.runtime_registry=registry
+    if display_failure:
+        def unavailable(_sid):
+            raise OSError("fixture display read unavailable")
+        registry.active_input_projection=unavailable
+    try:
+        with bind_run_context(Variant1RunContext.create(source="chat",session_id=sid,run_id="external-start",chat_session=session)):
+            result = await prepare_chat_turn_stage(ports,websocket,"Actual external task",session,resume=False,
+                reserved=True,client_id="external",source="chat",images=None,attachment_text="")
+        assert isinstance(result,ChatStageContinue)
+        frame=websocket.send_json.await_args.args[0]
+        assert frame["type"] == "start"
+        if display_failure:
+            assert "active_inputs" not in frame
+        else:
+            assert frame["active_inputs"]["root"]["text"] == "Actual external task"
+            assert frame["active_inputs"]["admission_id"] == admission
+            assert frame["active_inputs"]["run_id"] == "external-start"
+    finally:
+        registry.finish_run(admission,status="test-complete")

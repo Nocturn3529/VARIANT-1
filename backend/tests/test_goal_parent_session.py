@@ -69,7 +69,9 @@ async def finish(goals, goal_id, gate, registry):
 async def test_parent_goal_uses_canonical_chat_and_reports_without_spawning_child(tmp_path):
     work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
     goal_id = await launch(goals, runs)
-    run, _, args = runs[0]
+    run, prompt, args = runs[0]
+    assert "completing a build or one observation cycle is a milestone" in prompt
+    assert "For finite objectives, report completed" in prompt
     assert run.session_id == "owner" and run.work_scope.goal_id == goal_id
     assert args["source"] == "goal" and run.chat_session.viewed_session_id == "owner"
     assert [e.kind for e in goals.repository.list_effects(goal_id)] == ["parent.turn"]
