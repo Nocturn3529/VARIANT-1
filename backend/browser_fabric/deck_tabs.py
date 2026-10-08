@@ -12,10 +12,11 @@ import logging
 from typing import Any, Awaitable, Callable, Mapping
 
 from background_tasks import OwnedTaskSet
+from tab_mentions import MAX_TAB_MENTIONS, clean_tab_id, tab_mention_note
 
 _LOG = logging.getLogger(__name__)
 _CLEANUP_TASKS = OwnedTaskSet()
-MAX_TAB_REFERENCES = 8
+MAX_TAB_REFERENCES = MAX_TAB_MENTIONS
 
 Request = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -55,7 +56,7 @@ def schedule_run_cleanup(owner_chat_id: str, run_id: str) -> None:
 def _clean_reference(raw: Any) -> dict[str, str] | None:
     if not isinstance(raw, Mapping) or raw.get("kind") != "browser_tab":
         return None
-    tab_id = str(raw.get("tab_id") or "").strip()[:200]
+    tab_id = clean_tab_id(raw.get("tab_id"))
     if not tab_id:
         return None
     return {
@@ -102,20 +103,7 @@ async def resolve_tab_references(
             and str(tab.get("title") or "") == row["title"]
             and str(tab.get("url") or "") == row["url"]
         )
-        label = f'"{row["title"] or row["url"]}" ({row["url"]})'
-        if same:
-            notes.append(
-                "[Browser tab the user mentioned]\n"
-                f"Title: {row['title']}\nURL: {row['url']}\n"
-                "It is open in this chat's built-in browser. Use that exact page from the "
-                "browser session's pages(); do not open a new tab for it."
-            )
-        else:
-            notes.append(
-                "[Browser tab the user mentioned is unavailable]\n"
-                f"The tab {label} was closed or changed after it was mentioned. Do not use "
-                "or open a different tab in its place; tell the user it is unavailable."
-            )
+        notes.append(tab_mention_note(row["tab_id"], row["title"], row["url"], available=same))
     return "\n\n".join(notes)
 
 

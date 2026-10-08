@@ -31,12 +31,12 @@ def _ref(**overrides):
 async def test_a_mentioned_tab_resolves_only_to_that_unchanged_tab():
     live = {"id": "t1", "title": "Docs", "url": "https://example.test/docs"}
     note = await resolve_tab_references([_ref()], "chat-a", request=_tabs(live))
-    assert note.startswith("[Browser tab the user mentioned]")
+    assert note.startswith("[Mentioned browser tab t1: Docs]\nURL: https://example.test/docs\n")
     assert "https://example.test/docs" in note and "unavailable" not in note
 
     changed = {**live, "title": "Other page"}
     note = await resolve_tab_references([_ref()], "chat-a", request=_tabs(changed))
-    assert note.startswith("[Browser tab the user mentioned is unavailable]")
+    assert note.startswith("[Mentioned browser tab t1 is unavailable: Docs]")
     assert "Do not use or open a different tab" in note
 
     closed = await resolve_tab_references([_ref()], "chat-a", request=_tabs())
@@ -60,7 +60,7 @@ async def test_only_browser_tab_references_count_and_they_are_bounded():
     assert await resolve_tab_references("not-a-list", "chat-a", request=_tabs()) == ""
     many = [_ref(tab_id=f"t{i}") for i in range(20)]
     note = await resolve_tab_references(many, "chat-a", request=_tabs())
-    assert note.count("[Browser tab") == 8
+    assert note.count("[Mentioned browser tab") == 8
 
 
 @pytest.mark.asyncio
@@ -141,7 +141,7 @@ async def test_chat_send_puts_resolved_mentions_in_the_model_context(tmp_path, m
 
     async def resolve(references, owner):
         seen["owner"] = owner
-        return "[Browser tab the user mentioned]\nTitle: Docs"
+        return "[Mentioned browser tab t1: Docs]\nURL: https://example.test/docs"
 
     monkeypatch.setattr("browser_fabric.deck_tabs.resolve_tab_references", resolve)
     srv, _runtimes, _repository, session, sid = _chat_stack(tmp_path, run_task)
@@ -151,4 +151,60 @@ async def test_chat_send_puts_resolved_mentions_in_the_model_context(tmp_path, m
     })
     await session.active.turn_task
     assert seen["owner"] == sid
-    assert "[Browser tab the user mentioned]" in seen["attachment_text"]
+    assert "[Mentioned browser tab t1: Docs]" in seen["attachment_text"]
+
+
+def test_tab_notes_round_trip_into_transcript_chips():
+    from tab_mentions import tab_mention_chips, tab_mention_note
+
+    notes = "\n\n".join([
+        tab_mention_note("t1", "Docs [beta]\nv2", "https://example.test/a]b", available=True),
+        tab_mention_note("t2", "", "https://gone.test/", available=False),
+        tab_mention_note("t1", "Docs", "https://example.test/", available=True),
+    ])
+    assert tab_mention_chips("[Attached file: a.txt]\n\n" + notes) == [
+        {"kind": "browser_tab", "name": "Docs [beta] v2", "tab_id": "t1",
+         "title": "Docs [beta] v2", "url": "https://example.test/a]b"},
+        {"kind": "browser_tab", "name": "https://gone.test/", "tab_id": "t2",
+         "title": "", "url": "https://gone.test/"},
+    ]
+
+
+def test_a_mention_only_message_shows_its_chip_and_no_text():
+    from chat_attachments import display_user_message
+    from chat_turn_plan import build_attachment_plan
+    from tab_mentions import tab_mention_note
+
+    note = tab_mention_note("t1", "Docs", "https://example.test/docs", available=True)
+    chip = {"kind": "browser_tab", "name": "Docs", "tab_id": "t1",
+            "title": "Docs", "url": "https://example.test/docs"}
+    plan = build_attachment_plan(text="", attachment_text=note,
+                                 display_user_message=display_user_message)
+    assert plan.display_text == ""
+    assert plan.display_attachments == (chip,)
+    assert plan.model_text == note
+    plan = build_attachment_plan(text="read this", attachment_text="\n\n" + note,
+                                 display_user_message=display_user_message)
+    assert plan.display_text == "read this"
+    assert plan.display_attachments == (chip,)
+
+
+def test_history_rows_keep_mentioned_tabs_as_references(tmp_path):
+    from chat_sessions import build_chat_sessions
+
+    path = str(tmp_path / "conversations.sqlite3")
+    service = build_chat_sessions(path=path)
+    sid = service.create_session("Mentions")
+    chip = {"kind": "browser_tab", "name": "Docs", "tab_id": "t1",
+            "title": "Docs", "url": "https://example.test/docs"}
+    service.append_messages(sid, [
+        {"role": "user", "text": "", "attachments": [chip]},
+        {"role": "assistant", "text": "That page is about docs."},
+        {"role": "user", "text": "and this", "attachments": [chip, {"name": "a.txt", "kind": "text"}]},
+    ])
+    messages = build_chat_sessions(path=path).get_session(sid)["messages"]
+    reference = [{"tab_id": "t1", "title": "Docs", "url": "https://example.test/docs"}]
+    assert [m["text"] for m in messages] == ["", "That page is about docs.", "and this"]
+    assert messages[0]["references"] == reference and "attachments" not in messages[0]
+    assert messages[2]["references"] == reference
+    assert messages[2]["attachments"] == [{"name": "a.txt", "kind": "text"}]

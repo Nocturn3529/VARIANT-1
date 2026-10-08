@@ -486,7 +486,7 @@ class ChatSessionService:
                 "text": _content_text(node.content),
                 "ts": float(node.created_at),
             }
-            for key in ("ticket_id", "attachments", "mood", "steps", "receipt", "origin",
+            for key in ("ticket_id", "attachments", "references", "mood", "steps", "receipt", "origin",
                         "peer_display", "run_id", "run_chat_id", "provider_summaries",
                         "text_segments"):
                 if key in node.metadata:
@@ -942,8 +942,20 @@ class ChatSessionService:
         if role == "user":
             text = text.strip()
             attachments = []
+            references = []
             for item in (raw.get("attachments") or [])[:24]:
                 if not isinstance(item, Mapping):
+                    continue
+                if item.get("kind") == "browser_tab":
+                    # A browser tab the user mentioned: history shows it as
+                    # a reference, never as a file.
+                    tab_id = str(item.get("tab_id") or "").strip()[:200]
+                    if tab_id and len(references) < 8:
+                        references.append({
+                            "tab_id": tab_id,
+                            "title": str(item.get("title") or "")[:300],
+                            "url": str(item.get("url") or "")[:2000],
+                        })
                     continue
                 name = str(item.get("name") or "").strip()[:200]
                 if not name:
@@ -952,7 +964,7 @@ class ChatSessionService:
                 if kind not in {"image", "text", "path", "folder"}:
                     kind = "text"
                 attachments.append({"name": name, "kind": kind})
-            if not text and not attachments:
+            if not text and not attachments and not references:
                 return None
             ticket = str(raw.get("ticket_id") or "").strip()[:96]
             if ticket:
@@ -962,6 +974,8 @@ class ChatSessionService:
                 metadata["transcript_id"] = transcript_id
             if attachments:
                 metadata["attachments"] = attachments
+            if references:
+                metadata["references"] = references
             origin = _peer_origin(raw.get("origin"))
             if origin is not None:
                 metadata["origin"] = origin
