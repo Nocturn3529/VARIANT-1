@@ -196,6 +196,8 @@ class MacPermissionRequest:
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self.granted = threading.Event()
+        # The last grant status the driver reported (None: not known yet).
+        self.last_status: dict[str, bool | None] = {"accessibility": None, "screen_recording": None}
 
     def active(self) -> bool:
         thread = self._thread
@@ -217,6 +219,8 @@ class MacPermissionRequest:
         try:
             daemon.launch()
             if daemon.wait_listening(_GRANT_TIMEOUT_S):
+                # The gate opens its socket only once both grants are given.
+                self.last_status = {"accessibility": True, "screen_recording": True}
                 self.granted.set()
         except CuaDriverError:
             pass
@@ -224,16 +228,18 @@ class MacPermissionRequest:
             daemon.stop()
 
 
-def _missing_grants(client: Any) -> bool:
-    """True only when the driver says a grant is missing; unknown never blocks."""
+def _grant_status(client: Any) -> dict[str, bool | None]:
+    """The driver's read-only grant status; None where it did not say."""
 
     try:
         status = client.call_tool("check_permissions", {"prompt": False})
     except CuaDriverError:
-        return False
-    if not isinstance(status, Mapping):
-        return False
-    return status.get("accessibility") is False or status.get("screen_recording") is False
+        status = {}
+    status = status if isinstance(status, Mapping) else {}
+    return {
+        key: status[key] if isinstance(status.get(key), bool) else None
+        for key in ("accessibility", "screen_recording")
+    }
 
 
 class MacDriverClient:
@@ -271,14 +277,16 @@ class MacDriverClient:
         try:
             client = self._client_factory(daemon.proxy_command(), env=self.env)
             client.open()
-            missing = _missing_grants(client)
+            grants = _grant_status(client)
         except Exception:
             if client is not None:
                 with contextlib.suppress(Exception):
                     client.close()
             daemon.stop()
             raise
-        if missing:
+        self.permissions.last_status = grants
+        # Only a reported missing grant blocks; an unknown status never does.
+        if False in grants.values():
             client.close()
             daemon.stop()
             self.permissions.start()

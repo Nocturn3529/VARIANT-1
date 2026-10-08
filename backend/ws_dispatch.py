@@ -37,6 +37,7 @@ import ws_peers
 import ws_goals
 import ws_children
 import ws_extensions_v2
+import ws_desktop
 from ws_protocol import session_chat_id
 from ws_transport import transport_disconnected
 
@@ -861,3 +862,4 @@ ws_peers.register(on)
 ws_goals.register(on)
 ws_children.register(on)
 ws_extensions_v2.register(on)
+ws_desktop.register(on)

@@ -51,6 +51,10 @@ class CuaDriverHost:
         self._sessions: set[str] = set()
         self._ended: OrderedDict[str, None] = OrderedDict()
         self._closed = False
+        # Why the last start failed, for Settings; cleared by a good start.
+        self.last_error = ""
+        # macOS: the shared MacPermissionRequest, when the platform has one.
+        self.permissions: Any = None
 
     @classmethod
     def from_client(cls, client: Any) -> "CuaDriverHost":
@@ -70,13 +74,17 @@ class CuaDriverHost:
             return client
         if client is not None:
             self._discard(client)
-        client = self._factory(self.command)
+        client = None
         try:
+            client = self._factory(self.command)
             client.open()
-        except Exception:
-            self._discard(client)
+            self._check_version(client)
+        except Exception as exc:
+            if client is not None:
+                self._discard(client)
+            self.last_error = str(exc)[:500]
             raise
-        self._check_version(client)
+        self.last_error = ""
         self.generation += 1
         self._client = client
         # A new process has no sessions; earlier runs simply get new ones.
@@ -88,7 +96,6 @@ class CuaDriverHost:
             return
         reported = str((getattr(client, "server_info", None) or {}).get("version") or "")
         if reported and reported != self.expected_version:
-            self._discard(client)
             raise CuaDriverError(
                 f"cua-driver {reported} does not match the pinned {self.expected_version}; "
                 "repair or reinstall VARIANT-1"
@@ -124,6 +131,7 @@ class CuaDriverHost:
             "running": bool(client is not None and (not callable(alive) or alive())),
             "expected_version": self.expected_version,
             "server_version": str((getattr(client, "server_info", None) or {}).get("version") or ""),
+            "last_error": self.last_error,
         }
 
     # Calls -----------------------------------------------------------------

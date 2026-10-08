@@ -457,6 +457,7 @@ def select_cua_adapter(platform: str | None = None) -> Any:
             command,
             client_factory=lambda argv: MacDriverClient(argv, permissions=permissions),
         )
+        host.permissions = permissions
         return CuaDesktopAdapter(host=host, platform=system)
     return CuaDesktopAdapter(host=CuaDriverHost(command), platform=system)
 
