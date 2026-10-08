@@ -41,6 +41,8 @@ export function retainedBrowser(id:string,url:string,api:RuntimeApi,navigationRe
   guest.canGoBack=()=>browser.state.canGoBack===true;guest.canGoForward=()=>browser.state.canGoForward===true;
   guest.getWebContentsId=()=>Number(browser.state.guestId)||0;guest.getZoomFactor=()=>Number(browser.state.zoomFactor)||1;
   guest.isDevToolsOpened=()=>browser.state.devToolsOpened===true;
+  guest.presentation=()=>({visible:browser.state.visible===true,viewport:browser.state.viewport as {width?:number;height?:number}|undefined});
+  guest.lease=async()=>{const result=await browser.api.workbenchBrowser?.({action:"lease",tabId:id,ms:2000});if(result?.ok && result.state && browsers.get(id)===browser)applyState(id,browser,result.state);};
   guest.flushLayout=async()=>{browser.attachment?.sync();await browser.update;if(browser.layoutError)throw new Error(browser.layoutError);};
   guest.loadURL=async value=>{await call("loadURL",[value]);};
   guest.executeJavaScript=(code,userGesture)=>call("executeJavaScript",[code,!!userGesture]);
@@ -73,7 +75,9 @@ export function attachRetainedBrowser(id:string,host:HTMLElement,api:RuntimeApi)
     const style=win.getComputedStyle(host);
     const visible=host.isConnected && !owner.hidden && style.visibility!=="hidden" && guestRect.width>0 && right>left && bottom>top && !owner.querySelector("dialog[open],.workbench-browser__menu,.popup-menu,.workbench-menu");
     const previous=browser.state.viewport as {width?:number;height?:number}|undefined;
-    const payload={tabId:id,attachmentId:attachment.id,windowId,url:String(browser.state.url || "about:blank"),bounds:{x:Math.round(left),y:Math.round(top),width:Math.max(0,Math.round(right-left)),height:Math.max(0,Math.round(bottom-top))},viewport:{width:Math.round(guestRect.width || previous?.width || 800),height:Math.round(guestRect.height || previous?.height || 480)},scroll:{x:Math.max(0,Math.round(left-guestRect.left)),y:Math.max(0,Math.round(top-guestRect.top))},visible};
+    // A hidden tab has no layout; a size the agent requested still applies natively.
+    const fixed=browser.guest.dataset.viewportMode==="fixed" ? {width:parseFloat(host.style.width),height:parseFloat(host.style.height)} : null;
+    const payload={tabId:id,attachmentId:attachment.id,windowId,url:String(browser.state.url || "about:blank"),bounds:{x:Math.round(left),y:Math.round(top),width:Math.max(0,Math.round(right-left)),height:Math.max(0,Math.round(bottom-top))},viewport:{width:Math.round(guestRect.width || fixed?.width || previous?.width || 800),height:Math.round(guestRect.height || fixed?.height || previous?.height || 480)},scroll:{x:Math.max(0,Math.round(left-guestRect.left)),y:Math.max(0,Math.round(top-guestRect.top))},visible};
     const signature=JSON.stringify(payload);if(signature===attachment.signature)return;
     const action=attachment.signature ? "layout" : "attach";attachment.signature=signature;
     browser.update=Promise.resolve(api.workbenchBrowser?.({action,...payload})).then(result=>{

@@ -48,6 +48,8 @@ Object.assign(window, {e01: {
   },
   hide(id: string) { hidePane(`preview:${id}`); },
   group(id: string) { return findGroupOfPane(getWorkbenchState().layout, `preview:${id}`)?.id; },
+  active(id: string) { return findGroupOfPane(getWorkbenchState().layout, `preview:${id}`)?.active; },
+  isHidden(id: string) { return !!getWorkbenchState().hidden[`preview:${id}`]; },
   detach(id: string) { detachWorkbenchPane(`preview:${id}`); return findGroupOfPane(getWorkbenchState().layout, `preview:${id}`)?.id; },
   dock() { dockAllNativeWindows(); },
   closeWindow(groupId:string){closeNativeWindow(`pane:${groupId}`);},

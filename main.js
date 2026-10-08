@@ -199,7 +199,7 @@ const nativePopouts = createNativePopoutManager({appRoot: APP_ROOT, getDeckWindo
 const browserViews = createBrowserViewManager({getDeckWindow: () => deckWindow,
   getNativeWindow:nativePopouts.getWindow, isTrustedIpcSender, hardenGuestContents:security.hardenGuestContents, log:logToFile});
 registerBrowserCapture({getDeckWindow: () => deckWindow, isTrustedIpcSender, isNativeHost: nativePopouts.isHost,
-  getRetainedGuest:browserViews.getGuest, log: logToFile});
+  getRetainedGuest:browserViews.getGuest, lendCaptureSurface:browserViews.lendCaptureSurface, log: logToFile});
 const browserDownloads = registerBrowserDownloads({getDataDir: () => DATA_DIR, getDeckWindow: () => deckWindow,
   isTrustedIpcSender, isNativeHost: nativePopouts.isHost, getRetainedGuest:browserViews.getGuest, log: logToFile});
 app.once('will-quit', () => { browserViews.dispose(); browserDownloads.dispose(); });

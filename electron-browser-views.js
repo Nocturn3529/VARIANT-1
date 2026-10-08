@@ -28,6 +28,7 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     row.host = null;
   }
   function destroy(row) {
+    clearTimeout(row.leaseTimer);
     tabs.delete(key(row.owner, row.tabId));
     park(row);
     if (alive(row.view.webContents)) row.view.webContents.close({waitForBeforeUnload:false});
@@ -95,15 +96,64 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     const clipped = {x,y,width:Math.max(0,Math.min(size.width,bounds.x+bounds.width)-x),
       height:Math.max(0,Math.min(size.height,bounds.y+bounds.height)-y)};
     const guest = {x:-Math.round(scroll.x)+Math.min(0,bounds.x),y:-Math.round(scroll.y)+Math.min(0,bounds.y),...viewport};
-    if (JSON.stringify(row.clip.getBounds()) !== JSON.stringify(clipped)) row.clip.setBounds(clipped);
-    if (JSON.stringify(row.view.getBounds()) !== JSON.stringify(guest)) row.view.setBounds(guest);
-    row.bounds = bounds; row.viewport = viewport;
+    row.bounds = bounds; row.viewport = viewport; row.hiddenClip = clipped; row.guestBounds = guest;
     row.visible = visible !== false && clipped.width > 0 && clipped.height > 0;
-    row.clip.setVisible(row.visible);
+    present(row, row.visible ? clipped : null);
+  }
+  /**
+   * A hidden tab lent out for a capture shows through a 1x1 clip: Chromium only
+   * paints views it considers shown, and an unpainted or hidden view captures
+   * empty or stale. The view moves to the clip's origin at its own viewport
+   * size; an off-screen background pane would otherwise leave it out of reach.
+   */
+  function present(row, clip) {
+    const lent = !clip && row.lent > 0;
+    const bounds = clip || (lent ? {x:0,y:0,width:1,height:1} : row.hiddenClip || {x:0,y:0,width:0,height:0});
+    const guest = lent ? {x:0,y:0,...row.viewport} : row.guestBounds || row.view.getBounds();
+    if (JSON.stringify(row.view.getBounds()) !== JSON.stringify(guest)) row.view.setBounds(guest);
+    if (JSON.stringify(row.clip.getBounds()) !== JSON.stringify(bounds)) row.clip.setBounds(bounds);
+    row.clip.setVisible(!!clip || lent);
     // Change this after the native attachment/geometry is published. Static
     // unthrottling during hidden guest creation can leave no capture surface.
     // Parked/hidden pages retain their document with normal idle throttling.
-    row.view.webContents.setBackgroundThrottling(!row.visible);
+    row.view.webContents.setBackgroundThrottling(!clip && !lent);
+  }
+  /**
+   * The agent working a hidden tab: a hidden view drops input and a never-shown
+   * one has no layout, so it keeps the 1x1 surface until it has been idle for
+   * `ms`. Nothing becomes visible to the user.
+   */
+  async function lease(row, ms) {
+    if (row.visible || !alive(row.host)) return;
+    clearTimeout(row.leaseTimer);
+    row.leaseTimer = setTimeout(() => {
+      row.leaseTimer = null; row.leased = false; row.lent -= 1;
+      if (!row.visible && alive(row.view.webContents) && alive(row.host)) present(row, null);
+    }, ms);
+    if (row.leased) return;
+    row.leased = true; row.lent = (row.lent || 0) + 1;
+    present(row, null);
+    // A never-shown page reports its size with its first painted frame.
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const width = await row.view.webContents.executeJavaScript('innerWidth').catch(() => 0);
+      if (width > 0 || !row.leased) return;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+  }
+  function lendCaptureSurface(guestId) {
+    const row = [...tabs.values()].find(item => alive(item.view.webContents) && item.view.webContents.id === guestId);
+    if (!row) return null;
+    if (row.visible) return () => {};
+    if (!alive(row.host)) return null;
+    row.lent = (row.lent || 0) + 1;
+    present(row, null);
+    let returned = false;
+    return () => {
+      if (returned) return;
+      returned = true;
+      row.lent -= 1;
+      if (!row.visible && alive(row.view.webContents) && alive(row.host)) present(row, null);
+    };
   }
   async function call(row, method, args) {
     const wc = row.view.webContents;
@@ -152,6 +202,10 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
       }
       if (input.action === 'destroy') { destroy(row); return {ok:true}; }
       if (input.action === 'state') return {ok:true,state:state(row)};
+      if (input.action === 'lease') {
+        await lease(row, Math.min(10000, Math.max(250, Number(input.ms) || 2000)));
+        return {ok:true,state:state(row)};
+      }
       if (input.action === 'call') {
         const value = await call(row,input.method,input.args || []);
         return {ok:true,value:value === undefined ? null : value,state:alive(row.view.webContents) ? state(row) : null};
@@ -160,10 +214,10 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     } catch (error) { return {ok:false,error:String(error.message || error)}; }
   }
   ipcMain.handle('workbench:browser:view',command);
-  return {command, getGuest(id) {
+  return {command, lendCaptureSurface, getGuest(id) {
     const row = [...tabs.values()].find(row=>row.view.webContents.id === id && alive(row.view.webContents));
     return row ? {contents:row.view.webContents, owner:row.owner, host:row.host, tabId:row.tabId,
-      attachmentId:row.attachmentId, visible:row.visible} : null;
+      attachmentId:row.attachmentId, visible:row.visible, lent:row.lent > 0} : null;
   }, dispose() { for (const row of [...tabs.values()]) destroy(row); ipcMain.removeHandler('workbench:browser:view'); }};
 }
 module.exports = {createBrowserViewManager};

@@ -41,6 +41,7 @@ import {
   getPreviewState,
   openBrowser,
   selectPreview,
+  takeBackgroundPlacement,
   usePreviewState,
 } from "./previewStore";
 import {
@@ -70,6 +71,7 @@ import {
   resetWorkbenchLayout,
   revealPane,
   revealPreviewPane,
+  placePreviewPaneInBackground,
   selectPane,
   saveWorkbenchPreset,
   deleteWorkbenchPreset,
@@ -467,7 +469,9 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
     const current = new Set(preview.tabs.map(tab => previewPaneId(tab.id)));
     for (const paneId of current) {
       if (!findPreviewPaneInLayout(paneId)) {
-        revealPreviewPane(previewTabId(paneId));
+        const tabId = previewTabId(paneId);
+        if (takeBackgroundPlacement(tabId)) placePreviewPaneInBackground(tabId);
+        else revealPreviewPane(tabId);
       }
     }
     for (const paneId of previousPreviewIds.current) {

@@ -66,12 +66,18 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
   guest.hostWebContents=null;guest.getType=()=> 'window';
   guest.executeJavaScript=async()=>({width:1280,height:720});
   guest.capturePage=async()=>image;
+  let lent=0, released=0, lendable=true;
   exported.exports.registerBrowserCapture({getDeckWindow:()=>({webContents:owner}),
     isTrustedIpcSender:event=>event.trusted===true,isNativeHost:()=>false,
-    getRetainedGuest:id=>id===7?{contents:guest,owner,attachmentId:attachment,visible}:null});
+    getRetainedGuest:id=>id===7?{contents:guest,owner,attachmentId:attachment,visible,lent:lent>released}:null,
+    lendCaptureSurface:id=>id===7 && lendable ? (lent++,()=>{released++;}) : null});
   assert.match((await handler({trusted:true,sender:outsider},7)).error,/owner_mismatch/);
   assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,'retained WebContentsView uses canonical ownership');
-  visible=false;assert.match((await handler({trusted:true,sender:owner},7)).error,/attachment_hidden.*Reveal/);visible=true;
+  // A hidden tab is captured in the background through a borrowed surface.
+  visible=false;assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,"hidden retained tabs capture without being shown");
+  assert.deepEqual([lent,released],[1,1],"the borrowed paint surface is returned");
+  lendable=false;assert.match((await handler({trusted:true,sender:owner},7)).error,/attachment_hidden.*Open/,"a parked tab still needs its panel");
+  lendable=true;visible=true;
   guest.capturePage=()=>new Promise(resolve=>{finish=resolve});
   const moved=handler({trusted:true,sender:owner},7);await new Promise(setImmediate);
   attachment='retained-b';finish(image);

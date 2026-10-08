@@ -125,7 +125,13 @@ export function getPreviewState(): PreviewState {
   return store.getState();
 }
 
-export function openPreview(target: PreviewTarget, options: {newBrowser?: boolean; ownerChatId?: string} = {}): string {
+/** Tabs the agent opened that should join the layout without being shown. */
+const backgroundPlacements = new Set<string>();
+export function takeBackgroundPlacement(id: string): boolean {
+  return backgroundPlacements.delete(id);
+}
+
+export function openPreview(target: PreviewTarget, options: {newBrowser?: boolean; ownerChatId?: string; background?: boolean} = {}): string {
   const state = store.getState();
   const ownerChatId = options.ownerChatId ?? getSessionState().displayedSessionId ?? "";
   const owned = state.tabs.filter(tab => (tab.ownerChatId || "") === ownerChatId);
@@ -135,11 +141,13 @@ export function openPreview(target: PreviewTarget, options: {newBrowser?: boolea
   const existing = state.tabs.findIndex(tab => tab.id === id);
   const navigation = target.kind === "url" ? {revision: (state.tabs[existing]?.navigation?.revision || 0) + 1, url: target.url} : undefined;
   const next: PreviewTab = {id, ownerChatId, target, navigation};
+  // Background work never moves the user's selection or shows the tab.
+  if (options.background && existing < 0) backgroundPlacements.add(id);
   patch({
     tabs: existing < 0
       ? [...state.tabs, next]
       : state.tabs.map((tab, index) => index === existing ? {...tab, target, navigation} : tab),
-    selectedId: id,
+    ...(options.background ? {} : {selectedId: id}),
   });
   return id;
 }
@@ -164,9 +172,9 @@ export function allowedBrowserUrl(value: unknown): string {
   return `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
 }
 
-export function openBrowser(url = "about:blank", options: {newTab?: boolean; ownerChatId?: string} = {}): string {
+export function openBrowser(url = "about:blank", options: {newTab?: boolean; ownerChatId?: string; background?: boolean} = {}): string {
   const safe = allowedBrowserUrl(url);
-  return openPreview({kind: "url", source: safe, url: safe, label: "Browser"}, {newBrowser: options.newTab, ownerChatId: options.ownerChatId});
+  return openPreview({kind: "url", source: safe, url: safe, label: "Browser"}, {newBrowser: options.newTab, ownerChatId: options.ownerChatId, background: options.background});
 }
 
 export function requestBrowserNavigation(id: string, url: string): void {
@@ -184,14 +192,15 @@ export function setBrowserViewport(id: string, viewport: ViewportSize | null): v
   patch({tabs: tabs.map(item => item.id === id ? {...item, viewport: viewport || undefined} : item)});
 }
 
-export function adoptBrowserTab(id: string, url: string, ownerChatId = getSessionState().displayedSessionId || ""): void {
+export function adoptBrowserTab(id: string, url: string, ownerChatId = getSessionState().displayedSessionId || "", background = false): void {
   const state = store.getState();
   const safe = allowedBrowserUrl(url);
   const target: PreviewTarget = {kind: "url", source: safe, url: safe, label: "Browser"};
   const index = state.tabs.findIndex(tab => tab.id === id);
+  if (background && index < 0) backgroundPlacements.add(id);
   patch({
     tabs: index < 0 ? [...state.tabs, {id, target, ownerChatId}] : state.tabs.map((tab, at) => at === index ? {...tab, target} : tab),
-    selectedId: id,
+    ...(background ? {} : {selectedId: id}),
   });
 }
 

@@ -2,7 +2,7 @@
 const {ipcMain, webContents} = require('electron');
 
 /** Same browser-host RPC; encode the native image in the main process. */
-function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost, getRetainedGuest, log = () => {}}) {
+function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost, getRetainedGuest, lendCaptureSurface, log = () => {}}) {
   ipcMain.handle('workbench:browser:capture', async (event, id) => {
     const deck = getDeckWindow();
     if (!isTrustedIpcSender(event, deck) || !Number.isSafeInteger(id)) return {ok:false, error:'untrusted_capture'};
@@ -16,10 +16,17 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
     if (!guest) return deny('guest_missing');
     if (guest.isDestroyed()) return deny('guest_destroyed');
     if (!owner) return deny('owner_missing');
+    // A hidden retained tab is captured in the background through a borrowed
+    // paint surface; the user's view is left as it is.
+    let release = () => {}, lent = false;
     if (retained) {
       if (retained.contents !== guest) return deny('retained_guest_mismatch');
       if (retained.owner !== event.sender) return deny('owner_mismatch');
-      if (!retained.visible) return deny('attachment_hidden', 'Reveal this chat\'s browser panel before capturing again');
+      if (!retained.visible) {
+        const surface = lendCaptureSurface?.(id);
+        if (!surface) return deny('attachment_hidden', 'Open this chat\'s browser panel before capturing again');
+        release = surface; lent = true;
+      }
     } else {
       if (guest.getType() !== 'webview') return deny('unsupported_guest_type');
       if (owner !== deck?.webContents && !isNativeHost(owner)) return deny('foreign_owner');
@@ -28,7 +35,7 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
       if (!retained) return guest.hostWebContents === owner;
       const current = getRetainedGuest?.(id);
       return current?.contents === guest && current.owner === owner && current.attachmentId === retained.attachmentId
-        && current.host === retained.host && current.visible;
+        && current.host === retained.host && (current.visible || current.lent);
     };
     let changed = false;
     let abandoned = false;
@@ -42,7 +49,7 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
           // Prefer a painted frame after attachment/resizing. Occluded windows
           // can suspend animation frames despite backgroundThrottling:false;
           // bound that wait and let Chromium's capture request drive rendering.
-          const viewport = await guest.executeJavaScript(`new Promise(resolve => {
+          const measure = () => guest.executeJavaScript(`new Promise(resolve => {
             let frame, settled = false;
             const finish = () => {
               if (settled) return;
@@ -52,6 +59,14 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
             const timer = setTimeout(finish, 200);
             frame = requestAnimationFrame(() => {frame = requestAnimationFrame(finish);});
           })`);
+          let viewport = await measure();
+          // A tab that has never been shown gets its size with its first
+          // painted frame; give a borrowed surface a few frames to report it.
+          for (let attempt = 0; lent && attempt < 10 && !(viewport?.width >= 1 && viewport?.height >= 1); attempt++) {
+            if (abandoned) break;
+            await new Promise(resolve => setTimeout(resolve, 50));
+            viewport = await measure();
+          }
           if (abandoned) throw new Error('browser_capture_cancelled');
           if (changed || guest.isDestroyed() || !sameAttachment()) throw new Error('browser_document_changed_during_capture');
           if (!viewport || !Number.isInteger(viewport.width) || !Number.isInteger(viewport.height)
@@ -88,7 +103,7 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
       const message = error instanceof Error ? error.message : String(error);
       log(`[browser-capture] guest=${id} error=${message}`);
       return {ok:false, error:message};
-    } finally { abandoned = true; clearTimeout(timer); if (!guest.isDestroyed()) guest.removeListener('did-start-navigation', navigation); }
+    } finally { abandoned = true; clearTimeout(timer); release(); if (!guest.isDestroyed()) guest.removeListener('did-start-navigation', navigation); }
   });
 }
 module.exports = {registerBrowserCapture};
