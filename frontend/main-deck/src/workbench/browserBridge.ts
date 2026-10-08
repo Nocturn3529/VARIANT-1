@@ -117,11 +117,12 @@ export function activateWorkbenchBrowser(id: string): void {
   if (handles.has(id)) activeId = id;
 }
 
-export function workbenchBrowserTargets(ownerChatId?: string): Array<BrowserPageState & {id:string; active:boolean; owner_chat_id:string}> {
+export function workbenchBrowserTargets(ownerChatId?: string): Array<BrowserPageState & {id:string; active:boolean; owner_chat_id:string; opened_by:"agent" | "user"; kept?:"deliverable" | "handoff"}> {
   const preview=getPreviewState();
   return preview.tabs.filter(tab=>tab.target.kind==="url" && (ownerChatId===undefined || (tab.ownerChatId || "")===ownerChatId)).map(tab=>({
     ...(preview.pages[tab.id] || {title:tab.target.label,url:tab.target.url,canGoBack:false,canGoForward:false,loading:false}),...(handles.has(tab.id) ? state(handles.get(tab.id)!) : {}),
     id:tab.id,active:tab.id===preview.selectedId,owner_chat_id:tab.ownerChatId || "",
+    opened_by:tab.origin==="agent" ? "agent" : "user",...(tab.origin==="agent" && tab.agentMark && tab.agentMark.runId===tab.agentRunId ? {kept:tab.agentMark.kind} : {}),
   }));
 }
 

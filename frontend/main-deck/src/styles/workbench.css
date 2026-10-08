@@ -191,6 +191,19 @@
   background: currentColor;
 }
 
+/* Agent tabs: a dashed ring while temporary, a solid ring once kept. */
+.workbench-tab__agent {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  box-sizing: border-box;
+  border: 1px dashed currentColor;
+  border-radius: 50%;
+  opacity: 0.7;
+}
+
+.workbench-tab__agent:not([data-agent-tab="temporary"]) { border-style: solid; }
+
 .workbench-tab__close,
 .workbench-tabs__new,
 .workbench-tabs__collapse {

@@ -41,8 +41,10 @@ import {
   getPreviewState,
   openBrowser,
   selectPreview,
+  keepBrowserTab,
   takeBackgroundPlacement,
   usePreviewState,
+  type PreviewTab,
 } from "./previewStore";
 import {
   activateFocusedSlot,
@@ -99,7 +101,21 @@ type PaneDescriptor = {
   tabless?: boolean;
   keepAlive?: boolean;
   browser?: boolean;
+  agent?: AgentTabState;
 };
+
+type AgentTabState = "temporary" | "deliverable" | "handoff";
+
+const AGENT_TAB_TITLE: Record<AgentTabState, string> = {
+  temporary: "Opened by the agent · closes when the task ends",
+  deliverable: "Kept by the agent",
+  handoff: "Kept for the next task",
+};
+
+function agentTabState(tab: PreviewTab): AgentTabState | undefined {
+  if (tab.origin !== "agent") return undefined;
+  return tab.agentMark && tab.agentMark.runId === tab.agentRunId ? tab.agentMark.kind : "temporary";
+}
 
 type MenuState = {
   ownerDocument: Document;
@@ -371,6 +387,7 @@ function GroupView({
               <Icon name={item.icon}/>
               <span>{item.label}</span>
               {item.dirty ? <em aria-label="Unsaved changes"/> : null}
+              {item.agent ? <i className="workbench-tab__agent" data-agent-tab={item.agent} title={AGENT_TAB_TITLE[item.agent]} aria-label={AGENT_TAB_TITLE[item.agent]}/> : null}
             </button>
             {item.close !== "never" ? <button className="workbench-tab__close" aria-label={`Close ${item.label}`} onClick={() => {
               closePane(paneId);
@@ -415,6 +432,7 @@ function PaneMenu({menu, close}: {menu: Exclude<MenuState, null>; close: () => v
     {selected?.target.kind === "url" ? <>
       <button role="menuitem" onClick={() => action(() => openBrowser("about:blank", {newTab: true,ownerChatId:selected?.ownerChatId}))}>New browser tab</button>
       <button role="menuitem" disabled={!selected.target.url || selected.target.url === "about:blank"} onClick={() => action(() => window.variant1Deck?.openExternal?.(selected.target.url))}>Open external</button>
+      {selected.origin === "agent" ? <button role="menuitem" title="The tab stays open after the agent's task ends" onClick={() => action(() => keepBrowserTab(selected.id))}>Keep tab</button> : null}
       <hr/>
     </> : null}
     {!native ? <>
@@ -568,6 +586,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
         dirty: !!tab.dirty,
         keepAlive: true,
         browser: tab.target.kind === "url",
+        agent: agentTabState(tab),
       });
     }
     return rows;

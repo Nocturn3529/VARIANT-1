@@ -3,7 +3,7 @@ import type {RuntimeContext} from "../types";
 import {browserCommandDiagnostics, isBrowserRecoveryAction, runWorkbenchBrowserCommand, waitForWorkbenchBrowser, workbenchBrowserTargets} from "./browserBridge";
 import {findStartedDownload, isDownloadCommand} from "./browserDownloads";
 import {BrowserCommandError, browserDeadline, checkBrowserRequest} from "./browserLifecycle";
-import {adoptBrowserTab, closePreview, getPreviewState, openBrowser, selectPreview} from "./previewStore";
+import {adoptBrowserTab, closeAgentRunTabs, closePreview, getPreviewState, markAgentTab, noteAgentRun, openBrowser, reconcileAgentTabs, selectPreview} from "./previewStore";
 import {navigateTo} from "../state/appStore";
 import {revealPreviewPane,rightPanelsHidden} from "./workbenchStore";
 import {browserKeyInput} from "./browserKeyboard";
@@ -66,7 +66,7 @@ async function ensureCommandSurface(command: Record<string, unknown>, signal: Ab
   if (requested && !tabs.some(tab => tab.id === requested)) throw new BrowserCommandError("TAB_NOT_FOUND", "Requested browser tab is not open");
   const tabId = requested || tabs.find(tab => tab.id === agentTabs.get(ownerChatId))?.id
     || tabs.find(tab => tab.id === getPreviewState().selectedId)?.id || tabs.at(-1)?.id
-    || openBrowser("about:blank", {newTab: true,ownerChatId,background:true});
+    || openBrowser("about:blank", {newTab: true,ownerChatId,background:true,agentRun: String(command.run_id || "")});
   agentTabs.set(ownerChatId, tabId);
   await readySurface(tabId, signal, !isBrowserRecoveryAction(String(command.action || "state")));
   return tabId;
@@ -75,6 +75,9 @@ async function ensureCommandSurface(command: Record<string, unknown>, signal: Ab
 export function ingestBrowserHost(message: Record<string, unknown>) {
   if (message.type === "browser:host:registered") {
     if (connection === "connected" && typeof document !== "undefined") document.body.dataset.browserHost = "registered";
+    // Runs that ended while the Deck was away; null means unknown, so keep everything.
+    if (Array.isArray(message.active_runs)) reconcileAgentTabs(new Set(message.active_runs
+      .map(run => String((run as Record<string, unknown> | null)?.run_id || "")).filter(Boolean)));
     return;
   }
   if (message.type !== "browser:host:command" || !context || connection !== "connected") return;
@@ -87,6 +90,8 @@ export function ingestBrowserHost(message: Record<string, unknown>) {
   const command = message.command && typeof message.command === "object" ? {...message.command as Record<string, unknown>} : {};
   const action = String(command.action || "state");
   const ownerChatId=String(command.owner_chat_id || "");
+  // Older backends send no run: their tabs are never closed automatically.
+  const runId = String(command.run_id || "");
   const targets=()=>workbenchBrowserTargets(ownerChatId);
   const started = Date.now();
   let diagnostics = browserCommandDiagnostics(command);
@@ -95,13 +100,26 @@ export function ingestBrowserHost(message: Record<string, unknown>) {
     const explicit=String(command.tab_id || command.target_id || "");
     const existing=getPreviewState().tabs.find(t=>t.id===explicit);
     if(existing && (existing.ownerChatId || "")!==ownerChatId)throw new BrowserCommandError("TAB_NOT_FOUND","Browser tab belongs to another chat");
+    if (action === "cleanup_run") {
+      const closed = closeAgentRunTabs(ownerChatId, runId);
+      if (closed.includes(agentTabs.get(ownerChatId) || "")) agentTabs.delete(ownerChatId);
+      return {ok: true, closed, tabs: targets()};
+    }
+    if (existing && runId) noteAgentRun(existing.id, runId);
+    if (action === "mark_page") {
+      const mark = String(command.mark || "");
+      if (mark !== "deliverable" && mark !== "handoff") throw new BrowserCommandError("INVALID_MARK", "mark must be deliverable or handoff");
+      if (!existing || existing.target.kind !== "url") throw new BrowserCommandError("TAB_NOT_FOUND", "Browser tab is not open");
+      // A tab the user owns already stays; marking it changes nothing.
+      return {ok: true, marked: markAgentTab(existing.id, mark, runId), target: targets().find(tab => tab.id === existing.id)};
+    }
     if (action === "keys") browserKeyInput(command.keys);
     if (isDownloadCommand(action)) return runWorkbenchBrowserCommand(command, {signal});
     if (action === "new_page") {
       const created = Date.now();
       const background = command.visible !== true;
-      const tabId = String(command.tab_id || command.target_id || "") || openBrowser(String(command.url || "about:blank"), {newTab: true,ownerChatId,background});
-      if (!getPreviewState().tabs.some(tab => tab.id === tabId)) adoptBrowserTab(tabId, String(command.url || "about:blank"),ownerChatId,background);
+      const tabId = String(command.tab_id || command.target_id || "") || openBrowser(String(command.url || "about:blank"), {newTab: true,ownerChatId,background,agentRun: runId});
+      if (!getPreviewState().tabs.some(tab => tab.id === tabId)) adoptBrowserTab(tabId, String(command.url || "about:blank"),ownerChatId,background,runId);
       command.tab_id = tabId; agentTabs.set(ownerChatId, tabId);
       if (!background) showSurface(tabId);
       try { await readySurface(tabId, signal); }
@@ -129,6 +147,7 @@ export function ingestBrowserHost(message: Record<string, unknown>) {
     }
     if (action === "tabs") return {ok: true, tabs: targets()};
     command.tab_id = await ensureCommandSurface(command, signal);
+    if (runId) noteAgentRun(String(command.tab_id), runId);
     diagnostics = browserCommandDiagnostics(command);
     return runWorkbenchBrowserCommand(command, {signal});
   };
