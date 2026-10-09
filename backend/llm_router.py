@@ -109,6 +109,7 @@ class LLMRouter:
         self.config_path = config_path
         self._recovery_cooldowns = RecoveryCooldowns()
         self._recovery_credential_revisions: dict[str, int] = {}
+        self._model_context_windows: dict[str, dict[str, int]] = {}
         self.mode = cfg.get("mode", "local")
         self.sampling = cfg.get("sampling", {})
         self.engine = self.build_inference_runtime(
@@ -183,11 +184,15 @@ class LLMRouter:
                 raw_usage=raw_usage,
             )
             normalized["call_category"] = current_usage_category()
-            if isinstance(event, dict):
-                # Pricing/timing are computed by the canonical usage ledger,
-                # not by provider-shape normalization. Carry those correlated
-                # scalar results into the manifest trace without prompt data.
-                normalized["cost_usd"] = event.get("cost_usd")
+            if isinstance(event, dict) and normalized.get("cost_usd") is None:
+                # A catalog estimate is not a provider bill. In particular a
+                # legacy telemetry event must never erase an explicit zero.
+                if event.get("cost_kind") == "exact":
+                    normalized["cost_usd"] = event.get("cost_usd")
+                    if normalized["cost_usd"] is not None:
+                        normalized["reported_fields"].append("cost_usd")
+                elif event.get("cost_kind") == "estimated":
+                    normalized["estimated_cost_usd"] = event.get("cost_usd")
             self._patch_model_request_manifest_usage(manifest_ref, normalized)
         except Exception:
             # Usage lineage is observability only.  Never fail inference,
@@ -473,6 +478,9 @@ class LLMRouter:
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
         self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
             identity, normalized, partial=True))
+
+    def _patch_model_request_stream(self, manifest_ref, value):
+        self._manifest_bus.patch_stream_diagnostics(manifest_ref, value)
 
     def _patch_model_request_manifest_response(
         self, manifest_ref, metadata: dict,
@@ -1582,7 +1590,7 @@ class LLMRouter:
         headers = dict(profile.default_headers or {})
         if profile.auth_style == "x-api-key" and key:
             headers["x-api-key"] = key
-        elif profile.auth_style == "bearer" and key:
+        elif profile.auth_style in {"bearer", "optional"} and key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
 
@@ -1619,10 +1627,13 @@ class LLMRouter:
             except OllamaCloudError as exc:
                 raise LocalEngineError(str(exc)) from exc
         if prov == "hermes":
-            from model_runtime.hermes_proxy import HermesProxyError, available_models
+            from model_runtime.hermes_proxy import HermesProxyError, available_model_catalog
+            from model_runtime.context import catalog_context_windows
 
             try:
-                return await available_models(start_if_needed=start_if_needed)
+                rows = await available_model_catalog(start_if_needed=start_if_needed)
+                self._model_context_windows[prov] = catalog_context_windows(rows)
+                return sorted({str(row["id"]) for row in rows if row.get("id")})
             except HermesProxyError as exc:
                 raise LocalEngineError(str(exc)) from exc
         if prov == 'google-antigravity':
@@ -1670,6 +1681,8 @@ class LLMRouter:
                     if r.status_code != 200:
                         raise LocalEngineError(f"list models failed: {r.status_code} {r.text[:100]}")
                     data = r.json()
+                    from model_runtime.context import catalog_context_windows
+                    self._model_context_windows[prov] = catalog_context_windows(data.get("data"))
                     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     return sorted(set(ids))
             elif profile.api_style == "anthropic":
@@ -1681,6 +1694,8 @@ class LLMRouter:
                     if r.status_code != 200:
                         raise LocalEngineError(f"list models failed: {r.status_code}")
                     data = r.json()
+                    from model_runtime.context import catalog_context_windows
+                    self._model_context_windows[prov] = catalog_context_windows(data.get("data"))
                     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     return sorted(ids)
             elif profile.api_style == "gemini":
@@ -1690,6 +1705,8 @@ class LLMRouter:
                     if r.status_code != 200:
                         raise LocalEngineError(f"list models failed: {r.status_code} {r.text[:100]}")
                     data = r.json()
+                    from model_runtime.context import catalog_context_windows
+                    self._model_context_windows[prov] = catalog_context_windows(data.get("models"))
                     ids = []
                     for m in data.get("models", []):
                         name = m.get("name", "").split("/")[-1]

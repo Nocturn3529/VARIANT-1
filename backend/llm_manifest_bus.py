@@ -231,6 +231,13 @@ class ModelRequestManifestBus:
             self.enqueue(updated)
             return
 
+    def patch_stream_diagnostics(self, manifest_ref, value: dict) -> None:
+        from llm_stream_diagnostics import sanitize_openai_stream_diagnostics
+        cleaned = sanitize_openai_stream_diagnostics(value)
+        identity = self.manifest_id_from_ref(manifest_ref)
+        if cleaned and identity:
+            self.submit_ledger(lambda: self.usage_ledger.patch_stream_diagnostics(identity, cleaned))
+
     def patch_response_metadata(self, manifest_ref, metadata: dict) -> None:
         """Patch allowlisted provider-returned identity fields, fail-open.
 

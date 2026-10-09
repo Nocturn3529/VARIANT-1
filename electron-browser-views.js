@@ -163,7 +163,7 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
   return {command, getGuest(id) {
     const row = [...tabs.values()].find(row=>row.view.webContents.id === id && alive(row.view.webContents));
     return row ? {contents:row.view.webContents, owner:row.owner, host:row.host, tabId:row.tabId,
-      attachmentId:row.attachmentId, visible:row.visible} : null;
+      attachmentId:row.attachmentId, visible:row.visible, document:row.document} : null;
   }, dispose() { for (const row of [...tabs.values()]) destroy(row); ipcMain.removeHandler('workbench:browser:view'); }};
 }
 module.exports = {createBrowserViewManager};

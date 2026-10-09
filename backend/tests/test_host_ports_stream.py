@@ -23,6 +23,8 @@ def _host_with_stream(tokens):
         count_prompt_tokens=AsyncMock(return_value=0),
         is_desktop_action=lambda _actions: False,
     )
+
+
     runtime = SimpleNamespace(
         chat=chat,
         registry=SimpleNamespace(get=lambda _name: None),
@@ -55,6 +57,26 @@ def _host_with_stream(tokens):
         clip=lambda text, _limit: text,
         state_block=lambda _state: "",
     )
+
+
+@pytest.mark.asyncio
+async def test_delivered_receipt_survives_unavailable_queue_projection():
+    import asyncio
+    host = _host_with_stream([])
+    session = ConnectionSession(viewed_session_id="chat-a")
+    session.active.runtime_chat_id="chat-a"
+    receipt={"ticket_id":"input-a","run_id":"run-a","admission_id":"admission-a","state":"running"}
+    runtime=host.require_runtime()
+    runtime.session_runtimes.record_input_delivery=lambda *_args: receipt
+    def unavailable(_sid):
+        raise OSError("fixture queue read unavailable")
+    runtime.session_runtimes.queue_snapshot=unavailable
+    ports=build_task_turn_ports(host,SimpleNamespace(),session)
+    assert ports.loop.record_active_input({"id":"input-a","text":"actual steer"},None) == receipt
+    await asyncio.sleep(0)
+    frame=host.hub.broadcast.await_args.args[0]
+    assert frame["id"] == "input-a" and frame["input"] == receipt
+    assert frame["queue"] is None and frame["admission_id"] == "admission-a"
 
 
 @pytest.mark.parametrize('effective', [False, True, None])

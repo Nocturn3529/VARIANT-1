@@ -144,6 +144,9 @@ async def test_goal_cancel_stops_all_owned_host_resources(tmp_path):
         )
 
         assert cancelled.status == "cancelled"
+        cleanup = goals.repository.state_get(goal.goal_id, "resource_cleanup")
+        assert cleanup["coverage"]["raw_python_processes"] == "not_attributed"
+        assert cleanup["coverage"]["parent_kernel"] == "retained"
         assert stopped_processes == [("process-live", True)]
         assert interrupted_kernels == [("parent-chat", "stop")]
         assert cancelled_children == [("parent-chat", "child-live")]

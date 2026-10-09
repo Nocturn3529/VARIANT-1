@@ -40,6 +40,85 @@ def test_duplicate_receipts_and_usage_corrections_do_not_double_count(tmp_path):
     assert totals["reasoning_tokens"] == 20  # Subset, not added to total.
 
 
+def test_stream_diagnostics_keep_identity_and_unknown_usage_without_payloads(tmp_path):
+    ledger = ModelUsageLedger(tmp_path / "usage.sqlite3")
+    ledger.record(request())
+    ledger.patch_response("mreq-a", {"provider_generation_id": "generation-a"})
+    ledger.patch_stream_diagnostics("mreq-a", {"schema": "variant1.openai-stream.v1",
+        "end_reason": "incomplete_eof", "saw_terminal": False, "data_lines": 2,
+        "json_events": 1, "malformed_events": 1, "prompt": "private prompt", "url": "private URL"})
+    row = ModelUsageLedger(tmp_path / "usage.sqlite3").get("mreq-a")
+    assert row["response"]["provider_generation_id"] == "generation-a"
+    assert row["response"]["stream"]["end_reason"] == "incomplete_eof"
+    assert row["response"]["stream"]["malformed_events"] == 1
+    assert row["usage"] is None
+    assert ledger.totals()["total_tokens"] is None
+    assert "private" not in json.dumps(row)
+
+
+@pytest.mark.parametrize("cost", [0, 0.0125, None, -1, float("nan"), True])
+def test_provider_cost_is_preserved_only_when_explicit_and_valid(tmp_path,cost):
+    from llm_usage import normalize_manifest_usage
+    ledger = ModelUsageLedger(tmp_path / "cost.sqlite3")
+    ledger.record(request())
+    usage = normalize_manifest_usage("openrouter",raw_usage={"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"cost":cost})
+    ledger.patch_usage("mreq-a",usage)
+    known = type(cost) in (int,float) and cost in (0,0.0125)
+    assert ledger.totals()["cost_usd"] == (cost if known else None)
+    assert ledger.totals()["cost_usd_reported_requests"] == (1 if known else 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raw,cost", [
+    ({"cost": 0}, 0.0), ({"cost": 0.0125}, 0.0125),
+    ({"cost_in_usd_ticks": 100_000_000}, 0.01),
+    ({}, None), ({"cost": True}, None), ({"cost": -1}, None),
+    ({"cost_in_usd_ticks": -1}, None),
+])
+async def test_router_telemetry_and_durable_ledger_keep_reported_cost(tmp_path, raw, cost):
+    from llm_router import LLMRouter
+    from llm_manifest_bus import ModelRequestManifestBus
+    from llm_usage import observe_usage
+    from observability.cloud_usage import CloudUsageTelemetry
+    ledger = ModelUsageLedger(tmp_path / "cost.sqlite3")
+    bus = ModelRequestManifestBus(usage_ledger=ledger)
+    router = object.__new__(LLMRouter)
+    router.cfg = {"cloud": {"pricing": {"unlisted-free": {"input_per_million": 3, "output_per_million": 9}}}}
+    router._kn = lambda value: value
+    router._cloud_usage = CloudUsageTelemetry(str(tmp_path / "legacy.json"))
+    router._manifest_bus = bus
+    await bus.record(request())
+    observed = []
+    try:
+        with observe_usage(observed.append):
+            router._record_usage("hermes", 10, 2, 12, model="unlisted-free", raw_usage=raw, manifest_ref="mreq-a")
+        await bus.flush_ledger()
+        row = ledger.get("mreq-a")
+        assert row["usage"].get("cost_usd") == cost
+        assert ("cost_usd" in row["usage"]["reported_fields"]) is (cost is not None)
+        assert ledger.totals()["cost_usd_reported_requests"] == (1 if cost is not None else 0)
+        if cost is not None:
+            assert observed[0]["cost_kind"] == "exact"
+            assert observed[0]["cost_usd"] == cost
+        else:
+            assert observed[0]["cost_kind"] == "estimated"
+            assert observed[0]["cost_usd"] > 0
+    finally:
+        await bus.stop()
+
+
+def test_router_does_not_replace_provider_zero_with_legacy_missing_cost():
+    from types import SimpleNamespace
+    from llm_router import LLMRouter
+    router = object.__new__(LLMRouter)
+    router.cfg = {}; router._kn = lambda value: value
+    router._cloud_usage = SimpleNamespace(record=lambda *a, **k: {"cost_usd": None})
+    patched = []
+    router._patch_model_request_manifest_usage = lambda ref, value: patched.append(value)
+    router._record_usage("hermes", raw_usage={"cost": 0})
+    assert patched[0]["cost_usd"] == 0.0
+
+
 def test_token_rollups_use_exact_integer_arithmetic_beyond_float_precision(tmp_path):
     ledger=ModelUsageLedger(tmp_path/'usage.sqlite3')
     ledger.record(request())

@@ -76,7 +76,7 @@ def test_cloud_capability_snapshot_uses_provider_profile_without_probe():
 
 def test_bundled_registry_has_hermes_aligned_profiles_and_aliases():
     registry = ProviderRegistry()
-    assert len(registry.list()) == 48
+    assert len(registry.list()) == 47
     assert registry.get('google-ai').name == 'google-antigravity'
     assert registry.get('google-antigravity').api_style == 'gemini'
     assert registry.canonical_name("claude") == "anthropic"
@@ -94,18 +94,30 @@ def test_bundled_registry_has_hermes_aligned_profiles_and_aliases():
     )
 
 
-def test_opencode_zen_free_route_is_anonymous_and_uses_exact_model_ids():
+def test_opencode_zen_and_go_require_keys_and_explicit_model_selection():
     registry = ProviderRegistry()
     profile = registry.get("opencode")
 
     assert profile.name == "opencode-zen"
-    assert profile.auth_style == "optional"
+    assert profile.auth_style == "bearer"
     assert profile.base_url == "https://opencode.ai/zen/v1"
     assert profile.models_url == "https://opencode.ai/zen/v1/models"
-    assert profile.default_model == "x-preview-f-free"
+    assert profile.default_model == ""
     assert "OPENCODE_API_KEY" in profile.env_vars
     assert profile.supports_reasoning is True
     assert all(not model.startswith("opencode/") for model in profile.fallback_models)
+    assert registry.get("opencode-free") is None
+    assert profile.default_headers["User-Agent"] == "VARIANT-1"
+    assert profile.prompt_cache_header == "x-opencode-session"
+
+
+def test_optional_key_is_sent_when_configured_and_absent_when_keyless():
+    registry = ProviderRegistry()
+    zen = registry.get("opencode-zen").with_overrides({"auth_style":"optional"})
+    assert LLMRouter._provider_headers(zen,"dummy-test-key")["Authorization"] == "Bearer dummy-test-key"
+    assert "Authorization" not in LLMRouter._provider_headers(zen,"")
+    local = registry.get("lmstudio")
+    assert "Authorization" not in LLMRouter._provider_headers(local,"")
 
 
 def test_provider_profiles_project_model_compatible_sampling_and_token_fields():
@@ -139,18 +151,33 @@ def test_reasoning_budget_is_separate_from_visible_output_allowance():
     assert effective_reasoning_budget(router, sampling, 256) == 256
 
 
-def test_opencode_zen_is_ready_without_copying_desktop_credentials():
+def test_opencode_zen_has_no_implicit_anonymous_or_desktop_credential():
     router = _router({"mode": "cloud", "cloud": {"provider": "opencode-zen"}})
 
-    assert router.has_cloud_key("opencode-zen") is True
+    assert router.has_cloud_key("opencode-zen") is False
     leases = router._credential_leases("opencode-zen")
-    assert len(leases) == 1
-    assert leases[0].source == "anonymous"
-    assert leases[0].secret == ""
-    assert router.get_cloud_model("opencode-zen") == "x-preview-f-free"
+    assert leases == []
+    assert router.get_cloud_model("opencode-zen") == ""
     assert "Authorization" not in router._provider_headers(
-        router.provider_profile("opencode-zen"), leases[0].secret,
+        router.provider_profile("opencode-zen"), "",
     )
+
+
+@pytest.mark.parametrize("provider,model,api,transport",[
+    ("opencode-zen","gpt-6.1-sol","openai","responses"),
+    ("opencode-go","grok-4.7","openai","responses"),
+    ("opencode-zen","claude-sonnet-4-6","anthropic",""),
+    ("opencode-zen","gemini-3.8-flash","gemini",""),
+    ("opencode-zen","qwen3.8-max","openai",""),
+    ("opencode-go","qwen3.8-max","anthropic",""),
+    ("opencode-zen","minimax-m2.7","openai",""),
+    ("opencode-go","minimax-m2.7","anthropic",""),
+    ("opencode-go","space-bunny-free","openai",""),
+])
+def test_opencode_declared_model_wire_routes(provider,model,api,transport):
+    profile = ProviderRegistry().get(provider).for_model(model)
+    assert (profile.api_style,profile.wire_transport) == (api,transport)
+    assert profile.name == provider
 
 
 def test_declarative_plugin_can_override_a_profile(tmp_path):

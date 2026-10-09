@@ -749,6 +749,114 @@ def test_ticket_lifecycle_and_transcript_proof(tmp_path):
     assert terminal.proof["ticket_id"] == ticket.ticket_id
 
 
+def test_active_input_projection_is_exact_bounded_and_not_history(tmp_path):
+    registry, repository = _runtime(tmp_path)
+    sid = "active-projection"
+    session = ConnectionSession(viewed_session_id=sid)
+    registry.attach(sid, session.attachment_id, session)
+    admission = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(admission, run_id="projection-run", thread_id="projection-run")
+    session.active.runtime_admission_id = admission
+    session.active.turn_display_user_text = "real root task"
+    pending = registry.enqueue_input(sid, "not delivered", delivery="follow_up")
+    for index in range(66):
+        ticket = registry.enqueue_input(sid, f"instruction {index}", delivery="steer")
+        row = registry.claim_input(sid, "steer", run_id="projection-run")
+        receipt = registry.record_input_delivery(sid, session, row, None)
+        assert receipt["ticket_id"] == ticket.ticket_id
+        assert receipt["run_id"] == "projection-run"
+        assert receipt["admission_id"] == admission
+        assert repository.get_ticket(ticket.ticket_id).proof["delivered_at"] == receipt["delivered_at"]
+    projected = registry.active_input_projection(sid)
+    assert projected["root"]["text"] == "real root task"
+    assert projected["omitted_inputs"] == 2
+    assert len(projected["inputs"]) == 64
+    assert projected["inputs"][-1]["text"] == "instruction 65"
+    assert pending.ticket_id not in {row["ticket_id"] for row in projected["inputs"]}
+    assert registry.active_input_projection("another-chat") is None
+    queued = registry.enqueue_input(sid,"stale callback",delivery="steer")
+    stale = registry.claim_input(sid,"steer",run_id="projection-run")
+    session.active.runtime_admission_id = "old-admission"
+    assert registry.active_input_projection(sid) is None
+    with pytest.raises(RuntimeError,match="stale admission"):
+        registry.record_input_delivery(sid,session,stale,None)
+    assert repository.get_ticket(queued.ticket_id).state == "preparing"
+    session.active.runtime_admission_id = admission
+    registry.finish_run(admission, status="test-complete")
+    assert registry.active_input_projection(sid) is None
+
+
+@pytest.mark.parametrize("delivery", ["steer", "follow_up"])
+def test_snapshot_resume_input_uses_the_current_admission_not_old_graph(tmp_path, delivery):
+    from agent_engine.runner import prepare_main_chat_run
+    from agent_engine.presets import chat_task_default
+    from run_context import Variant1RunContext, bind_run_context
+    registry, repository = _runtime(tmp_path)
+    sid = "resumed-input"
+    session = ConnectionSession(viewed_session_id=sid)
+    registry.attach(sid, session.attachment_id, session)
+    first = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(first, run_id="retained-graph", thread_id="retained-graph")
+    registry.finish_run(first, status="interrupted")
+    current = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(current, run_id="resume-admission-run", thread_id="retained-graph")
+    session.active.runtime_admission_id = current
+    with bind_run_context(Variant1RunContext.create(source="chat", run_id="resume-admission-run")):
+        state, _, _ = prepare_main_chat_run(config=chat_task_default(), text="Resume", base_system="",
+            full_tspec=[{"name": "ipython", "description": "Persistent Python", "parameters": {"type": "object"}}],
+            convo_tail=[], images=[], is_resume=True,
+            resume_snap={"run_id": "retained-graph", "thread_id": "retained-graph", "chat_id": sid}, ports=None)
+    assert state["run_id"] == "retained-graph"
+    ticket = registry.enqueue_input(sid, "new instruction", delivery=delivery)
+    row = registry.claim_input(sid, delivery, run_id=state["run_id"])
+    receipt = registry.record_input_delivery(sid, session, row, "work before steering")
+    assert repository.get_ticket(ticket.ticket_id).state == "running"
+    assert repository.get_ticket(ticket.ticket_id).run_id == "resume-admission-run"
+    assert receipt["run_id"] == "resume-admission-run" and receipt["admission_id"] == current
+    assert registry.active_input_projection(sid)["inputs"][0]["ticket_id"] == ticket.ticket_id
+    registry.finish_run(current, status="test-complete")
+
+
+def test_active_input_projection_reads_without_blocking_admissions_and_refences(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    registry, repository = _runtime(tmp_path)
+    sid = "projection-query-race"
+    session = ConnectionSession(viewed_session_id=sid)
+    registry.attach(sid, session.attachment_id, session)
+    admission = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(admission, run_id="query-run", thread_id="query-run")
+    session.active.runtime_admission_id = admission
+    session.active.turn_display_user_text = "old root"
+    ticket = registry.enqueue_input(sid, "delivered", delivery="steer")
+    registry.record_input_delivery(sid, session, registry.claim_input(sid, "steer", run_id="query-run"), None)
+    entered, release = threading.Event(), threading.Event()
+    original = repository.display_tickets
+    def blocked_read(*args):
+        entered.set()
+        assert release.wait(5), "test must release its bounded SQLite read"
+        return original(*args)
+    monkeypatch.setattr(repository, "display_tickets", blocked_read)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        projection = pool.submit(registry.active_input_projection, sid)
+        try:
+            assert entered.wait(2)
+            def replace_admission():
+                other = registry.try_reserve_run("independent-chat")
+                registry.finish_run(other, status="test-complete")
+                registry.finish_run(admission, status="interrupted")
+                fresh = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+                registry.begin_run(fresh, run_id="fresh-run", thread_id="fresh-run")
+                session.active.runtime_admission_id = fresh
+                return fresh
+            fresh = pool.submit(replace_admission).result(timeout=1)
+        finally:
+            release.set()
+        assert projection.result(timeout=2) is None, "the old query cannot publish into the replacement admission"
+    assert repository.get_ticket(ticket.ticket_id).state == "running", "display does not mutate ticket history"
+    registry.finish_run(fresh, status="test-complete")
+
+
 def test_transcript_append_if_absent_is_idempotent(tmp_path):
     store = open_sessions(tmp_path / "chats")
     sid = store.create_session()

@@ -3,7 +3,7 @@ import {registerWorkbenchBrowser, runWorkbenchBrowserCommand, waitForWorkbenchBr
 import {browserDeadline} from "../frontend/main-deck/src/workbench/browserLifecycle";
 import {ingestBrowserHost, setBrowserHostConnection, setBrowserHostContext} from "../frontend/main-deck/src/workbench/browserHostBridge";
 import {adoptBrowserTab, getPreviewState} from "../frontend/main-deck/src/workbench/previewStore";
-import {applyBrowserViewport, browserViewportSize} from "../frontend/main-deck/src/workbench/browserViewport";
+import {applyBrowserViewport, browserViewportSize, nextBrowserLayoutFrame} from "../frontend/main-deck/src/workbench/browserViewport";
 import {findGroupOfPane} from "../frontend/main-deck/src/workbench/layoutModel";
 import {getWorkbenchState} from "../frontend/main-deck/src/workbench/workbenchStore";
 import {browserKeyInput} from "../frontend/main-deck/src/workbench/browserKeyboard";
@@ -12,6 +12,11 @@ const pause = (ms = 0) => new Promise(resolve => setTimeout(resolve, ms));
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(yes => resolve = yes); return {promise, resolve}; }
 
 export async function run() {
+  let cancelledFrame = 0;
+  await nextBrowserLayoutFrame({requestAnimationFrame:()=>17,cancelAnimationFrame:id=>{cancelledFrame=id;}} as Window);
+  assert.equal(cancelledFrame,17,"occluded windows settle layout through a bounded timer and cancel the suspended frame");
+  document.body.getBoundingClientRect = () => new window.DOMRect(0,0,1920,1080);
+  document.documentElement.getBoundingClientRect = document.body.getBoundingClientRect;
   const guest = document.createElement("webview") as WorkbenchWebview;
   document.body.appendChild(guest);
   guest.getBoundingClientRect = () => ({width: 640, height: 400, top: 0, left: 0, right: 640, bottom: 400, x: 0, y: 0, toJSON() {}});

@@ -11,6 +11,8 @@ import {useElapsed} from "./elapsedClock";
 import {PEER_DELIVERY} from "../peers/peerModels";
 import {requestPeer, usePeers} from "../peers/peerStore";
 import {disclosureKey, disclosureChoice, rememberDisclosure as remember} from "./disclosures";
+import {navigateTo} from "../state/appStore";
+import {chooseContextChat,captureContext,getExternalContextSettings} from "../externalContextSettingsStore";
 
 // Virtualized turns retain disclosures across scroll and overlay visits.
 function timeMs(value?: number) {
@@ -219,12 +221,13 @@ function ToolRun({rows, live, latest, scope, suspended, mutation, liveLabel}: {
   </div>;
 }
 
-export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel="",tracePersistence,scope="",shownPeerMessages}: {
+export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel="",tracePersistence,scope="",shownPeerMessages,suppressStatus=false}: {
   steps: readonly ChatTurnStep[]; live: boolean; streamText: string; turnStartedAt: number;ownerLabel?:string;
   tracePersistence?: "pending" | "saved" | "failed";
   scope?: string;
   /** Peer messages this turn already shows as transcript cards. */
   shownPeerMessages?: ReadonlySet<string>;
+  suppressStatus?: boolean;
 }) {
   const blocks = useMemo(() => timelineBlocks(steps, shownPeerMessages), [steps, shownPeerMessages]);
   const chat = useChatSelection(state=>({sessionId:state.sessionId,runtime:state.runtime,connected:state.connected,pause:state.pause,stopPending:state.stopPending}),shallowChatSelection);
@@ -234,9 +237,12 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
   const fallbackScope = useRef(String(turnStartedAt));
   const rowScope = [chat.sessionId || "", scope || fallbackScope.current] as const;
   const elapsed = useElapsed(live && !suspended, turnStartedAt);
-  if (!blocks.length) return live && !streamText ? <div className="turn-status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{ownerLabel ? `${ownerLabel} · ${liveLabel}` : liveLabel}</span><em>{formatActivityDuration(elapsed)}</em></div> : null;
+  if (!blocks.length) return live && !streamText && !suppressStatus ? <div className="turn-status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{ownerLabel ? `${ownerLabel} · ${liveLabel}` : liveLabel}</span><em>{formatActivityDuration(elapsed)}</em></div> : null;
   const running = steps.some(step => step.status === "running");
   return <div className={`turn-timeline turn-activity-stack${live && !suspended ? " is-live" : ""}`}>
+    {steps.some(step=>step.omittedBefore) ? <button type="button" className="message-action" disabled={!chat.connected || !chat.sessionId}
+      onClick={()=>{if(!chat.sessionId)return;chooseContextChat(chat.sessionId);navigateTo("memory");if(getExternalContextSettings().chatId===chat.sessionId)captureContext();}}
+      aria-label="View earlier session evidence">View earlier evidence</button> : null}
     {ownerLabel ? <strong className="execution-trace__owner">{ownerLabel}</strong> : null}
     {blocks.map((block, index) => {
       if (block.kind === "thought") return <TraceEntry key={disclosureKey(rowScope[0], rowScope[1], block.row.step.id)} row={block.row} live={live} scope={rowScope} suspended={suspended} mutation={mutation}/>;
@@ -247,7 +253,7 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
       return <ToolRun key={`run:${first.callId || first.id}`} rows={block.rows} live={live} latest={index === blocks.length - 1}
         scope={rowScope} suspended={suspended} mutation={mutation} liveLabel={liveLabel}/>;
     })}
-    {live && (suspended || (!running && !streamText)) ? <div className="execution-trace__waiting turn-timeline__status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{liveLabel}</span>{elapsed > 0 ? <em>{formatActivityDuration(elapsed)}</em> : null}</div> : null}
+    {live && !suppressStatus && (suspended || (!running && !streamText)) ? <div className="execution-trace__waiting turn-timeline__status" role="status">{suspended ? <Icon name="pause"/> : <TraceProgress mutation={mutation}/>}<span>{liveLabel}</span>{elapsed > 0 ? <em>{formatActivityDuration(elapsed)}</em> : null}</div> : null}
     {tracePersistence === "pending" || tracePersistence === "failed" ? <small className="trace-persistence" role="status">{tracePersistence === "pending" ? "Activity details awaiting confirmation" : "Activity details not confirmed saved"}</small> : null}
   </div>;
 }

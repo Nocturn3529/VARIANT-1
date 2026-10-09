@@ -553,7 +553,11 @@ export function handleAppended(message: ChatAppendedMessage) {
   const assistant = parseMessage(message.assistant);
   const authoritative = parseMessages(message.messages);
   const continuedTicket = user?.ticketId || authoritative.find(row=>row.role==="user" && row.ticketId)?.ticketId;
+  const nativeTurn=turnApi().snapshot();
+  const sameNativeRun=!!message.run_id && message.run_id===nativeTurn.runId
+    && (!message.admission_id || message.admission_id===nativeTurn.admissionId);
   const sameClient = (!!eventClient && activeTurnClientIds().has(eventClient))
+    || sameNativeRun
     || (message.source==="queue_continue" && !!continuedTicket && state.messages.some(row=>row.role==="user" && row.ticketId===continuedTicket));
   const now = Date.now() / 1000;
 

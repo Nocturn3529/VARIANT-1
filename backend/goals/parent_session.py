@@ -220,6 +220,15 @@ class ParentSessionGoals:
                 "a concrete summary, and evidence_refs where available. Completed means the objective "
                 "has been achieved; continuing requests another turn; blocked identifies required input. "
                 "A report is your claim and does not replace independent validation.")
+            text += ("\nUse the owner's stated end condition. If the objective asks for ongoing "
+                "operation until stopped, completing a build or one observation cycle is a milestone, "
+                "not completion of that objective. Report continuing while useful authorized work remains; "
+                "await real outgoing peer requests through wait_for_message_ids when appropriate. "
+                "Run genuine scheduled/recurring work through documented process or automation capabilities "
+                "when the task needs it; this Goal report has no timed-wake argument. "
+                "If you cannot sustain the requested work with available capabilities, report blocked "
+                "with the concrete limitation. Avoid repeated no-change polls or artificial busywork. "
+                "For finite objectives, report completed once their actual criteria are satisfied.")
             with bind_run_context(run):
                 task = runtime.chat.launch_reserved_turn(transport, text, session,
                     runtime_admission_id=admission, source="goal",

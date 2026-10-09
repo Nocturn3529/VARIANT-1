@@ -19,7 +19,6 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
     if (retained) {
       if (retained.contents !== guest) return deny('retained_guest_mismatch');
       if (retained.owner !== event.sender) return deny('owner_mismatch');
-      if (!retained.visible) return deny('attachment_hidden', 'Reveal this chat\'s browser panel before capturing again');
     } else {
       if (guest.getType() !== 'webview') return deny('unsupported_guest_type');
       if (owner !== deck?.webContents && !isNativeHost(owner)) return deny('foreign_owner');
@@ -28,11 +27,15 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
       if (!retained) return guest.hostWebContents === owner;
       const current = getRetainedGuest?.(id);
       return current?.contents === guest && current.owner === owner && current.attachmentId === retained.attachmentId
-        && current.host === retained.host && current.visible;
+        && current.host === retained.host && current.document === retained.document;
     };
     let changed = false;
     let abandoned = false;
     let capturedViewport;
+    const throttled = guest.getBackgroundThrottling();
+    // Hidden retained guests normally idle. Enable their compositor only for
+    // this bounded read so a screenshot observes current DOM, not old pixels.
+    if (retained && !retained.visible) guest.setBackgroundThrottling(false);
     const navigation = (_event, _url, inPlace, mainFrame) => { if (mainFrame && !inPlace) changed = true; };
     guest.on('did-start-navigation', navigation);
     let timer;
@@ -83,12 +86,20 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
         || (width === Math.round(capturedViewport.width * scale) && height === Math.round(capturedViewport.height * scale)))) {
         return {ok:false,error:'browser_capture_clipped: move or enlarge the browser panel, or request a smaller viewport'};
       }
-      return {ok:true, image:png.toString('base64'), image_width:width, image_height:height};
+      return {ok:true, image:png.toString('base64'), image_width:width, image_height:height,
+        image_css_width:capturedViewport.width, image_css_height:capturedViewport.height};
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`[browser-capture] guest=${id} error=${message}`);
       return {ok:false, error:message};
-    } finally { abandoned = true; clearTimeout(timer); if (!guest.isDestroyed()) guest.removeListener('did-start-navigation', navigation); }
+    } finally {
+      abandoned = true; clearTimeout(timer);
+      if (!guest.isDestroyed()) {
+        guest.removeListener('did-start-navigation', navigation);
+        const current = getRetainedGuest?.(id);
+        guest.setBackgroundThrottling(current ? !current.visible : throttled);
+      }
+    }
   });
 }
 module.exports = {registerBrowserCapture};

@@ -93,8 +93,8 @@ async def test_proxy_rejects_wrong_upstream_or_logged_out_state(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_router_lists_models_through_the_proxy_without_credentials(monkeypatch):
-    listing = AsyncMock(return_value=["upstage/solar-pro4:free"])
-    monkeypatch.setattr(hermes_proxy, "available_models", listing)
+    listing = AsyncMock(return_value=[{"id": "upstage/solar-pro4:free", "context_length": 524288}])
+    monkeypatch.setattr(hermes_proxy, "available_model_catalog", listing)
 
     router = _router()
     assert router.has_cloud_key("hermes") is True
@@ -102,7 +102,11 @@ async def test_router_lists_models_through_the_proxy_without_credentials(monkeyp
     assert lease.source == "anonymous"
     assert lease.secret == ""
     assert await router.list_cloud_models("hermes") == ["upstage/solar-pro4:free"]
+    assert router.context_limit_tokens({"mode": "cloud", "provider": "hermes", "model": "upstage/solar-pro4:free"}) == 524288
     listing.assert_awaited_once_with(start_if_needed=True)
+    listing.return_value = [{"id": "upstage/solar-pro4:free"}]
+    await router.list_cloud_models("hermes")
+    assert router.context_limit_tokens({"mode": "cloud", "provider": "hermes", "model": "upstage/solar-pro4:free"}) == 0
 
 
 @pytest.mark.asyncio

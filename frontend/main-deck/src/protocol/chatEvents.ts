@@ -1,4 +1,4 @@
-import {parseInputQueueSnapshot,type InputQueueSnapshot,type InputQueueResult} from "./chatQueue";
+import {parseDeliveredInput,parseInputQueueSnapshot,type DeliveredInput,type InputQueueSnapshot,type InputQueueResult} from "./chatQueue";
 import {parsePeerActivity,type PeerActivity} from "./peerActivity";
 import {parseGoalMessage,parseGoalWorkEvent,type GoalMessage,type GoalWorkEvent} from "./goals";
 import {parseChildrenMessage,parseChildrenChanged,type ChildrenMessage,type ChildrenChangedMessage} from "./children";
@@ -123,6 +123,7 @@ export type ChatQueueRejectedMessage = Readonly<{
 } & StreamRouting>;
 
 export type ChatQueueProgressMessage = Readonly<{
+  input?:DeliveredInput;
   queue?: InputQueueSnapshot|null;
   type: "chat:queue_progress";
   id: string;
@@ -130,7 +131,7 @@ export type ChatQueueProgressMessage = Readonly<{
   state: "delivered";
   session_id?: string;
   queue_size: number;
-}>;
+} & StreamRouting>;
 
 export type ChatQueueSettledMessage = Readonly<{
   type: "chat:queue_settled";
@@ -167,6 +168,7 @@ export type ChatTranscriptFailedMessage = Readonly<{
 
 export type StreamStartMessage = Readonly<{
   type: "start";
+  active_inputs?:unknown;
 } & StreamRouting>;
 
 export type StreamTokenMessage = Readonly<{
@@ -466,6 +468,8 @@ export function parseChatWsMessage(
     case "chat:queue_progress":
       return {
         type: "chat:queue_progress",
+        ...r,
+        input:parseDeliveredInput(row.input,str(row.session_id),str(row.id)),
         ...(row.queue!==undefined ? {queue:parseInputQueueSnapshot(row.queue)} : {}),
         id: str(row.id),
         delivery: row.delivery === "follow_up" ? "follow_up" : "steer",
@@ -515,7 +519,7 @@ export function parseChatWsMessage(
 
 
     case "start":
-      return {type: "start", ...r};
+      return {type: "start", ...(row.active_inputs!==undefined?{active_inputs:row.active_inputs}:{}), ...r};
     case "token":
       return {type: "token", token: str(row.token), ...r, ...segmentOf(row)};
     case "thinking": {

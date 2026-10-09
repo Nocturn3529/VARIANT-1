@@ -650,6 +650,66 @@ def test_catalog_is_content_addressed_sparse_and_immutable(catalog_stack):
     assert service.repository.publish(build_catalog_document(registry)) == loaded.release_id
 
 
+def test_peer_work_discloses_the_mount_and_bound_reply_contract(catalog_stack):
+    _registry, _enabled, _runtimes, _artifacts, _broker, service, _manager = catalog_stack
+    prompt = service.runtime_prompt("peer-discovery", "Help the coordinator and reply to its peer request")
+    assert "ipython(category='operate')" in prompt
+    assert "peers.inspect_message(message_id=message_id)" in prompt
+    assert "message.reply(text=reply_text)" in prompt
+    assert "session.context()` reads history; it does not send messages" in prompt
+
+
+def test_cross_mount_discovery_finds_exact_peer_methods_without_selecting(catalog_stack):
+    from peers.capabilities import PEER_OBJECT_METHODS
+    _registry, _enabled, runtimes, _artifacts, _broker, service, _manager = catalog_stack
+    _registry.get("peers").object_methods = PEER_OBJECT_METHODS
+    service.reconcile_registry()
+    runtimes.ensure_runtime("peer-method-discovery", is_new=True)
+    service.select("peer-method-discovery", "build")
+    before = runtimes.runtime("peer-method-discovery").identity.mount_revision
+    for query in ("inspect_message", "peers.inspect_message", "peer reply"):
+        document, _ = service.namespace_document("peer-method-discovery", query=query)
+        hit = document["top_k"][0]
+        assert hit["qualified_alias"] == "peers"
+        assert hit["category_id"] == "operate"
+        assert hit["select"] == "ipython(category='operate')"
+        methods = hit["matched_methods"]
+        expected = "reply" if query == "peer reply" else "inspect_message"
+        assert any(row["alias"] == expected and row["call"].startswith(f"peers.{expected}(")
+                   for row in methods)
+        assert len(methods) <= 3
+        assert "methods" not in hit
+        assert document["selected_category_id"] == "build"
+        assert document["mount_revision"] == before
+
+
+def test_method_discovery_respects_conditions_and_disabled_roots(catalog_stack):
+    from kernel_runtime.worker_bridge import ToolbeltNamespace
+    _registry, enabled, _runtimes, _artifacts, _broker, service, _manager = catalog_stack
+    _registry.get("peers").object_methods = (
+        {"name": "inspect_message", "description": "Inspect a peer request",
+         "condition": "test-peer-enabled", "params": {"message_id": {"type": "string", "required": True}}},
+        {"name": "reply", "description": "Reply to a peer", "params": {}},
+    )
+    service.reconcile_registry()
+    loaded = service.repository.current()
+    index = service._catalog_index(loaded, condition_flags={})
+    peer = next(row for row in index if row["qualified_alias"] == "peers")
+    assert [row["alias"] for row in peer["methods"]] == ["reply"]
+    local = ToolbeltNamespace({"catalog_index": index})
+    with pytest.raises(KeyError, match="No pinned catalog match"):
+        local.describe("peers.inspect_message")
+    index = service._catalog_index(loaded, condition_flags={"test-peer-enabled": True})
+    assert all("params" not in method for row in index for method in row.get("methods", ()))
+    contract = ToolbeltNamespace({"catalog_index": index}).describe("peers.inspect_message")
+    assert contract["signature"] == "inspect_message(message_id)"
+    assert "methods" not in contract
+    enabled.remove("peers")
+    disabled = service._catalog_index(loaded, condition_flags={"test-peer-enabled": True})
+    assert not any(row["qualified_alias"] == "peers" for row in service.top_k(
+        loaded, "peers.inspect_message", catalog_index=disabled))
+
+
 def test_catalog_covers_the_remaining_service_baseline_during_absorption():
     category_counts = Counter(
         category_id

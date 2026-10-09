@@ -310,7 +310,7 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
         header_name=str(getattr(profile, "prompt_cache_header", "") or ""),
     )
     base = base or (profile.base_url if profile else "https://api.anthropic.com")
-    url = base.rstrip("/") + "/v1/messages"
+    url = router._openai_url(base, "messages")
     request_started = time.perf_counter()
     try:
         usage = {}
@@ -496,6 +496,8 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
     b = (base or (profile.base_url if profile else "https://api.openai.com/v1")).rstrip("/")
     url = router._openai_url(b, "chat/completions")
     request_started = time.perf_counter()
+    decoder = OpenAIChatSSEDecoder()
+    event_hooks = None
     try:
         usage = {}
         response_identity = {}
@@ -526,11 +528,12 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     # Surface the provider's reason in the log (not just the bubble)
                     # so failures like a bad model id / unsupported field are visible.
                     print(f"[cloud] {label} {resp.status_code}: {body[:300]!r}", flush=True)
+                    decoder.http_status = resp.status_code
                     raise _http_provider_error(label, resp, body)
+                decoder.http_status = resp.status_code
                 got_content = False
                 reasoning = []
                 out_chars = 0
-                decoder = OpenAIChatSSEDecoder()
                 async for line in resp.aiter_lines():
                     event = decoder.decode_line(line)
                     if event is None:
@@ -615,14 +618,29 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
             inference_time_s=time.perf_counter() - request_started,
             manifest_ref=event_hooks.request_ref,
         )
+    except asyncio.CancelledError:
+        decoder.end_reason = "cancelled"
+        raise
+    except GeneratorExit:
+        decoder.end_reason = "closed"
+        raise
     except LocalEngineError:
+        if decoder.end_reason == "reading":
+            decoder.end_reason = "provider_error"
         raise
     except (httpx.TimeoutException, httpx.TransportError) as e:
+        decoder.end_reason = "transport_error"
         raise ProviderRequestError(
             label, f"{label} transport failed: {e}", status_code=503,
         ) from e
     except Exception as e:
+        if decoder.end_reason == "reading":
+            decoder.end_reason = "request_error"
         raise ProviderRequestError(label, f"{label} request failed: {e}") from e
+    finally:
+        record = getattr(router, "_patch_model_request_stream", None)
+        if callable(record) and event_hooks is not None:
+            record(event_hooks.request_ref, decoder.diagnostics())
 
 def gemini_extract_text(obj: dict):
     """Pull any text deltas out of one parsed Gemini stream chunk."""
@@ -708,7 +726,8 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
 
-    headers = {"Content-Type": "application/json"}
+    headers = router._provider_headers(profile,key) if profile else {}
+    headers["Content-Type"] = "application/json"
     prompt_cache = apply_prompt_cache_identity(
         prompt_cache_identity,
         payload=payload,
@@ -721,7 +740,9 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     # alt=sse makes Gemini stream proper `data: {json}` SSE lines; without it
     # the endpoint returns a single chunked JSON *array*, which can't be parsed
     # line-by-line and yields no tokens.
-    url = f"{base}/models/{model}:streamGenerateContent?alt=sse&key={key}"
+    url = f"{base}/models/{model}:streamGenerateContent?alt=sse"
+    if not profile or profile.auth_style == "query":
+        url += f"&key={key}"
     subscription = label == 'google-antigravity'
     if subscription:
         from model_runtime.google_ai import prepare_request
@@ -1107,6 +1128,9 @@ async def call_cloud_once(router, profile, lease: CredentialLease, model: str,
                           tool_call_sink=None, stream_diagnostics=None,
                           prompt_cache_identity=None):
     """One provider/credential attempt; dispatches by api_style."""
+    resolve = getattr(profile, "for_model", None)
+    if callable(resolve):
+        profile = resolve(model)
     base = router.provider_base_url(profile.name, lease)
     if not base:
         raise ProviderRequestError(
@@ -1153,7 +1177,7 @@ async def call_cloud_once(router, profile, lease: CredentialLease, model: str,
                 prompt_cache_identity=prompt_cache_identity,
                 reasoning_budget=reasoning_budget)
         # Personal SuperGrok OAuth → Hermes-aligned /v1/responses.
-        elif profile.name == "xai" and getattr(lease, "source", "") == "oauth":
+        elif getattr(profile,"wire_transport","") == "responses" or (profile.name == "xai" and getattr(lease, "source", "") == "oauth"):
             from llm_xai_responses import call_xai_responses
             generator = call_xai_responses(
                 router, messages, sampling, lease.secret,

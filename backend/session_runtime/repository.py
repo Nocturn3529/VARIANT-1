@@ -1104,6 +1104,16 @@ class SessionRuntimeRepository(RunSettlementHistory):
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def display_tickets(self, chat_id: str, ticket_ids: Iterable[str]) -> dict[str, InputTicket]:
+        """One bounded indexed read for an active input projection."""
+        ids = tuple(dict.fromkeys(str(value) for value in ticket_ids))[-64:]
+        if not ids:
+            return {}
+        with self._transaction() as conn:
+            rows = conn.execute("SELECT * FROM astb_input_ticket WHERE chat_id=? AND ticket_id IN ("
+                + ",".join("?" for _ in ids) + ")", (str(chat_id), *ids)).fetchall()
+        return {row["ticket_id"]: self._ticket_from_row(row) for row in rows}
+
     def get_ticket(self, ticket_id: str) -> InputTicket | None:
         with self._lock:
             conn = self._connect()

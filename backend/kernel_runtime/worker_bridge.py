@@ -2538,6 +2538,20 @@ class MountedPythonAPI:
         object.__setattr__(self, "_method_descriptors", method_descriptors)
         object.__setattr__(self, "_locked", True)
 
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        raise AttributeError(self._missing_method(name))
+
+    def _missing_method(self, name: str) -> str:
+        available = ", ".join(self.methods())
+        return (
+            f"{self._name}.{name} is not in this mounted contract. "
+            f"Available methods: {available}. "
+            f"Use {self._name}.describe('method') for the exact signature; "
+            "use toolbelt.search(query=...) for another capability/category."
+        )
+
     def __setattr__(self, name: str, value: Any) -> None:
         if getattr(self, "_locked", False):
             raise AttributeError(f"the official VARIANT-1 {self._name} API is read-only")
@@ -2559,7 +2573,7 @@ class MountedPythonAPI:
             clean = _identifier(str(method))
             descriptor = self._method_descriptors.get(clean)
             if descriptor is None:
-                raise KeyError(method)
+                raise KeyError(self._missing_method(clean))
             return {
                 "api": self._name,
                 "method": clean,
@@ -3353,9 +3367,7 @@ class ToolbeltNamespace:
     def missing_capability(self, alias: str, *, namespace: str = "tools") -> str:
         """Explain local disclosure state without mounting or invoking anything."""
         name = str(alias).removeprefix("tools.")
-        matches = [row for row in self._index if name in {
-            str(row.get("alias") or ""), str(row.get("qualified_alias") or ""),
-        }]
+        matches = self._matching_contracts(name)
         current = self._document.get("selected_category_id") or "base"
         prefix = f"{namespace}.{alias} is not available in this namespace (selected category: {current})."
         enabled = [row for row in matches if row.get("enabled", True)]
@@ -3368,6 +3380,24 @@ class ToolbeltNamespace:
         if matches:
             return f"{prefix} The catalog entry is disabled; selecting a category will not enable it."
         return f"{prefix} No pinned catalog match. Use toolbelt.search({name!r}) or tools.methods()."
+
+    def _matching_contracts(self, name: str) -> list[dict[str, Any]]:
+        matches = []
+        for row in self._index:
+            if name in {str(row.get("alias") or ""), str(row.get("qualified_alias") or "")}:
+                matches.append(dict(row))
+                continue
+            for method in row.get("methods") or ():
+                alias = str(method.get("alias") or "")
+                qualified = f"{row['namespace']}.{alias}"
+                if name in {alias, qualified}:
+                    contract = {key: value for key, value in row.items() if key != "methods"}
+                    contract.update({**method, "qualified_alias": qualified,
+                                     "call": f"{row['namespace']}.{method['signature']}"})
+                    if row["category_id"] != "base":
+                        contract["select"] = f"ipython(category={row['category_id']!r})"
+                    matches.append(contract)
+        return matches
 
     def describe(self, alias: str) -> dict[str, Any]:
         clean = str(alias or "").replace("-", "_")
@@ -3385,13 +3415,7 @@ class ToolbeltNamespace:
                     ("alias", "namespace", "call", "signature", "enabled") if key in row}
                     for row in self._index if row.get("category_id") == clean],
             }
-        matches = [
-            dict(row) for row in self._index
-            if clean in {
-                str(row.get("alias") or ""),
-                str(row.get("qualified_alias") or ""),
-            }
-        ]
+        matches = self._matching_contracts(clean)
         if len(matches) != 1:
             raise KeyError(self.missing_capability(alias, namespace="toolbelt"))
         return matches[0]
