@@ -296,4 +296,20 @@ fs.rmSync(staleDeckOutput, {force: true});
 assert.strictEqual(staleDeckOutputSurvived, false,
   'Deck builds must remove stale generated outputs before bundling');
 
+// Every package the main process requires must be a runtime dependency:
+// electron-builder packs only `dependencies` into app.asar, and a missing one
+// crashes the installed app before its window opens.
+const builtin = new Set(require('node:module').builtinModules);
+const runtimeDeps = new Set(Object.keys(packageJson.dependencies || {}));
+const mainFiles = fs.readdirSync(root).filter(name => name === 'main.js' || /^electron-.*\.js$/.test(name) || /-preload\.js$/.test(name));
+for (const file of mainFiles) {
+  const source = fs.readFileSync(path.join(root, file), 'utf8');
+  for (const match of source.matchAll(/require\(\s*['"]([^'"./][^'"]*)['"]\s*\)/g)) {
+    const name = match[1].replace(/^node:/, '');
+    const pkg = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0];
+    if (builtin.has(name) || builtin.has(pkg) || pkg === 'electron') continue;
+    assert.ok(runtimeDeps.has(pkg), `${file} requires ${pkg}, which must be in package.json dependencies`);
+  }
+}
+
 console.log(`packaged files: ${requiredModules.size} electron modules + allowlist ok`);
