@@ -133,6 +133,8 @@ exe = EXE(
     entitlements_file=None,
 )
 
+# ---- Variant1Kernel analysis ----
+# (scripts/test-packaged-files.js checks each analysis on its side of this line.)
 # Variant1Kernel: the persistent CPython/ASTB worker. Host services remain in
 # Variant1Backend; this executable owns only the REPL, ASTB proxies, mutation
 # candidate dispatch, and portable analytical codecs.

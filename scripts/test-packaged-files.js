@@ -15,7 +15,11 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const mainJs = read('main.js');
 const backendLauncher = read('electron-backend.js');
-const backendSpec = read('backend/variant1_backend.spec');
+// One spec freezes both executables; each analysis is checked on its own side
+// of the marker so kernel-only imports never satisfy or trip backend rules.
+const KERNEL_SPEC_MARKER = '# ---- Variant1Kernel analysis ----';
+const [backendSpec, kernelSpec = ''] = read('backend/variant1_backend.spec').split(KERNEL_SPEC_MARKER);
+assert.ok(kernelSpec, 'backend spec must keep the Variant1Kernel analysis marker');
 const backendSetup = read('scripts/setup-backend.js');
 const backendBuild = read('scripts/build-backend.js');
 const browserProvisioning = read('backend/browser_fabric/provisioning.py');
@@ -282,6 +286,13 @@ for (const workerOnly of [
   assert.match(backendSpec, new RegExp(`["']${workerOnly}["']`),
     `${workerOnly} must be excluded from Variant1Backend`);
 }
+// The kernel runs model-authored Python; host services stay out of its archive.
+for (const hostOnly of ['server', 'fastapi', 'uvicorn', 'playwright', 'mcp']) {
+  assert.match(kernelSpec, new RegExp(`excludes=\\[[^\\]]*["']${hostOnly}["']`),
+    `${hostOnly} must be excluded from Variant1Kernel`);
+}
+assert.match(kernelSpec, /["']kernel_runtime\.capsule_worker["']/,
+  'the kernel analysis must freeze the capsule worker');
 
 // esbuild does not remove outputs for deleted/renamed entry points. Prove the
 // production builder replaces the generated directory instead of packaging a
