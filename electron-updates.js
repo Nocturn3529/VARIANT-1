@@ -215,7 +215,10 @@ function createUpdateService(deps) {
     // tab lists and cookies lazily; both have to settle before we hand over.
     try { await prepareInstall(); } catch (error) { log('[updates] install preparation failed: ' + errorText(error)); }
     log(`[updates] installing ${state.version}`);
-    up.quitAndInstall(false, true);
+    // Silent: the assisted installer would otherwise reopen its whole wizard
+    // (install scope, folder). It upgrades the existing install in place and
+    // still asks for elevation when that install is per-machine. Then relaunch.
+    up.quitAndInstall(true, true);
     return {ok: true};
   }
 

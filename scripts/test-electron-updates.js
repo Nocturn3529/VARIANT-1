@@ -115,7 +115,7 @@ async function run() {
   const installed = await t.svc.install();
   assert.deepStrictEqual(installed, {ok: true});
   assert.deepStrictEqual(t.order, [['prepare']]);
-  assert.deepStrictEqual(t.updater.calls, [['install', false, true]], 'the installer is shown, not run silently');
+  assert.deepStrictEqual(t.updater.calls, [['install', true, true]], 'the update installs silently over the existing install and relaunches');
 
   // Up to date and failed checks.
   t = service();
