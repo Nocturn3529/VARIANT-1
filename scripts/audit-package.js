@@ -34,7 +34,7 @@ walk(folder);
 const forbiddenResources = files.filter(row => /\/(?:kokoro_onnx|phonemizer|espeakng_loader|onnxruntime|neutts|kittentts|piper|soundfile)(?:\/|[._-])/.test(row.path)
   || row.path.includes('/pyarrow/tests/') || /\.(gguf|onnx|sqlite3|jsonl|part|pdb)$/.test(row.path));
 assert.deepEqual(forbiddenResources, [], 'offline speech, private data or test payload leaked into package');
-for (const name of ['resources/backend/Variant1Backend.exe', 'resources/backend/kernel/Variant1Kernel.exe',
+for (const name of ['resources/backend/Variant1Backend.exe', 'resources/backend/Variant1Kernel.exe',
   'resources/backend/_internal/THIRD_PARTY_LICENSES.txt']) assert.ok(files.some(row => row.path === name), name);
 const configFiles = fs.readdirSync(path.join(folder, 'resources/config'));
 assert.ok(!configFiles.some(name => ['llm_config.json', 'settings.json', 'tools.json', 'messaging.json', 'plugins'].includes(name)));

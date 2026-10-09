@@ -6,8 +6,8 @@
  *
  *   npm run build:backend
  *
- * Output: backend/dist/Variant1Backend/Variant1Backend.exe (+ _internal/) and
- * backend/dist/Variant1Kernel/Variant1Kernel.exe (+ _internal/).
+ * Output: backend/dist/Variant1Backend/ with Variant1Backend.exe and
+ * Variant1Kernel.exe sharing one _internal/.
  * The electron-builder step (package.json `extraResources`) copies that folder
  * into <resources>/backend/, where main.js launches Variant1Backend.exe.
  *
@@ -62,17 +62,17 @@ try {
     try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {}
   }
 
-  // Freeze both independently audited entry points. Run from backend/ so each
-  // spec's pathex='.' resolves to the modules.
+  // One spec freezes both independently audited entry points (separate module
+  // archives) into one folder that shares native libraries. Run from backend/
+  // so pathex='.' resolves to the modules.
   run(py, ['-m', 'PyInstaller', '--noconfirm', '--clean', 'variant1_backend.spec'], backendDir);
-  run(py, ['-m', 'PyInstaller', '--noconfirm', '--clean', 'variant1_kernel.spec'], backendDir);
 
   const exe = path.join(backendDir, 'dist', 'Variant1Backend',
     isWin ? 'Variant1Backend.exe' : 'Variant1Backend');
   if (!fs.existsSync(exe)) {
     throw new Error('expected output missing: ' + exe);
   }
-  const kernelExe = path.join(backendDir, 'dist', 'Variant1Kernel',
+  const kernelExe = path.join(backendDir, 'dist', 'Variant1Backend',
     isWin ? 'Variant1Kernel.exe' : 'Variant1Kernel');
   if (!fs.existsSync(kernelExe)) {
     throw new Error('expected kernel output missing: ' + kernelExe);

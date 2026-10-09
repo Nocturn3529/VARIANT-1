@@ -107,9 +107,9 @@ CLOUD_MODEL_ORDER: tuple[str, ...] = tuple(
 
 
 def frozen_kernel_path(backend: str | Path) -> Path:
-    """Return the one-directory kernel executable paired with a frozen backend."""
+    """Return the kernel executable frozen next to a frozen backend."""
 
-    return Path(backend).resolve().parent / "kernel" / "Variant1Kernel.exe"
+    return Path(backend).resolve().parent / "Variant1Kernel.exe"
 
 
 # Mutation-Off qualification covers each current category, immutable base

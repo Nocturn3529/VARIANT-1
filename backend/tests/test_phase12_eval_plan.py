@@ -75,12 +75,10 @@ def test_phase12_model_order_and_exact_routes_are_product_gates():
     assert "children.spawn" in CHAT_SUBAGENT_PROMPT
 
 
-def test_frozen_kernel_lives_in_its_isolated_onedir_runtime(tmp_path):
+def test_frozen_kernel_lives_next_to_the_frozen_backend(tmp_path):
     backend = tmp_path / "backend" / "Variant1Backend.exe"
 
-    assert frozen_kernel_path(backend) == (
-        backend.parent / "kernel" / "Variant1Kernel.exe"
-    ).resolve()
+    assert frozen_kernel_path(backend) == (backend.parent / "Variant1Kernel.exe").resolve()
 
 
 def test_frozen_freshness_ignores_generated_python_copies(tmp_path):

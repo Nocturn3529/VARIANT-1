@@ -176,6 +176,9 @@ jobs:
           app="$(find dist -name '*.app' -maxdepth 3 -print -quit)"
           test -n "$app"
           find "$app/Contents/Resources" -name 'Variant1Backend*' -print -quit | grep -q .
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload macOS packages
         uses: actions/upload-artifact@v6
         with:
@@ -255,6 +258,9 @@ jobs:
           test -n "$(find "$root" -maxdepth 1 -type f -perm -u+x -print -quit)"
           test -n "$(find "$root" -maxdepth 1 -name '*.desktop' -print -quit)"
           echo "AppImage extracts to a launcher and a desktop entry"
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload Linux packages
         uses: actions/upload-artifact@v6
         with:
@@ -494,6 +500,9 @@ jobs:
           $payload = Get-ChildItem dist -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
           if (-not $payload) { throw 'Variant1Backend not found in the packaged payload' }
           $payload | ForEach-Object { Write-Host "frozen backend: $($_.FullName)" }
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload Windows packages
         uses: actions/upload-artifact@v6
         with:
