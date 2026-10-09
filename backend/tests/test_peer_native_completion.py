@@ -139,3 +139,36 @@ async def test_another_admission_of_same_logical_run_cannot_complete_a_request(t
     finally:
         runtimes.finish_run(admission,status='test_cleanup')
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_peer_request_on_snapshot_resume_correlates_to_new_native_admission(tmp_path):
+    from chat_session import ConnectionSession
+    service, runtimes, _, _, first, second = _stack(tmp_path)
+    service.host.require_runtime = lambda: SimpleNamespace()
+    old = runtimes.try_reserve_run(second)
+    runtimes.begin_run(old, run_id="retained-graph", thread_id="retained-graph", source="chat")
+    runtimes.finish_run(old, status="interrupted")
+    admission = runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission, run_id="resumed-native", thread_id="retained-graph", source="chat")
+    session = ConnectionSession(viewed_session_id=second)
+    session.active.runtime_admission_id = admission
+    sender = "chat:" + first
+    try:
+        request = await service.send(sender, "chat:" + second, "Continue the review")
+        row = runtimes.claim_input(second, "steer", run_id="retained-graph")
+        delivered = runtimes.record_input_delivery(second, session, row, None)
+        assert delivered["run_id"] == "resumed-native"
+        runtimes.complete_transcript_commit(second, [row])
+        # The earlier graph/admission cannot satisfy this newly consumed request.
+        runtimes.repository.store_run_settlement(second, old,
+            {"run_id": "retained-graph", "status": "ok", "settled": True}, "Earlier answer")
+        assert service.native_completion(sender, request["message_id"]) is None
+        runtimes.repository.store_run_settlement(second, admission,
+            {"run_id": "resumed-native", "status": "ok", "settled": True}, "Resumed answer")
+        completion = service.native_completion(sender, request["message_id"])
+        assert completion["final_answer"] == "Resumed answer"
+        assert completion["run_id"] == "resumed-native" and completion["admission_id"] == admission
+    finally:
+        runtimes.finish_run(admission, status="test-complete")
+        await service.shutdown()

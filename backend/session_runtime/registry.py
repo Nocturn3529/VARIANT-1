@@ -1049,32 +1049,47 @@ class SessionRuntimeRegistry:
             if text is not None and not getattr(active, "turn_persisted", False):
                 root = {"role": "user", "text": str(text), "ts": admission.reserved_at,
                         "run_id": admission.run_id,
-                        "attachments": getattr(active, "turn_display_attachments", None) or []}
+                        "attachments": list(getattr(active, "turn_display_attachments", None) or [])}
                 ticket_id = str(getattr(active, "turn_ticket_id", "") or "")
-                ticket = self.repository.get_ticket(ticket_id) if ticket_id else None
-                if ticket and ticket.chat_id == clean:
-                    root["ticket_id"] = ticket_id
-                    origin = ticket.origin()
-                    if origin:
-                        root["origin"] = origin
-                        if "content" in origin:
-                            root["peer_display"] = {"display_name": origin["display_name"], "content": origin["content"]}
+            else:
+                ticket_id = ""
             delivered = getattr(active, "delivered_inputs", ()) or ()
-            tail = delivered[-64:]
-            tickets = self.repository.display_tickets(clean, [str(row.get("id") or "") for row in tail])
-            inputs = []
-            for row in tail:
-                ticket = tickets.get(str(row.get("id") or ""))
-                if ticket is None or ticket.chat_id != clean:
-                    continue
-                if row.get("run_id") and row["run_id"] != admission.run_id:
-                    continue
-                inputs.append({**ticket.to_dict(), "state": "running", "run_id": admission.run_id,
-                               "admission_id": admission.admission_id,
-                               "delivered_at": float(row.get("delivered_at") or ticket.proof.get("delivered_at") or ticket.updated_at)})
+            tail = [dict(row) for row in delivered[-64:]]
+            omitted = max(0, len(delivered) - 64)
+            run_id, admission_id = admission.run_id, admission.admission_id
+        # Display reads must not hold the registry's admission/pause/finish lock.
+        ticket = self.repository.get_ticket(ticket_id) if ticket_id else None
+        if root is not None and ticket and ticket.chat_id == clean:
+            root["ticket_id"] = ticket_id
+            origin = ticket.origin()
+            if origin:
+                root["origin"] = origin
+                if "content" in origin:
+                    root["peer_display"] = {"display_name": origin["display_name"], "content": origin["content"]}
+        tickets = self.repository.display_tickets(clean, [str(row.get("id") or "") for row in tail])
+        inputs = []
+        for row in tail:
+            ticket = tickets.get(str(row.get("id") or ""))
+            if ticket is None or ticket.chat_id != clean:
+                continue
+            if row.get("run_id") and row["run_id"] != run_id:
+                continue
+            inputs.append({**ticket.to_dict(), "state": "running", "run_id": run_id,
+                           "admission_id": admission_id,
+                           "delivered_at": float(row.get("delivered_at") or ticket.proof.get("delivered_at") or ticket.updated_at)})
+        with self._guard:
+            current = self._live.get(clean)
+            current_owner = self.active_run_owner(clean)
+            if (current is None or current.admission is not admission or current_owner is None
+                    or admission.run_id != run_id
+                    or getattr(current_owner[0], "active", None) is not active
+                    or getattr(active, "runtime_admission_id", "") != admission_id):
+                return None
+            if getattr(active, "turn_persisted", False):
+                root = None
             return {"schema": "variant1.active-inputs.v1", "session_id": clean,
-                    "run_id": admission.run_id, "admission_id": admission.admission_id,
-                    "root": root, "inputs": inputs, "omitted_inputs": max(0, len(delivered) - 64)}
+                    "run_id": run_id, "admission_id": admission_id,
+                    "root": root, "inputs": inputs, "omitted_inputs": omitted}
 
     def cancel_active_run(self, chat_id: str, *, expected_admission_id: str = "") -> asyncio.Task | None:
         """Cancel the one run owned by this durable chat, if any."""
@@ -1208,8 +1223,12 @@ class SessionRuntimeRegistry:
             admission = live.admission if live is not None else None
             if admission is not None and not admission.accepting_inputs:
                 return None
+            # Snapshot Resume preserves the graph's run ID under a new native
+            # admission. Tickets, delivery receipts and native settlements use
+            # that admission's run ID, not the retained graph ID from the caller.
+            claimed_run_id = admission.run_id if admission and admission.run_id else str(run_id or "")
             ticket = self.repository.claim_ticket(
-                clean, delivery, run_id=str(run_id or "")
+                clean, delivery, run_id=claimed_run_id
             )
         if ticket is None:
             return None
@@ -1223,7 +1242,7 @@ class SessionRuntimeRegistry:
             status="preparing",
             chat_id=ticket.chat_id,
             ticket_id=ticket.ticket_id,
-            run_id=run_id,
+            run_id=claimed_run_id,
         )
         return ticket.as_state()
 

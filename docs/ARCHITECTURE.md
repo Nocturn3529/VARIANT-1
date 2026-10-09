@@ -123,6 +123,12 @@ Provider-reported cost, including zero, takes precedence over catalog estimates
 through telemetry, request manifests and durable usage accounting. Estimates
 remain distinct from billed cost; absent cost remains unknown.
 
+Snapshot Resume retains the graph identity, while newly claimed inputs,
+delivery receipts and native settlements use the current admission's run ID.
+Active-input display reads snapshot owner identity under the registry lock,
+read bounded ticket metadata outside it, then recheck that identity before
+publication.
+
 Native peer requests default to `steer`: a busy recipient consumes them at a safe
 step, while an idle or ended session starts its own normal admitted turn without
 requiring an open chat view. Explicit `follow_up` waits for idle. Busy wake tasks
