@@ -202,7 +202,8 @@ for (const trigger of ['daily', 'weekdays', 'weekly', 'interval', 'cron']) asser
 assert.doesNotMatch(automationView + automationStore, /value="(?:file|window|clipboard)"|Queue latest|queue_latest|backpressure/);
 assert.match(stylesIndex, /\.\/workbench\.css/);
 assert.match(memoryStore, /goal run was not created/);
-assert.match(deckIpc, /available:\s*!!\(r && r\.isUpdateAvailable\)/);
+// update:check delegates to the update service (electron-updates.js); its reply is checked below.
+assert.match(deckIpc, /const state = await updates\.check\(\)/);
 assert.match(aboutStore, /result\.available && result\.version/);
 assert.doesNotMatch(deckIpc, /dialog:pickFiles/);
 
@@ -246,4 +247,47 @@ assert.doesNotMatch(agentToolsSettings, /type: "web_search:set", provider: "sear
 assert.match(messagingSettings, /<PlatformDetail key=\{selected\.id\}/);
 assert.match(pluginsStore, /package_id[\s\S]*plugins\.map[\s\S]*active/);
 
-console.log('main deck controls: Hermes workbench, live Files/Review/Terminal/Browser, providers, automations, and mutation controls verified');
+// The update IPC replies from the update service's state: available while an
+// update is found, downloading or downloaded, otherwise up to date, and the
+// service's own reason when updates are unavailable or the check failed.
+async function checkUpdateIpc() {
+  const vm = require('vm');
+  const {createRequire} = require('module');
+  const file = path.join(root, 'electron-deck-ipc.js');
+  const handlers = new Map();
+  const moduleResult = {exports: {}};
+  vm.runInNewContext(deckIpc, {module: moduleResult, exports: moduleResult.exports,
+    require: id => id === 'electron' ? {ipcMain: {handle: (name, fn) => handlers.set(name, fn), on: () => {}}} : createRequire(file)(id),
+    __dirname: root, process, Buffer, console, setTimeout, clearTimeout}, {filename: file});
+  const deckWindow = {};
+  const checks = [];
+  let next = {status: 'available', reason: '', version: '0.1.1-preview.4', error: ''};
+  const updates = {
+    check: async () => { checks.push(next.status); return {...next}; },
+    getState: () => ({...next}),
+    download: async () => ({ok: true}), cancel: () => ({ok: true}), install: async () => ({ok: true}), openRelease: async () => ({ok: true}),
+  };
+  moduleResult.exports.registerDeckIpc({app: {}, appRoot: root, getDeckWindow: () => deckWindow, getMonitorWindow: () => null,
+    isTrustedIpcSender: (event, window) => event.trusted === true && window === deckWindow, openMonitorWindow: () => {}, updates});
+  const check = handlers.get('update:check');
+  // Replies come from the vm realm, so compare their fields.
+  const untrusted = await check({trusted: false});
+  assert.deepStrictEqual([untrusted.ok, untrusted.reason], [false, 'untrusted_sender']);
+  assert.deepStrictEqual(checks, [], 'an untrusted sender never triggers a check');
+  for (const [status, available] of [['available', true], ['downloading', true], ['downloaded', true], ['up-to-date', false]]) {
+    next = {...next, status, version: available ? '0.1.1-preview.4' : ''};
+    const reply = await check({trusted: true});
+    assert.deepStrictEqual([reply.ok, reply.available, reply.version, reply.state.status],
+      [true, available, available ? '0.1.1-preview.4' : null, status], status);
+  }
+  next = {...next, status: 'unavailable', reason: 'unconfigured', version: ''};
+  assert.deepStrictEqual([(await check({trusted: true})).ok, (await check({trusted: true})).reason], [false, 'unconfigured']);
+  next = {...next, status: 'error', reason: '', error: 'net::ERR_INTERNET_DISCONNECTED'};
+  assert.deepStrictEqual([(await check({trusted: true})).ok, (await check({trusted: true})).reason], [false, 'net::ERR_INTERNET_DISCONNECTED']);
+  assert.match(read('frontend/main-deck/src/aboutStore.ts'), /result\.reason === "unconfigured"/,
+    'the About label uses the service reason for an unconfigured feed');
+}
+
+checkUpdateIpc().then(() => {
+  console.log('main deck controls: Hermes workbench, live Files/Review/Terminal/Browser, providers, automations, mutation controls and the update IPC contract verified');
+}).catch(error => { console.error(error); process.exitCode = 1; });
