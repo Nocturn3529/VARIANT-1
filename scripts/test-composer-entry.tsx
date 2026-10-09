@@ -89,6 +89,7 @@ export async function run() {
     await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"local",provider:"local",model:"C:/models/A/shared.gguf",status:"ready"}));
     await act(async()=>{host.querySelector<HTMLButtonElement>('#context-meter-button')!.click();await pause();});
     assert.ok(document.querySelector('[aria-label="Context budget"]')!.textContent!.includes("Unknown"));
+    assert.equal(document.querySelector('#context-meter-button')!.textContent!.includes("0%"), false, "an unknown window cannot be presented as 0% used");
     await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"local",provider:"local",model:"C:/models/A/shared.gguf",status:"ready",context_limit_tokens:32768,used_tokens:16000,output_reserve_tokens:16000}));
     const budgetRows=Array.from(document.querySelectorAll('[aria-label="Context budget"] > div')).map(row=>row.textContent);
     assert.ok(budgetRows[0]!.includes("Context window"));

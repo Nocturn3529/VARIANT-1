@@ -223,7 +223,7 @@ function ContextMeter({
   onToggle: () => void;
   onClose: () => void;
 }) {
-  const measured=context.status==="ready";
+  const measured=context.status==="ready" && !!context.contextLimitTokens;
   const filledSegments = context.percentUsed > 0
     ? Math.max(1, Math.ceil(context.percentUsed * CONTEXT_METER_SEGMENTS / 100))
     : 0;
@@ -256,7 +256,7 @@ function ContextMeter({
       aria-haspopup="dialog"
       aria-expanded={open}
       aria-controls="context-meter-menu"
-      aria-label={measured ? `Session context: ${context.percentUsed.toFixed(0)}% used` : "Session context: awaiting measurement"}
+      aria-label={measured ? `Session context: ${context.percentUsed.toFixed(0)}% used` : context.status === "ready" ? "Session context: window unknown" : "Session context: awaiting measurement"}
       title="Session context"
       disabled={!sessionId}
       onClick={onToggle}
@@ -275,7 +275,7 @@ function ContextMeter({
       <header className="context-meter-menu__header deck-section__header">
         <span>
           <small>Session context</small>
-          <strong>{measured ? `${context.percentUsed.toFixed(1)}% used` : "Awaiting measurement"}</strong>
+          <strong>{measured ? `${context.percentUsed.toFixed(1)}% used` : context.status === "ready" ? "Window unknown" : "Awaiting measurement"}</strong>
         </span>
         <b>{formatContextTokens(context.usedTokens)} / {formatContextTokens(context.contextLimitTokens)}</b>
       </header>
