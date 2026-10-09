@@ -44,8 +44,12 @@ from .toolbelt import register_toolbelt_tool
 
 IPYTHON_HOST_CAPABILITY_CONTRACT = (
     "The persistent Python REPL is trusted same-user host Python, not a sandbox. "
+    "Async code supports top-level await; the worker already runs an event loop, "
+    "so use await rather than asyncio.run inside a cell. "
     "Use Python to compose workflows. For launching and managing applications, "
-    "prefer the provided process capability. Category mounts govern only host-integrated "
+    "prefer the provided process capability. It records ownership for inspection and Goal cleanup. "
+    "Processes launched through ordinary Python require their own lifecycle management; the parent kernel is retained. "
+    "Category mounts govern only host-integrated "
     "VARIANT-1 proxies; they do not restrict standard Python. The current project is the "
     "starting directory, not an access boundary. Follow explicit user-requested "
     "scope or isolated-environment boundaries."
@@ -1912,6 +1916,8 @@ class CatalogService:
                 "then use the mounted `peers` proxy, not a Python import. "
                 "`peers.list()` returns peer handles; use "
                 "`for peer in peers.list(): print(peer.inspect())` rather than JSON-serializing handles. "
+                "`peers.inbox()` returns a mapping; iterate its ['messages'] list, "
+                "not the mapping's keys. "
                 "For an incoming message, bind `message = peers.inspect_message(message_id=message_id)` "
                 "using its exact Message ID; `message.reply(text=reply_text)` preserves correlation. "
                 "`peers.get(peer_id=peer_id).send(text=task_text)` requests work and wakes an idle "
@@ -1919,6 +1925,14 @@ class CatalogService:
                 "`session.context()` reads history; it does not send messages."
             )
         session_api = python_apis.get("session") or {}
+        if any(str(method.get("alias") or method.get("name") or "") == "report_outcome"
+               for method in session_api.get("methods") or ()):
+            current_parts.append(
+                "If working as an active child or owning-session Goal, record a structured outcome before "
+                "your final reply: call session.report_outcome(status=..., summary=...). "
+                "Use completed only when the objective is achieved, continuing for remaining "
+                "authorized work, or blocked for required input. Prose alone is not a report."
+            )
         if any(str(method.get("alias") or method.get("name") or "") == "context"
                for method in session_api.get("methods") or ()):
             current_parts.append(

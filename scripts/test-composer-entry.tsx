@@ -87,6 +87,14 @@ export async function run() {
     await act(async()=>{activateChatState("A");setChatState({...getChatState(),sessionId:"A",connected:true});noteDisplayedSession("A");});
 
     await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"local",provider:"local",model:"C:/models/A/shared.gguf",status:"ready"}));
+    await act(async()=>{host.querySelector<HTMLButtonElement>('#context-meter-button')!.click();await pause();});
+    assert.ok(document.querySelector('[aria-label="Context budget"]')!.textContent!.includes("Unknown"));
+    await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"local",provider:"local",model:"C:/models/A/shared.gguf",status:"ready",context_limit_tokens:32768,used_tokens:16000,output_reserve_tokens:16000}));
+    const budgetRows=Array.from(document.querySelectorAll('[aria-label="Context budget"] > div')).map(row=>row.textContent);
+    assert.ok(budgetRows[0]!.includes("Context window"));
+    assert.ok(budgetRows[1]!.includes("Reply reserve"));
+    assert.ok(budgetRows[2]!.includes("768"),"headroom subtracts reply reserve instead of calling it the model window");
+    await act(async()=>{host.querySelector<HTMLButtonElement>('#context-meter-button')!.click();await pause();});
     await act(async()=>{host.querySelector<HTMLButtonElement>('#model-button')!.click();await pause();});
     const catalog=commands.filter(command=>command.type==="model:options").at(-1)!;
     await act(async()=>{ingestSessionContext({type:"model:options",session_id:"A",request_id:catalog.request_id,providers:[{id:"local",mode:"local",name:"Local models",models:[

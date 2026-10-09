@@ -288,11 +288,17 @@ function ContextMeter({
       </div>
       <div className="context-meter-summary">
         <span>{context.status === "ready"
-          ? `${formatContextTokens(context.availableTokens)} tokens available`
+          ? `${formatContextTokens(context.availableTokens)} tokens before reply reserve`
           : "Waiting for the first model request"}</span>
         <span>{context.cachedInputTokens
           ? `${formatTokenCount(context.cachedInputTokens)} cached`
           : context.measurement.replaceAll("_", " ")}</span>
+      </div>
+      <div className="context-meter-budget" aria-label="Context budget">
+        <div><span>Context window</span><b>{context.contextLimitTokens ? formatContextTokens(context.contextLimitTokens) : "Unknown"}</b></div>
+        <div><span>Reply reserve</span><b>{formatContextTokens(context.outputReserveTokens)}</b></div>
+        <div><span>Input headroom after reply reserve</span><b>{context.contextLimitTokens ? formatContextTokens(Math.max(0, context.contextLimitTokens - context.usedTokens - context.outputReserveTokens)) : "Unknown"}</b></div>
+        {!context.contextLimitTokens ? <small>Projection uses a conservative budget until this route has context metadata or an explicit override.</small> : null}
       </div>
       <div className="context-meter-breakdown" aria-label="Context breakdown">
         {context.categories.map(category => <div

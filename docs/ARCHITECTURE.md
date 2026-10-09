@@ -99,8 +99,12 @@ configuration changes priority. Exact admission/run identities fence reports and
 cancellation. Restart recovery reconciles once and blocks an uncertain parent
 turn rather than replaying its effects. Pausing scheduling lets an admitted turn
 settle; cancellation stops Goal-attributed managed processes and delegated roots
-while retaining the parent session. Goal usage reads and settlements reconcile
-the durable physical-request ledger, including cancelled Goals. Explicit
+while retaining the parent session. Cleanup covers only registered resources:
+raw Python subprocesses are not attributed to a Goal by ancestry, and the
+parent kernel stays live. Cleanup receipts declare this
+coverage; use managed process handles when Goal cancellation should stop a service.
+Goal usage reads and settlements reconcile the durable physical-request ledger,
+including cancelled Goals. Explicit
 token/provider-call/cost/time budgets are checked at model/tool boundaries and
 before another turn. A boundary pause retains the live task and Python state;
 an in-flight step can finish. Missing measurements or lost ledger records pause
@@ -109,6 +113,15 @@ Accounting faults pause capped work visibly rather than failing as provider
 errors; unlimited turns continue. Unavailable named peer requests wake and
 block their waiting Goal without a fabricated result or automatic retry.
 Unlimited defaults remain unchanged.
+
+Provider model listing retains exact-ID context-window metadata for the current
+router lifetime. Explicit `cloud.context_windows` or provider overrides take
+precedence. A paid catalog entry does not qualify an unlisted free alias;
+unknown routes retain the conservative projection budget and an unknown public
+window. The composer separates context window, reply reserve and input headroom.
+Provider-reported cost, including zero, takes precedence over catalog estimates
+through telemetry, request manifests and durable usage accounting. Estimates
+remain distinct from billed cost; absent cost remains unknown.
 
 Native peer requests default to `steer`: a busy recipient consumes them at a safe
 step, while an idle or ended session starts its own normal admitted turn without

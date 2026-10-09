@@ -22,6 +22,25 @@ _REASONING_EFFORT_ORDER = (
 )
 
 
+def catalog_context_windows(rows: Any) -> dict[str, int]:
+    """Exact advertised IDs only; a paid ID is not proof about its free alias."""
+    windows = {}
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict):
+            continue
+        model = str(row.get("id") or row.get("name") or "").strip()
+        if model.startswith("models/"):
+            model = model[len("models/"):]
+        if not model or len(model) > 512:
+            continue
+        for key in ("context_length", "context_window", "inputTokenLimit"):
+            value = row.get(key)
+            if type(value) is int and 0 < value <= 2_147_483_647:
+                windows[model] = value
+                break
+    return windows
+
+
 def _uint(value: Any) -> int:
     try:
         return max(0, int(value or 0))
@@ -275,7 +294,9 @@ def context_limit_tokens(router: Any, route: dict | None = None) -> int:
         return _uint((local or {}).get("ctx_size")) or 8192
     provider = selected["provider"]
     model = selected["model"]
-    return _cloud_override(router, provider, model) or _known_cloud_limit(provider, model)
+    catalog = getattr(router, "_model_context_windows", {})
+    advertised = _uint((catalog.get(provider) or {}).get(model)) if isinstance(catalog, dict) else 0
+    return _cloud_override(router, provider, model) or advertised or _known_cloud_limit(provider, model)
 
 
 def projection_budget_tokens(router: Any, route: dict | None = None) -> int:

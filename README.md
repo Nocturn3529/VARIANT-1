@@ -64,6 +64,9 @@ Use the release notes for the behavior and qualification of a downloaded build.
   model route, peer identity, and live Python state while working toward the
   objective. It can explicitly delegate children or coordinate other sessions.
   Goal completion records the agent's claim and the available evidence.
+  Cancellation cleans up Goal-attributed managed resources while keeping the
+  parent Python kernel. Use managed process handles for services that should
+  stop with the Goal; raw Python subprocesses need their own lifecycle management.
   Admitted Goal and peer work appears live in that same chat, with session,
   admission and run identities keeping separate executions isolated.
   Addressed peer requests wake idle sessions or reach an active turn at its next

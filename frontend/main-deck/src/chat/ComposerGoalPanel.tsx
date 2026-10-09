@@ -40,7 +40,7 @@ export function ComposerGoalPanel() {
       </details>
       <div className="composer-goal__facts" aria-label="Goal outcome and cleanup">
         <span>Objective <strong>{snapshot.objectiveOutcome.status}</strong></span>
-        <span>Cleanup <strong>{snapshot.cleanup.complete?"complete":snapshot.cleanup.status==="complete"?"unconfirmed":snapshot.cleanup.status.replaceAll("_"," ")}</strong></span>
+        <span title="Goal-attributed managed resources; the parent Python kernel is retained. Raw Python processes require their own lifecycle management.">Managed cleanup <strong>{snapshot.cleanup.complete?"complete":snapshot.cleanup.status==="complete"?"unconfirmed":snapshot.cleanup.status.replaceAll("_"," ")}</strong></span>
       </div>
       {snapshot.objectiveOutcome.summary?<p>{snapshot.objectiveOutcome.summary}</p>:null}
       {snapshot.historyLimited?<small>History preview limited to recent records. Earlier records remain stored.</small>:null}
