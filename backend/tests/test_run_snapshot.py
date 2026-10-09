@@ -70,6 +70,19 @@ async def test_snapshot_belongs_only_to_the_chat_s_active_run():
 
 
 @pytest.mark.asyncio
+async def test_bounded_snapshot_has_a_stable_cumulative_omission_watermark():
+    with bind_run_context(_ctx()):
+        for index in range(100):
+            await emit_activity("tool:start", tool="ipython", call_id=f"call-{index}")
+            await emit_activity("tool:result", tool="ipython", call_id=f"call-{index}", status="ok")
+    first = activity.run_snapshot("chat-a", "run-1")
+    second = activity.run_snapshot("chat-a", "run-1")
+    assert len(first["steps"]) == 64
+    assert first["omitted_before"] == 36
+    assert first == second
+
+
+@pytest.mark.asyncio
 async def test_chat_session_payload_carries_the_snapshot_only_while_busy():
     from types import SimpleNamespace
 

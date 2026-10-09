@@ -44,8 +44,12 @@ from .toolbelt import register_toolbelt_tool
 
 IPYTHON_HOST_CAPABILITY_CONTRACT = (
     "The persistent Python REPL is trusted same-user host Python, not a sandbox. "
+    "Async code supports top-level await; the worker already runs an event loop, "
+    "so use await rather than asyncio.run inside a cell. "
     "Use Python to compose workflows. For launching and managing applications, "
-    "prefer the provided process capability. Category mounts govern only host-integrated "
+    "prefer the provided process capability. It records ownership for inspection and Goal cleanup. "
+    "Processes launched through ordinary Python require their own lifecycle management; the parent kernel is retained. "
+    "Category mounts govern only host-integrated "
     "VARIANT-1 proxies; they do not restrict standard Python. The current project is the "
     "starting directory, not an access boundary. Follow explicit user-requested "
     "scope or isolated-environment boundaries."
@@ -483,6 +487,15 @@ class CatalogService:
     ) -> list[dict[str, Any]]:
         enabled = set(self.enabled_resolver() or ())
         rows: list[dict[str, Any]] = []
+        object_methods = {
+            (str(category.get("category_id") or ""), int(slot.get("position") or 0)):
+            [self._discovery_method(method) for method in slot.get("methods") or ()
+             if isinstance(method, dict)
+             and self._binding_condition_enabled(method, condition_flags)]
+            for category in loaded.document.get("categories") or ()
+            for slot in category.get("slots") or ()
+            if slot.get("projection") == "object"
+        }
         for category_id, position, binding in iter_bindings(loaded.document):
             source_namespace = str(binding.get("namespace") or "tools")
             projection = str(binding.get("projection") or "seeds")
@@ -527,6 +540,8 @@ class CatalogService:
                 "enabled": handler_enabled and condition_enabled,
                 "baseline_version": 0,
             })
+            if projection == "object":
+                rows[-1]["methods"] = object_methods.get((category_id, position), [])
         for category in loaded.document.get("categories") or ():
             category_id = str(category.get("category_id") or "")
             for api in category.get("python_apis") or ():
@@ -562,8 +577,17 @@ class CatalogService:
                     "handler_enabled": handler_enabled,
                     "enabled": handler_enabled and bool(methods),
                     "baseline_version": 0,
+                    "methods": [self._discovery_method(method) for method in methods],
                 })
         return rows
+
+    @staticmethod
+    def _discovery_method(method: dict[str, Any]) -> dict[str, str]:
+        """Keep search metadata compact; the mount owns full parameter schemas."""
+        return {"alias": str(method.get("alias") or ""),
+                "signature": str(method.get("signature") or ""),
+                "description": str(method.get("description") or "")[:600],
+                "effect_class": str(method.get("effect_class") or "")}
 
     @staticmethod
     def _overlay_catalog_rows(
@@ -798,6 +822,28 @@ class CatalogService:
             score += 8.0 * len(terms & _tokens(category_id))
             score += 2.0 * len(terms & description_tokens)
             score -= 3.0 * len(terms & avoid_tokens)
+            method_matches = []
+            for method in row.get("methods") or ():
+                method_alias = str(method.get("alias") or "")
+                qualified_method = f"{row['namespace']}.{method_alias}"
+                method_tokens = _tokens(method_alias)
+                method_description = _tokens(str(method.get("description") or ""))
+                if not terms & (method_tokens | method_description):
+                    continue
+                method_score = (
+                    14.0 * len(terms & _tokens(qualified_method))
+                    + 2.0 * len(terms & method_description)
+                )
+                if phrase in {method_alias.casefold(), qualified_method.casefold()}:
+                    method_score += 100.0
+                if phrase and phrase in qualified_method.casefold():
+                    method_score += 30.0
+                method_matches.append((method_score, method_alias, method))
+            method_matches.sort(key=lambda match: (-match[0], match[1]))
+            if method_matches:
+                # A root still owns one discovery result/slot. A method query
+                # must find that root without filling the top-k with siblings.
+                score = max(score, method_matches[0][0])
             if row.get("live_connector") and terms & (
                 alias_tokens | description_tokens
             ):
@@ -806,12 +852,24 @@ class CatalogService:
                 score += 24.0
             if score <= 0.0:
                 continue
+            hit = {key: value for key, value in row.items() if key != "methods"}
+            if category_id != "base":
+                hit["select"] = f"ipython(category={category_id!r})"
+            if method_matches:
+                hit["matched_methods"] = [
+                    {"alias": method_alias,
+                     "call": f"{row['namespace']}.{method['signature']}",
+                     "signature": str(method["signature"]),
+                     "description": str(method.get("description") or ""),
+                     "effect_class": str(method.get("effect_class") or "")}
+                    for _method_score, method_alias, method in method_matches[:3]
+                ]
             scored.append((
                 -score,
                 order.get(category_id, 999),
                 int(row["position"]),
                 alias,
-                row,
+                hit,
             ))
         scored.sort(key=lambda item: item[:4])
         return [
@@ -1852,7 +1910,29 @@ class CatalogService:
              "Selectable categories:\n" + "\n".join(category_lines),
         ]
         current_parts: list[str] = []
+        if any(word in query_text for word in ("peer", "swarm", "coordinator", "collaborat")):
+            current_parts.append(
+                "Peer communication is in Operate: select `ipython(category='operate')`, "
+                "then use the mounted `peers` proxy, not a Python import. "
+                "`peers.list()` returns peer handles; use "
+                "`for peer in peers.list(): print(peer.inspect())` rather than JSON-serializing handles. "
+                "`peers.inbox()` returns a mapping; iterate its ['messages'] list, "
+                "not the mapping's keys. "
+                "For an incoming message, bind `message = peers.inspect_message(message_id=message_id)` "
+                "using its exact Message ID; `message.reply(text=reply_text)` preserves correlation. "
+                "`peers.get(peer_id=peer_id).send(text=task_text)` requests work and wakes an idle "
+                "native chat. Use `toolbelt.search('peer reply')` for discovery if needed. "
+                "`session.context()` reads history; it does not send messages."
+            )
         session_api = python_apis.get("session") or {}
+        if any(str(method.get("alias") or method.get("name") or "") == "report_outcome"
+               for method in session_api.get("methods") or ()):
+            current_parts.append(
+                "If working as an active child or owning-session Goal, record a structured outcome before "
+                "your final reply: call session.report_outcome(status=..., summary=...). "
+                "Use completed only when the objective is achieved, continuing for remaining "
+                "authorized work, or blocked for required input. Prose alone is not a report."
+            )
         if any(str(method.get("alias") or method.get("name") or "") == "context"
                for method in session_api.get("methods") or ()):
             current_parts.append(
@@ -1884,7 +1964,10 @@ class CatalogService:
                 "identity before interacting. The retained `app_proc` handle "
                 "remains usable across the category switch for `inspect()`, "
                 "`read()`, `wait()` and `stop()`. Check the returned state when "
-                "verifying startup or shutdown."
+                "verifying startup or shutdown. A mode='once' command instead returns "
+                "a mapping with ['exit_code'], ['stdout'], ['stderr'] and ['process']; "
+                "do not treat a process handle as that wrapper or start another process "
+                "just because inspecting the first result failed."
                 )
         if not selected_category_id and ranked_top:
             suggested_category = str(ranked_top[0].get("category_id") or "")

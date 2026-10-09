@@ -45,7 +45,7 @@ PEER_OBJECT_METHODS: tuple[dict[str, Any], ...] = (
         },
     },
     {
-        "name": "inbox", "description": "Read this chat's incoming, outgoing, or combined peer messages.",
+        "name": "inbox", "description": "Return a mapping with messages (list of message dictionaries), cursor and revision. Iterate result['messages']; inspect_message(message_id=row['message_id']) binds a row for reply/wait. Read incoming, outgoing, or combined peer messages.",
         "effect_class": "read",
         "params": {
             "after": {"type": "integer", "required": False, "minimum": 0},
@@ -89,7 +89,7 @@ PEER_HANDLE_METHODS: tuple[dict[str, Any], ...] = (
         "returns": "message",
     },
     {
-        "name": "inbox", "description": "Read exchanges between this chat and the bound peer.",
+        "name": "inbox", "description": "Return a mapping with messages (list of message dictionaries), cursor and revision for this bound peer. Iterate result['messages'].",
         "params": [
             {"name": "after", "type": "int", "required": False, "default": 0},
             {"name": "limit", "type": "int", "required": False, "default": 50},

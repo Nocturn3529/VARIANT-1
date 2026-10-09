@@ -9,6 +9,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 from background_tasks import OwnedTaskSet
+from peer_message_contract import PEER_REPLY_HINT
 
 from session_runtime.models import TICKET_TERMINAL_STATES
 from .repository import MESSAGE_DIRECTIONS, PeerRepository
@@ -385,6 +386,9 @@ class PeerCommunicationService:
                 return
             for row in self.repository.messages_for_tickets(ids):
                 if row.get('state') != 'replied':
+                    if (row.get('evidence') or {}).get('native_wait_failure'):
+                        self._event(row)
+                        continue
                     self._event(self.repository.update_message(row['message_id'], state='unknown',
                         error='Recipient turn ended without a settlement',
                         evidence={**row.get('evidence', {}), 'native_wait_failure':'recipient_unsettled'}))
@@ -512,7 +516,7 @@ class PeerCommunicationService:
             f"Message ID: {row.get('message_id')}\n"
             f"Exchange ID: {row.get('exchange_id')}\n\n"
             + str(row.get("content") or "")
-            + "\n\nReply only when useful with peers.inspect_message(...).reply(...)."
+            + PEER_REPLY_HINT
         )
 
     def _sync_native_state(self, row: Mapping[str, Any]) -> dict[str, Any]:
@@ -1261,6 +1265,19 @@ class PeerCommunicationService:
         self.session_runtimes.register_idle_listener(self._notify_native_idle)
         self.session_runtimes.register_settlement_listener(self.notify_native_settlement)
         self.session_runtimes.register_run_end_listener(self.notify_native_end)
+        # A new process has no surviving native tasks. Retain an explicit
+        # unsettled observation, rather than wait forever or replay effects.
+        # Service restart inside the same process must leave finalizers alone.
+        after = ''
+        while True:
+            rows = await asyncio.to_thread(self.session_runtimes.repository.unsettled_completed_peer_tickets, after=after)
+            if not rows:
+                break
+            for row in rows:
+                if (self.session_runtimes.active_admission(row['chat_id']) != row['admission_id']
+                        and not self.session_runtimes.admission_task_pending(row['admission_id'])):
+                    self.notify_native_end(row['chat_id'], row['run_id'], row['admission_id'])
+            after = rows[-1]['ticket_id']
         for row in self.repository.reconcile_stale_external_claims():
             self._event(row)
         for row in self.repository.pending_native():

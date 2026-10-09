@@ -137,6 +137,20 @@ fs.mkdirSync(out, {recursive: true});
       await evaluate('window.e01.dock()'); await pause(300);
       const docked=check(await command({action:'screenshot',tab_id:'native-a'}),'docked capture');readable(docked);assert.equal(docked.viewport.width,1280);
       assert.deepEqual((await command({action:'evaluate',tab_id:'native-a',expression:'({marker:window.retainedMarker?.value,draft:document.querySelector("input").value})'})).value,{marker:17,draft:'unsent text'},'docking preserves page runtime/input');
+      // Exercise capture while attachment/layout changes are still settling.
+      // Each capture is a read; retained page effects and identity must survive.
+      for(let transfer=0;transfer<4;transfer++) {
+        await evaluate('window.e01.detach("native-a")');
+        const freshDetached=check(await command({action:'screenshot',tab_id:'native-a'}),'immediate detached capture '+transfer);
+        readable(freshDetached);
+        assert.equal(freshDetached.diagnostics.guest_generation,generationBefore);
+        await evaluate('window.e01.dock()');
+        const freshDocked=check(await command({action:'screenshot',tab_id:'native-a'}),'immediate docked capture '+transfer);
+        readable(freshDocked);
+        assert.equal(freshDocked.diagnostics.guest_generation,generationBefore);
+        assert.deepEqual((await command({action:'evaluate',tab_id:'native-a',expression:'({marker:window.retainedMarker?.value,draft:document.querySelector("input").value})'})).value,{marker:17,draft:'unsent text'});
+      }
+      console.log('Immediate browser attachment/capture race: retained generation, page state and complete frames passed');
       check(await command({action:'navigate',tab_id:'native-a',url:base+'/changed'}),'navigation');
       const changed=check(await command({action:'read',tab_id:'native-a'}),'read after navigation');
       assert.ok(changed.text.includes('/changed'));
@@ -163,6 +177,15 @@ fs.mkdirSync(out, {recursive: true});
       check(await command({action:'read',owner_chat_id:'owner-a',tab_id:'owned-a'}),'background owned read');
       const retained=check(await command({action:'evaluate',owner_chat_id:'owner-a',tab_id:'owned-a',expression:'window.__ownershipSentinel'}),'retained background state');
       assert.equal(retained.value ?? retained.result,37,'chat switch preserves live page state');
+      check(await command({action:'evaluate',owner_chat_id:'owner-a',tab_id:'owned-a',expression:'document.querySelector("[style*=fixed]").style.background="#00ff00"'}),'change hidden document pixels');
+      const background=check(await command({action:'screenshot',owner_chat_id:'owner-a',tab_id:'owned-a'}),'background owned capture');
+      assert.equal(background.diagnostics.end.visibility,'hidden','diagnostics report native hidden presentation');
+      const hiddenImage=nativeImage.createFromBuffer(Buffer.from(background.image,'base64')).resize({width:background.viewport.width,height:background.viewport.height});
+      const hiddenPixels=hiddenImage.getBitmap(),hiddenAt=(370*background.viewport.width+700)*4;
+      fs.writeFileSync(${JSON.stringify(path.join(out,'background-capture.png'))},Buffer.from(background.image,'base64'));
+      console.log('Background frame pixel',Array.from(hiddenPixels.subarray(hiddenAt,hiddenAt+4)),background.viewport);
+      assert.ok(hiddenPixels[hiddenAt+1]>240 && hiddenPixels[hiddenAt]<16 && hiddenPixels[hiddenAt+2]<16,'background capture includes newly changed hidden page pixels');
+      assert.equal((await command({action:'screenshot',owner_chat_id:'owner-b',tab_id:'owned-a'})).code,'TAB_NOT_FOUND','capture preserves foreign-chat refusal');
       const selected=await evaluate('document.querySelector(".history-item.active")?.dataset.sessionId');
       assert.equal(selected,'owner-b','background operation cannot switch foreground chat');
       await evaluate('window.e01.selectChat("owner-a")');

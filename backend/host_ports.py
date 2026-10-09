@@ -486,15 +486,24 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         )
         ticket_id = str((row or {}).get("id") or "")
         if ticket_id:
+            try:
+                queue = runtime_registry.queue_snapshot(chat_id)
+                count = runtime_registry.queued_input_count(chat_id)
+            except Exception:
+                # The delivery already happened. A display snapshot failure
+                # must not turn it into a failed or replayed model instruction.
+                queue, count = None, 0
             background_tasks.spawn(
                 h.hub.broadcast({
                     "type": "chat:queue_progress",
                     "id": ticket_id,
                     "delivery": str((row or {}).get("delivery") or "steer"),
                     "state": "delivered",
+                    **({"input": result, "run_id": result["run_id"],
+                        "admission_id": result["admission_id"]} if result else {}),
                     "session_id": chat_id,
-                    "queue_size": runtime_registry.queued_input_count(chat_id),
-                    "queue": runtime_registry.queue_snapshot(chat_id),
+                    "queue_size": count,
+                    "queue": queue,
                 }),
                 name=f"chat-input-delivered:{ticket_id[:48]}",
             )

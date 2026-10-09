@@ -315,6 +315,14 @@ export async function run() {
   growSession(grown[0]);assert.equal(getChatState().streamText,"Initial");
   growSession(grown[1]);assert.equal(getChatState().streamText,"Initial continued","an equal revision with more text for the same call advances the view");
   growSession(grown[0]);assert.equal(getChatState().streamText,"Initial continued","a shorter copy of the same call never shrinks the view");
+  const bounded={run_id:"run-grow",admission_id:"admission-grow",revision:10,omitted_before:36,segment:2,
+    steps:Array.from({length:64},(_,i)=>({id:`bounded-${i+36}`,call_id:`bounded-${i+36}`,kind:"tool",tool:"ipython",label:"Python",status:"ok",ts:1000+i})),text:""};
+  growSession(bounded);assert.equal(getChatState().turnSteps[0].omittedBefore,52,"backend omissions and the smaller frontend window share one cumulative baseline");
+  growSession(bounded);assert.equal(getChatState().turnSteps[0].omittedBefore,52,"repeated real hydration does not count omissions again");
+  for(let i=0;i<2;i++)incoming({type:"tool:activity",session_id:"D",source:"chat",run_id:"run-grow",admission_id:"admission-grow",event:"tool:start",tool:"ipython",call_id:`newer-${i}`,status:"running",ts:Date.now()/1000});
+  assert.equal(getChatState().turnSteps[0].omittedBefore,54);
+  growSession(bounded);assert.equal(getChatState().turnSteps[0].omittedBefore,54,"an older snapshot cannot recount an evicted prefix or lose new live steps");
+  assert.equal(getChatState().turnSteps.filter(step=>step.callId?.startsWith("newer-")).length,2);
 
   // Queued messages from other agents say who sent them.
   const queue=parseInputQueueSnapshot({type:"chat:queue_snapshot",schema:"variant1.input-queue.v1",session_id:"A",revision:1,items:[

@@ -236,6 +236,10 @@
 .context-meter-summary { display: flex; justify-content: space-between; margin: 8px 14px 0; gap: 10px; color: var(--deck-text-muted); font: var(--deck-text-xs)/1.35 var(--font-mono); text-transform: capitalize; }
 .context-meter-breakdown { display: flex; flex-direction: column; margin-top: 13px; padding: 0; gap: 0; border-top: 1px solid var(--deck-line-soft); }
 .context-meter-row { display: grid; grid-template-columns: 66px minmax(64px,1fr) 38px 34px; align-items: center; padding: 9px 14px; gap: 8px; border-bottom: 1px solid var(--deck-line-soft); }
+.context-meter-budget { padding: 8px 14px; border-bottom: 1px solid var(--deck-line-soft); color: var(--deck-text-muted); font-size: var(--deck-text-xs); }
+.context-meter-budget > div { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 3px 0; }
+.context-meter-budget b { color: var(--deck-text-primary); font-family: var(--font-mono); font-weight: 400; }
+.context-meter-budget small { display: block; margin-top: 6px; font-size: inherit; line-height: 1.4; }
 .context-meter-row:last-child { border-bottom: 0; }
 .context-meter-row > span { overflow: hidden; color: var(--deck-text-primary); font-family: var(--font-ui); font-size: var(--deck-text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .context-meter-row > i { height: 2px; overflow: hidden; border-radius: 999px; background: rgba(255,255,255,.08); }

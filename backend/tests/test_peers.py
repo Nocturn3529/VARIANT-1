@@ -71,6 +71,22 @@ async def _settle_service(service, runtimes):
 
 
 @pytest.mark.asyncio
+async def test_peer_envelope_guidance_preserves_original_and_legacy_display_body(tmp_path):
+    from dataclasses import replace
+    from peer_message_contract import PEER_REPLY_HINT, LEGACY_PEER_REPLY_HINT
+    service, runtimes, _sessions, _chat, first, second = _stack(tmp_path)
+    try:
+        sent = await service.send("chat:"+first,"chat:"+second,"Actual addressed work")
+        ticket = runtimes.repository.get_ticket(sent["delivery_ticket_id"])
+        assert PEER_REPLY_HINT in ticket.text
+        assert ticket.origin()["content"] == "Actual addressed work"
+        legacy = replace(ticket, text=ticket.text[:-len(PEER_REPLY_HINT)]+LEGACY_PEER_REPLY_HINT)
+        assert legacy.origin()["content"] == "Actual addressed work"
+    finally:
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
 async def test_peer_display_is_canonical_and_sender_trace_survives_reload(tmp_path):
     from chat_finalize import _display_transcript
     from capability_broker import InvocationContext
@@ -1038,10 +1054,27 @@ async def test_real_cpython_broker_front_door_sends_replies_waits_and_breaks_mut
     catalog.reconcile_registry()
     first = sessions.create_session("Kernel A", make_active=False)
     second = sessions.create_session("Kernel B", make_active=False)
-    catalog.select(first, "operate")
+    catalog.select(first, "build")
     catalog.select(second, "operate")
 
     try:
+        discovered = await kernel.execute(
+            chat_id=first, run_id="peer-kernel-discovery",
+            outer_tool_call_id="peer-kernel-discovery-call",
+            code=(
+                "assert 'peers' not in globals()\n"
+                "hits = toolbelt.search(query='inspect_message')\n"
+                "assert hits[0]['qualified_alias'] == 'peers'\n"
+                "assert hits[0]['matched_methods'][0]['call'] == 'peers.inspect_message(message_id)'\n"
+                "contract = toolbelt.describe('peers.inspect_message')\n"
+                "assert contract['signature'] == 'inspect_message(message_id)'\n"
+                "assert contract['category_id'] == 'operate'\n"
+                "assert toolbelt.inspect()['selected_category_id'] == 'build'\n"
+                "toolbelt.mount(category=hits[0]['category_id'])\n"
+            ),
+        )
+        assert discovered.ok, discovered.to_dict()
+        assert not service.repository.list_messages(f"chat:{first}")
         sent_result = await kernel.execute(
             chat_id=first, run_id="peer-kernel-send",
             outer_tool_call_id="peer-kernel-send-call",

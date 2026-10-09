@@ -20,7 +20,7 @@ _CACHE_TTL_SECONDS = 300.0
 _DISCOVERY_TIMEOUT_SECONDS = 18.0
 _MAX_MODELS_PER_PROVIDER = 500
 _LOOPBACK_PROVIDERS = {"hermes", "lmstudio", "ollama"}
-_KEYLESS_REMOTE_PROVIDERS = {"opencode-free", "opencode-zen"}
+_KEYLESS_REMOTE_PROVIDERS: set[str] = set()
 
 
 def _text(value: Any, limit: int = 500) -> str:

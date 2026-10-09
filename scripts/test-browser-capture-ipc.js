@@ -6,7 +6,9 @@ const vm = require('node:vm');
 const {EventEmitter} = require('node:events');
 const owner = {}, native = {}, outsider = {};
 const guest = new EventEmitter();
+let throttled=false;
 Object.assign(guest, {hostWebContents:owner, isDestroyed:()=>false, getType:()=> 'webview', executeJavaScript:async()=>({width:1280,height:720})});
+guest.getBackgroundThrottling=()=>throttled;guest.setBackgroundThrottling=value=>{throttled=value;};
 let handler, captures = 0, deadline;
 const exported = {exports:{}};
 vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron-browser-capture.js'),'utf8'), {
@@ -29,6 +31,7 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
   const captured = await handler({trusted:true},7);
   assert.equal(captured.image,png.toString('base64'));
   assert.equal(captured.image_width,1280); assert.equal(captured.image_height,720);
+  assert.equal(captured.image_css_width,1280);assert.equal(captured.image_css_height,720);
   const originalViewport=guest.executeJavaScript;
   guest.executeJavaScript=async expression=>vm.runInNewContext(expression,{
     innerWidth:1280,innerHeight:720,devicePixelRatio:1,
@@ -73,9 +76,13 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
     lendCaptureSurface:id=>id===7 && lendable ? (lent++,()=>{released++;}) : null});
   assert.match((await handler({trusted:true,sender:outsider},7)).error,/owner_mismatch/);
   assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,'retained WebContentsView uses canonical ownership');
-  // A hidden tab is captured in the background through a borrowed surface.
-  visible=false;assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,"hidden retained tabs capture without being shown");
+  // A hidden tab is captured in the background: it borrows a paint surface
+  // and is unthrottled for this read; both are returned afterwards.
+  visible=false;throttled=true;
+  guest.capturePage=async()=>{assert.equal(throttled,false,'hidden capture enables its compositor for this read');return image;};
+  assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,"hidden retained tabs capture without being shown");
   assert.deepEqual([lent,released],[1,1],"the borrowed paint surface is returned");
+  assert.equal(throttled,true,'hidden idle throttling is restored');
   lendable=false;assert.match((await handler({trusted:true,sender:owner},7)).error,/attachment_hidden.*Open/,"a parked tab still needs its panel");
   lendable=true;visible=true;
   guest.capturePage=()=>new Promise(resolve=>{finish=resolve});

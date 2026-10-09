@@ -416,8 +416,9 @@ async def test_usage_patches_exact_manifest_and_republishes_without_raw_data(
         "uncached_input_tokens",
         "cache_share",
         "token_volume",
-        "cost_usd",
     }
+    assert "cost_usd" not in stored["usage"]
+    assert "estimated_cost_usd" not in stored["usage"]
     assert snapshot["usage_totals"]["calls"] == 1
     assert snapshot["usage_totals"]["prompt_token_volume"] == 11
     assert snapshot["usage_totals"]["cached_input_tokens"] == 3

@@ -225,8 +225,11 @@ class CloudUsageTelemetry:
         exact_ticks = raw_usage.get("cost_in_usd_ticks")
         cost = None
         cost_kind = "unpriced"
-        if exact_ticks is not None:
-            cost = _number(exact_ticks) / 10_000_000_000
+        if normalized.get("cost_usd") is not None:
+            cost = normalized["cost_usd"]
+            cost_kind = "exact"
+        elif type(exact_ticks) in (int, float) and _finite_non_negative(exact_ticks) is not None:
+            cost = exact_ticks / 10_000_000_000
             cost_kind = "exact"
         else:
             price = self._price_for(provider, model, custom_pricing)

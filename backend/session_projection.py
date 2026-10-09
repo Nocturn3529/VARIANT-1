@@ -39,9 +39,13 @@ def projection_model_route(router, sessions, sid: str, *, selected: dict | None 
         from model_runtime.context import model_route_support_coordinates
 
         profile = profile_for(route["provider"])
+        resolve = getattr(profile, "for_model", None)
+        if callable(resolve):
+            profile = resolve(route["model"])
         base_for = getattr(router, "provider_base_url", None)
         account_for = getattr(router, "oauth_account_id", None)
         identity = {"api_style": str(getattr(profile, "api_style", "") or ""),
+                    **({"wire_transport":profile.wire_transport} if getattr(profile,"wire_transport","") else {}),
                     "adapter": str(model_route_support_coordinates(router, selected).get("adapter") or ""),
                     "endpoint": str(base_for(route["provider"]) if callable(base_for) else ""),
                     "account": str(account_for(route["provider"]) if callable(account_for) else "")}

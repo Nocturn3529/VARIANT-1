@@ -84,6 +84,9 @@ export type ChatTurnReceipt = {
 };
 
 export type ChatMessage = {
+  admissionId?: string;
+  /** A delivered input belongs inside this run's activity chronology. */
+  inputBoundary?: boolean;
   runId?: string;
   role: "user" | "assistant";
   text: string;

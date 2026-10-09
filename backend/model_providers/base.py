@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from copy import deepcopy
+import fnmatch
 from typing import Any, Mapping
 
 
@@ -57,6 +58,20 @@ class ProviderProfile:
     # empty values mean the provider/runtime uses automatic prefix caching.
     prompt_cache_body_field: str = ""
     prompt_cache_header: str = ""
+    wire_transport: str = ""
+    wire_model_rules: tuple[Mapping[str, Any], ...] = ()
+
+    def for_model(self, model: str) -> "ProviderProfile":
+        if self.wire_transport not in {"", "responses"}:
+            raise ValueError("invalid provider wire transport")
+        for rule in self.wire_model_rules:
+            if any(fnmatch.fnmatchcase(str(model or ""), str(pattern)) for pattern in rule.get("patterns", ())):
+                api = str(rule.get("api_style") or self.api_style)
+                transport = str(rule.get("wire_transport") or "")
+                if api not in {"openai", "anthropic", "gemini"} or transport not in {"", "responses"}:
+                    raise ValueError("invalid provider model wire rule")
+                return replace(self, api_style=api, wire_transport=transport)
+        return self
 
     def with_overrides(self, values: Mapping[str, Any] | None) -> "ProviderProfile":
         """Apply safe, declarative per-install overrides from config.
@@ -77,13 +92,12 @@ class ProviderProfile:
             "completion_token_field", "max_completion_token_model_patterns",
             "structured_output_style",
             "prompt_cache_body_field", "prompt_cache_header",
+            "wire_transport", "wire_model_rules",
         }
         updates = {key: values[key] for key in allowed if key in values}
-        if "reasoning_model_rules" in updates:
-            updates["reasoning_model_rules"] = tuple(
-                deepcopy(dict(rule)) for rule in (updates["reasoning_model_rules"] or ())
-                if isinstance(rule, Mapping)
-            )
+        for field_name in ("reasoning_model_rules", "wire_model_rules"):
+            if field_name in updates:
+                updates[field_name] = tuple(deepcopy(dict(rule)) for rule in (updates[field_name] or ()) if isinstance(rule, Mapping))
         for key in (
             "aliases", "env_vars", "fallback_models", "reasoning_efforts", "sampling_fields",
             "sampling_forbidden_model_patterns",
@@ -100,7 +114,7 @@ class ProviderProfile:
             "name": self.name,
             "display_name": self.display_name,
             "description": self.description,
-            "api_style": self.api_style,
+            "api_style": self.for_model(model or self.default_model).api_style,
             "auth_style": self.auth_style,
             "base_url": base_url or self.base_url,
             "models_url": self.models_url,

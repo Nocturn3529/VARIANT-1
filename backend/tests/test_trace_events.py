@@ -320,8 +320,18 @@ def test_disk_writer_does_not_hold_the_producer_sequence_lock(tmp_path, monkeypa
         recorder.reset_configuration()
 
 
-def test_flush_restarts_a_dead_writer(tmp_path):
+def test_flush_restarts_a_dead_writer(tmp_path, monkeypatch):
+    import os
     path = tmp_path / "events.jsonl"
+    real_fsync = os.fsync
+    synced = []
+    def observe_fsync(fd):
+        real_fsync(fd)
+        if path.exists():
+            target, opened = path.stat(), os.fstat(fd)
+            if (target.st_dev, target.st_ino) == (opened.st_dev, opened.st_ino):
+                synced.append(fd)
+    monkeypatch.setattr(os, "fsync", observe_fsync)
     recorder = TraceRecorder()
     recorder.configure_for_tests(path=str(path), enabled=True)
     dead = threading.Thread(target=lambda: None)
@@ -332,6 +342,7 @@ def test_flush_restarts_a_dead_writer(tmp_path):
     recorder.record("run:settled", run_id="run_restart", status="ok")
 
     assert recorder.durability_barrier(timeout=1)
+    assert len(synced) == 1, "the real canonical file is fsynced at the boundary"
     assert recorder.health()["writer_alive"] is True
     assert json.loads(path.read_text(encoding="utf-8"))["run_id"] == "run_restart"
     recorder.reset_configuration()

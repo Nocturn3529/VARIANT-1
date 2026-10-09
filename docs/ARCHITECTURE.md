@@ -60,6 +60,11 @@ qualification is separate.
 
 `session_catalog.service` publishes categories, mounts, and disclosure; its
 mutation manager delegates disposable execution to the mutation worker client.
+Cross-category discovery indexes method names as well as capability roots.
+An exact method search returns its owning root, category selection and up to
+three matching call signatures without changing the mount. Local
+`toolbelt.describe('object.method')` reads that pinned contract; unknown calls
+on a mounted object list its actual methods and the documentation entry point.
 `kernel_runtime.lease` owns one worker generation, while `continuity` coordinates
 portable capture/restoration and `worker_bridge` carries capability proxies.
 The separate `resources` module observes the interpreter and its owned process
@@ -111,8 +116,12 @@ configuration changes priority. Exact admission/run identities fence reports and
 cancellation. Restart recovery reconciles once and blocks an uncertain parent
 turn rather than replaying its effects. Pausing scheduling lets an admitted turn
 settle; cancellation stops Goal-attributed managed processes and delegated roots
-while retaining the parent session. Goal usage reads and settlements reconcile
-the durable physical-request ledger, including cancelled Goals. Explicit
+while retaining the parent session. Cleanup covers only registered resources:
+raw Python subprocesses are not attributed to a Goal by ancestry, and the
+parent kernel stays live. Cleanup receipts declare this
+coverage; use managed process handles when Goal cancellation should stop a service.
+Goal usage reads and settlements reconcile the durable physical-request ledger,
+including cancelled Goals. Explicit
 token/provider-call/cost/time budgets are checked at model/tool boundaries and
 before another turn. A boundary pause retains the live task and Python state;
 an in-flight step can finish. Missing measurements or lost ledger records pause
@@ -125,6 +134,21 @@ only a deleted recipient, a failed, cancelled or unadmitted request, or a turn
 that ended without a settlement blocks it.
 Unlimited defaults remain unchanged.
 
+Provider model listing retains exact-ID context-window metadata for the current
+router lifetime. Explicit `cloud.context_windows` or provider overrides take
+precedence. A paid catalog entry does not qualify an unlisted free alias;
+unknown routes retain the conservative projection budget and an unknown public
+window. The composer separates context window, reply reserve and input headroom.
+Provider-reported cost, including zero, takes precedence over catalog estimates
+through telemetry, request manifests and durable usage accounting. Estimates
+remain distinct from billed cost; absent cost remains unknown.
+
+Snapshot Resume retains the graph identity, while newly claimed inputs,
+delivery receipts and native settlements use the current admission's run ID.
+Active-input display reads snapshot owner identity under the registry lock,
+read bounded ticket metadata outside it, then recheck that identity before
+publication.
+
 Native peer requests default to `steer`: a busy recipient consumes them at a safe
 step, while an idle or ended session starts its own normal admitted turn without
 requiring an open chat view. Explicit `follow_up` waits for idle. Busy wake tasks
@@ -134,6 +158,11 @@ recipient. Request-handle inspection/waits expose a committed native answer and
 terminal status by exact recipient run/admission identity. This observation
 creates no synthetic reply or prompt and is not independent task verification.
 Explicit replies remain supported and take precedence in message waits.
+Startup reconciles consumed native requests that have exact admission/run proof
+but no settlement into explicit uncertain observations. This blocks awaiting
+Goals for inspection without replaying work. Process-owned finalization remains
+protected even after admission release; legacy requests without proof are not
+assigned invented identities or outcomes.
 
 The metadata-only `data/model-usage.sqlite3` ledger retains physical requests
 independently of the bounded model inspector. It records session/Goal/run lineage,
@@ -370,12 +399,27 @@ resynchronization. Tokens first target the owner, then surviving chat views or
 the native event sink. A failed display send does not abort canonical execution.
 Native token/thinking publication enqueues without waiting for a slow Deck;
 terminal frames retain the same ordered outbox.
+Browser viewport and capture layout waits have bounded timer fallbacks for
+occluded windows whose animation frames stop. Capture waits for visible layout
+to settle before pinning image provenance; ownership and document fences remain.
+Retained pages belonging to a background chat may be captured without selecting
+that chat. Native capture temporarily unthrottles the hidden guest, verifies its
+owner, attachment, host and document, and restores its current idle policy.
+Image coordinates use the captured DOM's CSS dimensions; pending hidden-pane
+geometry must not mislabel a frame. Visibility diagnostics report native
+presentation separately from the renderer document's visibility.
 
 Admitted Goal and peer turns project into their owning chat's live transcript.
 Their original source remains in the event; the UI chat lane requires explicit
 session and admission identities. Start frames also carry the matching run
 identity. Fresh admissions may change ingress clients, while stale admissions
 and separate voice/subagent streams remain excluded.
+Active-input projections contain the genuine admitted root and the latest 64
+delivered tickets under the exact run/admission identity. They are display
+observations, not transcript writes or queue resumptions. Queue snapshots keep
+their revision fence independently of delivery receipts. Delivered user inputs
+split live activity at their delivery timestamps, with a stable admission key;
+the correlated durable append replaces their temporary rows exactly once.
 
 The chat timeline retains per-call narration beside public summaries, tools and
 peer messages. Consecutive tools fold into a run. Mid-run snapshots carry exact
@@ -386,14 +430,32 @@ earlier segment. Completed narration clears its live buffer. Recovered terminal
 tool traces use the same run-correlated annotation retries as ordinary completion.
 Peer rows render synchronously; the Review panel loads on demand with a visible
 loading state within the existing startup bundle budget.
+Bounded run snapshots include a cumulative omission watermark. The Deck merges
+it with its smaller display window without counting the same prefix again on
+refresh. Older retained evidence opens through the paged Session context view;
+the activity preview and DOM remain bounded.
 
 Physical-request accounting retains SQLite WAL with FULL durability. Repeated
 provider identity chunks are coalesced per manifest in a bounded cache. Patches
 use a bounded serial writer off the event loop; terminal request boundaries await
 an ordered write fence, independent of future requests from other sessions.
 Pending partial-usage writes coalesce to one per request. A lost request or usage
-write marks only that request's Goal as having incomplete accounting, which
-pauses its explicit caps; other Goals keep their exact totals.
+write marks only that request's Goal, carried on the request reference, as having
+incomplete accounting, which pauses its explicit caps; other Goals keep their
+exact totals.
+Explicit provider cost, including a reported zero, survives normalization;
+missing cost remains unknown. OpenAI-compatible streams retain allowlisted
+end-state, terminal-marker and parser-count diagnostics per physical request,
+without retaining frame text. An incomplete stream does not publish buffered
+tool calls or manufacture usage. Individual SSE frames have a bounded size.
+
+OpenCode Zen and Go are API-key routes with explicit model selection. Their
+profiles resolve model-specific Chat Completions, Messages, Responses or Gemini
+transports before admission and dispatch. Zen and Go may route the same model
+name differently. Requests carry VARIANT-1's own client identity and its opaque
+durable-chat key in `x-opencode-session`, including auxiliary calls. Public
+catalog access is not authenticated inference qualification; no OpenCode OAuth
+or anonymous Free profile is shipped.
 
 The Electron backend watchdog records health-probe failure reasons and elapsed
 time. A constant-space, once-per-second backend sampler exposes last/maximum

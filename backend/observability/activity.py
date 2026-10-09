@@ -89,7 +89,7 @@ def _live_run(session_id: str, run_id: str) -> dict:
 
     run = _LIVE_RUNS.get(session_id)
     if run is None or run["run_id"] != run_id:
-        run = {"run_id": run_id, "steps": OrderedDict(), "live": None, "revision": 0}
+        run = {"run_id": run_id, "steps": OrderedDict(), "live": None, "revision": 0, "omitted_before": 0}
         _LIVE_RUNS[session_id] = run
     _LIVE_RUNS.move_to_end(session_id)
     while len(_LIVE_RUNS) > _LAST_SESSION_ACTIVITY_LIMIT:
@@ -102,6 +102,7 @@ def _put_run_step(run: dict, step: dict) -> None:
     run["steps"][step["id"]] = step
     while len(run["steps"]) > _RUN_STEP_LIMIT:
         run["steps"].popitem(last=False)
+        run["omitted_before"] = min(1_000_000, run.get("omitted_before", 0) + 1)
 
 
 def _remember_run_step(message: dict) -> None:
@@ -199,10 +200,12 @@ def run_snapshot(session_id: str, run_id: str, admission_id: str = "") -> dict |
             segment, parts = 0, []
         text = "".join(str(part) for part in list(parts))
         revision = int(run["revision"])
+        omitted = int(run.get("omitted_before", 0))
     steps.sort(key=lambda step: float(step.get("ts") or 0))
     return {
         "run_id": run_id, "admission_id": str(admission_id or ""),
         "revision": revision, "steps": steps, "segment": segment, "text": text,
+        "omitted_before": omitted,
     }
 
 

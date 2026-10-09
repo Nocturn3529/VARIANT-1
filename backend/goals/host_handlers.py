@@ -107,6 +107,13 @@ class GoalHostHandlers:
         result=await cleanup_goal_descendant_resources(goal_id=goal.goal_id,roots=roots,
             child_manager=manager,execution=runtime.execution,kernel=runtime.kernel)
         payload=result.to_dict()
+        # The retained parent kernel can launch ordinary Python processes.
+        # Generation ancestry does not establish which Goal owns them.
+        payload['coverage'] = {
+            'managed_execution': 'goal_and_delegated_roots',
+            'raw_python_processes': 'not_attributed',
+            'parent_kernel': 'retained',
+        }
         payload['stopped_process_ids']=list(dict.fromkeys(payload['stopped_process_ids']+direct_processes))
         payload['closed_terminal_ids']=list(dict.fromkeys(payload['closed_terminal_ids']+direct_terminals))
         payload['issues']+=issues

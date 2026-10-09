@@ -116,6 +116,24 @@ def _ports(running_log=None):
 
 
 @pytest.mark.asyncio
+async def test_kernel_error_code_reaches_activity_and_run_receipt():
+    from dataclasses import replace
+    from kernel_runtime.contracts import KernelExecutionError, KernelExecutionResult
+    from kernel_runtime.output import CellOutput
+    from observability.activity import emit_activity
+    tool = FakeTool("ipython", raise_exc=KernelExecutionError(KernelExecutionResult(
+        execution_id="test-execution",chat_id="test-chat",generation=1,status="error",
+        output=CellOutput(),error_code="python_exception",error_message="test failure")))
+    ports, _ = _ports()
+    context = Variant1RunContext.create(source="chat",run_id="error-receipt")
+    with bind_run_context(context):
+        batch = await execute_tool_batch([_runnable("ipython",tool,call_id="error-call")],
+            should_stop=None,ports=replace(ports,emit=emit_activity))
+    assert batch.had_error and tool.calls == 1
+    assert context.metadata["_tool_result_observations"] == [{"status":"error","error_code":"python_exception"}]
+
+
+@pytest.mark.asyncio
 async def test_batch_terminates_only_when_every_call_requests_it():
     ports, _ = _ports()
     first = FakeTool("first", result=ToolExecutionResult("done", terminate=True))

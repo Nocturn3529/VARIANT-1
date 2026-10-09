@@ -73,6 +73,15 @@ def _session_payload(srv, sid: str):
         runtime = {"error": str(exc)}
     active_run_id = str((runtime or {}).get("active_run_id") or "")
     if active_run_id:
+        project_inputs = getattr(runtimes, "active_input_projection", None)
+        if callable(project_inputs):
+            try:
+                inputs = project_inputs(sid)
+            except Exception:
+                inputs = None
+                payload["active_inputs_error"] = "unavailable"
+            if inputs and inputs["run_id"] == active_run_id and inputs["admission_id"] == runtime.get("active_admission_id"):
+                payload["active_inputs"] = inputs
         # A Deck opening this chat mid-run rebuilds the live timeline from it.
         from observability.activity import run_snapshot
 

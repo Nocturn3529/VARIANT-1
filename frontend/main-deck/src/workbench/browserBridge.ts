@@ -1,10 +1,12 @@
 import {BrowserCommandError, browserDeadline, checkBrowserRequest} from "./browserLifecycle";
 import {allowedBrowserUrl, getPreviewState, setBrowserViewport, type BrowserPageState} from "./previewStore";
-import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, parseBrowserViewport} from "./browserViewport";
+import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, nextBrowserLayoutFrame, parseBrowserViewport} from "./browserViewport";
 import {downloadsForTab, findStartedDownload, isDownloadCommand, runBrowserDownloadCommand} from "./browserDownloads";
 import {browserKeyInput} from "./browserKeyboard";
 
 export type WorkbenchWebview = HTMLElement & {
+  /** A retained tab's native presentation; hidden ones are captured and driven in place. */
+  getBrowserPresentation?:()=>{visible:boolean;attached:boolean;viewport?:{width:number;height:number}};
   flushLayout?:()=>Promise<void>;
   loadURL?: (url: string) => Promise<void>;
   getURL?: () => string;
@@ -22,8 +24,6 @@ export type WorkbenchWebview = HTMLElement & {
   isDevToolsOpened?: () => boolean;
   getWebContentsId?: () => number;
   getZoomFactor?: () => number;
-  /** A retained tab's native presentation; hidden ones are captured in place. */
-  presentation?: () => {visible: boolean; viewport?: {width?: number; height?: number}};
   /** Keep a hidden retained tab laid out and accepting input while the agent works it. */
   lease?: () => Promise<void>;
   inspectElement?: (x: number, y: number) => void;
@@ -145,9 +145,9 @@ export function browserCommandDiagnostics(command: Record<string, unknown>) {
   const id = String(command.tab_id || command.target_id || activeId);
   const handle = handles.get(id);
   return {tab_id: id, guest_generation: handle?.generation, document_generation: handle?.document,
-    guest_ready: !!handle?.ready, guest_attached: !!handle?.webview.isConnected,
+    guest_ready: !!handle?.ready, guest_attached: handle?.webview.getBrowserPresentation?.().attached ?? !!handle?.webview.isConnected,
     viewport: handle ? measureBrowserViewport(handle.webview) : undefined,
-    visibility: handle?.webview.ownerDocument.visibilityState};
+    visibility: handle?.webview.getBrowserPresentation ? (handle.webview.getBrowserPresentation().visible ? "visible" : "hidden") : handle?.webview.ownerDocument.visibilityState};
 }
 
 function selectedHandle(command: Record<string, unknown>): BrowserHandle {
@@ -314,7 +314,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
   valid();
   // A background tab drops input and has no layout while fully hidden; the
   // main process keeps it painting, unseen, until the agent goes idle.
-  if (handle.webview.lease && handle.webview.presentation && !handle.webview.presentation().visible && !["state", "tabs"].includes(action)) {
+  if (handle.webview.lease && handle.webview.getBrowserPresentation && !handle.webview.getBrowserPresentation().visible && !["state", "tabs"].includes(action)) {
     await browserDeadline(handle.webview.lease(), 3000, "ready", signal);
     valid();
   }
@@ -359,12 +359,13 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     applyBrowserViewport(webview, requested);
     // A background tab has no on-screen layout to wait for; its native view
     // takes the requested size directly.
-    const hidden = webview.presentation && !webview.presentation().visible;
+    const hidden = webview.getBrowserPresentation && !webview.getBrowserPresentation().visible;
     const owner = webview.ownerDocument.defaultView || window;
-    if (!hidden) await browserDeadline(new Promise<void>(resolve => owner.requestAnimationFrame(() => owner.requestAnimationFrame(() => resolve()))), 2000, "viewport", signal);
+    // A hidden tab has no frames to wait for; its native view applies the size.
+    if (!hidden) await browserDeadline((async () => {await nextBrowserLayoutFrame(owner); await nextBrowserLayoutFrame(owner);})(), 2000, "viewport", signal);
     if(webview.flushLayout)await browserDeadline(webview.flushLayout(),2000,"viewport",signal);
     valid();
-    const presented = webview.presentation?.();
+    const presented = webview.getBrowserPresentation?.();
     const viewport = presented && !presented.visible ? backgroundViewport(webview, presented.viewport) : measureBrowserViewport(webview);
     if (requested && (viewport.width !== requested.width || viewport.height !== requested.height)) {
       throw new BrowserCommandError("VIEWPORT_NOT_APPLIED", "The browser could not apply the requested viewport; inspect its current size", "viewport");
@@ -425,24 +426,25 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     return {ok: true, html: String(html || ""), state: current()};
   }
   if (action === "screenshot") {
-    // A retained tab the user isn't looking at keeps its native size and is
-    // captured in place by the main process; nothing is revealed for it.
-    const presented = webview.presentation?.();
+    // Retained tabs are native views the main process captures in place. A
+    // hidden one keeps its native size and nothing is revealed for it.
+    const retained = !!webview.getBrowserPresentation;
+    const presented = webview.getBrowserPresentation?.();
     const background = !!presented && !presented.visible;
     if (!background) {
       // Revealing a retained tab schedules its automatic layout in the next
       // frame. Settle that layout before fixing the capture's size provenance.
       applyBrowserViewport(webview, getPreviewState().tabs.find(tab => tab.id === handle.id)?.viewport);
-      const owner = webview.ownerDocument.defaultView || window;
       let settling = true;
       const settle = async () => {
         let previous = measureBrowserViewport(webview), frames = 0;
         while (frames < 2) {
-          await new Promise<void>(resolve => owner.requestAnimationFrame(() => resolve()));
+          await nextBrowserLayoutFrame(webview.ownerDocument.defaultView || window);
           if (!settling) return;
           valid();
           const next = measureBrowserViewport(webview);
-          frames = next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
+          frames = next.visible_width > 0 && next.visible_height > 0
+            && next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
           previous = next;
         }
       };
@@ -454,7 +456,9 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     const rect = webview.getBoundingClientRect();
     const measure = () => background ? backgroundViewport(webview, presented?.viewport) : measureBrowserViewport(webview);
     const viewport = measure();
-    if (!background && (webview.ownerDocument.visibilityState === "hidden" || rect.width < 1 || rect.height < 1)) {
+    // A native view captures even when the window is covered; only a plain
+    // <webview> has to be on screen.
+    if (!retained && (webview.ownerDocument.visibilityState === "hidden" || rect.width < 1 || rect.height < 1)) {
       throw new BrowserCommandError("CAPTURE_NOT_VISIBLE", "Reveal the browser window before capturing it", "capture");
     }
     const capture = window.variant1Deck?.captureWorkbenchPreview;
@@ -472,8 +476,13 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
       throw new BrowserCommandError("VIEWPORT_CHANGED", "The browser resized during capture; inspect its current viewport before another capture", "capture");
     }
     if (!result.ok || !result.image) throw new BrowserCommandError(result.error?.startsWith("browser_capture_clipped") ? "VIEWPORT_CLIPPED" : "CAPTURE_FAILED", `Browser capture failed: ${result.error || "empty image"}`, "capture");
+    // A hidden native view can retain a different painted viewport from the
+    // pane's next layout. Coordinates must describe the actual captured DOM.
+    const actualViewport=result.image_css_width && result.image_css_height ? {...viewport,width:result.image_css_width,height:result.image_css_height} : viewport;
+    if(viewport.mode==="fixed" && (actualViewport.width!==viewport.width || actualViewport.height!==viewport.height))
+      throw new BrowserCommandError("VIEWPORT_NOT_APPLIED","The requested viewport is not painted yet; inspect the browser before another capture","capture");
     return {ok: true, image: result.image, image_width: result.image_width, image_height: result.image_height,
-      viewport, state: current()};
+      viewport:actualViewport, state: {...current(),viewport:actualViewport}};
   }
   if (action === "click") {
     const ref = targetRef(command.target || command.backend_ref, handle.epoch);

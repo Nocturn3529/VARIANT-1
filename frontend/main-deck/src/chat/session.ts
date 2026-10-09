@@ -21,11 +21,12 @@ import {
 } from "./messages";
 import {ACTION_SURFACE} from "./runtimeProfile";
 import type {ChatRuntimeState, ChatState, ChatTurnStep} from "./types";
+import {MAX_TURN_STEPS} from "./preview";
 import type {ChatNavigationOutcome} from "../protocol/chatEvents";
 import {invalidatePendingChatAttachments} from "./attachments";
 import {restorePauseFromRuntime,runtimeConflictsWithActiveRun} from "./pause";
 import {parseInputQueueSnapshot} from "../protocol/chatQueue";
-import {applyInputQueue,refreshInputQueue,reconcileContinuedHistory} from "./inputQueue";
+import {applyInputQueue,refreshInputQueue,reconcileContinuedHistory,hydrateActiveInputs} from "./inputQueue";
 import {refreshComposerGoal} from "./goals";
 import {refreshAgentTeam} from "./agentTeam";
 import {restoreRecoveryNotice,dismissRecoveryNotice} from "./recovery";
@@ -123,7 +124,7 @@ function hydrateTurn(runtime: ChatRuntimeState | null): void {
   } else if (runtime.busy === false && turn.snapshot().admissionId) turn.end({status:"complete"});
 }
 
-type RunSnapshot = {steps: ChatTurnStep[]; segment?: number; text: string};
+type RunSnapshot = {steps: ChatTurnStep[]; segment?: number; text: string; omittedBefore:number};
 /** Newest snapshot revision applied per admission; a lower one arriving late is stale. */
 const appliedSnapshots = new Map<string, number>();
 
@@ -149,7 +150,8 @@ function parseRunSnapshot(value: unknown, runId: string, admissionId: string): R
     appliedSnapshots.set(fence, revision);
     while (appliedSnapshots.size > 64) appliedSnapshots.delete(appliedSnapshots.keys().next().value!);
   }
-  return {steps, segment, text: typeof row.text === "string" ? row.text : ""};
+  return {steps, segment, text: typeof row.text === "string" ? row.text : "",
+    omittedBefore:Math.max(0,Math.min(1_000_000,Number(row.omitted_before)||0)) + steps.reduce((n,step)=>n+(step.omittedBefore || 0),0)};
 }
 
 /**
@@ -159,6 +161,7 @@ function parseRunSnapshot(value: unknown, runId: string, admissionId: string): R
  */
 function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatState, "turnSteps" | "streamText" | "streamSegment" | "streaming"> {
   const local = state.turnSteps;
+  const localOmitted=local.reduce((n,step)=>n+(step.omittedBefore || 0),0);
   const identity = (step: ChatTurnStep) => step.kind === "text" && step.segment ? `text:${step.segment}` : step.callId || step.id;
   const remote = new Map(snapshot.steps.map(step => [identity(step), step]));
   const merged = local.map(step => {
@@ -167,8 +170,15 @@ function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatSta
     remote.delete(identity(step));
     return step.status === "running" && newer.status !== "running" ? {...step, ...newer, id: step.id} : step;
   });
-  const steps = [...merged, ...remote.values()].map((step, order) => ({step, order}))
-    .sort((a, b) => (a.step.ts - b.step.ts) || (a.order - b.order)).map(({step}) => step);
+  const oldest=snapshot.steps[0]?.ts ?? 0;
+  const steps = [...merged, ...remote.values()].filter(step=>!snapshot.omittedBefore || !oldest || step.ts>=oldest)
+    .map((step, order) => ({step, order}))
+    .sort((a, b) => (a.step.ts - b.step.ts) || (a.order - b.order)).map(({step}) => {
+      const {omittedBefore:_omitted,...retained}=step;return retained;
+    });
+  const omitted=Math.min(1_000_000,Math.max(localOmitted,snapshot.omittedBefore + Math.max(0,steps.length-MAX_TURN_STEPS)));
+  const retained:ChatTurnStep[]=steps.slice(-MAX_TURN_STEPS);
+  if(omitted && retained.length)retained[0]={...retained[0],omittedBefore:omitted};
   // Text this window already saw for the same or a later call is newer than
   // the snapshot; text the snapshot already saved as narration is not live.
   const seenSegment = state.streamSegment ?? 0, remoteSegment = snapshot.segment ?? 0;
@@ -176,7 +186,7 @@ function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatSta
   let streamText = keepLocal ? state.streamText : snapshot.text;
   const streamSegment = keepLocal ? state.streamSegment : snapshot.segment;
   if (streamSegment && steps.some(step => step.kind === "text" && step.segment === streamSegment)) streamText = "";
-  return {turnSteps: steps, streamText, streamSegment, streaming: state.streaming || !!streamText};
+  return {turnSteps: retained, streamText, streamSegment, streaming: state.streaming || !!streamText};
 }
 
 export function applySession(session: Record<string, unknown>, navigation?: ChatNavigationOutcome) {
@@ -225,6 +235,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
     noteDisplayedSession(id);
     restorePauseFromRuntime(parsedRuntime);
     if(candidateRuntime?.inputQueue)applyInputQueue(candidateRuntime.inputQueue);else refreshInputQueue();
+    hydrateActiveInputs(acceptPrefix ? session.active_inputs : null);
     refreshComposerGoal();
     refreshAgentTeam();
     emit();
