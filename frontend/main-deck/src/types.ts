@@ -583,7 +583,7 @@ export type RuntimeApi = {
   getUpdateState?: () => Promise<UpdateState | null | undefined>;
   downloadUpdate?: () => Promise<{ok?: boolean; reason?: string} | null | undefined>;
   cancelUpdateDownload?: () => Promise<{ok?: boolean} | null | undefined>;
-  installUpdate?: () => Promise<{ok?: boolean; reason?: string} | null | undefined>;
+  installUpdate?: () => Promise<{ok?: boolean; reason?: string; error?: string} | null | undefined>;
   openUpdateRelease?: () => Promise<{ok?: boolean} | null | undefined>;
   onUpdateState?: (callback: (state: UpdateState) => void) => () => void;
 };

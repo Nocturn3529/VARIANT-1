@@ -18,6 +18,8 @@ const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const RELEASES_URL = 'https://github.com/Nocturn3529/VARIANT-1/releases';
 const LINUX_SUDO = ['gksudo', 'kdesudo', 'pkexec', 'beesu'];
 const PROGRESS_INTERVAL_MS = 250;
+// An installer that can't start reports it within a tick or two; quit only after this.
+const INSTALLER_LAUNCH_GRACE_MS = 1500;
 
 function errorText(error) {
   const text = String((error && error.message) || error || 'Update failed');
@@ -82,12 +84,15 @@ function installModeFor({platform, env, resourcesPath, fileSystem}) {
  * @param {{openExternal: (url: string) => Promise<void>}} deps.shell
  * @param {string} deps.appRoot
  * @param {(state: object) => void} deps.broadcast  sends each state change to the Deck
- * @param {() => Promise<void>} deps.prepareInstall  flushes storage and stops the backend
+ * @param {() => Promise<void>} deps.prepareInstall  flushes storage and stops the backend;
+ *   rejects when the backend is still running, which aborts the install
+ * @param {() => Promise<void>} [deps.resumeAfterFailedInstall]  restarts what preparation stopped
  * @param {(msg: string) => void} deps.log
  */
 function createUpdateService(deps) {
   const {
     app, shell, appRoot, broadcast, prepareInstall, log,
+    resumeAfterFailedInstall = async () => {},
     platform = process.platform,
     env = process.env,
     resourcesPath = process.resourcesPath,
@@ -95,6 +100,7 @@ function createUpdateService(deps) {
     now = Date.now,
     every = setInterval,
     stopEvery = clearInterval,
+    after = (ms, fn) => { const id = setTimeout(fn, ms); return () => clearTimeout(id); },
     loadUpdater = () => require('electron-updater').autoUpdater,
     // Resolved through electron-updater so a nested copy is used if npm nests it.
     newCancellation = () => new (require(require.resolve('builder-util-runtime',
@@ -207,18 +213,63 @@ function createUpdateService(deps) {
     return {ok: true};
   }
 
+  /**
+   * Start the installer and report whether it launched.
+   *
+   * electron-updater's quitAndInstall() quits even when the installer then
+   * fails to start, because that failure arrives later as an 'error' event.
+   * So install() runs here directly and the app quits only after a launch error
+   * had time to arrive. Silent: the assisted installer would otherwise reopen
+   * its whole wizard (install scope, folder); it upgrades the existing install
+   * in place, still asks for elevation when that install is per-machine, and
+   * relaunches the app.
+   */
+  function launchInstaller(up) {
+    return new Promise(resolve => {
+      let settled = false;
+      let cancelGrace = null;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        up.removeListener('error', onError);
+        if (cancelGrace) cancelGrace();
+        resolve(result);
+      };
+      const onError = error => finish({ok: false, error: errorText(error)});
+      up.on('error', onError);
+      let started = false;
+      try { started = up.install(true, true); } catch (error) { onError(error); }
+      if (settled) return;
+      if (!started) { finish({ok: false, error: "The installer couldn't be started"}); return; }
+      cancelGrace = after(INSTALLER_LAUNCH_GRACE_MS, () => finish({ok: true}));
+    });
+  }
+
+  async function failInstall(up, reason, message) {
+    log(`[updates] install stopped (${reason}): ${message}`);
+    // electron-updater ignores further installs once one was attempted.
+    if (up && 'quitAndInstallCalled' in up) up.quitAndInstallCalled = false;
+    // The downloaded update stays, so "Restart and install" can simply be tried again.
+    set({status: 'downloaded', error: message});
+    try { await resumeAfterFailedInstall(); } catch (error) { log('[updates] restart after the failed install failed: ' + errorText(error)); }
+    return {ok: false, reason, error: message};
+  }
+
   async function install() {
     const up = getUpdater();
     if (!up || state.status !== 'downloaded') return {ok: false, reason: 'not_downloaded'};
-    set({status: 'installing'});
+    set({status: 'installing', error: ''});
     // The installer can't replace a running backend's files, and Chromium writes
     // tab lists and cookies lazily; both have to settle before we hand over.
-    try { await prepareInstall(); } catch (error) { log('[updates] install preparation failed: ' + errorText(error)); }
+    try {
+      await prepareInstall();
+    } catch (error) {
+      return failInstall(up, 'prepare_failed', `VARIANT-1 couldn't get ready to install: ${errorText(error)}`);
+    }
     log(`[updates] installing ${state.version}`);
-    // Silent: the assisted installer would otherwise reopen its whole wizard
-    // (install scope, folder). It upgrades the existing install in place and
-    // still asks for elevation when that install is per-machine. Then relaunch.
-    up.quitAndInstall(true, true);
+    const launched = await launchInstaller(up);
+    if (!launched.ok) return failInstall(up, 'install_failed', `The installer didn't start: ${launched.error}`);
+    app.quit();
     return {ok: true};
   }
 

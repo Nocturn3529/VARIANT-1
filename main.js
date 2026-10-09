@@ -88,7 +88,13 @@ const updates = createUpdateService({
     await Promise.allSettled([session.defaultSession, session.fromPartition('persist:variant1-preview')]
       .flatMap((store) => [store.flushStorageData(), store.cookies.flushStore()]));
     await backend.stopBackend();
+    const backendStop = await backend.confirmBackendStopped();
+    if (!backendStop.stopped) {
+      throw new Error(`the backend is still running (process ${backendStop.remaining.join(', ') || 'unknown'})`);
+    }
   },
+  // A failed install leaves VARIANT-1 open, so bring the backend back.
+  resumeAfterFailedInstall: () => backend.startBackend(),
 });
 
 // --- Window refs -----------------------------------------------------------

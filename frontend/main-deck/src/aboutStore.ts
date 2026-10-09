@@ -91,7 +91,8 @@ export async function installUpdate() {
   const interrupted = restartInterruptions();
   if (interrupted && !window.confirm(`Restart VARIANT-1 to install the update? ${interrupted[0].toUpperCase()}${interrupted.slice(1)}.`)) return;
   const result = await store.getContext()?.api?.installUpdate?.();
-  if (result && !result.ok) notifyAbout("The update is not ready to install");
+  // A failed install keeps the downloaded update; the card shows why.
+  if (result && !result.ok) notifyAbout(result.error || "The update is not ready to install");
 }
 
 export function setAboutConnection(status: string) {
@@ -207,7 +208,7 @@ export async function checkForUpdates() {
         : "Up to date";
     }
     else if (result.reason === "dev_mode") label = "Development build";
-    else if (result.reason === "updater_unconfigured") label = "Update feed not configured";
+    else if (result.reason === "unconfigured") label = "Update feed not configured";
     store.setState({updateLabel: label, updateChecking: false, updateCheckComplete: true});
   } catch {
     store.setState({updateLabel: "Update check unavailable", updateChecking: false,

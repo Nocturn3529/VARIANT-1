@@ -56,8 +56,11 @@ function UpdateCard({update}: {update: UpdateState}) {
     actions = <Button tone="quiet" onClick={cancelUpdateDownload}>Cancel</Button>;
   } else if (update.status === "downloaded" || update.status === "installing") {
     title = update.status === "installing" ? "Restarting to install…" : `VARIANT-1 ${update.version} is ready to install`;
-    detail = "VARIANT-1 closes, installs the update and opens again. Your chats, tabs and settings are kept.";
-    actions = <Button tone="primary" disabled={busy} onClick={() => { void installUpdate(); }}>Restart and install</Button>;
+    // A failed install leaves the downloaded update in place, ready for another try.
+    detail = update.status === "downloaded" && update.error
+      ? `${update.error}. The downloaded update is kept, so you can try again.`
+      : "VARIANT-1 closes, installs the update and opens again. Your chats, tabs and settings are kept.";
+    actions = <Button tone="primary" disabled={busy} onClick={() => { void installUpdate(); }}>{update.error && update.status === "downloaded" ? "Try installing again" : "Restart and install"}</Button>;
   } else if (update.status === "error") {
     title = "The last update check didn't finish";
     detail = update.error || "VARIANT-1 couldn't reach GitHub releases.";

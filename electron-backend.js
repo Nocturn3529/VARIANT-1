@@ -840,6 +840,9 @@ function createBackendManager(deps) {
     return false;
   }
 
+  // The processes the last stop owned, so an update can confirm they are gone.
+  let lastStopped = {pids: [], info: null};
+
   async function stopBackendOnce() {
     backendStopping = true;
     clearScheduledRestarts();
@@ -893,6 +896,26 @@ function createBackendManager(deps) {
     else {
       try { if (portFile && fs.existsSync(portFile)) fs.unlinkSync(portFile); } catch (_) {}
     }
+    lastStopped = {pids: [...pids], info};
+  }
+
+  /**
+   * After stopBackend(): wait until none of the stopped processes remain.
+   * An installer must not replace the backend's files while it still runs.
+   */
+  async function confirmBackendStopped(timeoutMs = timings.forceKillTimeoutMs) {
+    const {pids, info} = lastStopped;
+    const deadline = now() + timeoutMs;
+    for (;;) {
+      const remaining = pids.filter((pid) => processIsAlive(pid));
+      // Without a PID, only the authenticated health endpoint can show it is still up.
+      const serving = !pids.length && info && info.port
+        ? await pingHealth(info.port, Math.min(timings.probeTimeoutMs, 300), info).catch(() => false)
+        : false;
+      if (!remaining.length && !serving) return {stopped: true, remaining: []};
+      if (now() >= deadline) return {stopped: false, remaining};
+      await pause(Math.min(timings.shutdownPollMs, Math.max(1, deadline - now())));
+    }
   }
 
   function stopBackend() {
@@ -910,6 +933,7 @@ function createBackendManager(deps) {
     setBackendStatus,
     startBackend,
     stopBackend,
+    confirmBackendStopped,
     killVariant1EngineProcesses,
   };
 }

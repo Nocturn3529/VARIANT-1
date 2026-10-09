@@ -10,7 +10,8 @@ const {EventEmitter} = require('events');
 const {createUpdateService, installModeFor, resolveFeed, CHECK_INTERVAL_MS} = require('../electron-updates');
 
 const root = path.join(__dirname, '..');
-const app = (packaged = true) => ({isPackaged: packaged, getVersion: () => '0.1.1-preview.3'});
+const app = (packaged = true, order = []) => ({isPackaged: packaged, getVersion: () => '0.1.1-preview.3', quit: () => order.push(['quit'])});
+const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function fakeUpdater() {
   const updater = new EventEmitter();
@@ -27,7 +28,19 @@ function fakeUpdater() {
     updater.finishDownload = resolve;
     token.onCancel = () => reject(new Error('cancelled'));
   });
-  updater.quitAndInstall = (silent, runAfter) => updater.calls.push(['install', silent, runAfter]);
+  // BaseUpdater.install(): sync failures dispatch 'error' and return false or
+  // throw; a failed launch arrives later as an 'error' event.
+  updater.quitAndInstallCalled = false;
+  updater.installBehaviour = 'ok';
+  updater.install = (silent, runAfter) => {
+    updater.calls.push(['install', silent, runAfter]);
+    updater.quitAndInstallCalled = true;
+    if (updater.installBehaviour === 'throw') throw new Error('spawn failed\nstack');
+    if (updater.installBehaviour === 'false') { updater.emit('error', new Error('No update filepath provided')); return false; }
+    if (updater.installBehaviour === 'async') setImmediate(() => updater.emit('error', new Error('spawn EACCES')));
+    return true;
+  };
+  updater.quitAndInstall = () => { throw new Error('quitAndInstall quits even when the installer fails to start'); };
   return updater;
 }
 
@@ -38,11 +51,11 @@ function token() {
 
 function service(overrides = {}) {
   const updater = overrides.updater || fakeUpdater();
-  const states = [], order = [];
+  const states = [], order = [], graces = [];
   let clock = 1000;
   const timers = [];
   const svc = createUpdateService({
-    app: overrides.app || app(),
+    app: overrides.app || app(true, order),
     shell: {openExternal: async url => { order.push(['open', url]); }},
     appRoot: root,
     env: overrides.env || {},
@@ -50,14 +63,16 @@ function service(overrides = {}) {
     resourcesPath: '',
     log: () => {},
     broadcast: state => states.push(state),
-    prepareInstall: async () => { order.push(['prepare']); },
+    prepareInstall: overrides.prepareInstall || (async () => { order.push(['prepare']); }),
+    resumeAfterFailedInstall: async () => { order.push(['resume']); },
+    after: (ms, fn) => { graces.push({ms, fn}); return () => { graces.splice(graces.findIndex(g => g.fn === fn), 1); }; },
     now: () => (clock += 1000),
     every: (fn, ms) => { timers.push({fn, ms}); return {unref() {}}; },
     stopEvery: () => {},
     loadUpdater: () => updater,
     newCancellation: token,
   });
-  return {svc, updater, states, order, timers};
+  return {svc, updater, states, order, timers, graces};
 }
 
 async function run() {
@@ -112,10 +127,55 @@ async function run() {
   assert.strictEqual(t.updater.calls.filter(call => call[0] === 'check').length, checks,
     'a downloaded update is not re-checked away');
   t.updater.calls.length = 0;
-  const installed = await t.svc.install();
-  assert.deepStrictEqual(installed, {ok: true});
-  assert.deepStrictEqual(t.order, [['prepare']]);
+  let installing = t.svc.install();
+  await tick();
   assert.deepStrictEqual(t.updater.calls, [['install', true, true]], 'the update installs silently over the existing install and relaunches');
+  assert.deepStrictEqual(t.order, [['prepare']], 'the app waits for a launch error before quitting');
+  t.graces[0].fn();
+  assert.deepStrictEqual(await installing, {ok: true});
+  assert.deepStrictEqual(t.order, [['prepare'], ['quit']]);
+
+  // R5: a failed preparation, or a backend still alive, aborts before the installer runs.
+  const downloaded = async (options = {}) => {
+    const d = service(options);
+    await d.svc.check();
+    const result = d.svc.download();
+    d.updater.finishDownload();
+    await result;
+    d.updater.calls.length = 0;
+    return d;
+  };
+  t = await downloaded({prepareInstall: async () => { throw new Error('the backend is still running (process 4242)'); }});
+  let result = await t.svc.install();
+  assert.deepStrictEqual(result, {ok: false, reason: 'prepare_failed',
+    error: "VARIANT-1 couldn't get ready to install: the backend is still running (process 4242)"});
+  assert.deepStrictEqual(t.updater.calls, [], 'no installer runs while the backend may be alive');
+  assert.deepStrictEqual(t.order, [['resume']], 'the backend comes back and the app stays open');
+  assert.strictEqual(t.svc.getState().status, 'downloaded', 'the downloaded update is kept for a retry');
+  assert.match(t.svc.getState().error, /backend is still running/);
+
+  // R6: installer failures, synchronous or reported later, keep the update and allow a retry.
+  for (const [behaviour, message] of [['throw', 'spawn failed'], ['false', 'No update filepath provided'], ['async', 'spawn EACCES']]) {
+    t = await downloaded();
+    t.updater.installBehaviour = behaviour;
+    installing = t.svc.install();
+    if (behaviour === 'async') { await tick(); await tick(); }
+    result = await installing;
+    assert.deepStrictEqual(result, {ok: false, reason: 'install_failed', error: `The installer didn't start: ${message}`}, behaviour);
+    assert.strictEqual(t.svc.getState().status, 'downloaded', `${behaviour}: not stuck at installing`);
+    assert.ok(!t.order.some(step => step[0] === 'quit'), `${behaviour}: the app does not quit`);
+    assert.deepStrictEqual(t.order.at(-1), ['resume'], `${behaviour}: the backend is restarted`);
+    assert.strictEqual(t.updater.quitAndInstallCalled, false, `${behaviour}: electron-updater accepts another install`);
+    assert.strictEqual(t.updater.listenerCount('error'), 0, `${behaviour}: no error listener is left behind`);
+  }
+  // The retry after the asynchronous failure installs and quits.
+  t.updater.installBehaviour = 'ok';
+  installing = t.svc.install();
+  await tick();
+  t.graces.at(-1).fn();
+  assert.deepStrictEqual(await installing, {ok: true});
+  assert.deepStrictEqual(t.order.at(-1), ['quit']);
+  assert.strictEqual(t.svc.getState().error, '', 'a new attempt clears the old failure');
 
   // Up to date and failed checks.
   t = service();
@@ -154,7 +214,7 @@ async function run() {
   assert.strictEqual(mode('linux', {PATH: '/usr/bin'}, files(false, 'deb', '')), 'release-page');
   assert.strictEqual(mode('linux', {PATH: '/usr/bin'}, files(false, '', 'pkexec')), 'release-page');
 
-  console.log('electron updates: start + 24 h checks, button-only download/cancel/install, backend stopped before install, platform install modes passed');
+  console.log('electron updates: start + 24 h checks, button-only download/cancel/install, backend stopped before install, prepare/launch failures keep the update and retry, platform install modes passed');
 }
 
 run().catch(error => { console.error(error); process.exitCode = 1; });
