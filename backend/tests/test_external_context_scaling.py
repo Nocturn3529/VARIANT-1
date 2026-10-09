@@ -1,6 +1,8 @@
 """Algorithmic and source-integrity checks for shared frozen context views."""
 import json
 import sqlite3
+import time
+import tracemalloc
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -28,23 +30,50 @@ def test_capture_and_reopen_read_only_delta_for_many_saved_views(tmp_path, monke
         return original(sid, conversation, nodes)
     monkeypatch.setattr(sessions, 'context_nodes', observe)
     monkeypatch.setattr(sessions, 'context_sources', lambda *a: pytest.fail('Whole history reader used'))
-    old = service.capture(chat)
+    import psutil
+    process = psutil.Process()
+    rss_before = process.memory_info().rss
+    already_tracing = tracemalloc.is_tracing()
+    if not already_tracing:
+        tracemalloc.start()
+    started = time.perf_counter()
+    try:
+        old = service.capture(chat)
+        initial_seconds = time.perf_counter()-started
+        # A preexisting tracer's global peak cannot be attributed to capture.
+        python_peak = None if already_tracing else tracemalloc.get_traced_memory()[1]
+    finally:
+        if not already_tracing:
+            tracemalloc.stop()
+    first_bytes = Path(service.path).stat().st_size
     assert len(reads) == 1202
     reads.clear()
+    refresh_times = []
     for _ in range(25):
+        started = time.perf_counter()
         service.capture(chat)
+        refresh_times.append(time.perf_counter()-started)
+    view_bytes = Path(service.path).stat().st_size
     assert reads == []
     assert counts(service)['context_record'] == counts(service)['context_member'] == 1202
     reopened = SessionContextService(database_path=service.path, sessions=sessions, kernel=service.kernel,
                                      artifacts=artifacts, runtimes=runtimes)
     sessions.append_messages(chat, [{'role': 'user', 'text': 'one new observation'}])
+    started = time.perf_counter()
     new = reopened.capture(chat)
+    append_seconds = time.perf_counter()-started
     assert len(reads) == 1
     assert counts(service)['context_record'] == counts(service)['context_member'] == 1203
     assert service.status(chat, old)['counts']['message'] == 1202
     assert service.status(chat, new)['counts']['message'] == 1203
     tail = service.read(chat, old, after=1200, limit=2)['items']
     assert [row['ordinal'] for row in tail] == [1200, 1201]
+    print('SCALING_RESOURCES ' + json.dumps({'records_first': 1202, 'records_final': 1203, 'views': 27,
+          'first_capture_seconds': initial_seconds, 'unchanged_refresh_seconds_median': sorted(refresh_times)[12],
+          'append_capture_seconds': append_seconds, 'python_peak_bytes_initial_capture': python_peak,
+          'rss_before_bytes': rss_before, 'rss_after_bytes': process.memory_info().rss,
+          'index_main_db_bytes_first': first_bytes, 'index_main_db_bytes_after_25_more_views': view_bytes,
+          'index_main_db_bytes_after_one_new_record': Path(service.path).stat().st_size}))
 
 
 def test_divergent_heads_and_merged_dag_keep_frozen_membership(tmp_path):
@@ -207,7 +236,7 @@ def test_many_native_threads_share_one_prefix_and_only_ingest_new_commits(tmp_pa
         return page
     monkeypatch.setattr(store, 'context_commit_page_sync', observed)
     monkeypatch.setattr(store, 'context_cursors_sync', lambda *args: pytest.fail('All native cursors materialized'))
-    monkeypatch.setattr(store, 'context_heads_page_sync', lambda *args, **kwargs: pytest.fail('All native threads visited'))
+    monkeypatch.setattr(store, 'context_heads_page_sync', lambda *args, **kwargs: pytest.fail('All native threads visited'), raising=False)
     first = service.capture(chat)
     assert len(rows) == 80
     rows.clear()
