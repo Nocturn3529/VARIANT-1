@@ -111,6 +111,7 @@ class MacDriverDaemon:
         self._sleep = sleep
         self._clock = clock
         self._launched = False
+        self._stop_requested = False
 
     def serve_arguments(self) -> list[str]:
         if self.gate:
@@ -150,6 +151,8 @@ class MacDriverDaemon:
     def wait_listening(self, timeout_s: float) -> bool:
         deadline = self._clock() + timeout_s
         while True:
+            if self._stop_requested:
+                return False
             if self.listening():
                 return True
             if self._clock() >= deadline:
@@ -171,6 +174,9 @@ class MacDriverDaemon:
         return probe.returncode == 0
 
     def stop(self) -> None:
+        """Retire this daemon only; idempotent and safe from another thread."""
+
+        self._stop_requested = True
         if self._launched:
             self._launched = False
             for argv in (
@@ -195,6 +201,9 @@ class MacPermissionRequest:
         self._factory = daemon_factory
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        # The gate daemon this request launched, owned until it is stopped.
+        self._daemon: MacDriverDaemon | None = None
+        self._cancel = threading.Event()
         self.granted = threading.Event()
         # The last grant status the driver reported (None: not known yet).
         self.last_status: dict[str, bool | None] = {"accessibility": None, "screen_recording": None}
@@ -210,15 +219,37 @@ class MacPermissionRequest:
             if self.active():
                 return False
             self.granted.clear()
+            self._cancel.clear()
             self._thread = threading.Thread(target=self._wait, name="cua-driver-grant", daemon=True)
             self._thread.start()
             return True
 
+    def cancel(self, timeout_s: float = 5.0) -> None:
+        """Stop a pending request and its gate daemon (host shutdown).
+
+        Only the daemon this request launched is stopped. Repeated calls,
+        and calls with nothing pending, do nothing.
+        """
+
+        self._cancel.set()
+        with self._lock:
+            daemon, thread = self._daemon, self._thread
+        if daemon is not None:
+            daemon.stop()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout_s)
+
     def _wait(self) -> None:
         daemon = self._factory(self._binary, env=self._env, gate=True)
+        with self._lock:
+            self._daemon = daemon
         try:
+            if self._cancel.is_set():
+                return
             daemon.launch()
-            if daemon.wait_listening(_GRANT_TIMEOUT_S):
+            # A cancel that arrived while launching finds the daemon here.
+            if not self._cancel.is_set() and daemon.wait_listening(_GRANT_TIMEOUT_S) \
+                    and not self._cancel.is_set():
                 # The gate opens its socket only once both grants are given.
                 self.last_status = {"accessibility": True, "screen_recording": True}
                 self.granted.set()
@@ -226,6 +257,9 @@ class MacPermissionRequest:
             pass
         finally:
             daemon.stop()
+            with self._lock:
+                if self._daemon is daemon:
+                    self._daemon = None
 
 
 def _grant_status(client: Any) -> dict[str, bool | None]:

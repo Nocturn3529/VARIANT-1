@@ -3,9 +3,11 @@
 The driver starts on first desktop use, not at backend startup. When the
 process dies it is restarted on the next call with a new generation; an
 action that was in flight is never replayed, because its effect is unknown.
-Each VARIANT-1 run drives through its own driver session, which ends with
-the run so held keys and the cursor overlay are released and late input
-for that run is refused.
+Each admitted attempt drives through its own driver session, which ends with
+the attempt so held keys and the cursor overlay are released. Input is
+fenced by the attempt, not the logical run id: snapshot Resume keeps the run
+id but runs under a new admission, and an attempt that is no longer admitted
+is refused however long ago it ended.
 """
 
 from __future__ import annotations
@@ -46,6 +48,9 @@ class CuaDriverHost:
             else str(expected_version or "")
         )
         self.generation = 0
+        # Whether an admitted attempt still holds its run (the session
+        # registry). Without it, ended attempts are remembered below.
+        self.attempt_active: Callable[[str], bool] | None = None
         self._client: Any = None
         self._lock = threading.RLock()
         self._sessions: set[str] = set()
@@ -110,6 +115,14 @@ class CuaDriverHost:
             self._client = None
 
     def close(self) -> None:
+        # A macOS permission request may be waiting on the user with its own
+        # CuaDriver gate; shutdown retires it too.
+        permissions = self.permissions
+        if permissions is not None and callable(getattr(permissions, "cancel", None)):
+            try:
+                permissions.cancel()
+            except Exception:
+                pass
         with self._lock:
             self._closed = True
             client = self._client
@@ -136,15 +149,28 @@ class CuaDriverHost:
 
     # Calls -----------------------------------------------------------------
 
+    def _attempt_ended(self, attempt_id: str) -> bool:
+        if not attempt_id:
+            return False
+        check = self.attempt_active
+        if check is not None:
+            try:
+                return not check(attempt_id)
+            except Exception:
+                return True
+        return session_label(attempt_id) in self._ended
+
     def call(
         self, name: str, arguments: Mapping[str, Any], *,
-        run_id: str = "", read_only: bool = False,
+        run_id: str = "", attempt_id: str = "", read_only: bool = False,
     ) -> dict[str, Any]:
-        label = session_label(run_id)
+        label = session_label(attempt_id or run_id)
         payload = dict(arguments)
         payload.setdefault("session", label)
         with self._lock:
-            if run_id and label in self._ended:
+            if self._attempt_ended(attempt_id) or (
+                not attempt_id and run_id and label in self._ended
+            ):
                 raise CuaRunEnded("this run has ended; its desktop input is refused")
             client = self._ensure()
             generation = self.generation
@@ -158,7 +184,7 @@ class CuaDriverHost:
                     result = client.call_tool(name, payload)
                 else:
                     raise
-            if run_id:
+            if attempt_id or run_id:
                 self._sessions.add(label)
             return result
 
@@ -167,26 +193,37 @@ class CuaDriverHost:
         alive = getattr(client, "alive", None)
         return not callable(alive) or bool(alive())
 
-    def end_run(self, run_id: str) -> None:
-        """End one run's driver session; later input for it is refused."""
+    def end_run(self, run_id: str, attempt_id: str = "") -> None:
+        """End an attempt's driver session; its later input is refused.
 
-        if not run_id:
+        The admitted attempt is the fence (see ``attempt_active``). The
+        remembered labels below only serve hosts without a session registry,
+        and runs that never had an admission.
+        """
+
+        labels = [session_label(key) for key in (attempt_id, run_id) if key]
+        if not labels:
             return
-        label = session_label(run_id)
+        # Only the attempt is fenced when it is known; its logical run id may
+        # continue under a new admission.
+        fenced = labels[:1]
         with self._lock:
-            self._ended[label] = None
-            self._ended.move_to_end(label)
-            while len(self._ended) > 512:
+            for label in fenced:
+                self._ended[label] = None
+                self._ended.move_to_end(label)
+            while len(self._ended) > 4096:
                 self._ended.popitem(last=False)
             client = self._client
-            if label not in self._sessions or client is None or not self._alive(client):
+            for label in labels:
+                if label not in self._sessions:
+                    continue
                 self._sessions.discard(label)
-                return
-            self._sessions.discard(label)
-            try:
-                client.call_tool("end_session", {"session": label})
-            except Exception:
-                pass
+                if client is None or not self._alive(client):
+                    continue
+                try:
+                    client.call_tool("end_session", {"session": label})
+                except Exception:
+                    pass
 
 
 __all__ = ["CuaDriverHost", "CuaRunEnded", "session_label"]

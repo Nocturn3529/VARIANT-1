@@ -33,6 +33,10 @@ class ModelRequestManifestBus:
         self._response_identities: OrderedDict[str, dict] = OrderedDict()
         # A lost usage record makes only its own Goal's capped accounting
         # incomplete; other Goals and unscoped chats keep exact totals.
+        # Requests still streaming keep their Goal until their final usage is
+        # submitted, so neighbouring Goals cannot push it out; finished
+        # requests stay attributable for the next 8192 finished requests.
+        self._inflight_goals: OrderedDict[str, str] = OrderedDict()
         self._manifest_goals: OrderedDict[str, str] = OrderedDict()
         self._goal_usage_losses: dict[str, int] = {}
         self._pending_partial: dict[str, dict] = {}
@@ -185,6 +189,7 @@ class ModelRequestManifestBus:
                     except Exception:
                         self.publish_failures += 1
         self.submit_ledger(persist, manifest_id=manifest_id, usage=True)
+        self._settle_goal(manifest_id)
         if manifest_id not in self._usage_manifest_ids:
             if (
                 self._usage_manifest_order.maxlen
@@ -294,6 +299,9 @@ class ModelRequestManifestBus:
         """
         if self.usage_ledger is None:
             return True
+        # The Goal is fixed when the write is queued, so a failure later in the
+        # queue is charged to it however many requests finish meanwhile.
+        goal_id = self._goal_of(manifest_id) if usage else ""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -301,16 +309,16 @@ class ModelRequestManifestBus:
                 operation()
                 return True
             except Exception:
-                self._ledger_failed(manifest_id, usage)
+                self._ledger_failed(manifest_id, usage, goal_id)
                 return False
         if self._ledger_task is None or self._ledger_task.done():
             self._ledger_queue = asyncio.Queue(maxsize=256)
             self._ledger_task = loop.create_task(self._ledger_loop(), name='model-usage-writer', context=Context())
         try:
-            self._ledger_queue.put_nowait((operation, manifest_id, usage))
+            self._ledger_queue.put_nowait((operation, manifest_id, usage, goal_id))
             return True
         except asyncio.QueueFull:
-            self._ledger_failed(manifest_id, usage)
+            self._ledger_failed(manifest_id, usage, goal_id)
             return False
 
     def submit_partial_usage(self, manifest_id: str, usage: dict) -> bool:
@@ -338,20 +346,33 @@ class ModelRequestManifestBus:
         scope = (manifest.get("run") or {}).get("work_scope") or {}
         goal_id = str(scope.get("goal_id") or "")[:160]
         if manifest_id and goal_id:
+            self._inflight_goals[manifest_id] = goal_id
+            self._inflight_goals.move_to_end(manifest_id)
+            # Only requests that never report final usage (an abandoned
+            # stream) can pile up here; a generous bound still applies.
+            while len(self._inflight_goals) > 65536:
+                self._inflight_goals.popitem(last=False)
+
+    def _settle_goal(self, manifest_id: str) -> None:
+        goal_id = self._inflight_goals.pop(manifest_id, "")
+        if goal_id:
             self._manifest_goals[manifest_id] = goal_id
             self._manifest_goals.move_to_end(manifest_id)
-            if len(self._manifest_goals) > 8192:
+            while len(self._manifest_goals) > 8192:
                 self._manifest_goals.popitem(last=False)
 
-    def _usage_lost(self, manifest_id: str) -> None:
+    def _goal_of(self, manifest_id: str) -> str:
+        return self._inflight_goals.get(manifest_id) or self._manifest_goals.get(manifest_id, "")
+
+    def _usage_lost(self, manifest_id: str, goal_id: str = "") -> None:
         self.ledger_failures += 1
-        goal_id = self._manifest_goals.get(manifest_id, "")
+        goal_id = goal_id or self._goal_of(manifest_id)
         if goal_id:
             self._goal_usage_losses[goal_id] = self._goal_usage_losses.get(goal_id, 0) + 1
 
-    def _ledger_failed(self, manifest_id: str, usage: bool) -> None:
+    def _ledger_failed(self, manifest_id: str, usage: bool, goal_id: str = "") -> None:
         if usage:
-            self._usage_lost(manifest_id)
+            self._usage_lost(manifest_id, goal_id)
         else:
             self.ledger_failures += 1
 
@@ -368,11 +389,11 @@ class ModelRequestManifestBus:
                     if not item.done():
                         item.set_result(None)
                 else:
-                    operation, manifest_id, usage = item
+                    operation, manifest_id, usage, goal_id = item
                     try:
                         await asyncio.to_thread(operation)
                     except Exception:
-                        self._ledger_failed(manifest_id, usage)
+                        self._ledger_failed(manifest_id, usage, goal_id)
             finally:
                 queue.task_done()
 

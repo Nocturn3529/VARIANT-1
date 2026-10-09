@@ -799,12 +799,19 @@ class DesktopFabric:
         self.adapter.close()
         self._semantic_locks.clear()
 
-    def end_run(self, run_id: str) -> None:
-        """End a finished run's driver session; its late input is refused."""
+    def end_run(self, run_id: str, attempt_id: str = "") -> None:
+        """End a finished attempt's driver session; its late input is refused."""
 
         end = getattr(self.adapter, "end_run", None)
-        if callable(end) and run_id:
-            end(str(run_id))
+        if callable(end) and (run_id or attempt_id):
+            end(str(run_id or ""), str(attempt_id or ""))
+
+    def bind_attempt_check(self, attempt_active: Any) -> None:
+        """Let the driver ask the session registry whether an attempt is admitted."""
+
+        host = getattr(self.adapter, "host", None)
+        if host is not None and hasattr(host, "attempt_active"):
+            host.attempt_active = attempt_active
 
 
 def create_desktop_fabric(

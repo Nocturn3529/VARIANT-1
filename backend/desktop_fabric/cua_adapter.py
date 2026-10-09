@@ -132,6 +132,19 @@ def _current_run_id() -> str:
     return str(getattr(context, "run_id", "") or "") if context is not None else ""
 
 
+def _current_attempt_id() -> str:
+    """The admission this run holds; Resume keeps the run id, not this."""
+
+    try:
+        from run_context import current_run_context
+
+        context = current_run_context()
+    except Exception:
+        return ""
+    metadata = getattr(context, "metadata", None) if context is not None else None
+    return str((metadata or {}).get("admission_id") or "")
+
+
 class CuaDesktopAdapter:
     """Map cua-driver window tools onto the Desktop Fabric adapter."""
 
@@ -145,6 +158,7 @@ class CuaDesktopAdapter:
         started_at: Callable[[int], float] | None = None,
         locked: Callable[[], bool] | None = None,
         run_id: Callable[[], str] | None = None,
+        attempt_id: Callable[[], str] | None = None,
     ) -> None:
         self.platform = platform or sys.platform
         if host is None:
@@ -162,12 +176,13 @@ class CuaDesktopAdapter:
             windows_desktop_locked if self.platform.startswith("win") else (lambda: False)
         )
         self._run_id = run_id or _current_run_id
+        self._attempt_id = attempt_id or _current_attempt_id
 
     def close(self) -> None:
         self.host.close()
 
-    def end_run(self, run_id: str) -> None:
-        self.host.end_run(run_id)
+    def end_run(self, run_id: str, attempt_id: str = "") -> None:
+        self.host.end_run(run_id, attempt_id)
 
     # Catalog -----------------------------------------------------------
 
@@ -427,7 +442,8 @@ class CuaDesktopAdapter:
 
     def _tool(self, name: str, arguments: Mapping[str, Any], *, read_only: bool = False) -> dict[str, Any]:
         try:
-            return self.host.call(name, arguments, run_id=self._run_id(), read_only=read_only)
+            return self.host.call(name, arguments, run_id=self._run_id(),
+                                  attempt_id=self._attempt_id(), read_only=read_only)
         except CuaRunEnded as exc:
             raise DesktopUnavailable(str(exc)) from exc
         except CuaDriverError as exc:
@@ -437,10 +453,12 @@ class CuaDesktopAdapter:
         # Driver calls block on the process pipe; keep them off the event loop.
         # The run id is read here, where the run context is bound.
         run_id = self._run_id()
+        attempt_id = self._attempt_id()
 
         def call() -> dict[str, Any]:
             try:
-                return self.host.call(name, arguments, run_id=run_id, read_only=read_only)
+                return self.host.call(name, arguments, run_id=run_id,
+                                      attempt_id=attempt_id, read_only=read_only)
             except CuaDriverError as exc:
                 raise DesktopUnavailable(str(exc)) from exc
 

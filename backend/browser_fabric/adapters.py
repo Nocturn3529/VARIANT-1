@@ -1070,7 +1070,11 @@ class EmbeddedBrowserAdapter(BrowserAdapter):
         try:
             from run_context import current_run_context
 
-            run_id = str(getattr(current_run_context(), "run_id", "") or "")
+            context = current_run_context()
+            # Tabs belong to the admitted attempt's run, the id run-end
+            # cleanup and active_runs use; Resume keeps an older graph run id.
+            metadata = getattr(context, "metadata", None) or {}
+            run_id = str(metadata.get("admission_run_id") or getattr(context, "run_id", "") or "")
         except Exception:
             run_id = ""
         command = {"action": action, **params, "owner_chat_id": self.owner_chat_id}

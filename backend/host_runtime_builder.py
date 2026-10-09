@@ -100,16 +100,20 @@ def install_host_runtime(
         backend_instance_id=host.instance_id,
     )
 
-    def end_desktop_run(_chat_id: str, run_id: str, _admission_id: str) -> None:
+    # Desktop input is fenced by the admitted attempt: snapshot Resume keeps
+    # the logical run id under a new admission.
+    desktop.bind_attempt_check(astb.session_runtimes.admission_live)
+
+    def end_desktop_run(_chat_id: str, run_id: str, admission_id: str) -> None:
         # Fires on the event loop when a run's task ends (done, cancelled or
         # failed). Ending the driver session may wait for the driver, so it
         # runs off the loop.
         import asyncio
 
         try:
-            asyncio.get_running_loop().run_in_executor(None, desktop.end_run, run_id)
+            asyncio.get_running_loop().run_in_executor(None, desktop.end_run, run_id, admission_id)
         except RuntimeError:
-            desktop.end_run(run_id)
+            desktop.end_run(run_id, admission_id)
 
     astb.session_runtimes.register_run_end_listener(end_desktop_run)
 

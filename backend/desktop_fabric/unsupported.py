@@ -34,7 +34,7 @@ class UnsupportedDesktopAdapter:
         detail = self.reason or "no window or input driver is available for this host"
         return f"Desktop automation is not available on {self.platform}: {detail}."
 
-    def end_run(self, run_id: str) -> None:
+    def end_run(self, run_id: str, attempt_id: str = "") -> None:
         return None
 
     def catalog(self, *, backend_instance_id: str) -> tuple[list[AppRecord], list[WindowRecord]]:

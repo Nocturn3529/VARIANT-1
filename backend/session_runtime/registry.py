@@ -961,6 +961,16 @@ class SessionRuntimeRegistry:
                 if live.admission is not None and live.admission.run_id
             ]
 
+    def admission_live(self, admission_id: str) -> bool:
+        """Whether this exact admitted attempt still holds its run.
+
+        Desktop and browser input from an attempt that has finished is late:
+        a resumed continuation runs under a new admission, so this, not the
+        resumable logical run id, decides whether input may still act.
+        """
+        with self._guard:
+            return str(admission_id or "") in self._reservations
+
     def active_admission(self, chat_id: str) -> str:
         clean = self._chat_id(chat_id)
         with self._guard:
