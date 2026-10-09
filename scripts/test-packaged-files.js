@@ -185,15 +185,15 @@ function binResource(platform) {
   );
 }
 
-const kernelRuntime = effectiveExtraResources('win').find(
-  entry => entry && entry.from === 'backend/dist/Variant1Kernel'
-    && entry.to === 'backend/kernel',
-) || (packageJson.build.extraResources || []).find(
-  entry => entry && entry.from === 'backend/dist/Variant1Kernel'
-    && entry.to === 'backend/kernel',
-);
-assert.ok(kernelRuntime,
-  'the one-directory kernel runtime must remain isolated under backend/kernel');
+// One frozen folder carries Variant1Backend and Variant1Kernel over a shared
+// _internal/; a separate kernel folder would ship that runtime twice.
+for (const platform of ['win', 'linux', 'mac']) {
+  const backendEntries = effectiveExtraResources(platform).filter(
+    entry => entry && String(entry.from || '').startsWith('backend/dist/'));
+  assert.deepStrictEqual(backendEntries.map(entry => [entry.from, entry.to]),
+    [['backend/dist/Variant1Backend', 'backend']],
+    `${platform} ships the backend and kernel from one frozen folder`);
+}
 
 // The installer ships only the pinned computer-use driver. llama.cpp is not
 // bundled on any platform; the app downloads it on request.

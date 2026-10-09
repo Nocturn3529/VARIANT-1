@@ -95,10 +95,6 @@
       {
         "from": "backend/dist/Variant1Backend",
         "to": "backend"
-      },
-      {
-        "from": "backend/dist/Variant1Kernel",
-        "to": "backend/kernel"
       }
     ],
     "win": {
