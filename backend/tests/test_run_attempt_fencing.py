@@ -215,16 +215,81 @@ def test_a_late_usage_failure_stays_charged_to_its_goal():
     remember("long-request", "goal-a")
     for index in range(9000):
         remember(f"neighbour-{index}", "goal-b")
-        bus._settle_goal(f"neighbour-{index}")
+        bus.settle_goal(f"neighbour-{index}")
     bus._usage_lost("long-request")
     assert bus.goal_usage_lost("goal-a") == 1
     assert bus.goal_usage_lost("goal-b") == 0
     # A finished request stays attributable while recent; a failure queued
     # with its Goal is charged to it even after it ages out.
-    bus._settle_goal("long-request")
+    bus.settle_goal("long-request")
     for index in range(9000):
         remember(f"later-{index}", "goal-c")
-        bus._settle_goal(f"later-{index}")
+        bus.settle_goal(f"later-{index}")
     bus._ledger_failed("long-request", True, "goal-a")
     assert bus.goal_usage_lost("goal-a") == 2
     assert bus.goal_usage_lost("goal-c") == 0
+
+
+def test_goal_attribution_travels_with_the_request_reference():
+    """Open requests that never settle cannot push an old request's Goal out."""
+    from llm_manifest_bus import ModelRequestManifestBus
+
+    class Ledger:
+        def patch_usage(self, *args, **kwargs):
+            raise OSError("disk full")
+
+        def get(self, identity):
+            return {"goal_id": "goal-stored"} if identity == "stored-request" else None
+
+    bus = ModelRequestManifestBus(usage_ledger=Ledger())
+    bus._remember_goal({"manifest_id": "old-request", "run": {"work_scope": {"goal_id": "owner-goal"}}})
+    for index in range(65537):
+        bus._remember_goal({"manifest_id": f"open-{index}", "run": {"work_scope": {"goal_id": "goal-b"}}})
+    assert bus._goal_of("old-request") == ""
+
+    # The adapters' request reference carries the Goal of that exact request.
+    bus.patch_usage({"manifest_id": "old-request", "goal_id": "owner-goal"}, {"input_tokens": 1})
+    bus.submit_partial_usage("old-request", {"input_tokens": 1}, "owner-goal")
+    assert bus.goal_usage_lost("owner-goal") == 2
+    assert bus.goal_usage_lost("goal-b") == 0
+    # A bare id falls back to the durable request row.
+    bus._usage_lost("stored-request")
+    assert bus.goal_usage_lost("goal-stored") == 1
+
+
+def test_the_request_hook_stamps_its_goal_and_the_call_end_settles_it():
+    import asyncio
+    from types import SimpleNamespace
+
+    from llm_manifest_bus import ModelRequestManifestBus
+    from model_runtime.request_manifest import begin_model_call, end_model_call, model_request_event_hooks
+
+    bus = ModelRequestManifestBus()
+
+    class Router:
+        _manifest_bus = bus
+
+        async def _record_model_request_manifest(self, manifest):
+            await bus.record(manifest)
+
+        def _patch_model_request_manifest_terminal(self, manifest_ref, *, outcome, duration_s=None):
+            bus.settle_goal(bus.manifest_id_from_ref(manifest_ref))
+
+    context = Variant1RunContext.create(source="chat", run_id="run-1", work_scope={"goal_id": "goal-a"})
+
+    async def call():
+        token = begin_model_call(requested_route="test", selected_mode="test")
+        hooks = model_request_event_hooks(
+            Router(), provider="openai", api_style="openai", transport="chat_completions",
+            adapter="test", adapter_version="1", model="test-model",
+            payload={"messages": []}, source_messages=[])
+        await hooks["request"][0](SimpleNamespace(content=b'{"messages":[]}'))
+        assert bus.goal_id_from_ref(hooks.request_ref) == "goal-a"
+        assert bus._inflight_goals == {hooks.request_ref["manifest_id"]: "goal-a"}
+        end_model_call(token, outcome="failed")
+        return hooks.request_ref["manifest_id"]
+
+    with bind_run_context(context):
+        identity = asyncio.run(call())
+    assert not bus._inflight_goals
+    assert bus._goal_of(identity) == "goal-a"

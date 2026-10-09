@@ -802,6 +802,9 @@ def model_request_event_hooks(
                 payload_basis=payload_basis,
                 output_budget=output_budget,
             )
+            work_scope = (manifest.get("run") or {}).get("work_scope") or {}
+            if work_scope.get("goal_id"):
+                request_ref["goal_id"] = str(work_scope["goal_id"])[:160]
             request_ref["manifest_id"] = str(manifest.get("manifest_id") or "")
             scope = _MODEL_CALL_SCOPE.get()
             if scope is not None:
