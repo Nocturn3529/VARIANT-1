@@ -139,7 +139,7 @@ WARMUP_ARRIVAL_TIMEOUT_S = 30.0
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("navigation", ["before_start", "during_warmup", "cancel_warmup"])
+@pytest.mark.parametrize("navigation", ["before_start", "during_warmup", "cancel_warmup", "cancel_warmup_slow_trace"])
 async def test_admitted_chat_survives_navigation_before_setup(
     tmp_path, monkeypatch, navigation,
 ):
@@ -157,6 +157,23 @@ async def test_admitted_chat_survives_navigation_before_setup(
     session.active.runtime_chat_id = first
     entered = asyncio.Event()
     release = asyncio.Event()
+    trace_entered = asyncio.Event()
+    import threading
+    trace_release = threading.Event()
+    trace_calls = []
+    loop = asyncio.get_running_loop()
+
+    def trace_boundary(timeout):
+        # This test checks admission/navigation, not the process-global trace
+        # writer or filesystem latency from unrelated tests. Real flush/fsync
+        # remains covered by test_trace_events.py. Still require this boundary.
+        trace_calls.append(timeout)
+        loop.call_soon_threadsafe(trace_entered.set)
+        if navigation == "cancel_warmup_slow_trace":
+            assert trace_release.wait(WARMUP_ARRIVAL_TIMEOUT_S + 5)
+        return True
+
+    monkeypatch.setattr(chat_pipeline, "trace_durability_barrier", trace_boundary)
     route = {"mode": "local"}
     monkeypatch.setattr(chat_pipeline, "session_model_route", lambda *_args: route)
 
@@ -200,24 +217,34 @@ async def test_admitted_chat_survives_navigation_before_setup(
         # Liveness, not promptness: this only asks whether the turn ever
         # reaches warmup. There is no upper bound on how long a loaded event
         # loop takes to schedule the task, and a 2s budget here fails on a busy
-        # CI runner while passing on an idle machine. The two timeouts below
-        # are promptness assertions and stay tight on purpose.
+        # CI runner while passing on an idle machine. Promptness below measures
+        # the controlled runtime boundary, independent of real disk flushing.
         await asyncio.wait_for(entered.wait(), timeout=WARMUP_ARRIVAL_TIMEOUT_S)
         if navigation == "during_warmup":
             registry.move_attachment(session.attachment_id, second)
             release.set()
-        if navigation == "cancel_warmup":
+        if navigation.startswith("cancel_warmup"):
             turn.cancel()
+            if navigation == "cancel_warmup_slow_trace":
+                await asyncio.wait_for(trace_entered.wait(), timeout=WARMUP_ARRIVAL_TIMEOUT_S)
+                assert not turn.done(), "the controlled trace flush is still pending"
+                assert not registry.is_busy(first), "native admission already settled"
+                assert session.busy is False
+                assert store.get_last_run_receipt(first)["settled"] is True
+                assert store.get_session(second)["messages"] == []
+                trace_release.set()
             with pytest.raises(asyncio.CancelledError):
                 await asyncio.wait_for(turn, timeout=2)
         else:
             await asyncio.wait_for(turn, timeout=2)
     finally:
+        trace_release.set()
         if not turn.done():
             turn.cancel()
             await asyncio.gather(turn, return_exceptions=True)
 
-    if navigation == "cancel_warmup":
+    assert trace_calls == [0.5], "terminal tracing remains part of finalization"
+    if navigation.startswith("cancel_warmup"):
         assert not registry.is_busy(first)
         assert session.busy is False
         assert not registry.writer_lock(first).locked()
