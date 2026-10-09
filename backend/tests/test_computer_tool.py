@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-import desktop_control
-from desktop import registry as desktop_registry
+from desktop_fabric import tool as desktop_registry
 import desktop_fabric.access as desktop_access
 import desktop_fabric.capabilities as desktop_capabilities
 import tools
@@ -13,7 +12,7 @@ import tools
 
 def _registry():
     registry = tools.ToolRegistry()
-    desktop_registry.register(registry, desktop_control.DesktopControl())
+    desktop_registry.DesktopSurface().register(registry)
     return registry
 
 
@@ -92,3 +91,8 @@ def test_replaced_desktop_seeds_are_not_registered():
         "ui_click", "ui_set_text", "ui_select", "ui_keys", "ui_scroll",
         "ui_steps", "ui_click_xy", "ui_drag_xy", "window_stack",
     })
+
+
+def test_computer_is_the_only_desktop_surface_and_log_root():
+    assert desktop_registry.DESKTOP_SURFACE_TOOLS == {"computer"}
+    assert desktop_registry.DESKTOP_LOG_TOOLS == {"computer"}

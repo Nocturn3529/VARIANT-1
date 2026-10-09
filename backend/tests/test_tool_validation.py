@@ -148,11 +148,10 @@ def test_any_schema_preserves_mapping_scalar_and_handle_shaped_values():
 
 
 def test_computer_object_methods_are_validated_without_legacy_dispatch_shapes():
-    import desktop_control
-    from desktop.registry import COMPUTER_OBJECT_METHODS
+    from desktop_fabric.tool import COMPUTER_OBJECT_METHODS, DesktopSurface
 
     registry = tools.ToolRegistry()
-    desktop_control.DesktopControl().register(registry)
+    DesktopSurface().register(registry)
     tool = registry.get("computer")
     assert tool is not None
 

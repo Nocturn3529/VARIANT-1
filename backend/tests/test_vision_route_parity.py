@@ -1,7 +1,7 @@
 import pytest
 
 import llm_profiles
-from desktop import vision
+from model_runtime import vision
 
 
 class FakeRouter:

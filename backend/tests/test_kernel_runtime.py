@@ -2692,7 +2692,7 @@ async def test_nested_capability_conclusion_reaches_outer_ipython_tool(
 async def test_nested_ipython_screenshot_rejoins_outer_model_image_sink(
     kernel_stack,
 ):
-    from desktop import service as desktop_service
+    import tool_images as desktop_service
 
     manager, runtimes, _artifacts = kernel_stack
     chat_id = "chat-nested-screenshot"

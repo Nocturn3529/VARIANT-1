@@ -25,7 +25,6 @@
     "dist:electron-only": "node scripts/check-native-runtime.js && electron-builder",
     "test": "node scripts/test.js",
     "clean:artifacts": "node scripts/clean-artifacts.js",
-    "prepare:native": "node scripts/prepare-native-runtime.js",
     "audit:package": "node scripts/audit-package.js"
   },
   "dependencies": {
@@ -54,6 +53,9 @@
   "build": {
     "appId": "app.variant1.desktop",
     "productName": "VARIANT-1",
+    "electronLanguages": [
+      "en-US"
+    ],
     "files": [
       "main.js",
       "electron-*.js",
@@ -93,10 +95,6 @@
       {
         "from": "backend/dist/Variant1Backend",
         "to": "backend"
-      },
-      {
-        "from": "backend/dist/Variant1Kernel",
-        "to": "backend/kernel"
       }
     ],
     "win": {
@@ -108,22 +106,8 @@
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server.exe",
-            "llama-server-impl.dll",
-            "llama-common.dll",
-            "llama.dll",
-            "mtmd.dll",
-            "ggml.dll",
-            "ggml-base.dll",
-            "ggml-cpu-*.dll",
-            "ggml-cuda.dll",
-            "ggml-rpc.dll",
-            "libomp140.x86_64.dll",
             "cua-driver/cua-driver.exe",
-            "cua-driver/VERSION",
-            "cublas64_13.dll",
-            "cublasLt64_13.dll",
-            "cudart64_13.dll"
+            "cua-driver/VERSION"
           ]
         }
       ]
@@ -135,8 +119,10 @@
     },
     "publish": [
       {
-        "provider": "generic",
-        "url": ""
+        "provider": "github",
+        "owner": "Nocturn3529",
+        "repo": "VARIANT-1",
+        "releaseType": "prerelease"
       }
     ],
     "linux": {
@@ -153,15 +139,8 @@
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server",
             "cua-driver/cua-driver",
-            "cua-driver/VERSION",
-            "libllama*",
-            "libmtmd*",
-            "libggml*",
-            "*.so",
-            "*.so.*",
-            "*.dylib"
+            "cua-driver/VERSION"
           ]
         }
       ]
@@ -173,21 +152,17 @@
       ],
       "category": "public.app-category.developer-tools",
       "icon": "assets/tray/icon_1024.png",
+      "signIgnore": [
+        "/Contents/Resources/bin/cua-driver/CuaDriver\\.app(/|$)"
+      ],
       "artifactName": "VARIANT-1-${version}-${os}-${arch}.${ext}",
       "extraResources": [
         {
           "from": "bin",
           "to": "bin",
           "filter": [
-            "llama-server",
-            "cua-driver/cua-driver",
-            "cua-driver/VERSION",
-            "libllama*",
-            "libmtmd*",
-            "libggml*",
-            "*.so",
-            "*.so.*",
-            "*.dylib"
+            "cua-driver/CuaDriver.app/**",
+            "cua-driver/VERSION"
           ]
         }
       ]

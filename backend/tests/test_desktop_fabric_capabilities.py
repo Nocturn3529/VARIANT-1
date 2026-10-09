@@ -5,10 +5,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import desktop_control
 from artifacts import ContentAddressedArtifactStore
 from capability_broker import CapabilityBroker, InvocationContext
-from desktop import registry as desktop_registry
+from desktop_fabric import tool as desktop_registry
 from desktop_fabric import (
     AdapterCapture,
     AdapterDispatch,
@@ -202,13 +201,13 @@ def _stack(tmp_path, *, with_artifacts=False):
         broker=broker,
         session_artifacts=artifacts,
     )
-    control = desktop_control.DesktopControl()
+    surface = desktop_registry.DesktopSurface()
     host = SimpleNamespace(
-        desktop_control=control,
+        desktop_surface=surface,
         require_runtime=lambda: runtime,
     )
     install_desktop_fabric(fabric, host)
-    desktop_registry.register(registry, control)
+    surface.register(registry)
     if with_artifacts:
         from artifacts.blob_service import ArtifactBlobService
         from artifacts.capabilities import register_artifact_tools

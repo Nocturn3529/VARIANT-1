@@ -465,6 +465,12 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                     thread_id=str(getattr(ctx_at_admission, "thread_id", "") or ""),
                     source=source or "chat",
                 )
+                if ctx_at_admission is not None:
+                    # The attempt identity: snapshot Resume keeps the logical
+                    # run id but runs under a new admission.
+                    ctx_at_admission.metadata["admission_id"] = admission_id
+                    ctx_at_admission.metadata["admission_run_id"] = str(
+                        getattr(ctx_at_admission, "run_id", "") or "")
             except BaseException:
                 runtime_registry.finish_run(
                     admission_id, status="admission_start_failed"

@@ -24,18 +24,6 @@ def _configure_runtime_adapters(host: "AppHost") -> None:
     from automation import scheduler as agent_scheduler
     from run_context import current_run_context
 
-    desktop_cfg = (host.tools_cfg.data.get("desktop", {}) or {})
-    host.desktop_control.set_recovery_config(desktop_cfg.get("recovery"))
-    host.desktop_control.set_perception_config(desktop_cfg.get("perception"))
-    host.desktop_control.set_observability_config(desktop_cfg.get("observability"))
-
-    async def desktop_perception_activity(event: str, **fields):
-        await host.emit_activity(event, **fields)
-
-    host.desktop_control.set_activity_emitter(desktop_perception_activity)
-    host.desktop_control.set_ctx_getter(
-        lambda: int(host.router.projection_budget_tokens() or 0)
-    )
     def local_gate():
         principal = agent_scheduler.principal_for_context(current_run_context())
         return host.scheduler.slot(principal)
@@ -109,9 +97,32 @@ def install_host_runtime(
     desktop = create_desktop_fabric(
         data_dir=data_root,
         artifact_store=astb.session_artifacts,
-        desktop_control=host.desktop_control,
         backend_instance_id=host.instance_id,
     )
+
+    # Desktop input is fenced by the admitted attempt: snapshot Resume keeps
+    # the logical run id under a new admission.
+    desktop.bind_attempt_check(astb.session_runtimes.admission_live)
+
+    def end_desktop_run(_chat_id: str, run_id: str, admission_id: str) -> None:
+        # Fires on the event loop when a run's task ends (done, cancelled or
+        # failed). Ending the driver session may wait for the driver, so it
+        # runs off the loop.
+        import asyncio
+
+        try:
+            asyncio.get_running_loop().run_in_executor(None, desktop.end_run, run_id, admission_id)
+        except RuntimeError:
+            desktop.end_run(run_id, admission_id)
+
+    astb.session_runtimes.register_run_end_listener(end_desktop_run)
+
+    def end_browser_run(chat_id: str, run_id: str, _admission_id: str) -> None:
+        from browser_fabric.deck_tabs import schedule_run_cleanup
+
+        schedule_run_cleanup(chat_id, run_id)
+
+    astb.session_runtimes.register_run_end_listener(end_browser_run)
     extensions = host._pending_extensions
     if extensions is None:
         os.makedirs(os.path.join(host.config_dir, "plugins"), exist_ok=True)

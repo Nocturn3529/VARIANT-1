@@ -7,9 +7,16 @@ a self-contained Variant1Backend executable so the installed app needs NO Python
 on the target machine. Built via `node scripts/build-backend.js` (or directly:
 `python -m PyInstaller --noconfirm --clean variant1_backend.spec` from backend/).
 
-Output: backend/dist/Variant1Backend/Variant1Backend.exe (+ _internal/). The Electron
-packaging step (package.json) copies that folder to <resources>/backend/, where
-main.js launches Variant1Backend.exe.
+Output: backend/dist/Variant1Backend/ with Variant1Backend.exe, Variant1Kernel.exe
+and one shared _internal/. The Electron packaging step (package.json) copies that
+folder to <resources>/backend/, where main.js launches Variant1Backend.exe and the
+backend launches Variant1Kernel.exe next to itself.
+
+The two executables are frozen from separate analyses, so each keeps its own
+module archive and excludes: the kernel never carries host services and the
+backend never carries model-side analytics. Only native libraries and data
+files are shared, which avoids shipping the Python runtime and common
+extension modules twice.
 
 Notes:
 - Offline speech engines/weights are not bundled. Cloud speech uses HTTP clients;
@@ -57,7 +64,7 @@ hiddenimports += [
 # Our own sibling modules (imported by name from server.py).
 hiddenimports += [
     "paths", "llm_router", "security.secretstore",
-    "desktop.vision", "desktop.vision_capture", "speech.local_stt",
+    "model_runtime.vision", "speech.local_stt",
     "speech.local_tts", "speech.xai", "tools", "builtin_tools",
     "extensions.mcp_v2",
     "model_runtime", "model_runtime.capabilities", "model_runtime.context",
@@ -126,10 +133,126 @@ exe = EXE(
     entitlements_file=None,
 )
 
+# ---- Variant1Kernel analysis ----
+# (scripts/test-packaged-files.js checks each analysis on its side of this line.)
+# Variant1Kernel: the persistent CPython/ASTB worker. Host services remain in
+# Variant1Backend; this executable owns only the REPL, ASTB proxies, mutation
+# candidate dispatch, and portable analytical codecs.
+kernel_datas = []
+kernel_hiddenimports = [
+    "kernel_runtime.repl_protocol",
+    "kernel_runtime.repl_worker",
+    "kernel_runtime.worker_context",
+    "kernel_runtime.bridge_protocol",
+    "kernel_runtime.worker_bridge",
+    "kernel_runtime.capsule_worker",
+    "kernel_runtime.capsule_contracts",
+    "kernel_runtime.runtime_profile",
+    "kernel_runtime.mutation_worker",
+    "kernel_runtime.candidate_contract",
+    "kernel_runtime.proxy_arguments",
+    "psutil",
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "duckdb",
+    "matplotlib",
+    "plotly",
+    "plotly.express",
+    "plotly.graph_objects",
+    "safetensors",
+    "safetensors.numpy",
+]
+
+# Runtime-profile validation and portable codecs query exact installed
+# distribution identities inside the frozen worker.
+for distribution in (
+    "psutil",
+    "duckdb",
+    "matplotlib",
+    "numpy",
+    "pandas",
+    "plotly",
+    "pyarrow",
+    "safetensors",
+):
+    kernel_datas += copy_metadata(distribution)
+
+kernel = Analysis(
+    ["kernel_runtime/worker_main.py"],
+    pathex=["."],
+    binaries=[],
+    datas=kernel_datas,
+    hiddenimports=kernel_hiddenimports,
+    hookspath=[],
+    hooksconfig={"matplotlib": {"backends": ["Agg"]}},
+    runtime_hooks=[],
+    excludes=[
+        "server", "fastapi", "uvicorn", "playwright", "mcp", "kokoro_onnx",
+        "phonemizer", "espeakng_loader", "onnxruntime", "neutts", "kittentts", "piper", "soundfile",
+        "IPython", "ipykernel", "jupyter_client", "jupyter_core", "zmq",
+        "traitlets", "tornado", "comm", "debugpy", "jedi", "parso",
+        "prompt_toolkit", "matplotlib_inline", "nest_asyncio", "tkinter",
+        "torch", "scipy", "pytest", "_pytest", "hypothesis",
+        "numpy.tests", "pandas.tests", "pyarrow.tests", "psutil.tests",
+        "matplotlib.tests", "plotly.tests",
+    ],
+    noarchive=False,
+)
+
+# The upstream Arrow hook copies regression datasets despite excluding Python
+# test modules. They are not runtime codecs or headers.
+kernel.datas = [row for row in kernel.datas if not row[0].replace("\\", "/").startswith("pyarrow/tests/")]
+
+kernel_pyz = PYZ(kernel.pure)
+
+kernel_exe = EXE(
+    kernel_pyz,
+    kernel.scripts,
+    [],
+    exclude_binaries=True,
+    name="Variant1Kernel",
+    debug=False,
+    bootloader_ignore_signals=False,
+    strip=False,
+    upx=False,
+    # The host launches with CREATE_NO_WINDOW and captures JSONL/stdout/stderr
+    # through private pipes. A console build keeps those handles usable.
+    console=True,
+    disable_windowed_traceback=False,
+    argv_emulation=False,
+    target_arch=None,
+    codesign_identity=None,
+    entitlements_file=None,
+)
+
+# Compile-time files ship with some wheels (Arrow headers and import
+# libraries, numpy headers, Cython sources) but nothing loads them at runtime.
+# License texts under *.dist-info stay.
+_BUILD_ONLY_SUFFIXES = (".lib", ".h", ".hpp", ".pyx", ".pxd", ".cmake")
+
+
+def _runtime_only(toc):
+    kept = []
+    for row in toc:
+        dest = row[0].replace("\\", "/")
+        if ".dist-info/" not in dest and (
+            dest.endswith(_BUILD_ONLY_SUFFIXES) or dest.startswith("pyarrow/include/")
+        ):
+            continue
+        kept.append(row)
+    return kept
+
+
+# One folder, one _internal: COLLECT keeps a single copy of every native
+# library and data file the two analyses share.
 coll = COLLECT(
     exe,
-    a.binaries,
-    a.datas,
+    _runtime_only(a.binaries),
+    _runtime_only(a.datas),
+    kernel_exe,
+    _runtime_only(kernel.binaries),
+    _runtime_only(kernel.datas),
     strip=False,
     upx=False,
     upx_exclude=[],

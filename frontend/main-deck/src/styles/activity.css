@@ -160,6 +160,10 @@
 .activity-overlay .composer-goal__controls { gap: 4px; margin: 12px 14px 14px; }
 .activity-overlay .composer-goal__controls small { color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
 .activity-overlay .composer-goal__guidance textarea { border-color: var(--deck-line); background: var(--deck-canvas); font-size: var(--deck-text-sm); }
+/* Why the goal is held, and what unblocks it. */
+.activity-overlay .composer-goal .composer-goal__notice { display: grid; justify-items: start; gap: 6px; margin-block: 8px; padding: 8px 10px; border: 1px solid var(--deck-line); border-radius: var(--deck-radius-md); background: var(--deck-surface-raised); }
+.activity-overlay .composer-goal .composer-goal__notice p { margin: 0; color: var(--deck-text-secondary); font-size: var(--deck-text-xs); line-height: 1.45; overflow-wrap: anywhere; }
+.activity-overlay .composer-goal .composer-goal__notice strong { color: var(--deck-text-primary); font-weight: 600; }
 
 /* Background processes: rows open their output in place. */
 .background-processes ul { display: grid; margin: 0; padding: 0; list-style: none; }

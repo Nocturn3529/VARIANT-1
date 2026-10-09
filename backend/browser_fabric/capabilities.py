@@ -203,7 +203,7 @@ def _deliver_image_artifact(
     if not ref:
         return None
     try:
-        from desktop.service import deliver_image
+        from tool_images import deliver_image
 
         payload = runtime.artifact_store.read_bytes(ref)
         deliver_image(
@@ -577,6 +577,10 @@ async def _handle_router(
         if method == "close":
             await runtime.close_page(page, scope=_scope(context))
             return {"target_id": target.target_id, "state": "closed"}
+        if method == "mark":
+            return await runtime.mark_page(page, str(arguments.get("kind") or ""), scope=_scope(context))
+        if method == "show":
+            return await runtime.show_page(page, scope=_scope(context))
         raise ToolError(f"unsupported browser.page method: {method}")
 
     if kind == "element":

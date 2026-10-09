@@ -1485,6 +1485,42 @@ class BrowserFabric:
                     )
                     raise BrowserUnknownEffect(f"select-page effect is unknown: {exc}") from exc
 
+    async def mark_page(
+        self, page: PageRef, mark: str, *, scope: WorkScope | Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Keep a tab this run opened: ``deliverable`` or ``handoff``.
+
+        Only visible Deck tabs close with their run, so only they take marks.
+        """
+
+        clean = str(mark or "").strip().lower()
+        if clean not in {"deliverable", "handoff"}:
+            raise BrowserValidationError("mark must be deliverable or handoff")
+        session, target = self._resolve_page(page)
+        self._assert_scope(session.scope, _scope(scope), mutation=True)
+        _session, adapter = await self._adapter(session.session_id)
+        marker = getattr(adapter, "mark_page", None)
+        if not callable(marker):
+            return {"target_id": target.target_id, "mark": clean, "applied": False,
+                    "reason": "only visible Deck tabs close when a run ends"}
+        await marker(target.backend_target_id, clean)
+        return {"target_id": target.target_id, "mark": clean, "applied": True}
+
+    async def show_page(
+        self, page: PageRef, *, scope: WorkScope | Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Show one Deck tab to the user. Agent browsing stays hidden otherwise."""
+
+        session, target = self._resolve_page(page)
+        self._assert_scope(session.scope, _scope(scope), mutation=True)
+        _session, adapter = await self._adapter(session.session_id)
+        show = getattr(adapter, "show_page", None)
+        if not callable(show):
+            return {"target_id": target.target_id, "shown": False,
+                    "reason": "only the built-in browser tabs can be shown in the Deck"}
+        await show(target.backend_target_id)
+        return {"target_id": target.target_id, "shown": True}
+
     async def close_page(
         self, page: PageRef, *, scope: WorkScope | Mapping[str, Any] | None = None,
     ) -> None:

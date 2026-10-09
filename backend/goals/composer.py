@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import weakref
 from .models import GoalConflict, GoalValidationError
 from work_fabric.models import WorkActor
@@ -16,6 +17,15 @@ class ComposerGoals:
     def __init__(self, service):
         self.service = service
         self._locks = weakref.WeakValueDictionary()
+
+    def _panel_facts(self, goal_id):
+        parent = getattr(self.service, 'parent_session', None)
+        if parent is not None:
+            try:
+                return parent.panel_facts(goal_id)
+            except Exception:
+                logging.getLogger(__name__).exception('Goal panel facts unavailable')
+        return {'accounting': {'lost_usage_records': None}, 'awaiting_peers': []}
 
     def _continuation_admission(self, goal_id, state):
         request = state.get('continuation_request') or {}
@@ -47,7 +57,8 @@ class ComposerGoals:
         policy = result['goal']['completion_policy']
         cleanup=result['state'].get('resource_cleanup') or {'status':'not_requested','complete':False}
         outcome=result['state'].get('objective_outcome') or {'status':'unreported','basis':None,'independently_verified':False}
-        return {**result, 'submission_request_id': policy.get('submission_request_id'),
+        return {**result, **self._panel_facts(goal_id),
+                'submission_request_id': policy.get('submission_request_id'),
                 'completion_basis': policy.get('completion_basis', 'declared_criteria'),
                 'objective_outcome':outcome,'cleanup':cleanup,
                 'termination':result['state'].get('termination'),

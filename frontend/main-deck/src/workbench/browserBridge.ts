@@ -3,9 +3,9 @@ import {allowedBrowserUrl, getPreviewState, setBrowserViewport, type BrowserPage
 import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, nextBrowserLayoutFrame, parseBrowserViewport} from "./browserViewport";
 import {downloadsForTab, findStartedDownload, isDownloadCommand, runBrowserDownloadCommand} from "./browserDownloads";
 import {browserKeyInput} from "./browserKeyboard";
-import {getSessionState} from "../state/sessionStore";
 
 export type WorkbenchWebview = HTMLElement & {
+  /** A retained tab's native presentation; hidden ones are captured and driven in place. */
   getBrowserPresentation?:()=>{visible:boolean;attached:boolean;viewport?:{width:number;height:number}};
   flushLayout?:()=>Promise<void>;
   loadURL?: (url: string) => Promise<void>;
@@ -24,6 +24,8 @@ export type WorkbenchWebview = HTMLElement & {
   isDevToolsOpened?: () => boolean;
   getWebContentsId?: () => number;
   getZoomFactor?: () => number;
+  /** Keep a hidden retained tab laid out and accepting input while the agent works it. */
+  lease?: () => Promise<void>;
   inspectElement?: (x: number, y: number) => void;
   findInPage?: (text: string, options?: Record<string, unknown>) => number;
   stopFindInPage?: (action: string) => void;
@@ -115,11 +117,12 @@ export function activateWorkbenchBrowser(id: string): void {
   if (handles.has(id)) activeId = id;
 }
 
-export function workbenchBrowserTargets(ownerChatId?: string): Array<BrowserPageState & {id:string; active:boolean; owner_chat_id:string}> {
+export function workbenchBrowserTargets(ownerChatId?: string): Array<BrowserPageState & {id:string; active:boolean; owner_chat_id:string; opened_by:"agent" | "user"; kept?:"deliverable" | "handoff"}> {
   const preview=getPreviewState();
   return preview.tabs.filter(tab=>tab.target.kind==="url" && (ownerChatId===undefined || (tab.ownerChatId || "")===ownerChatId)).map(tab=>({
     ...(preview.pages[tab.id] || {title:tab.target.label,url:tab.target.url,canGoBack:false,canGoForward:false,loading:false}),...(handles.has(tab.id) ? state(handles.get(tab.id)!) : {}),
     id:tab.id,active:tab.id===preview.selectedId,owner_chat_id:tab.ownerChatId || "",
+    opened_by:tab.origin==="agent" ? "agent" : "user",...(tab.origin==="agent" && tab.agentMark && tab.agentMark.runId===tab.agentRunId ? {kept:tab.agentMark.kind} : {}),
   }));
 }
 
@@ -274,6 +277,14 @@ function elementScript(ref: string, body: string): string {
   })()`;
 }
 
+/** The size a hidden retained tab keeps natively: its last laid-out viewport. */
+function backgroundViewport(guest: WorkbenchWebview, viewport?: {width?: number; height?: number}) {
+  const width = Math.round(Number(viewport?.width) || 800), height = Math.round(Number(viewport?.height) || 480);
+  return {width, height, visible_width: width, visible_height: height,
+    device_scale_factor: guest.ownerDocument.defaultView?.devicePixelRatio || 1,
+    mode: guest.dataset.viewportMode === "fixed" ? "fixed" : "auto", background: true};
+}
+
 function normalizedUrl(value: unknown): string {
   return allowedBrowserUrl(value);
 }
@@ -301,6 +312,12 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     if (requiresDocument && !handle.ready) throw new BrowserCommandError("GUEST_NOT_READY", handle.failure || "Browser document is not ready; navigate or reload this tab to recover", "ready");
   };
   valid();
+  // A background tab drops input and has no layout while fully hidden; the
+  // main process keeps it painting, unseen, until the agent goes idle.
+  if (handle.webview.lease && handle.webview.getBrowserPresentation && !handle.webview.getBrowserPresentation().visible && !["state", "tabs"].includes(action)) {
+    await browserDeadline(handle.webview.lease(), 3000, "ready", signal);
+    valid();
+  }
   if (["navigate", "open", "reload", "back", "forward", "click", "keys", "evaluate"].includes(action) && window.variant1Deck?.bindWorkbenchBrowser) {
     const guestId = handle.webview.getWebContentsId?.();
     const bound = guestId && await window.variant1Deck.bindWorkbenchBrowser(handle.id, guestId, String(command.operation_id || ""));
@@ -340,11 +357,16 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     }
     setBrowserViewport(handle.id, requested);
     applyBrowserViewport(webview, requested);
+    // A background tab has no on-screen layout to wait for; its native view
+    // takes the requested size directly.
+    const hidden = webview.getBrowserPresentation && !webview.getBrowserPresentation().visible;
     const owner = webview.ownerDocument.defaultView || window;
-    await browserDeadline((async () => {await nextBrowserLayoutFrame(owner); await nextBrowserLayoutFrame(owner);})(), 2000, "viewport", signal);
+    // A hidden tab has no frames to wait for; its native view applies the size.
+    if (!hidden) await browserDeadline((async () => {await nextBrowserLayoutFrame(owner); await nextBrowserLayoutFrame(owner);})(), 2000, "viewport", signal);
     if(webview.flushLayout)await browserDeadline(webview.flushLayout(),2000,"viewport",signal);
     valid();
-    const viewport = measureBrowserViewport(webview);
+    const presented = webview.getBrowserPresentation?.();
+    const viewport = presented && !presented.visible ? backgroundViewport(webview, presented.viewport) : measureBrowserViewport(webview);
     if (requested && (viewport.width !== requested.width || viewport.height !== requested.height)) {
       throw new BrowserCommandError("VIEWPORT_NOT_APPLIED", "The browser could not apply the requested viewport; inspect its current size", "viewport");
     }
@@ -353,6 +375,8 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
   if (action === "state" || action === "tabs") return {ok: true, state: current(), tabs: workbenchBrowserTargets(typeof command.owner_chat_id === "string" ? command.owner_chat_id : undefined)};
   if (action === "navigate" || action === "open") {
     const url = normalizedUrl(command.url);
+    // Already there: report the page rather than reload it and lose its state.
+    if (handle.ready && command.reload !== true && webview.getURL?.() === url) return {ok: true, navigated: false, already_current: true, state: current()};
     if (!webview.loadURL) throw new Error("Browser tab is not ready");
     const started = Date.now();
     try { await browserDeadline(webview.loadURL(url), 20000, "navigation", signal); }
@@ -402,30 +426,38 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     return {ok: true, html: String(html || ""), state: current()};
   }
   if (action === "screenshot") {
-    const retained=!!webview.getBrowserPresentation;
-    const background=retained && (getPreviewState().tabs.find(tab=>tab.id===handle.id)?.ownerChatId || "") !== (getSessionState().displayedSessionId || "");
-    // Revealing a retained tab schedules its automatic layout in the next
-    // frame. Settle that layout before fixing the capture's size provenance.
-    applyBrowserViewport(webview, getPreviewState().tabs.find(tab => tab.id === handle.id)?.viewport);
-    let settling = true;
-    const settle = async () => {
-      let previous = measureBrowserViewport(webview), frames = 0;
-      while (frames < 2) {
-        await nextBrowserLayoutFrame(webview.ownerDocument.defaultView || window);
-        if (!settling) return;
-        valid();
-        const next = measureBrowserViewport(webview);
-        frames = (background || next.visible_width > 0 && next.visible_height > 0)
-          && next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
-        previous = next;
-      }
-    };
-    try { await browserDeadline(settle(), 2000, "viewport", signal); }
-    finally { settling = false; }
-    if(webview.flushLayout)await browserDeadline(webview.flushLayout(),2000,"viewport",signal);
+    // Retained tabs are native views the main process captures in place. A
+    // hidden one keeps its native size and nothing is revealed for it.
+    const retained = !!webview.getBrowserPresentation;
+    const presented = webview.getBrowserPresentation?.();
+    const background = !!presented && !presented.visible;
+    if (!background) {
+      // Revealing a retained tab schedules its automatic layout in the next
+      // frame. Settle that layout before fixing the capture's size provenance.
+      applyBrowserViewport(webview, getPreviewState().tabs.find(tab => tab.id === handle.id)?.viewport);
+      let settling = true;
+      const settle = async () => {
+        let previous = measureBrowserViewport(webview), frames = 0;
+        while (frames < 2) {
+          await nextBrowserLayoutFrame(webview.ownerDocument.defaultView || window);
+          if (!settling) return;
+          valid();
+          const next = measureBrowserViewport(webview);
+          frames = next.visible_width > 0 && next.visible_height > 0
+            && next.width === previous.width && next.height === previous.height ? frames + 1 : 0;
+          previous = next;
+        }
+      };
+      try { await browserDeadline(settle(), 2000, "viewport", signal); }
+      finally { settling = false; }
+      if(webview.flushLayout)await browserDeadline(webview.flushLayout(),2000,"viewport",signal);
+    }
     valid();
     const rect = webview.getBoundingClientRect();
-    const viewport = measureBrowserViewport(webview);
+    const measure = () => background ? backgroundViewport(webview, presented?.viewport) : measureBrowserViewport(webview);
+    const viewport = measure();
+    // A native view captures even when the window is covered; only a plain
+    // <webview> has to be on screen.
     if (!retained && (webview.ownerDocument.visibilityState === "hidden" || rect.width < 1 || rect.height < 1)) {
       throw new BrowserCommandError("CAPTURE_NOT_VISIBLE", "Reveal the browser window before capturing it", "capture");
     }
@@ -439,7 +471,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
       throw new BrowserCommandError("CAPTURE_FAILED", `Browser capture failed: ${error instanceof Error ? error.message : String(error)}`, "capture");
     }
     valid();
-    const finalViewport = measureBrowserViewport(webview);
+    const finalViewport = measure();
     if (viewport.width !== finalViewport.width || viewport.height !== finalViewport.height) {
       throw new BrowserCommandError("VIEWPORT_CHANGED", "The browser resized during capture; inspect its current viewport before another capture", "capture");
     }

@@ -622,11 +622,15 @@ def display_user_message(
     transcript so drag-and-drop HTML/etc. does not explode the UI.
     """
     # Peel any already-inlined model suffix off the composer field first.
+    from tab_mentions import tab_mention_chips
+
     text, recovered = strip_inlined_attachments(composer_text)
     labels = attachment_labels_from_suffix(attach_suffix) or recovered
+    # A mentioned browser tab is a chip of its own, never message text.
+    tabs = tab_mention_chips(attach_suffix)
     if text:
-        return text, labels
+        return text, labels + tabs
     line = _labels_to_display_line(labels, has_image=has_image)
-    return line, labels
+    return line, labels + tabs
 
 

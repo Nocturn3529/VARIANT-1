@@ -27,6 +27,23 @@ include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`
 `desktop_fabric`, `execution_hosts`, `work_fabric`, `peers`, and `extensions`.
 Provider calls use the backend model-routing path.
 
+Desktop control uses the pinned cua-driver on every platform, below Desktop
+Fabric. The model sees only the `computer` object. The backend starts the driver
+on first use, checks it against the bundled `VERSION` pin, and restarts it after a
+crash without replaying input whose effect is unknown. Each run drives its own
+driver session, ended with the run so later input for it is refused. The driver
+receives an allowlisted environment without provider keys, and its upstream
+telemetry is off unless `VARIANT1_CUA_TELEMETRY=1`.
+
+On macOS the driver ships as trycua's signed `CuaDriver.app`, because macOS gives
+Accessibility and Screen Recording to the responsible app and VARIANT-1 has no
+Developer ID. The backend checks the bundle's signature (`com.trycua.driver`,
+trycua's team) before each launch, starts a private daemon through LaunchServices
+so CuaDriver holds the grants across VARIANT-1 updates, and talks MCP to it
+through `cua-driver mcp --embedded --socket`. When the daemon reports missing
+grants, the backend launches CuaDriver once with its permission gate, which asks
+macOS for them, and restarts the daemon after they are given.
+
 Provider configuration and live connection evidence are separate. Settings checks
 refresh native OAuth when needed and verify model listings; recent checks expire
 after five minutes. Ollama's local helper and cloud tags do not prove cloud account
@@ -111,7 +128,10 @@ an in-flight step can finish. Missing measurements or lost ledger records pause
 explicit accounting caps rather than treating unknown cost/tokens as zero.
 Accounting faults pause capped work visibly rather than failing as provider
 errors; unlimited turns continue. Unavailable named peer requests wake and
-block their waiting Goal without a fabricated result or automatic retry.
+block their waiting Goal without a fabricated result or automatic retry. A
+request parked by a recipient Stop is still resumable, so its Goal keeps waiting;
+only a deleted recipient, a failed, cancelled or unadmitted request, or a turn
+that ended without a settlement blocks it.
 Unlimited defaults remain unchanged.
 
 Provider model listing retains exact-ID context-window metadata for the current
@@ -366,7 +386,8 @@ survive idle view eviction.
 The WebSocket reader accepts embedded-browser acknowledgements independently
 of an ordered, bounded ordinary-command worker. Disconnect cleanup discards
 unstarted commands and gives the active command up to ten seconds to finish,
-then releases the view attachment. ASGI cancellation is preserved after cleanup.
+then releases the view attachment. Browser acknowledgements awaited from the
+closed socket fail immediately rather than consuming that grace. ASGI cancellation is preserved after cleanup.
 Native and detached turns can publish through the host event sink after their
 original socket closes; foreground disconnect cancellation retains its existing
 ownership rules. Response delivery failure never changes a committed operation
@@ -418,7 +439,10 @@ Physical-request accounting retains SQLite WAL with FULL durability. Repeated
 provider identity chunks are coalesced per manifest in a bounded cache. Patches
 use a bounded serial writer off the event loop; terminal request boundaries await
 an ordered write fence, independent of future requests from other sessions.
-Writer failures/overflow remain visible to explicit Goal accounting caps.
+Pending partial-usage writes coalesce to one per request. A lost request or usage
+write marks only that request's Goal, carried on the request reference, as having
+incomplete accounting, which pauses its explicit caps; other Goals keep their
+exact totals.
 Explicit provider cost, including a reported zero, survives normalization;
 missing cost remains unknown. OpenAI-compatible streams retain allowlisted
 end-state, terminal-marker and parser-count diagnostics per physical request,

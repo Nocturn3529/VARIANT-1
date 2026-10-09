@@ -11,6 +11,7 @@ from typing import Any
 from background_tasks import OwnedTaskSet
 from peer_message_contract import PEER_REPLY_HINT
 
+from session_runtime.models import TICKET_TERMINAL_STATES
 from .repository import MESSAGE_DIRECTIONS, PeerRepository
 from .delivery import MESSAGE_KINDS, requests_work, grok_delivery_status
 
@@ -399,11 +400,46 @@ class PeerCommunicationService:
             return None
         if self._native_completion(message) is not None:
             return None
-        if (message.get('state') in {'failed', 'parked'}
+        if (message.get('state') == 'failed'
+                or (message.get('state') == 'parked' and not self._parked_resumable(message))
                 or message.get('evidence', {}).get('native_wait_failure')
                 or self.sessions.get_session(_native_chat_id(message['target_peer_id'])) is None):
             return message.get('error') or 'Recipient work is unavailable; inspect before continuing'
         return None
+
+    def _parked_resumable(self, message):
+        """A Stop parks the recipient's ticket; resuming its queue still runs it.
+
+        A parked message without a live ticket (an archived recipient, or a
+        cancelled/rejected ticket) has nothing left that could answer it.
+        """
+        ticket_id = str(message.get('delivery_ticket_id') or '')
+        ticket = self.session_runtimes.repository.get_ticket(ticket_id) if ticket_id else None
+        return ticket is not None and ticket.state not in TICKET_TERMINAL_STATES
+
+    def awaited_request(self, sender_peer_id: str, message_id: str) -> dict[str, Any]:
+        """Display facts for a request the sender awaits.
+
+        ``state`` is the message state, except that a parked request with no
+        live ticket left to resume is reported as ``unavailable``.
+        """
+        message = self._message_for_peer(sender_peer_id, message_id)
+        target = str(message.get('target_peer_id') or '')
+        state = str(message.get('state') or '')
+        if state == 'parked' and not self._parked_resumable(message):
+            state = 'unavailable'
+        try:
+            name = str(self.get_peer(target).get('display_name') or '')
+        except PeerError:
+            name = ''  # A deleted recipient keeps the name it was sent to.
+        name = name or str((message.get('evidence') or {}).get('target_display_name') or target)
+        return {'message_id': str(message.get('message_id') or ''), 'chat_id': _native_chat_id(target),
+                'display_name': name[:200], 'state': state}
+
+    def native_ticket_changed(self, ticket_id: str) -> None:
+        """Re-project peer requests whose recipient ticket changed outside a turn."""
+        for row in self.repository.messages_for_tickets([str(ticket_id or "")]):
+            self._sync_native_state(row)
 
     def inspect_request(self, peer_id: str, request_id: str) -> dict[str, Any]:
         clean = str(request_id or "").strip()
@@ -504,7 +540,12 @@ class PeerCommunicationService:
             "rejected": "failed", "transcript_failed": "unknown",
         }
         projected = state_map.get(ticket.state)
-        if projected and projected != message.get("state") and message.get("state") != "replied":
+        # A parked request whose ticket is then removed stays "parked", but
+        # it has become a dead end; record that so its waiters are told.
+        ended = (ticket.state in TICKET_TERMINAL_STATES
+                 and (message.get("evidence") or {}).get("ticket_state") != ticket.state)
+        if (projected and (projected != message.get("state") or ended)
+                and message.get("state") != "replied"):
             message = self.repository.update_message(
                 str(message["message_id"]), state=projected,
                 target_run_id=str(ticket.run_id or ""),

@@ -72,6 +72,8 @@ def run_context_from_state(
             "project_environment",
             "chat_id",
             "runtime_identity",
+            "admission_id",
+            "admission_run_id",
         ):
             if parent_meta.get(key):
                 meta[key] = parent_meta[key]

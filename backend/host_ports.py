@@ -267,7 +267,7 @@ def chat_ports(h) -> chat_pipeline.ChatPorts:
 
 
 def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
-    from desktop.service import install_image_sink
+    from tool_images import install_image_sink
 
     """Wire server callbacks into TaskTurnPorts for one task-classified chat turn."""
 

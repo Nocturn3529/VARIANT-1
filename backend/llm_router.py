@@ -467,6 +467,7 @@ class LLMRouter:
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
         self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_terminal(
             identity, outcome=outcome, duration_s=duration_s))
+        self._manifest_bus.settle_goal(identity)
 
     def _patch_model_request_manifest_partial_usage(self, manifest_ref, raw_usage):
         normalized = normalize_manifest_usage('openrouter', raw_usage=raw_usage)
@@ -476,8 +477,8 @@ class LLMRouter:
                 normalized[field] = None
         # Incomplete observations must not preempt the final UI/CloudUsage count.
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
-        self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_usage(
-            identity, normalized, partial=True))
+        self._manifest_bus.submit_partial_usage(identity, normalized,
+                                                self._manifest_bus.goal_id_from_ref(manifest_ref))
 
     def _patch_model_request_stream(self, manifest_ref, value):
         self._manifest_bus.patch_stream_diagnostics(manifest_ref, value)

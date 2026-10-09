@@ -503,7 +503,7 @@
 }
 .message__attachments { display: flex; flex-wrap: wrap; margin: 0 0 8px; gap: 6px; }
 .message__attachment-thumb { max-width: 180px; max-height: 120px; border: 1px solid var(--deck-line); border-radius: 6px; object-fit: cover; background: #111; }
-.message__attachment-file { min-height: 26px; display: inline-flex; align-items: center; padding: 3px 8px; border: 1px solid var(--deck-line); border-radius: 5px; color: var(--deck-text-muted); background: var(--deck-surface-subtle); font-size: var(--deck-text-xs); }
+.message__attachment-file { min-height: 26px; display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--deck-line); border-radius: 5px; color: var(--deck-text-muted); background: var(--deck-surface-subtle); font-size: var(--deck-text-xs); }
 .runtime-clarification {
   display: flex;
   flex-direction: column;

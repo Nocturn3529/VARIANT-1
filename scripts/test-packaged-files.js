@@ -15,7 +15,11 @@ const read = file => fs.readFileSync(path.join(root, file), 'utf8');
 
 const mainJs = read('main.js');
 const backendLauncher = read('electron-backend.js');
-const backendSpec = read('backend/variant1_backend.spec');
+// One spec freezes both executables; each analysis is checked on its own side
+// of the marker so kernel-only imports never satisfy or trip backend rules.
+const KERNEL_SPEC_MARKER = '# ---- Variant1Kernel analysis ----';
+const [backendSpec, kernelSpec = ''] = read('backend/variant1_backend.spec').split(KERNEL_SPEC_MARKER);
+assert.ok(kernelSpec, 'backend spec must keep the Variant1Kernel analysis marker');
 const backendSetup = read('scripts/setup-backend.js');
 const backendBuild = read('scripts/build-backend.js');
 const browserProvisioning = read('backend/browser_fabric/provisioning.py');
@@ -185,33 +189,21 @@ function binResource(platform) {
   );
 }
 
-const kernelRuntime = effectiveExtraResources('win').find(
-  entry => entry && entry.from === 'backend/dist/Variant1Kernel'
-    && entry.to === 'backend/kernel',
-) || (packageJson.build.extraResources || []).find(
-  entry => entry && entry.from === 'backend/dist/Variant1Kernel'
-    && entry.to === 'backend/kernel',
-);
-assert.ok(kernelRuntime,
-  'the one-directory kernel runtime must remain isolated under backend/kernel');
+// One frozen folder carries Variant1Backend and Variant1Kernel over a shared
+// _internal/; a separate kernel folder would ship that runtime twice.
+for (const platform of ['win', 'linux', 'mac']) {
+  const backendEntries = effectiveExtraResources(platform).filter(
+    entry => entry && String(entry.from || '').startsWith('backend/dist/'));
+  assert.deepStrictEqual(backendEntries.map(entry => [entry.from, entry.to]),
+    [['backend/dist/Variant1Backend', 'backend']],
+    `${platform} ships the backend and kernel from one frozen folder`);
+}
 
+// The installer ships only the pinned computer-use driver. llama.cpp is not
+// bundled on any platform; the app downloads it on request.
 const WINDOWS_NATIVE_FILTER = [
-  'llama-server.exe',
-  'llama-server-impl.dll',
-  'llama-common.dll',
-  'llama.dll',
-  'mtmd.dll',
-  'ggml.dll',
-  'ggml-base.dll',
-  'ggml-cpu-*.dll',
-  'ggml-cuda.dll',
-  'ggml-rpc.dll',
-  'libomp140.x86_64.dll',
   'cua-driver/cua-driver.exe',
   'cua-driver/VERSION',
-  'cublas64_13.dll',
-  'cublasLt64_13.dll',
-  'cudart64_13.dll',
 ];
 
 const winNative = binResource('win');
@@ -229,21 +221,25 @@ for (const excludedTool of [
     `installer must not retain non-runtime tool ${excludedTool}`);
 }
 
+// electron-builder must not re-sign trycua's app: macOS grants belong to its identity.
+const macSignIgnore = [].concat(packageJson.build.mac.signIgnore || []).map(pattern => new RegExp(pattern));
+assert.ok(macSignIgnore.some(re => re.test('/A.app/Contents/Resources/bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver'))
+  && macSignIgnore.some(re => re.test('/A.app/Contents/Resources/bin/cua-driver/CuaDriver.app'))
+  && !macSignIgnore.some(re => re.test('/A.app/Contents/MacOS/VARIANT-1')),
+  'mac signing skips exactly the bundled CuaDriver.app');
+
 for (const platform of ['linux', 'mac']) {
   const unixNative = binResource(platform);
   assert.ok(unixNative && Array.isArray(unixNative.filter),
     `${platform} native runtime packaging must use an explicit filter`);
-  assert.ok(unixNative.filter.includes('llama-server'),
-    `${platform} native filter must include llama-server`);
-  assert.ok(unixNative.filter.includes('cua-driver/cua-driver'),
-    `${platform} native filter must include the pinned cua-driver binary`);
-  assert.ok(unixNative.filter.includes('cua-driver/VERSION'),
-    `${platform} native filter must include the pinned cua-driver version`);
-  assert.ok(!unixNative.filter.includes('llama-server.exe'),
-    `${platform} native filter must not require Windows llama-server.exe`);
+  // macOS ships trycua's signed CuaDriver.app; Linux ships the bare executable.
+  assert.deepStrictEqual(unixNative.filter, platform === 'mac'
+    ? ['cua-driver/CuaDriver.app/**', 'cua-driver/VERSION']
+    : ['cua-driver/cua-driver', 'cua-driver/VERSION'],
+    `${platform} installer ships only the pinned cua-driver`);
   assert.ok(!unixNative.filter.some(item => String(item).endsWith('.dll')),
     `${platform} native filter must not ship Windows DLLs`);
-  assert.ok(!unixNative.filter.some(item => item.includes('**') || item.includes('whisper')),
+  assert.ok(!unixNative.filter.some(item => (item.includes('**') && item !== 'cua-driver/CuaDriver.app/**') || item.includes('whisper')),
     `${platform} native runtime must not broaden or rebundle Whisper`);
 }
 
@@ -290,6 +286,13 @@ for (const workerOnly of [
   assert.match(backendSpec, new RegExp(`["']${workerOnly}["']`),
     `${workerOnly} must be excluded from Variant1Backend`);
 }
+// The kernel runs model-authored Python; host services stay out of its archive.
+for (const hostOnly of ['server', 'fastapi', 'uvicorn', 'playwright', 'mcp']) {
+  assert.match(kernelSpec, new RegExp(`excludes=\\[[^\\]]*["']${hostOnly}["']`),
+    `${hostOnly} must be excluded from Variant1Kernel`);
+}
+assert.match(kernelSpec, /["']kernel_runtime\.capsule_worker["']/,
+  'the kernel analysis must freeze the capsule worker');
 
 // esbuild does not remove outputs for deleted/renamed entry points. Prove the
 // production builder replaces the generated directory instead of packaging a
@@ -303,5 +306,21 @@ const staleDeckOutputSurvived = fs.existsSync(staleDeckOutput);
 fs.rmSync(staleDeckOutput, {force: true});
 assert.strictEqual(staleDeckOutputSurvived, false,
   'Deck builds must remove stale generated outputs before bundling');
+
+// Every package the main process requires must be a runtime dependency:
+// electron-builder packs only `dependencies` into app.asar, and a missing one
+// crashes the installed app before its window opens.
+const builtin = new Set(require('node:module').builtinModules);
+const runtimeDeps = new Set(Object.keys(packageJson.dependencies || {}));
+const mainFiles = fs.readdirSync(root).filter(name => name === 'main.js' || /^electron-.*\.js$/.test(name) || /-preload\.js$/.test(name));
+for (const file of mainFiles) {
+  const source = fs.readFileSync(path.join(root, file), 'utf8');
+  for (const match of source.matchAll(/require\(\s*['"]([^'"./][^'"]*)['"]\s*\)/g)) {
+    const name = match[1].replace(/^node:/, '');
+    const pkg = name.startsWith('@') ? name.split('/').slice(0, 2).join('/') : name.split('/')[0];
+    if (builtin.has(name) || builtin.has(pkg) || pkg === 'electron') continue;
+    assert.ok(runtimeDeps.has(pkg), `${file} requires ${pkg}, which must be in package.json dependencies`);
+  }
+}
 
 console.log(`packaged files: ${requiredModules.size} electron modules + allowlist ok`);

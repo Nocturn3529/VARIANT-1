@@ -422,6 +422,15 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
             if receiver is not None:
                 receiver.cancel()
                 await asyncio.gather(receiver, return_exceptions=True)
+            if view_role != "detached_chat":
+                # The active command may be waiting for this socket's browser
+                # acknowledgement, which can no longer arrive. Fail that wait
+                # now instead of letting it run out the grace below.
+                try:
+                    from browser_fabric.interactive import unregister_host
+                    unregister_host(logged)
+                except Exception:
+                    pass
             # Unstarted commands have performed no effects. Let the active
             # command finish its domain action, even if its reply cannot be
             # delivered, rather than cancelling it at an arbitrary await.
@@ -445,6 +454,7 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
                     # A failed reply after disconnect does not undo an action.
                     pass
             if view_role != "detached_chat":
+                # Again, in case the finished command registered this socket.
                 try:
                     from browser_fabric.interactive import unregister_host
                     unregister_host(logged)

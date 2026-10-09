@@ -24,7 +24,7 @@ const python = isWin
 const executable = path.join(
   backend,
   'dist',
-  'Variant1Kernel',
+  'Variant1Backend',
   isWin ? 'Variant1Kernel.exe' : 'Variant1Kernel',
 );
 const scratch = path.join(

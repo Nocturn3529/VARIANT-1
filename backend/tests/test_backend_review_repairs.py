@@ -17,7 +17,7 @@ from kernel_runtime.worker_bridge import _promoted_helper_contract
 from session_catalog.mutation_worker_client import MutationWorkerClient
 from session_catalog.mutation_contracts import WorkerLimits, MutationWorkerError
 from tools import validate_arguments, ToolError
-from desktop.registry import COMPUTER_OBJECT_METHODS
+from desktop_fabric.tool import COMPUTER_OBJECT_METHODS
 from test_session_catalog import catalog_stack
 from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
 from tests.support.conversation_sessions import open_sessions

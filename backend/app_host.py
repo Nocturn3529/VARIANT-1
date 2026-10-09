@@ -36,7 +36,7 @@ class AppHost:
     gateway: Any = None
     scheduler: Any = None
     automation_history: Any = None
-    desktop_control: Any = None
+    desktop_surface: Any = None
     Task: Any = None
     searxng: Any = None
     hardware: Any = None

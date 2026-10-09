@@ -114,7 +114,7 @@ async def run_chat_agent_stage(
         )
     finally:
         if image_token is not None:
-            from desktop.service import reset_image_sink
+            from tool_images import reset_image_sink
 
             reset_image_sink(image_token)
         if not reserved:

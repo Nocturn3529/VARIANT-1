@@ -14,7 +14,7 @@ from typing import Any, Awaitable, Callable
 from core_invariants import cancellation_is_requested, canonical_digest
 from observability import context_lineage
 from agent_types import ToolBatchResult
-from desktop.catalog import DESKTOP_LOG_TOOLS as _DESKTOP_LOG_TOOLS
+from desktop_fabric.tool import DESKTOP_LOG_TOOLS as _DESKTOP_LOG_TOOLS
 from run_context import current_run_context
 from tool_core import CapabilityReceipt, ToolError, ToolExecutionResult
 
@@ -52,10 +52,10 @@ async def _exec_with_image_provenance(
     else:
         outer_call_scope = bind_outer_tool_call_id
     try:
-        from desktop import service as desktop_service
-        token = desktop_service.bind_image_provenance(call_id, tool_name)
+        import tool_images
+        token = tool_images.bind_image_provenance(call_id, tool_name)
     except Exception:
-        desktop_service = None
+        tool_images = None
         token = None
     try:
         if cancellation_is_requested(should_stop):
@@ -74,8 +74,8 @@ async def _exec_with_image_provenance(
         except Exception as exc:
             return False, str(exc), exc, None
     finally:
-        if desktop_service is not None and token is not None:
-            desktop_service.reset_image_provenance(token)
+        if tool_images is not None and token is not None:
+            tool_images.reset_image_provenance(token)
 
 
 def _desktop_args_preview(name: str, raw_args: dict) -> str:

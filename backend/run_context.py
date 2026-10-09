@@ -189,18 +189,18 @@ def bind_run_context(ctx: Variant1RunContext | None) -> Iterator[Variant1RunCont
                     browser_token = None
             if ctx.image_sink is not None:
                 try:
-                    import desktop.service as dservice
+                    import tool_images
 
-                    image_token = dservice.install_image_sink(ctx.image_sink)
+                    image_token = tool_images.install_image_sink(ctx.image_sink)
                 except Exception:
                     image_token = None
         yield ctx
     finally:
         if image_token is not None:
             try:
-                import desktop.service as dservice
+                import tool_images
 
-                dservice.reset_image_sink(image_token)
+                tool_images.reset_image_sink(image_token)
             except Exception:
                 pass
         if desktop_token is not None:

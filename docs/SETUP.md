@@ -54,25 +54,16 @@ of the connection you intend to use.
 
 ### Local llama.cpp inference
 
-Obtain an appropriate upstream `llama-server` Windows build from
-[llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases). Keep its
-matching DLL dependencies together, then configure the executable and your
-separately obtained GGUF model in Local Models. Do not mix DLLs from different
-builds.
+VARIANT-1 does not bundle llama.cpp. In Settings > Providers > Local models,
+download the llama.cpp engine once: VARIANT-1 picks the official release build
+for your platform and hardware (CUDA, Vulkan or CPU on Windows; Vulkan or CPU on
+Linux; Metal on Apple silicon) and checks it against a pinned SHA-256 digest.
+Then add your separately obtained GGUF model in Local Models. You can also point
+VARIANT-1 at a llama-server or other OpenAI-compatible server you run yourself.
 
 Other supported local runtimes and custom endpoints have their own installation
 requirements. No model weights, CUDA redistributables, or native executables are
 committed to this repository.
-
-### Native runtimes for release builders
-
-Choosing a runtime in Settings is separate from preparing an installer payload.
-The installer recipe expects a reviewed `bin/` manifest. A generic upstream
-runtime is not automatically the exact payload required by that recipe.
-
-Release builders use `npm run prepare:native` for the hash-verified native
-payload and notices. Record upstream versions, checksums, licenses, the DLL list,
-and hardware tests as described in [Release process](RELEASING.md).
 
 ## Google subscription OAuth limitation
 

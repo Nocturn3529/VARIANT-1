@@ -1,4 +1,4 @@
-"""Task- or control-scoped Desktop Fabric access for original seed tools."""
+"""Task- or surface-scoped Desktop Fabric access for original seed tools."""
 
 from __future__ import annotations
 
@@ -10,52 +10,49 @@ from typing import Any, Iterator
 _CURRENT_FABRIC: ContextVar[Any] = ContextVar("variant1_desktop_fabric", default=None)
 _CURRENT_HOST: ContextVar[Any] = ContextVar(
     "variant1_desktop_fabric_host", default=None)
-_CONTROL_FABRIC_ATTR = "_variant1_desktop_fabric"
-_CONTROL_HOST_ATTR = "_variant1_desktop_host"
+_SURFACE_FABRIC_ATTR = "_variant1_desktop_fabric"
+_SURFACE_HOST_ATTR = "_variant1_desktop_host"
 
 
-def _host_control(host: Any, fabric: Any = None) -> Any:
-    control = getattr(host, "desktop_control", None) if host is not None else None
-    if control is None and fabric is not None:
-        control = getattr(getattr(fabric, "adapter", None), "control", None)
-    return control
+def _host_surface(host: Any) -> Any:
+    return getattr(host, "desktop_surface", None) if host is not None else None
 
 
 def install_desktop_fabric(fabric: Any, host: Any = None) -> None:
-    """Bind one composed Fabric to its own DesktopControl instance.
+    """Bind one composed Fabric to its host's own DesktopSurface.
 
     Tool registries close over that control, so this avoids process-global host
     state leaking into another registry, test, or restarted host.
     """
 
-    control = _host_control(host, fabric)
-    if control is None:
+    surface = _host_surface(host)
+    if surface is None:
         return
-    setattr(control, _CONTROL_FABRIC_ATTR, fabric)
-    setattr(control, _CONTROL_HOST_ATTR, host)
+    setattr(surface, _SURFACE_FABRIC_ATTR, fabric)
+    setattr(surface, _SURFACE_HOST_ATTR, host)
 
 
 def uninstall_desktop_fabric(host: Any, fabric: Any = None) -> None:
-    """Remove a control-scoped binding during host teardown."""
+    """Remove a surface-scoped binding during host teardown."""
 
-    control = _host_control(host, fabric)
-    if control is None:
+    surface = _host_surface(host)
+    if surface is None:
         return
-    current = getattr(control, _CONTROL_FABRIC_ATTR, None)
+    current = getattr(surface, _SURFACE_FABRIC_ATTR, None)
     if fabric is not None and current is not fabric:
         return
-    setattr(control, _CONTROL_FABRIC_ATTR, None)
-    setattr(control, _CONTROL_HOST_ATTR, None)
+    setattr(surface, _SURFACE_FABRIC_ATTR, None)
+    setattr(surface, _SURFACE_HOST_ATTR, None)
 
 
-def current_desktop_fabric(control: Any = None) -> Any:
+def current_desktop_fabric(surface: Any = None) -> Any:
     return _CURRENT_FABRIC.get() or getattr(
-        control, _CONTROL_FABRIC_ATTR, None
+        surface, _SURFACE_FABRIC_ATTR, None
     )
 
 
-def current_desktop_host(control: Any = None) -> Any:
-    return _CURRENT_HOST.get() or getattr(control, _CONTROL_HOST_ATTR, None)
+def current_desktop_host(surface: Any = None) -> Any:
+    return _CURRENT_HOST.get() or getattr(surface, _SURFACE_HOST_ATTR, None)
 
 
 @contextmanager

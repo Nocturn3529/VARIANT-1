@@ -19,6 +19,7 @@ import type {
 import {ProviderKeyRow} from "./ProviderCredentialPool";
 import {Button} from "./ui/Button";
 import {Overlay} from "./ui/Overlay";
+import {activeEngineJob} from "./localEngine";
 
 
 function Status({ok}: {ok: boolean}) {
@@ -488,57 +489,76 @@ function humanBytes(value: number): string {
 }
 
 
+const BACKEND_LABEL: Record<string, string> = {cuda: "NVIDIA CUDA", vulkan: "Vulkan", metal: "Apple Metal", cpu: "CPU"};
+// Older backends report no list; they accepted these three.
+const LEGACY_BACKENDS = ["cuda", "vulkan", "cpu"];
+
+function backendLabel(value: string): string {
+  return BACKEND_LABEL[value] || value;
+}
+
 export function LocalRuntimePanel() {
   const {config} = usePlatformState();
   const platform = (config.inference_platform || {}) as unknown as InferencePlatform;
   const status = (platform.local_runtime || {}) as Partial<LocalRuntimeStatus>;
   const jobs = (platform.install_jobs || []) as InstallJob[];
-  const activeJob = jobs.find(item => item.runtime_id === "llamacpp" && !["done", "error", "cancelled"].includes(item.status));
+  const activeJob = activeEngineJob(jobs);
   const latestJob = jobs.find(item => item.runtime_id === "llamacpp");
   const failedJob = latestJob?.status === "error" ? latestJob : undefined;
   const [backend, setBackend] = useState("auto");
+  const known = !!platform.local_runtime;
+  const supported = status.supported !== false;
+  const backends = Array.isArray(status.available_backends) ? status.available_backends : LEGACY_BACKENDS;
+  const choice = backend === "auto" || backends.includes(backend) ? backend : "auto";
   const installed = !!status.installed;
   const managedInstalled = !!status.managed_installed;
-  const bundledActive = status.install_source === "bundled" || !!status.bundled_active;
+  // A llama-server in a development checkout's bin folder; installers never ship one.
+  const checkoutActive = status.install_source === "bundled" || !!status.bundled_active;
   const customActive = status.install_source === "custom" || !!status.custom_active;
   const pendingRestart = !!status.pending_restart;
   const runningBinary = status.running_binary || "";
   const selectedBinary = status.configured_binary || status.active_binary || "";
+  const binary = runningBinary || selectedBinary || status.binary || "";
   const operation = managedInstalled ? "update" : "install";
-  const statusLabel = pendingRestart ? "Restart pending" : status.managed_active ? "Managed" : bundledActive ? "Bundled" : customActive ? "Custom" : managedInstalled ? "Installed" : "Not downloaded";
+  const release = status.version || status.tag || "";
+  const statusLabel = !known ? "Checking" : !supported ? "Unavailable" : pendingRestart ? "Restart pending"
+    : status.managed_active || managedInstalled ? (status.update_available ? "Update available" : "Installed")
+    : checkoutActive ? "Checkout build" : customActive ? "Custom" : status.update_available ? "Update available" : "Not installed";
+  const note = !known ? "Checking the local engine…"
+    : !supported ? "Local models aren't available on this platform yet. Cloud models work as usual."
+    : installed ? "Runs local models on this computer. Manage model files and downloads below."
+    : "VARIANT-1 doesn't include a local engine. Install llama.cpp once to run models on this computer; cloud models work without it.";
 
   return <section className="provider-runtime deck-instrument">
     <header className="deck-instrument__header">
-      <div><span className="deck-instrument__eyebrow">LOCAL RUNTIME</span><h3 className="deck-instrument__title">llama.cpp engine</h3></div>
+      <div><span className="deck-instrument__eyebrow">LOCAL ENGINE</span><h3 className="deck-instrument__title">llama.cpp</h3></div>
       <span className={installed ? "platform-badge platform-badge--ready" : "platform-badge"}>{statusLabel}</span>
     </header>
-    <p className="platform-note">Install or update the llama.cpp runtime here. Manage model files and downloads below.</p>
-    <div className="provider-runtime__facts deck-data-list">
-      <div className="deck-data-row"><span><strong>Release</strong><small>{bundledActive ? "Packaged llama.cpp fallback" : customActive ? "Custom llama.cpp executable" : status.version || status.tag || "Pinned by this VARIANT-1 build"}</small></span><em>{status.backend || status.recommended_backend || "auto"}</em></div>
-      <div className="deck-data-row"><span><strong>Runtime binary</strong><small><code>{runningBinary || selectedBinary || status.binary || status.runtime_root || "runtime\\llamacpp"}</code></small></span><em>{runningBinary ? "Running" : selectedBinary ? "Selected" : managedInstalled ? "Installed" : "Empty"}</em></div>
+    <p className="platform-note">{note}</p>
+    {known && supported ? <div className="provider-runtime__facts deck-data-list">
+      <div className="deck-data-row"><span><strong>Release</strong><small>{customActive ? "Custom llama.cpp executable" : checkoutActive ? "llama-server from this checkout's bin folder" : release ? `llama.cpp ${release}` : "Pinned by this VARIANT-1 build"}</small></span><em>{status.backend ? backendLabel(status.backend) : installed ? "" : "Not installed"}</em></div>
+      {installed && binary ? <div className="deck-data-row"><span><strong>Engine binary</strong><small><code>{binary}</code></small></span><em>{runningBinary ? "Running" : "Selected"}</em></div> : null}
       {pendingRestart && selectedBinary && selectedBinary !== runningBinary ? <div className="deck-data-row"><span><strong>Next binary</strong><small><code>{selectedBinary}</code></small></span><em>Restart pending</em></div> : null}
-    </div>
+    </div> : null}
     {activeJob ? <div className="provider-runtime__progress" role="status">
-      <div><strong>{activeJob.step || "Installing llama.cpp"}</strong><span>{activeJob.progress || 0}%</span></div>
+      <div><strong>{activeJob.step || "Installing the local engine"}</strong><span>{activeJob.progress || 0}%</span></div>
       <progress max="100" value={activeJob.progress || 0}/>
       <small>{activeJob.done_bytes ? `${humanBytes(activeJob.done_bytes)}${activeJob.total_bytes ? ` of ${humanBytes(activeJob.total_bytes)}` : ""}` : activeJob.target_label}</small>
       <Button tone="quiet" onClick={() => send({type: "inference:install:cancel", id: activeJob.id})}>Cancel</Button>
-    </div> : <div className="provider-runtime__actions">
-      {failedJob ? <p className="runtime-error" role="alert">{failedJob.error || failedJob.step || "The last llama.cpp installation failed."}</p> : null}
-      <label className="platform-field"><span>Compute backend</span><select value={backend} onChange={event => setBackend(event.target.value)}>
-        <option value="auto">Auto ({status.recommended_backend || "best available"})</option>
-        <option value="cuda">NVIDIA CUDA</option>
-        <option value="vulkan">Vulkan</option>
-        <option value="cpu">CPU</option>
-      </select></label>
-      <Button tone="primary" disabled={status.supported === false} onClick={() => send({
+    </div> : known && supported ? <div className="provider-runtime__actions">
+      {failedJob ? <p className="runtime-error" role="alert">{failedJob.error || failedJob.step || "The last engine installation failed."}</p> : null}
+      {backends.length > 1 ? <label className="platform-field"><span>Compute backend</span><select value={choice} onChange={event => setBackend(event.target.value)}>
+        <option value="auto">Auto ({status.recommended_backend ? backendLabel(status.recommended_backend) : "best available"})</option>
+        {backends.map(value => <option key={value} value={value}>{backendLabel(value)}</option>)}
+      </select></label> : null}
+      <Button tone="primary" onClick={() => send({
         type: "inference:install",
         runtime_id: "llamacpp",
         target_id: "managed-binary:llamacpp",
         operation,
-        backend,
-      })}>{managedInstalled ? "Repair or update runtime" : bundledActive || customActive ? "Replace with managed build" : "Download llama.cpp"}</Button>
+        backend: choice,
+      })}>{managedInstalled ? (status.update_available ? "Update the local engine" : "Repair the local engine") : "Install the local engine"}</Button>
       <Button tone="quiet" onClick={() => send({type: "inference:platform:get"})}>Refresh status</Button>
-    </div>}
+    </div> : null}
   </section>;
 }

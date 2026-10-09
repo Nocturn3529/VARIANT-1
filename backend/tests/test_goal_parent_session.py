@@ -111,13 +111,20 @@ async def test_explicit_goal_cap_stops_on_missing_ledger_records_but_not_foreign
     from model_runtime.usage_ledger import ModelUsageLedger
     work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
     ledger = ModelUsageLedger(tmp_path/'failed-ledger.sqlite3')
-    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(usage_ledger=ledger, ledger_failures=1))
+    losses = {}
+    parent.host.router = SimpleNamespace(_manifest_bus=SimpleNamespace(
+        usage_ledger=ledger, ledger_failures=1, goal_usage_lost=lambda goal: losses.get(goal, 0)))
     goal_id = await launch(goals, runs)
     run = runs[0][0]
     admission = registry.active_admission('owner')
     assert not parent.boundary_budget(run, admission)  # Unlimited default.
     with goals.repository.work._write() as conn:
         conn.execute('UPDATE workflow_goal SET budget_limits_json=? WHERE goal_id=?', ('{"provider_calls":10}',goal_id))
+    losses['another-goal'] = 3
+    assert not parent.boundary_budget(run, admission)  # Another Goal's lost record.
+    assert parent.panel_facts(goal_id)['accounting'] == {'lost_usage_records': 0}
+    losses[goal_id] = 1
+    assert parent.panel_facts(goal_id) == {'accounting': {'lost_usage_records': 1}, 'awaiting_peers': []}
     assert not parent.boundary_budget(run, 'foreign-admission')
     assert parent.boundary_budget(run, admission)
     assert goals.get(goal_id).pause_reason == 'budget accounting has lost usage records'
@@ -384,6 +391,50 @@ async def test_unavailable_named_peer_wakes_and_blocks_without_another_turn(tmp_
     assert result['status'] == 'blocked'
     assert goals.repository.state_get(goal_id,'objective_outcome')['continuation_allowed'] is False
     assert len(runs) == 1 and repo.find_reply('request-a') is None
+    await peers.shutdown();await work.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stopped_peer_request_keeps_goal_waiting_until_a_real_dead_end(tmp_path):
+    from peers import PeerCommunicationService, PeerRepository
+    work, goals, parent, registry, gate, runs, _ = stack(tmp_path)
+    runtime = parent.host.require_runtime()
+    runtime.sessions.get_session = {'owner':{'id':'owner'}, 'collaborator':{'id':'collaborator'}}.get
+    repo = PeerRepository(tmp_path/'peers.sqlite3')
+    peers = PeerCommunicationService(parent.host, repo, sessions=runtime.sessions,
+        session_runtimes=registry, chat_service=runtime.chat)
+    runtime.peers = peers
+    registry.enqueue_input('collaborator', 'Verify', delivery='follow_up',
+        source='peer:chat:owner', ticket_id='ticket-a')
+    repo.persist_message({'message_id':'request-a','sender_peer_id':'chat:owner',
+        'target_peer_id':'chat:collaborator','content':'Verify', 'delivery':'follow_up',
+        'message_kind':'request','state':'queued'})
+    repo.update_message('request-a', delivery_ticket_id='ticket-a')
+    goal_id = await launch(goals, runs)
+    parent.report(invocation(runs[0][0]),status='continuing',summary='Await verification',wait_for_message_ids=['request-a'])
+    assert (await finish(goals,goal_id,gate,registry))['status'] == 'waiting_external'
+    before = len(work.jobs.list(owner_kind='goal',owner_id=goal_id))
+    registry.park_queued_input_tickets('collaborator', reason='explicit_stop')
+    row = peers._sync_native_state(repo.get_message('request-a'))
+    assert row['state'] == 'parked'
+    assert peers.native_wait_failure('chat:owner', 'request-a') is None
+    assert len(work.jobs.list(owner_kind='goal',owner_id=goal_id)) == before  # No wake.
+    facts = parent.panel_facts(goal_id)
+    assert facts['awaiting_peers'] == [{'message_id':'request-a', 'chat_id':'collaborator',
+        'display_name':facts['awaiting_peers'][0]['display_name'], 'state':'parked'}]
+    assert facts['awaiting_peers'][0]['display_name']
+    assert facts['accounting'] == {'lost_usage_records': None}  # No ledger in this stack.
+    snapshot = goals.composer.snapshot(goal_id)
+    assert snapshot['awaiting_peers'] == facts['awaiting_peers'] and snapshot['accounting'] == facts['accounting']
+    assert (await goals.supervisor.tick(goal_id))['status'] == 'waiting_external'
+    registry.repository.queued_ticket_command('collaborator', 'ticket-a',
+        expected_revision=registry.queue_snapshot('collaborator')['revision'], operation='remove')
+    peers.native_ticket_changed('ticket-a')  # As the queue-remove command does.
+    assert peers.native_wait_failure('chat:owner', 'request-a')
+    assert parent.panel_facts(goal_id)['awaiting_peers'][0]['state'] == 'unavailable'
+    assert len(work.jobs.list(owner_kind='goal',owner_id=goal_id)) == before + 1
+    assert (await goals.supervisor.tick(goal_id))['status'] == 'blocked'
+    assert len(runs) == 1
     await peers.shutdown();await work.shutdown()
 
 

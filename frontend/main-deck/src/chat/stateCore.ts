@@ -31,6 +31,7 @@ export let state: ChatState = {
   lastError: "",
   draft: "",
   attachments: [],
+  references: [],
   attachmentsPreparing: 0,
   deliveryMode: "steer",
   stopPending: false,
@@ -71,7 +72,7 @@ export function activateChatState(id: string): void {
   const prior = state;
   if (prior.sessionId) sessions.set(prior.sessionId, prior);
   state = {...(sessions.get(id) || {...initialChatState(), sessionId:id,
-    ...(!prior.sessionId ? {draft:prior.draft, attachments:prior.attachments} : {})}), connected:prior.connected};
+    ...(!prior.sessionId ? {draft:prior.draft, attachments:prior.attachments, references:prior.references} : {})}), connected:prior.connected};
   revisions.set(id, (revisions.get(id) || 0) + 1);
   sessions.set(id, state);focusTurnSession(id);
   for (const [key, value] of sessions) {
@@ -79,7 +80,7 @@ export function activateChatState(id: string): void {
     const goalStatus=value.goal.snapshot?.goal?.status;
     const activeGoal=!!goalStatus && !["succeeded","failed","cancelled","archived"].includes(goalStatus);
     const unconfirmedTrace=value.messages.some(message=>message.tracePersistence==="pending" || message.tracePersistence==="failed");
-    if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
+    if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.references.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
       sessions.delete(key);revisions.delete(key);revokeRemovedAttachmentUrls(value, initialChatState());releaseChatProjection(key,"idle");
     }
   }
@@ -143,7 +144,7 @@ export function subscribe(listener: () => void): () => void {
 
 export const getComposerRevision = (sessionId = state.sessionId || "") => revisions.get(sessionId) || 0;
 function noteComposerChange(next: ChatState) {
-  if (next.draft !== state.draft || next.attachments !== state.attachments || next.sessionId !== state.sessionId) revisions.set(next.sessionId || "", (revisions.get(next.sessionId || "") || 0) + 1);
+  if (next.draft !== state.draft || next.attachments !== state.attachments || next.references !== state.references || next.sessionId !== state.sessionId) revisions.set(next.sessionId || "", (revisions.get(next.sessionId || "") || 0) + 1);
 }
 
 export function getChatState(): ChatState {
@@ -259,6 +260,7 @@ export function initialChatState(): ChatState {
     lastError: "",
     draft: "",
     attachments: [],
+    references: [],
     attachmentsPreparing: 0,
     deliveryMode: "steer",
     stopPending: false,

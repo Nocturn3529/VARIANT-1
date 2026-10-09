@@ -1050,15 +1050,38 @@ class EmbeddedBrowserAdapter(BrowserAdapter):
     def set_download_sink(self, sink: Callable[..., Awaitable[Any]]) -> None:
         self._download_sink = sink
 
+    async def mark_page(self, backend_target_id: str, mark: str) -> dict[str, Any]:
+        """Keep an agent tab past its run: ``deliverable`` or ``handoff``."""
+
+        return await self._call("mark_page", tab_id=str(backend_target_id), mark=str(mark))
+
+    async def show_page(self, backend_target_id: str) -> dict[str, Any]:
+        """Bring a tab into view for the user; agent browsing is otherwise hidden."""
+
+        return await self._call("activate_page", tab_id=str(backend_target_id), visible=True)
+
     @staticmethod
     def _state(result: Mapping[str, Any]) -> dict[str, Any]:
         nested = result.get("state")
         return dict(nested) if isinstance(nested, Mapping) else dict(result)
 
     async def _call(self, action: str, **params: Any) -> dict[str, Any]:
+        # The run lets the Deck tie tabs it opens to that run (D1 cleanup).
         try:
-            result = await self._request({"action": action, **params,
-                                          "owner_chat_id": self.owner_chat_id})
+            from run_context import current_run_context
+
+            context = current_run_context()
+            # Tabs belong to the admitted attempt's run, the id run-end
+            # cleanup and active_runs use; Resume keeps an older graph run id.
+            metadata = getattr(context, "metadata", None) or {}
+            run_id = str(metadata.get("admission_run_id") or getattr(context, "run_id", "") or "")
+        except Exception:
+            run_id = ""
+        command = {"action": action, **params, "owner_chat_id": self.owner_chat_id}
+        if run_id:
+            command["run_id"] = run_id
+        try:
+            result = await self._request(command)
         except BrowserUnsupported:
             raise
         except Exception as exc:

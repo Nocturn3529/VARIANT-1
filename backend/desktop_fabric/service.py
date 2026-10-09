@@ -17,7 +17,6 @@ from .adapter import (
     AdapterFocus,
     AdapterObservation,
     DesktopLiveAdapter,
-    WindowsDesktopAdapter,
 )
 from .fusion import fuse_elements, observation_fingerprint
 from .models import (
@@ -800,11 +799,25 @@ class DesktopFabric:
         self.adapter.close()
         self._semantic_locks.clear()
 
+    def end_run(self, run_id: str, attempt_id: str = "") -> None:
+        """End a finished attempt's driver session; its late input is refused."""
+
+        end = getattr(self.adapter, "end_run", None)
+        if callable(end) and (run_id or attempt_id):
+            end(str(run_id or ""), str(attempt_id or ""))
+
+    def bind_attempt_check(self, attempt_active: Any) -> None:
+        """Let the driver ask the session registry whether an attempt is admitted."""
+
+        host = getattr(self.adapter, "host", None)
+        if host is not None and hasattr(host, "attempt_active"):
+            host.attempt_active = attempt_active
+
 
 def create_desktop_fabric(
     *, path: str | None = None, data_dir: str | None = None,
     artifact_store: Any | None = None, adapter: DesktopLiveAdapter | None = None,
-    desktop_control: Any | None = None, backend_instance_id: str = "",
+    backend_instance_id: str = "",
     reconcile: bool = True,
 ) -> DesktopFabric:
     """Compose Desktop Fabric without scanning or focusing the desktop."""
@@ -834,11 +847,9 @@ def create_desktop_fabric(
     )
     if adapter is not None:
         live_adapter = adapter
-    elif sys.platform.startswith("win"):
-        live_adapter = WindowsDesktopAdapter(desktop_control=desktop_control)
     else:
-        from .cua_adapter import select_non_windows_adapter
-        live_adapter = select_non_windows_adapter(sys.platform)
+        from .cua_adapter import select_cua_adapter
+        live_adapter = select_cua_adapter(sys.platform)
     return DesktopFabric(
         repository=repository, artifact_store=artifact_store,
         adapter=live_adapter, backend_instance_id=instance_id,

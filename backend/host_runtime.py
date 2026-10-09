@@ -290,7 +290,7 @@ class BrowserFabricRuntime(Protocol):
 
 @runtime_checkable
 class DesktopFabricRuntime(Protocol):
-    """Durable Windows app/window catalog, observation, and action evidence."""
+    """Durable desktop app/window catalog, observation, and action evidence."""
 
     def refresh_catalog(self) -> Any: ...
     def apps(self, **filters: Any) -> Any: ...

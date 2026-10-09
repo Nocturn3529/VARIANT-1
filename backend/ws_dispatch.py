@@ -37,6 +37,7 @@ import ws_peers
 import ws_goals
 import ws_children
 import ws_extensions_v2
+import ws_desktop
 from ws_protocol import session_chat_id
 from ws_transport import transport_disconnected
 
@@ -377,6 +378,13 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
         await websocket.send_json({"type":"chat:rejected", "error":"attachment_preparation_failed",
                                    "text":str(exc), **_input_reply_fields(msg, bound_sid)})
         return
+    if msg.get("references"):
+        # Browser tabs the user mentioned resolve fail-closed to that exact tab.
+        from browser_fabric.deck_tabs import resolve_tab_references
+
+        notes = await resolve_tab_references(msg.get("references"), bound_sid)
+        if notes:
+            attachment_text = (attachment_text + "\n\n" + notes) if attachment_text else notes
     if not resume_requested and not (str(msg.get("text") or "").strip() or images or attachment_text or msg.get("image")):
         await websocket.send_json({"type":"chat:rejected", "error":"empty_input",
                                    **_input_reply_fields(msg, bound_sid)})
@@ -520,6 +528,15 @@ async def _queue_command(srv, websocket, session, msg):
             registry.repository.queued_ticket_command(chat_id, ticket_id,
                 expected_revision=expected_revision, operation="remove")
             accepted = True
+            peers = getattr(srv.require_runtime(), "peers", None)
+            if peers is not None:
+                # A removed peer request can no longer be answered; tell the
+                # sender's waits now rather than leave them pending.
+                try:
+                    peers.native_ticket_changed(ticket_id)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("peer ticket resync failed")
         else:
             snapshot = registry.queue_snapshot(chat_id)
             if type(expected_revision) is not int or expected_revision != snapshot["revision"]:
@@ -845,3 +862,4 @@ ws_peers.register(on)
 ws_goals.register(on)
 ws_children.register(on)
 ws_extensions_v2.register(on)
+ws_desktop.register(on)

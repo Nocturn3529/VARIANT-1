@@ -413,16 +413,41 @@ export function revealPane(
     ...(state.compact && isSidePane(paneId) ? {overlayPaneId: paneId} : {})});
 }
 
-/** UI-created and host-created previews must use the same insertion policy. */
-export function revealPreviewPane(tabId: string): void {
+function previewStackAnchor(tabId: string): string | undefined {
   const tabs = getPreviewState().tabs;
   const tab = tabs.find(item => item.id === tabId);
-  if (!tab) return;
+  if (!tab) return undefined;
   const layout = store.getState().layout;
   const candidates = tabs.filter(item => item.id !== tabId && item.ownerChatId === tab.ownerChatId && findGroupOfPane(layout, `preview:${item.id}`));
   const anchor = candidates.find(item => item.target.kind === tab.target.kind) || candidates[0];
   const files=chatPaneId("files",tab.ownerChatId || "");
-  revealPane(`preview:${tabId}`, "right", tab.target.kind === "directory" && findGroupOfPane(layout,files) ? files : anchor ? `preview:${anchor.id}` : undefined);
+  return tab.target.kind === "directory" && findGroupOfPane(layout,files) ? files : anchor ? `preview:${anchor.id}` : undefined;
+}
+
+/** UI-created and host-created previews must use the same insertion policy. */
+export function revealPreviewPane(tabId: string): void {
+  if (!getPreviewState().tabs.some(item => item.id === tabId)) return;
+  revealPane(`preview:${tabId}`, "right", previewStackAnchor(tabId));
+}
+
+/**
+ * The agent's own tabs join the layout hidden: the page loads and stays
+ * mounted (browser panes are keep-alive) without replacing what the user is
+ * looking at or focusing the window.
+ */
+export function placePreviewPaneInBackground(tabId: string): void {
+  if (!getPreviewState().tabs.some(item => item.id === tabId)) return;
+  const paneId = `preview:${tabId}`;
+  const state = store.getState();
+  if (findGroupOfPane(state.layout, paneId)) return;
+  const stack = previewStackAnchor(tabId);
+  const group = stack ? findGroupOfPane(state.layout, stack) : null;
+  const anchor = group ? {groupId: group.id, position: "center" as const} : insertionAnchor(state.layout, "right");
+  const layout = insertAtGroup(state.layout, anchor.groupId, paneId, anchor.position) || state.layout;
+  // Inserting makes the pane its group's active one; keep the previous choice.
+  const inserted = findGroupOfPane(layout, paneId);
+  const previous = group?.active && group.active !== paneId ? group.active : "";
+  replace({layout: inserted && previous ? setActivePane(layout, inserted.id, previous) : layout, hidden: {...state.hidden, [paneId]: true}});
 }
 
 export function setWorkbenchCompact(compact: boolean): void {

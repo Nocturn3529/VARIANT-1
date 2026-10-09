@@ -11,6 +11,7 @@ import os
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 from typing import Any, Mapping
 
@@ -19,15 +20,71 @@ class CuaDriverError(RuntimeError):
     """The cua-driver process failed or returned an MCP error."""
 
 
+# The driver is a third-party binary: it gets only what it needs to find the
+# desktop session and its own files, never VARIANT-1's provider keys or other
+# secrets from the backend environment.
+_DRIVER_ENV_KEYS = frozenset({
+    "PATH", "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS",
+    "USER", "USERNAME", "LOGNAME", "LANG", "LANGUAGE", "TZ",
+    "DISPLAY", "WAYLAND_DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
+    "CUA_DRIVER_RS_ENABLE_WAYLAND",
+})
+_DRIVER_ENV_PREFIXES = ("LC_",)
+
+
+def cua_driver_env(base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Allowlisted child environment with upstream telemetry turned off.
+
+    cua-driver sends content-free usage telemetry by default. VARIANT-1 turns
+    it off unless the user sets ``VARIANT1_CUA_TELEMETRY=1``.
+    """
+
+    source = dict(os.environ if base is None else base)
+    env = {
+        key: value for key, value in source.items()
+        if key.upper() in _DRIVER_ENV_KEYS
+        or key.upper().startswith(_DRIVER_ENV_PREFIXES)
+    }
+    if str(source.get("VARIANT1_CUA_TELEMETRY") or "").strip() != "1":
+        env["DO_NOT_TRACK"] = "1"
+        env["CUA_DRIVER_RS_TELEMETRY_ENABLED"] = "0"
+    return env
+
+
 def bundled_cua_driver_path() -> str | None:
     """The copy setup installs under bin/cua-driver, not a Hermes or Codex install."""
 
-    root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-    name = "cua-driver.exe" if os.name == "nt" else "cua-driver"
-    candidate = os.path.join(root, "bin", "cua-driver", name)
+    from paths import APP_ROOT
+
+    root = os.path.join(APP_ROOT, "bin", "cua-driver")
+    if sys.platform == "darwin":
+        # macOS ships trycua's signed app bundle, never a bare binary.
+        candidate = os.path.join(root, "CuaDriver.app", "Contents", "MacOS", "cua-driver")
+    else:
+        candidate = os.path.join(root, "cua-driver.exe" if os.name == "nt" else "cua-driver")
     if os.path.isfile(candidate):
         return candidate
     return None
+
+
+def pinned_cua_driver_version(binary: str) -> str:
+    """The VERSION stamp setup writes next to the bundled driver, if any."""
+
+    path = os.path.abspath(binary)
+    bundle, marker, _ = path.partition(os.path.join(".app", "Contents", "MacOS", ""))
+    # Inside CuaDriver.app the stamp sits next to the bundle.
+    directory = os.path.dirname(bundle + ".app") if marker else os.path.dirname(path)
+    stamp = os.path.join(directory, "VERSION")
+    try:
+        with open(stamp, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
 
 
 def resolve_cua_driver_command() -> list[str] | None:
@@ -48,7 +105,11 @@ def resolve_cua_driver_command() -> list[str] | None:
 
 
 class CuaDriverClient:
-    """Legacy MCP ``2025-06-18`` over Content-Length framed stdio."""
+    """MCP ``2025-06-18`` over newline-delimited JSON-RPC on stdio.
+
+    Requests are serialized: one request owns the pipe until its response
+    arrives, so concurrent callers can never consume each other's replies.
+    """
 
     def __init__(
         self,
@@ -60,12 +121,13 @@ class CuaDriverClient:
         if not command or not command[0]:
             raise CuaDriverError("cua-driver command is empty")
         self.command = list(command)
-        self.env = dict(os.environ if env is None else env)
+        self.env = cua_driver_env() if env is None else dict(env)
         self.timeout_s = float(timeout_s)
+        self.server_info: dict[str, Any] = {}
         self._process: subprocess.Popen[bytes] | None = None
         self._messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._reader: threading.Thread | None = None
-        self._write_lock = threading.Lock()
+        self._request_lock = threading.RLock()
         self._stderr_lock = threading.Lock()
         self._stderr_text = ""
         self._id = 0
@@ -74,6 +136,7 @@ class CuaDriverClient:
     def open(self) -> None:
         if self._process is not None:
             return
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         try:
             self._process = subprocess.Popen(
                 self.command,
@@ -81,6 +144,7 @@ class CuaDriverClient:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=self.env,
+                creationflags=flags,
             )
         except OSError as exc:
             raise CuaDriverError(f"could not start cua-driver: {exc}") from exc
@@ -91,12 +155,18 @@ class CuaDriverClient:
         threading.Thread(
             target=self._read_stderr, name="cua-driver-mcp-err", daemon=True,
         ).start()
-        self._request("initialize", {
+        result = self._request("initialize", {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": {"name": "variant1", "version": "0.1"},
         })
+        info = result.get("serverInfo") if isinstance(result, dict) else None
+        self.server_info = dict(info) if isinstance(info, dict) else {}
         self._notify("notifications/initialized", {})
+
+    def alive(self) -> bool:
+        process = self._process
+        return process is not None and process.poll() is None
 
     def close(self) -> None:
         self._closed = True
@@ -116,6 +186,11 @@ class CuaDriverClient:
             except subprocess.TimeoutExpired:
                 process.kill()
 
+    def list_tools(self) -> list[str]:
+        result = self._request("tools/list", {})
+        tools = result.get("tools") if isinstance(result, dict) else None
+        return [str(tool.get("name")) for tool in tools or () if isinstance(tool, dict)]
+
     def call_tool(self, name: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         result = self._request("tools/call", {
             "name": name,
@@ -128,7 +203,7 @@ class CuaDriverClient:
         return unwrap_tool_result(result)
 
     def _request(self, method: str, params: Mapping[str, Any]) -> Any:
-        with self._write_lock:
+        with self._request_lock:
             self._id += 1
             message_id = self._id
             self._write({
@@ -137,18 +212,18 @@ class CuaDriverClient:
                 "method": method,
                 "params": dict(params),
             })
-        while True:
-            message = self._next(self.timeout_s)
-            if message.get("id") != message_id:
-                continue
-            if "error" in message:
-                error = message.get("error") or {}
-                detail = error.get("message") if isinstance(error, dict) else error
-                raise CuaDriverError(f"cua-driver {method} failed: {detail}")
-            return message.get("result")
+            while True:
+                message = self._next(self.timeout_s)
+                if message.get("id") != message_id:
+                    continue
+                if "error" in message:
+                    error = message.get("error") or {}
+                    detail = error.get("message") if isinstance(error, dict) else error
+                    raise CuaDriverError(f"cua-driver {method} failed: {detail}")
+                return message.get("result")
 
     def _notify(self, method: str, params: Mapping[str, Any]) -> None:
-        with self._write_lock:
+        with self._request_lock:
             self._write({
                 "jsonrpc": "2.0",
                 "method": method,
@@ -162,8 +237,11 @@ class CuaDriverClient:
         # MCP stdio is one JSON-RPC message per line. Content-Length framing
         # is not a message, so cua-driver 0.28 never answers it.
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        process.stdin.write(body + b"\n")
-        process.stdin.flush()
+        try:
+            process.stdin.write(body + b"\n")
+            process.stdin.flush()
+        except OSError as exc:
+            raise CuaDriverError(f"cua-driver stopped accepting requests{self._stderr_suffix()}") from exc
 
     def _stderr_suffix(self) -> str:
         with self._stderr_lock:
@@ -221,22 +299,40 @@ class CuaDriverClient:
 
 
 def unwrap_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    """Structured tool output, plus the first image the driver returned.
+
+    Screenshots arrive as a separate MCP ``image`` content item, so they are
+    attached as ``_image_base64`` / ``_image_mime_type``.
+    """
+
+    unwrapped: dict[str, Any] | None = None
     structured = result.get("structuredContent")
     if isinstance(structured, dict):
-        return dict(structured)
+        unwrapped = dict(structured)
+    else:
+        for item in result.get("content") or ():
+            if not isinstance(item, dict) or item.get("type") != "text":
+                continue
+            text = str(item.get("text") or "").strip()
+            if not text:
+                continue
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict):
+                unwrapped = parsed
+                break
+    if unwrapped is None:
+        unwrapped = {
+            key: value for key, value in result.items() if key != "content"
+        }
     for item in result.get("content") or ():
-        if not isinstance(item, dict) or item.get("type") != "text":
-            continue
-        text = str(item.get("text") or "").strip()
-        if not text:
-            continue
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return dict(result)
+        if isinstance(item, dict) and item.get("type") == "image" and item.get("data"):
+            unwrapped.setdefault("_image_base64", str(item.get("data")))
+            unwrapped.setdefault("_image_mime_type", str(item.get("mimeType") or "image/png"))
+            break
+    return unwrapped
 
 
 def _error_text(result: Mapping[str, Any]) -> str:
@@ -249,6 +345,8 @@ def _error_text(result: Mapping[str, Any]) -> str:
 __all__ = [
     "CuaDriverClient",
     "CuaDriverError",
+    "cua_driver_env",
+    "pinned_cua_driver_version",
     "resolve_cua_driver_command",
     "unwrap_tool_result",
 ]

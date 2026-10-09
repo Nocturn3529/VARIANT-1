@@ -199,6 +199,17 @@ export async function run() {
     await act(async()=>ingest({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{...custom,running_binary:''}}));
     assert.ok([...host.querySelectorAll('em')].some(node=>node.textContent==='Selected'));
     assert.ok(![...host.querySelectorAll('em')].some(node=>node.textContent==='Running'),'configured executable alone is not labeled running');
+    // C4: the engine is installed in-app; only this platform's backends are offered.
+    const fresh={supported:true,tag:'b10679',recommended_backend:'metal',available_backends:['metal'],installed:false,managed_installed:false,install_source:'none'};
+    await act(async()=>ingest({type:'inference:platform',targets:[],install_jobs:[],local_runtime:fresh}));
+    assert.equal(host.querySelector('.platform-badge')?.textContent,'Not installed');assert.match(host.textContent!,/doesn't include a local engine/);
+    assert.equal(host.querySelector('select'),null,'a single backend needs no choice');assert.ok([...host.querySelectorAll('button')].some(node=>node.textContent==='Install the local engine'));
+    await act(async()=>ingest({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{...fresh,recommended_backend:'cuda',available_backends:['cuda','vulkan','cpu']}}));
+    assert.deepEqual([...host.querySelectorAll('option')].map(node=>node.textContent),['Auto (NVIDIA CUDA)','NVIDIA CUDA','Vulkan','CPU']);
+    await act(async()=>ingest({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{...fresh,installed:true,install_source:'bundled',bundled_active:true}}));
+    assert.equal(host.querySelector('.platform-badge')?.textContent,'Checkout build');assert.ok(!/Bundled|Packaged|Replace with managed/.test(host.textContent!));
+    await act(async()=>ingest({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{...fresh,supported:false,available_backends:[]}}));
+    assert.equal(host.querySelector('.platform-badge')?.textContent,'Unavailable');assert.equal(host.querySelector('.provider-runtime__actions'),null);
     await act(async()=>root.unmount());host.remove();
     console.log("frontend maintainability UI/lifecycle acceptance: all tests passed");
   } finally { await act(async () => roots.forEach(root => root.unmount())); }

@@ -3,6 +3,8 @@ name: CI
 on:
   push:
     branches: [master, main]
+    # A v* tag builds every platform and drafts a prerelease (job: release).
+    tags: ['v*']
   pull_request:
     branches: [master, main]
 
@@ -35,6 +37,14 @@ jobs:
         # leave only the last completed -q percentage, obscuring the hold point.
         # Dump all Python thread stacks if one test runs for over five minutes.
         run: node ../scripts/test-python.js tests -vv -o faulthandler_timeout=300
+      - name: Install pinned cua-driver
+        if: ${{ always() && !cancelled() }}
+        working-directory: .
+        run: node scripts/install-cua-driver.js
+      - name: cua-driver list, focus, observe and capture
+        if: ${{ always() && !cancelled() }}
+        working-directory: .
+        run: backend\.venv\Scripts\python.exe scripts\ci-windows-desktop.py
 
   frontend-scripts:
     runs-on: windows-latest
@@ -127,15 +137,19 @@ jobs:
         run: npm ci
       - name: Backend setup, including pinned cua-driver
         run: npm run setup:backend
-      - name: Pinned cua-driver is installed
+      - name: Pinned CuaDriver.app is installed with trycua's signature
         run: |
-          test -x bin/cua-driver/cua-driver
-          grep -qx 0.28.2 bin/cua-driver/VERSION
-          file bin/cua-driver/cua-driver
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        run: bin/llama-server --version
+          test -x bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver
+          grep -qx "$(node -p "require('./scripts/install-cua-driver').VERSION")" bin/cua-driver/VERSION
+          file bin/cua-driver/CuaDriver.app/Contents/MacOS/cua-driver
+          codesign --verify --deep --strict bin/cua-driver/CuaDriver.app
+          codesign -dv bin/cua-driver/CuaDriver.app 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -qx 'Identifier=com.trycua.driver' "$RUNNER_TEMP/codesign.txt"
+          grep -qE '^TeamIdentifier=(4YEC26S9KF|YCK386LBJ7)$' "$RUNNER_TEMP/codesign.txt"
+          # Informational: Gatekeeper's view of trycua's notarization.
+          spctl --assess -vv --type execute bin/cua-driver/CuaDriver.app || true
+      - name: CuaDriver.app starts through LaunchServices and serves MCP
+        run: backend/.venv/bin/python scripts/ci-macos-desktop.py
       # These three steps were missing here while linux-package had them. The
       # app packaged without a Deck bundle and without a frozen backend, so
       # macos-qualify launched an app that could never reach a connected
@@ -162,6 +176,9 @@ jobs:
           app="$(find dist -name '*.app' -maxdepth 3 -print -quit)"
           test -n "$app"
           find "$app/Contents/Resources" -name 'Variant1Backend*' -print -quit | grep -q .
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload macOS packages
         uses: actions/upload-artifact@v6
         with:
@@ -169,6 +186,19 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload macOS update metadata
+        uses: actions/upload-artifact@v6
+        with:
+          name: macos-update-metadata
+          # electron-updater channel files (preview*.yml for prerelease
+          # versions) and differential-download blockmaps. A separate artifact,
+          # so qualify jobs only ever see the installers.
+          path: |
+            dist/latest*.yml
+            dist/preview*.yml
+            dist/*.blockmap
           if-no-files-found: error
           retention-days: 14
 
@@ -191,11 +221,7 @@ jobs:
       - name: Pinned cua-driver is installed
         run: |
           test -x bin/cua-driver/cua-driver
-          grep -qx 0.28.2 bin/cua-driver/VERSION
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        run: bin/llama-server --version
+          grep -qx "$(node -p "require('./scripts/install-cua-driver').VERSION")" bin/cua-driver/VERSION
       - name: Build the main deck
         run: npm run build:deck
       - name: Build the frozen backend
@@ -232,6 +258,9 @@ jobs:
           test -n "$(find "$root" -maxdepth 1 -type f -perm -u+x -print -quit)"
           test -n "$(find "$root" -maxdepth 1 -name '*.desktop' -print -quit)"
           echo "AppImage extracts to a launcher and a desktop entry"
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload Linux packages
         uses: actions/upload-artifact@v6
         with:
@@ -239,6 +268,19 @@ jobs:
           path: |
             dist/*.AppImage
             dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Linux update metadata
+        uses: actions/upload-artifact@v6
+        with:
+          name: linux-update-metadata
+          # electron-updater channel files (preview*.yml for prerelease
+          # versions) and differential-download blockmaps. A separate artifact,
+          # so qualify jobs only ever see the installers.
+          path: |
+            dist/latest*.yml
+            dist/preview*.yml
+            dist/*.blockmap
           if-no-files-found: error
           retention-days: 14
 
@@ -266,9 +308,11 @@ jobs:
           # executable from package.json "name" (variant1), not productName
           # (VARIANT-1). Assert the names the package actually produces.
           test -x /opt/VARIANT-1/variant1
-          /opt/VARIANT-1/resources/bin/llama-server --version
+          # llama.cpp is installed in the app, never shipped.
+          test ! -e /opt/VARIANT-1/resources/bin/llama-server
           test -x /opt/VARIANT-1/resources/bin/cua-driver/cua-driver
-          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "0.28.2"
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 /opt/VARIANT-1/resources/bin/cua-driver/cua-driver --version
+          test "$(cat /opt/VARIANT-1/resources/bin/cua-driver/VERSION)" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Display server libraries for Electron
         run: |
           # libasound2 is a virtual package on Ubuntu 24.04 (noble) after the
@@ -375,10 +419,15 @@ jobs:
         run: |
           set -eu
           test -x "$EXE"
-          test -x "$APP/Contents/Resources/bin/llama-server"
-          "$APP/Contents/Resources/bin/llama-server" --version
-          test -x "$APP/Contents/Resources/bin/cua-driver/cua-driver"
-          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "0.28.2"
+          # llama.cpp is installed in the app, never shipped.
+          test ! -e "$APP/Contents/Resources/bin/llama-server"
+          # Packaging must not re-sign trycua's app: macOS grants belong to it.
+          CUA="$APP/Contents/Resources/bin/cua-driver/CuaDriver.app"
+          test -x "$CUA/Contents/MacOS/cua-driver"
+          codesign --verify --deep --strict "$CUA"
+          codesign -dv "$CUA" 2>&1 | grep -qE '^TeamIdentifier=(4YEC26S9KF|YCK386LBJ7)$'
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 "$CUA/Contents/MacOS/cua-driver" --version
+          test "$(cat "$APP/Contents/Resources/bin/cua-driver/VERSION")" = "$(node -p "require('./scripts/install-cua-driver').VERSION")"
       - name: Packaged Main Deck smoke (unpacked app)
         env:
           VARIANT1_E2E_EXECUTABLE: ${{ env.EXE }}
@@ -422,15 +471,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path bin\cua-driver\cua-driver.exe)) { throw 'cua-driver.exe missing' }
-          if ((Get-Content bin\cua-driver\VERSION -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
-      - name: Prepare native llama-server
-        run: npm run prepare:native
-      - name: llama-server runs
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          & bin\llama-server.exe --version
-          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+          if ((Get-Content bin\cua-driver\VERSION -Raw).Trim() -ne (node -p "require('./scripts/install-cua-driver').VERSION")) { throw 'unexpected cua-driver VERSION' }
       - name: Build the main deck
         run: npm run build:deck
       - name: Build the frozen backend
@@ -459,12 +500,28 @@ jobs:
           $payload = Get-ChildItem dist -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
           if (-not $payload) { throw 'Variant1Backend not found in the packaged payload' }
           $payload | ForEach-Object { Write-Host "frozen backend: $($_.FullName)" }
+      - name: Package size report
+        if: ${{ always() && !cancelled() }}
+        run: node scripts/package-size-report.js
       - name: Upload Windows packages
         uses: actions/upload-artifact@v6
         with:
           name: windows-packages
           path: |
             dist/*.exe
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Windows update metadata
+        uses: actions/upload-artifact@v6
+        with:
+          name: windows-update-metadata
+          # electron-updater channel files (preview*.yml for prerelease
+          # versions) and differential-download blockmaps. A separate artifact,
+          # so qualify jobs only ever see the installers.
+          path: |
+            dist/latest*.yml
+            dist/preview*.yml
+            dist/*.blockmap
           if-no-files-found: error
           retention-days: 14
 
@@ -518,13 +575,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path $env:APPEXE)) { throw "missing $env:APPEXE" }
           $bin = Join-Path (Split-Path $env:APPEXE -Parent) 'resources\bin'
-          $llama = Get-ChildItem $bin -Filter 'llama-server.exe' -ErrorAction SilentlyContinue
-          if (-not $llama) { throw "llama-server.exe missing under $bin" }
-          & $llama.FullName --version
-          if ($LASTEXITCODE -ne 0) { throw "llama-server exited $LASTEXITCODE" }
+          # llama.cpp is installed in the app, never shipped.
+          if (Get-ChildItem $bin -Filter 'llama-server*' -ErrorAction SilentlyContinue) { throw "llama.cpp must not ship under $bin" }
           $cua = Join-Path $bin 'cua-driver\cua-driver.exe'
           if (-not (Test-Path $cua)) { throw "cua-driver.exe missing under $bin" }
-          if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne '0.28.2') { throw 'unexpected cua-driver VERSION' }
+          $env:DO_NOT_TRACK = '1'
+          $env:CUA_DRIVER_RS_TELEMETRY_ENABLED = '0'
+          & $cua --version
+          if ($LASTEXITCODE -ne 0) { throw "cua-driver exited $LASTEXITCODE" }
+          if ((Get-Content (Join-Path $bin 'cua-driver\VERSION') -Raw).Trim() -ne (node -p "require('./scripts/install-cua-driver').VERSION")) { throw 'unexpected cua-driver VERSION' }
           $frozen = Get-ChildItem (Split-Path $env:APPEXE -Parent) -Recurse -Filter 'Variant1Backend*' -ErrorAction SilentlyContinue
           if (-not $frozen) { throw 'frozen backend missing from the installed payload' }
       - name: Packaged Main Deck smoke (installed binary)
@@ -553,3 +612,47 @@ jobs:
             exit 1
           }
           Write-Host "removed $($env:INSTALL)"
+
+  release:
+    # Only a v* tag drafts a release, and only after every check and installer
+    # qualification passed. The owner reviews and publishes the draft; the
+    # installed app sees an update only once it is published.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [backend, backend-linux, frontend-scripts, linux-qualify, macos-qualify, windows-qualify]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Collect installers and update metadata
+        uses: actions/download-artifact@v7
+        with:
+          pattern: '*-{packages,update-metadata}'
+          path: release
+          merge-multiple: true
+      - name: Draft the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match package.json version $version"
+            exit 1
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::release $TAG already exists; published bytes are never replaced"
+            exit 1
+          fi
+          cd release
+          ls -l
+          test -n "$(ls ./*.yml 2>/dev/null)" || { echo "::error::no update metadata"; exit 1; }
+          sha256sum ./*.exe ./*.dmg ./*.zip ./*.AppImage ./*.deb | sed 's# \./# #' > SHA256SUMS
+          cat SHA256SUMS
+          prerelease=()
+          case "$version" in *-*) prerelease=(--prerelease) ;; esac
+          gh release create "$TAG" --draft "${prerelease[@]}" \
+            --title "VARIANT-1 $version" \
+            --notes "Draft created by CI from $GITHUB_SHA. Review the installers, then publish." \
+            ./*

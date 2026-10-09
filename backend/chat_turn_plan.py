@@ -130,7 +130,8 @@ def build_attachment_plan(
     return AttachmentPlan(
         composer_text=composer_text,
         model_text=model_text,
-        display_text=display_text or model_text,
+        # Chips alone (a mentioned tab) keep the bubble text empty.
+        display_text=display_text if (display_text or atts) else model_text,
         display_attachments=atts,
         user_images=user_images,
         attach_suffix=attach_suffix,

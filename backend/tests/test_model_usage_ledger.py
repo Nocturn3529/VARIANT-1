@@ -1,3 +1,4 @@
+import asyncio
 import json
 import pytest
 
@@ -248,6 +249,65 @@ async def test_async_ledger_failure_and_overflow_are_visible():
     assert bus.ledger_failures == 1
     await bus.flush_ledger()
     assert bus.ledger_failures == 257
+    await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_lost_usage_is_charged_only_to_the_requests_goal():
+    from llm_manifest_bus import ModelRequestManifestBus
+    class FailedLedger:
+        def record(self, value):
+            raise OSError("unavailable")
+    bus = ModelRequestManifestBus(usage_ledger=FailedLedger())
+    await bus.record(request("mreq-a", goal="goal-a"))
+    await bus.record(request("mreq-unscoped", goal=""))
+    assert bus.goal_usage_lost("goal-a") == 1
+    assert bus.goal_usage_lost("goal-b") == 0
+    assert bus.ledger_failures == 2  # Still counted for diagnostics.
+
+
+@pytest.mark.asyncio
+async def test_usage_overflow_charges_its_goal_but_metadata_overflow_does_not(tmp_path):
+    import threading
+    from llm_manifest_bus import ModelRequestManifestBus
+    gate = threading.Event()
+    bus = ModelRequestManifestBus(usage_ledger=ModelUsageLedger(tmp_path / "usage.sqlite3"))
+    await bus.record(request("mreq-a", goal="goal-a"))
+    await bus.record(request("mreq-b", goal="goal-b"))
+    bus.submit_ledger(lambda: gate.wait(timeout=5))
+    await asyncio.sleep(0.05)  # The writer is now blocked; fill its queue.
+    try:
+        for _ in range(256):
+            assert bus.submit_ledger(lambda: None)
+        assert not bus.submit_ledger(lambda: None, manifest_id="mreq-b")
+        bus.patch_usage("mreq-a", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+        assert bus.goal_usage_lost("goal-a") == 1
+        assert bus.goal_usage_lost("goal-b") == 0
+    finally:
+        gate.set()
+        await bus.stop()
+
+
+@pytest.mark.asyncio
+async def test_partial_usage_writes_coalesce_to_the_latest_observation(tmp_path):
+    import threading
+    from llm_manifest_bus import ModelRequestManifestBus
+    gate = threading.Event()
+    ledger = ModelUsageLedger(tmp_path / "usage.sqlite3")
+    writes = []
+    patch = ledger.patch_usage
+    ledger.patch_usage = lambda *args, **kwargs: (writes.append(args[1]), patch(*args, **kwargs))[1]
+    bus = ModelRequestManifestBus(usage_ledger=ledger)
+    await bus.record(request("mreq-a"))
+    bus.submit_ledger(lambda: gate.wait(timeout=5))
+    await asyncio.sleep(0.05)
+    for tokens in range(1, 301):
+        assert bus.submit_partial_usage("mreq-a", {"output_tokens": tokens, "reported_fields": ["output_tokens"]})
+    gate.set()
+    await bus.flush_ledger()
+    assert [value["output_tokens"] for value in writes] == [300]
+    assert ledger.get("mreq-a")["usage"]["output_tokens"] == 300
+    assert bus.ledger_failures == 0
     await bus.stop()
 
 

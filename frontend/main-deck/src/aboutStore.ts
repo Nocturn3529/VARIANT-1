@@ -1,6 +1,8 @@
 import type { WsCommand } from "./protocol";
 import { createModuleStore } from "./state/createModuleStore";
-import type { AboutState, DoctorFinding, RuntimeContext } from "./types";
+import { getSessionState } from "./state/sessionStore";
+import { activeBrowserDownloads } from "./workbench/browserDownloads";
+import type { AboutState, DoctorFinding, RuntimeApi, RuntimeContext, UpdateState } from "./types";
 
 const store = createModuleStore<AboutState>({
   initialState: {
@@ -10,6 +12,7 @@ const store = createModuleStore<AboutState>({
     updateLabel: "Development build",
     updateChecking: false,
     updateCheckComplete: false,
+    update: null,
     paths: {},
     health: {
       backend: "Waiting",
@@ -25,8 +28,71 @@ const store = createModuleStore<AboutState>({
   },
 });
 
+let updateApi: RuntimeApi | null = null;
+let stopUpdateFeed: (() => void) | null = null;
+
 export function setAboutContext(next: RuntimeContext) {
   store.setContext(next);
+  // The main process owns update checks; the Deck mirrors what it reports.
+  const api = next.api || null;
+  if (api === updateApi) return;
+  stopUpdateFeed?.();
+  updateApi = api;
+  stopUpdateFeed = api?.onUpdateState?.(applyUpdate) || null;
+  void api?.getUpdateState?.().then(state => { if (state) applyUpdate(state); }).catch(() => {});
+}
+
+/** One line for the About hero and the header pill. */
+export function updateLabelFor(update: UpdateState | null, packaged: boolean): string {
+  if (!update) return packaged ? "Installed build" : "Development build";
+  switch (update.status) {
+    case "unavailable":
+      return update.reason === "dev_mode" ? "Development build"
+        : update.reason === "unconfigured" ? "Update feed not configured" : "Updates unavailable";
+    case "checking": return "Checking for updates…";
+    case "up-to-date": return "Up to date";
+    case "available": return `Update ${update.version} available`;
+    case "downloading": return `Downloading ${update.version} · ${Math.round(update.percent)}%`;
+    case "downloaded": return `Update ${update.version} ready to install`;
+    case "installing": return "Restarting to install…";
+    case "error": return "Update check failed";
+    default: return packaged ? "Installed build" : "Development build";
+  }
+}
+
+function applyUpdate(update: UpdateState) {
+  store.setState({update, updateLabel: updateLabelFor(update, store.getState().packaged),
+    updateChecking: update.status === "checking", updateCheckComplete: update.status !== "idle"});
+}
+
+export async function downloadUpdate() {
+  const result = await store.getContext()?.api?.downloadUpdate?.();
+  if (result && !result.ok && result.reason !== "cancelled") notifyAbout("The update could not be downloaded");
+}
+
+export function cancelUpdateDownload() {
+  void store.getContext()?.api?.cancelUpdateDownload?.();
+}
+
+export function openUpdateRelease() {
+  void store.getContext()?.api?.openUpdateRelease?.();
+}
+
+/** What a restart would interrupt, for the confirmation before installing. */
+export function restartInterruptions(): string {
+  const tasks = getSessionState().workingSessionIds.length, downloads = activeBrowserDownloads();
+  return [
+    tasks ? `${tasks} running ${tasks === 1 ? "task" : "tasks"} will stop` : "",
+    downloads ? `${downloads} browser ${downloads === 1 ? "download" : "downloads"} will be cancelled` : "",
+  ].filter(Boolean).join(" and ");
+}
+
+export async function installUpdate() {
+  const interrupted = restartInterruptions();
+  if (interrupted && !window.confirm(`Restart VARIANT-1 to install the update? ${interrupted[0].toUpperCase()}${interrupted.slice(1)}.`)) return;
+  const result = await store.getContext()?.api?.installUpdate?.();
+  // A failed install keeps the downloaded update; the card shows why.
+  if (result && !result.ok) notifyAbout(result.error || "The update is not ready to install");
 }
 
 export function setAboutConnection(status: string) {
@@ -111,6 +177,7 @@ export async function loadAboutInfo() {
         : info.packaged ? "Installed build" : "Development build",
       paths: {...(info.paths || {})},
     });
+    if (info.update) applyUpdate(info.update);
   } catch {
     /* ignore */
   }
@@ -125,6 +192,10 @@ export async function checkForUpdates() {
   store.setState({updateChecking: true, updateLabel: "Checking…"});
   try {
     const result = await store.getContext()?.api?.checkForUpdates?.();
+    if (result?.state) {
+      applyUpdate(result.state);
+      return;
+    }
     if (!result) {
       store.setState({updateChecking: false, updateCheckComplete: true,
         updateLabel: "Update check unavailable"});
@@ -137,7 +208,7 @@ export async function checkForUpdates() {
         : "Up to date";
     }
     else if (result.reason === "dev_mode") label = "Development build";
-    else if (result.reason === "updater_unconfigured") label = "Update feed not configured";
+    else if (result.reason === "unconfigured") label = "Update feed not configured";
     store.setState({updateLabel: label, updateChecking: false, updateCheckComplete: true});
   } catch {
     store.setState({updateLabel: "Update check unavailable", updateChecking: false,

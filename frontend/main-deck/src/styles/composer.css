@@ -72,6 +72,8 @@
   100% { opacity: 0; transform: scale(.55); }
 }
 .composer-status { margin: 0; padding: 10px 14px 0; color: var(--deck-text-muted); font: var(--deck-label-text)/1.4 var(--font-ui); }
+.composer-engine { margin: 0; padding: 10px 14px 0; color: var(--deck-text-muted); font: var(--deck-label-text)/1.4 var(--font-ui); }
+.composer-engine button { padding: 0; border: 0; color: var(--deck-text-primary); background: none; font: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .composer-length { padding: 0 14px 8px; text-align: right; font: var(--deck-text-xs)/1 var(--font-mono); color: var(--deck-text-muted); }
 .composer__context { flex: none; padding-right: 7px; margin-right: 3px; border-right: 1px solid var(--deck-line); }
 .context-meter-button { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 4px; border: 0; border-radius: 4px; color: var(--deck-text-muted); background: transparent; font: var(--deck-text-xs)/1 var(--font-mono); cursor: pointer; }
@@ -171,6 +173,8 @@
 .model-picker__effort-menu button[aria-pressed="true"] { border-color: var(--deck-text-muted); color: var(--deck-text-primary); background: var(--deck-surface-raised); }
 .model-picker__more { margin: 4px 10px 8px; min-height: 26px; padding: 3px 7px; border: 0; border-radius: 4px; color: var(--deck-text-muted); background: transparent; font-size: var(--deck-text-xs); cursor: pointer; }
 .model-picker__more:hover { background: var(--deck-surface-raised); }
+.model-picker__engine { display: block; width: calc(100% - 20px); margin: 2px 10px 6px; padding: 7px 9px; border: 1px dashed var(--deck-line-strong); border-radius: var(--deck-radius-md); color: var(--deck-text-secondary); background: transparent; font: var(--deck-text-xs)/1.4 var(--font-ui); text-align: left; cursor: pointer; }
+.model-picker__engine:hover { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
 .model-picker__empty { padding: 18px 12px; color: var(--deck-text-muted); text-align: center; }
 .context-meter-menu__header { display: flex; align-items: end; justify-content: space-between; gap: 12px; padding: 14px; border-bottom: 1px solid var(--deck-line); }
 .context-meter-menu__header > span { display: grid; gap: 5px; }

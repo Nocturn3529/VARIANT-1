@@ -83,6 +83,55 @@ async def test_disconnect_finishes_active_command_drops_queue_and_preserves_shut
 
 
 @pytest.mark.asyncio
+async def test_disconnect_fails_a_browser_wait_without_waiting_out_the_grace(monkeypatch):
+    from browser_fabric import interactive
+    sent, outcomes = asyncio.Event(), []
+    class Socket:
+        query_params = {'token':'secret'}
+        reads = 0
+        async def accept(self):
+            pass
+        async def send_json(self, value):
+            if value.get('type') == 'browser:host:command':
+                sent.set()
+        async def receive_text(self):
+            self.reads += 1
+            if self.reads == 1:
+                return json.dumps({'type':'browse','request_id':'active'})
+            await sent.wait()
+            raise server_http.WebSocketDisconnect()
+    class Hub:
+        active = set()
+        def add(self, ws): self.active.add(ws)
+        def remove(self, ws): self.active.discard(ws)
+    class Runtimes:
+        def attach(self, *args): pass
+        def detach(self, *args): return []
+    runtime = SimpleNamespace(sessions=SimpleNamespace(get_active=lambda:'chat-a'),
+        session_runtimes=Runtimes(), chat=SimpleNamespace(orphaned_task_payload=lambda *_:None),
+        tool_settings=SimpleNamespace(state=lambda:{'type':'tools'}))
+    host = SimpleNamespace(hub=Hub(), require_runtime=lambda:runtime)
+    async def dispatch(_host, _socket, _session, _msg):
+        try:
+            await interactive.request_host({'action':'snapshot'}, timeout=30)
+        except Exception as exc:
+            outcomes.append(type(exc).__name__)
+        return True
+    monkeypatch.setattr(server_http.ws_dispatch, 'dispatch', dispatch)
+    monkeypatch.setattr(server_http, 'hello_payload', lambda *_:{'type':'hello'})
+    monkeypatch.setattr(server_http, 'cancel_session_work', AsyncMock())
+    socket = Socket()
+    await interactive.register_host(socket)
+    try:
+        await asyncio.wait_for(server_http.websocket_endpoint(
+            host, socket, auth_token='secret', session_factory=ConnectionSession), timeout=3)
+    finally:
+        interactive.unregister_host(socket)
+    assert outcomes == ['BrowserHostUnavailable']
+    assert not interactive.BROKER.available
+
+
+@pytest.mark.asyncio
 async def test_cancel_session_work_cancels_and_settles_owned_tasks():
     session = ConnectionSession()
     session.busy = True

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {registerWorkbenchBrowser, runWorkbenchBrowserCommand, waitForWorkbenchBrowser, type WorkbenchWebview} from "../frontend/main-deck/src/workbench/browserBridge";
 import {browserDeadline} from "../frontend/main-deck/src/workbench/browserLifecycle";
 import {ingestBrowserHost, setBrowserHostConnection, setBrowserHostContext} from "../frontend/main-deck/src/workbench/browserHostBridge";
-import {adoptBrowserTab, getPreviewState} from "../frontend/main-deck/src/workbench/previewStore";
+import {adoptBrowserTab, closeAgentRunTabs, closePreview, getPreviewState, keepBrowserTab, noteAgentRun, reopenPreview, requestBrowserNavigation} from "../frontend/main-deck/src/workbench/previewStore";
 import {applyBrowserViewport, browserViewportSize, nextBrowserLayoutFrame} from "../frontend/main-deck/src/workbench/browserViewport";
 import {findGroupOfPane} from "../frontend/main-deck/src/workbench/layoutModel";
 import {getWorkbenchState} from "../frontend/main-deck/src/workbench/workbenchStore";
@@ -142,6 +142,14 @@ export async function run() {
   await runWorkbenchBrowserCommand({action:"reload",tab_id:"e11-recovery"}); assert.equal(reloads,1);
   recoveryGuest.loadURL=async()=>{recoveryGuest.dispatchEvent(new Event("dom-ready"));};
   assert.equal((await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/"})).ok,true);
+  // Navigating to the page already shown reports it instead of reloading.
+  let loads=0; recoveryGuest.loadURL=async()=>{loads++;recoveryGuest.dispatchEvent(new Event("dom-ready"));};
+  recoveryGuest.getURL=()=>"https://recovered.test/";
+  const same=await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/"});
+  assert.deepEqual([same.navigated,same.already_current,loads],[false,true,0],"the current URL is not reloaded");
+  await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/",reload:true});
+  await runWorkbenchBrowserCommand({action:"navigate",tab_id:"e11-recovery",url:"https://recovered.test/next"});
+  assert.equal(loads,2,"an explicit reload and a different URL still load");
   retained=deferred<unknown>(); startNavigation(); recoveryGuest.dispatchEvent(new Event("did-stop-loading"));
   unregisterRecovery(); recoveryGuest.remove();retained.resolve({url:"https://retained.test/",ready:"complete"});await pause();
   assert.equal(recoveryGuest.dataset.browserReady,"false","a disposed guest cannot be revived by its old readiness probe");
@@ -151,6 +159,57 @@ export async function run() {
   await testClickPositions();
   await testKeyboardInput();
   await testElementIdentity();
+  await testAgentTabs();
+}
+
+async function testAgentTabs() {
+  const sent: Array<any> = [];
+  setBrowserHostContext({send: (value: unknown) => { sent.push(value); return true; }, notify() {}, api: {log() {}}} as never);
+  setBrowserHostConnection("connected");
+  const command = async (id: string, body: Record<string, unknown>) => {
+    await ingestBrowserHost({type: "browser:host:command", id, command: {owner_chat_id: "chat-d1", ...body}});
+    return sent.find(value => value.type === "browser:host:result" && value.id === id).result;
+  };
+  const tab = (id: string) => getPreviewState().tabs.find(row => row.id === id);
+  try {
+    adoptBrowserTab("d1-temp", "https://a.test/", "chat-d1", true, "run-1");
+    adoptBrowserTab("d1-kept", "https://b.test/", "chat-d1", true, "run-1");
+    adoptBrowserTab("d1-user", "https://c.test/", "chat-d1", true);
+    adoptBrowserTab("d1-other", "https://d.test/", "chat-other", true, "run-1");
+    assert.deepEqual([tab("d1-temp")?.origin, tab("d1-temp")?.agentRunId, tab("d1-user")?.origin], ["agent", "run-1", undefined]);
+
+    assert.equal((await command("d1-mark", {action: "mark_page", tab_id: "d1-kept", mark: "deliverable", run_id: "run-1"})).marked, true);
+    assert.equal((await command("d1-mark-user", {action: "mark_page", tab_id: "d1-user", mark: "handoff", run_id: "run-1"})).marked, false, "a user tab already stays");
+    assert.equal((await command("d1-mark-bad", {action: "mark_page", tab_id: "d1-kept", mark: "forever", run_id: "run-1"})).code, "INVALID_MARK");
+    assert.equal((await command("d1-mark-foreign", {action: "mark_page", tab_id: "d1-other", mark: "handoff", run_id: "run-1"})).code, "TAB_NOT_FOUND");
+    const listed = (await command("d1-tabs", {action: "tabs"})).tabs as Array<{id: string; opened_by: string; kept?: string}>;
+    assert.deepEqual(listed.map(row => [row.id, row.opened_by, row.kept]),
+      [["d1-temp", "agent", undefined], ["d1-kept", "agent", "deliverable"], ["d1-user", "user", undefined]]);
+
+    const cleanup = await command("d1-cleanup", {action: "cleanup_run", run_id: "run-1"});
+    assert.deepEqual(cleanup.closed, ["d1-temp"], "only the run's unmarked agent tabs close");
+    assert.deepEqual(["d1-temp", "d1-kept", "d1-user", "d1-other"].map(id => !!tab(id)), [false, true, true, true], "another chat's tabs are untouched");
+
+    // A mark lasts past its own run only: the next run working the tab makes it temporary again.
+    noteAgentRun("d1-kept", "run-2");
+    ingestBrowserHost({type: "browser:host:registered", active_runs: null});
+    assert.ok(tab("d1-kept"), "unknown active runs never close tabs");
+    ingestBrowserHost({type: "browser:host:registered", active_runs: [{owner_chat_id: "chat-other", run_id: "run-1"}]});
+    assert.deepEqual([!!tab("d1-kept"), !!tab("d1-other"), !!tab("d1-user")], [false, true, true], "runs that ended while the Deck was away are reconciled");
+    assert.equal(reopenPreview("d1-kept"), "d1-kept");
+    assert.equal(tab("d1-kept")?.origin, undefined, "a reopened agent tab is the user's");
+
+    adoptBrowserTab("d1-nav", "https://e.test/", "chat-d1", true, "run-3");
+    adoptBrowserTab("d1-keep", "https://f.test/", "chat-d1", true, "run-3");
+    requestBrowserNavigation("d1-nav", "https://g.test/");
+    keepBrowserTab("d1-keep");
+    assert.deepEqual([tab("d1-nav")?.origin, tab("d1-keep")?.origin], [undefined, undefined]);
+    assert.deepEqual(closeAgentRunTabs("chat-d1", "run-3"), [], "the user's navigation and Keep tab both make a tab stay");
+    console.log("D1: agent tab origin, mark_page, cleanup_run, register reconciliation, reopen/navigation/Keep tab ownership passed");
+  } finally {
+    for (const id of ["d1-temp", "d1-kept", "d1-user", "d1-other", "d1-nav", "d1-keep"]) if (tab(id)) closePreview(id);
+    setBrowserHostConnection("offline");
+  }
 }
 
 async function testKeyboardInput() {

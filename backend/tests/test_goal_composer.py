@@ -41,6 +41,7 @@ async def test_submission_is_durable_idempotent_and_owner_scoped(tmp_path):
     assert len(service.list(owner_chat_id='chat-a'))==1
     assert len(a['steps'])==1 and a['steps'][0]['kind']=='agent'
     assert a['completion_basis']=='structured_parent_report' and a['capabilities']['pause_active_work'] is False
+    assert a['accounting']=={'lost_usage_records':None} and a['awaiting_peers']==[]
     assert service.composer.current('chat-b','r1') is None
     assert service.composer.current('chat-a','r1')['goal']['goal_id']==a['goal']['goal_id']
     with pytest.raises(GoalConflict):await service.composer.submit('chat-a','r1','Different objective')

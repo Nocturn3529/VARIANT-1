@@ -2,6 +2,7 @@
  * Transcript message parse / merge helpers (session rehydrate + appended).
  */
 import type {
+  ChatBrowserReference,
   ChatAttachment,
   ChatMessage,
   ChatTurnStep,
@@ -57,6 +58,19 @@ function collapseUserAttachmentBodies(text: string): {
   };
 }
 
+/** Tab mentions: history keeps them in `references`; live turns list them as attachments. */
+function parseStoredReferences(...sources: unknown[]): ChatBrowserReference[] {
+  const out: ChatBrowserReference[] = [];
+  for (const source of sources) for (const item of Array.isArray(source) ? source : []) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    const tabId = String(row.tab_id || "");
+    if (!tabId || (row.kind !== undefined && row.kind !== "browser_tab") || out.some(ref => ref.tabId === tabId)) continue;
+    out.push({tabId, title: String(row.title || ""), url: String(row.url || "")});
+  }
+  return out.slice(0, 8);
+}
+
 function parseStoredAttachments(raw: unknown): ChatAttachment[] {
   if (!Array.isArray(raw)) return [];
   const out: ChatAttachment[] = [];
@@ -66,6 +80,7 @@ function parseStoredAttachments(raw: unknown): ChatAttachment[] {
     const name = String(row.name || "").trim();
     if (!name) continue;
     const kindRaw = String(row.kind || "text").toLowerCase();
+    if (kindRaw === "browser_tab") continue;
     const kind: ChatAttachment["kind"] =
       kindRaw === "image" ? "image"
         : kindRaw === "path" ? "path"
@@ -183,6 +198,7 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   const peerDisplay=origin && display && typeof display.display_name==="string" && typeof display.content==="string" ? {display_name:display.display_name,content:display.content} : undefined;
   let text = String(row.text || "");
   let attachments = parseStoredAttachments(row.attachments);
+  const references = role === "user" ? parseStoredReferences(row.references, row.attachments) : [];
   // Legacy: whole file bodies were saved on the user message.
   if (role === "user" && !origin) {
     const collapsed = collapseUserAttachmentBodies(text);
@@ -211,6 +227,7 @@ export function parseMessage(raw: unknown): ChatMessage | null {
     activeInputAccepted: !!delivery || undefined,
     activeInputState: delivery ? "delivered" : undefined,
     attachments: attachments.length ? attachments : undefined,
+    ...(references.length ? {references} : {}),
     steps,
     delivery,
     receipt: role === "assistant" ? parseTurnReceipt(row.receipt) : undefined,
@@ -332,6 +349,7 @@ function mergeLocalEnrichment(
           : remote.text,
       ts: remote.ts ?? local.ts,
       attachments: attachments.length ? attachments : undefined,
+      ...(remote.references || local.references ? {references: remote.references || local.references} : {}),
       steps: retainedSteps(remote.steps,local.steps),
       receipt: remote.receipt || local.receipt,
       delivery: remote.delivery || local.delivery,

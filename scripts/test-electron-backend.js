@@ -787,6 +787,30 @@ async function testGracefulShutdownAndForceFallback(tempDir) {
   await closeServer(fallbackServer);
 }
 
+// An update installs only once the stopped backend's processes are really gone.
+async function testUpdateConfirmsBackendStopped(tempDir) {
+  for (const survives of [true, false]) {
+    const server = healthServer(`update-stop-${survives}`);
+    const port = await listen(server);
+    const portFile = path.join(tempDir, `update-stop-${survives}.json`);
+    writeRecord(portFile, {port, token: 'update-token', pid: 44003, version: VERSION, instance_id: `update-stop-${survives}`});
+    let alive = true;
+    const result = managerFor(portFile, {deps: {
+      isProcessAlive: () => alive,
+      killProcessTree: () => { if (!survives) alive = false; },
+    }});
+    await result.manager.startBackend();
+    await result.manager.stopBackend();
+    assert.deepStrictEqual(await result.manager.confirmBackendStopped(20),
+      survives ? {stopped: false, remaining: [44003]} : {stopped: true, remaining: []},
+      survives ? 'a backend that survives the force kill blocks the installer' : 'a stopped backend lets the installer run');
+    await closeServer(server);
+  }
+  const idle = managerFor(path.join(tempDir, 'update-never-started.json'));
+  assert.deepStrictEqual(await idle.manager.confirmBackendStopped(20), {stopped: true, remaining: []},
+    'nothing to stop is stopped');
+}
+
 async function testQuitDuringReadinessUsesVerifiedPortRecord(tempDir) {
   const instanceId = 'readiness-quit';
   const server = healthServer(instanceId);
@@ -981,6 +1005,7 @@ async function main() {
     await testReadinessRestartWaitsForTreeTermination(tempDir);
     await testSpawnIdentityDoesNotAssumeLauncherPid(tempDir);
     await testGracefulShutdownAndForceFallback(tempDir);
+    await testUpdateConfirmsBackendStopped(tempDir);
     await testQuitDuringReadinessUsesVerifiedPortRecord(tempDir);
     await testRestartBudgetNeedsSustainedHealth(tempDir);
     await testBeforeQuitWaitsExactlyOnce();

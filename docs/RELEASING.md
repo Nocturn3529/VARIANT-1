@@ -10,12 +10,10 @@ from source should follow [Setup](SETUP.md).
 1. Choose an exact source commit and a unique application version/tag.
 2. Install the locked npm/Python dependencies and build lock in an isolated
    Windows candidate workspace with Python 3.13.
-3. Run `npm run prepare:native` after backend setup. The pinned manifest in
-   `config/native-runtime.json` verifies upstream archives and every output DLL.
-   It retains the CPU/CUDA runtime and uses official LLVM OpenMP bytes under
-   ggml's required import filename, never the Microsoft `debug_nonredist` binary.
-   Use `-- --replace` only to replace existing manifest-listed build inputs.
-   Supply a build cache with `-- --cache PATH` when needed.
+3. Backend setup installs the pinned cua-driver into `bin/cua-driver`, the
+   only bundled native program (on macOS, trycua's signed `CuaDriver.app`,
+   which packaging must never re-sign). llama.cpp is not bundled: users install it from
+   Settings > Providers > Local models, against pinned SHA-256 digests.
 4. Run the frontend/backend tests, build the backend and kernel, then run the
    frozen checks. See [Validation](VALIDATION.md) for commands and coverage limits.
 5. Package the already-tested outputs with
@@ -25,12 +23,16 @@ from source should follow [Setup](SETUP.md).
    system, test installation as an ordinary user, startup, updates and data
    preservation, and uninstallation. Include CPU/no-NVIDIA coverage and the
    connections advertised for that release.
-7. Upload a versioned installer, checksums, release notes, and required notices
-   to a draft GitHub prerelease. Publish only after review, then update website links.
+7. Push the tag `v<version>` (it must equal `package.json`'s version). CI builds
+   and qualifies every platform, then drafts a GitHub release with the installers,
+   the update metadata (`preview*.yml`/`latest*.yml` and blockmaps) and
+   `SHA256SUMS`. A prerelease version drafts a prerelease. Review the draft, add
+   release notes, publish it, then update website links. CI never publishes and
+   refuses to replace an existing release.
 
 ## What the packaging checks establish
 
-`dist:electron-only` verifies native input hashes and notices before NSIS runs.
+`dist:electron-only` checks that `bin/` holds the pinned cua-driver before packaging.
 The renderer build collects license texts for the modules actually bundled by
 esbuild. The frozen backend build includes locked Python/CPython notices.
 
@@ -38,18 +40,30 @@ Offline speech engines and weights are excluded. The frozen backend smoke test
 checks unconfigured speech and WAV transport through a configured HTTP fixture;
 it does not require private speech model files or validate real synthesis quality.
 
-Native verification includes a CPU matrix calculation at one and four threads
-without loading an LLM model. The packaged native test also requires CUDA device
-enumeration. Neither check replaces full CPU/no-NVIDIA testing, and enumeration
-is not proof of compatibility with every GPU/model combination.
+The packaged native test checks that `resources/bin` holds only the pinned
+cua-driver and that it reports its pinned version. Local inference is covered by
+the in-app llama.cpp install on each platform, which is not part of the package.
 
 ## Publish and update responsibly
 
 Do not commit release binaries or replace published bytes under the same version.
 The website links to GitHub Releases; it does not need to host the installer.
-Manual updates are acceptable initially. An automatic update feed requires its
-own tested channel, metadata, signature, and migration behavior.
+Installed apps check this repository's published GitHub releases at start and
+every 24 hours, and the user can check from Settings > About. Drafts are not
+visible to them. Downloading and installing happen only when the user presses
+the update buttons. Without a code-signing identity, macOS shows the release page
+instead of installing in place.
 
 The Live2D cat and its overlay have been removed, including the model, vendor
 libraries, configuration, and tray controls. Do not reintroduce those payloads.
 Do not ship a developer's model weights, accounts, profiles, test data, or logs.
+
+## Keep cua-driver current
+
+The `cua-driver bump` workflow runs every Monday. When trycua/cua has a newer
+`cua-driver-rs` release, it pins that version in `scripts/install-cua-driver.js`
+from GitHub's published digests, checks that the Linux binary reports the version,
+and opens or refreshes one draft pull request. Run it by hand from the Actions
+tab to pin an exact version. It needs the repository setting that lets GitHub
+Actions create pull requests, and pull requests it opens do not start CI on their
+own: run CI on the branch, check desktop control on each platform, then merge.

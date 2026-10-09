@@ -27,6 +27,12 @@ export type PreviewTab = Readonly<{
   dirty?: boolean;
   navigation?: {revision: number; url: string};
   viewport?: ViewportSize;
+  /** Opened by the agent: temporary unless marked; the user's tabs never auto-close. */
+  origin?: "agent";
+  /** The last agent run that worked this tab; its end closes the tab unless marked. */
+  agentRunId?: string;
+  /** Kept past the end of `runId`: a result for the user, or work for the next run. */
+  agentMark?: Readonly<{kind: "deliverable" | "handoff"; runId: string}>;
 }>;
 
 export type BrowserPageState = Readonly<{
@@ -58,10 +64,15 @@ function persistedTabs(): PreviewTab[] {
       if ((kind !== "url" && kind !== "file" && kind !== "directory") || typeof tab.id !== "string") return [];
       let viewport: ViewportSize | undefined;
       try { if (kind === "url" && tab.viewport) viewport = parseBrowserViewport(tab.viewport as Record<string, unknown>) || undefined; } catch { /* Reset malformed saved sizes. */ }
+      const mark = tab.agentMark as Record<string, unknown> | undefined;
+      const agent = kind === "url" && tab.origin === "agent" && typeof tab.agentRunId === "string" && !!tab.agentRunId;
       return [{
         id: tab.id,
         ownerChatId: String(tab.ownerChatId || ""),
         viewport,
+        ...(agent ? {origin: "agent" as const, agentRunId: tab.agentRunId as string,
+          ...((mark?.kind === "deliverable" || mark?.kind === "handoff") && typeof mark.runId === "string"
+            ? {agentMark: {kind: mark.kind, runId: mark.runId}} : {})} : {}),
         target: {
           kind,
           source: String(target.source || target.url || ""),
@@ -125,7 +136,13 @@ export function getPreviewState(): PreviewState {
   return store.getState();
 }
 
-export function openPreview(target: PreviewTarget, options: {newBrowser?: boolean; ownerChatId?: string} = {}): string {
+/** Tabs the agent opened that should join the layout without being shown. */
+const backgroundPlacements = new Set<string>();
+export function takeBackgroundPlacement(id: string): boolean {
+  return backgroundPlacements.delete(id);
+}
+
+export function openPreview(target: PreviewTarget, options: {newBrowser?: boolean; ownerChatId?: string; background?: boolean; agentRun?: string} = {}): string {
   const state = store.getState();
   const ownerChatId = options.ownerChatId ?? getSessionState().displayedSessionId ?? "";
   const owned = state.tabs.filter(tab => (tab.ownerChatId || "") === ownerChatId);
@@ -134,12 +151,15 @@ export function openPreview(target: PreviewTarget, options: {newBrowser?: boolea
     : `${ownerChatId}:${fileTabId(target)}`;
   const existing = state.tabs.findIndex(tab => tab.id === id);
   const navigation = target.kind === "url" ? {revision: (state.tabs[existing]?.navigation?.revision || 0) + 1, url: target.url} : undefined;
-  const next: PreviewTab = {id, ownerChatId, target, navigation};
+  const next: PreviewTab = {id, ownerChatId, target, navigation,
+    ...(target.kind === "url" && options.agentRun ? {origin: "agent" as const, agentRunId: options.agentRun} : {})};
+  // Background work never moves the user's selection or shows the tab.
+  if (options.background && existing < 0) backgroundPlacements.add(id);
   patch({
     tabs: existing < 0
       ? [...state.tabs, next]
       : state.tabs.map((tab, index) => index === existing ? {...tab, target, navigation} : tab),
-    selectedId: id,
+    ...(options.background ? {} : {selectedId: id}),
   });
   return id;
 }
@@ -164,17 +184,63 @@ export function allowedBrowserUrl(value: unknown): string {
   return `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
 }
 
-export function openBrowser(url = "about:blank", options: {newTab?: boolean; ownerChatId?: string} = {}): string {
+export function openBrowser(url = "about:blank", options: {newTab?: boolean; ownerChatId?: string; background?: boolean; agentRun?: string} = {}): string {
   const safe = allowedBrowserUrl(url);
-  return openPreview({kind: "url", source: safe, url: safe, label: "Browser"}, {newBrowser: options.newTab, ownerChatId: options.ownerChatId});
+  return openPreview({kind: "url", source: safe, url: safe, label: "Browser"}, {newBrowser: options.newTab, ownerChatId: options.ownerChatId, background: options.background, agentRun: options.agentRun});
 }
 
+/** The user navigating a tab from its address bar makes the tab theirs. */
 export function requestBrowserNavigation(id: string, url: string): void {
   const safe = allowedBrowserUrl(url);
   const state = store.getState();
   patch({tabs: state.tabs.map(tab => tab.id === id && tab.target.kind === "url" ? {
-    ...tab, target: {...tab.target, url: safe, source: safe}, navigation: {revision: (tab.navigation?.revision || 0) + 1, url: safe},
+    ...userOwned(tab), target: {...tab.target, url: safe, source: safe}, navigation: {revision: (tab.navigation?.revision || 0) + 1, url: safe},
   } : tab)});
+}
+
+function userOwned(tab: PreviewTab): PreviewTab {
+  const {origin: _origin, agentRunId: _run, agentMark: _mark, ...rest} = tab;
+  return rest;
+}
+
+/** "Keep tab", a mention, or the user's own navigation: the tab is no longer temporary. */
+export function keepBrowserTab(id: string): void {
+  const state = store.getState();
+  if (!state.tabs.some(tab => tab.id === id && tab.origin === "agent")) return;
+  patch({tabs: state.tabs.map(tab => tab.id === id ? userOwned(tab) : tab)});
+}
+
+/** An agent run worked this tab: its end now decides whether the tab stays. */
+export function noteAgentRun(id: string, runId: string): void {
+  const state = store.getState();
+  if (!runId || !state.tabs.some(tab => tab.id === id && tab.origin === "agent" && tab.agentRunId !== runId)) return;
+  patch({tabs: state.tabs.map(tab => tab.id === id ? {...tab, agentRunId: runId} : tab)});
+}
+
+/** The latest mark wins and lasts only past the run that made it. */
+export function markAgentTab(id: string, kind: "deliverable" | "handoff", runId: string): boolean {
+  const state = store.getState();
+  if (!runId || !state.tabs.some(tab => tab.id === id && tab.origin === "agent")) return false;
+  patch({tabs: state.tabs.map(tab => tab.id === id ? {...tab, agentRunId: runId, agentMark: {kind, runId}} : tab)});
+  return true;
+}
+
+function temporaryFor(tab: PreviewTab, ended: (runId: string) => boolean): boolean {
+  return tab.origin === "agent" && !!tab.agentRunId && ended(tab.agentRunId) && tab.agentMark?.runId !== tab.agentRunId;
+}
+
+/** Close a finished run's unmarked agent tabs; they stay in the reopen history. */
+export function closeAgentRunTabs(ownerChatId: string, runId: string): string[] {
+  const ids = store.getState().tabs.filter(tab => (tab.ownerChatId || "") === ownerChatId && temporaryFor(tab, run => run === runId)).map(tab => tab.id);
+  if (ids.length) closeTabs(ids, true);
+  return ids;
+}
+
+/** After the Deck was closed through a run's end: drop tabs of runs no longer active. */
+export function reconcileAgentTabs(activeRunIds: ReadonlySet<string>): string[] {
+  const ids = store.getState().tabs.filter(tab => temporaryFor(tab, run => !activeRunIds.has(run))).map(tab => tab.id);
+  if (ids.length) closeTabs(ids, true);
+  return ids;
 }
 
 export function setBrowserViewport(id: string, viewport: ViewportSize | null): void {
@@ -184,14 +250,16 @@ export function setBrowserViewport(id: string, viewport: ViewportSize | null): v
   patch({tabs: tabs.map(item => item.id === id ? {...item, viewport: viewport || undefined} : item)});
 }
 
-export function adoptBrowserTab(id: string, url: string, ownerChatId = getSessionState().displayedSessionId || ""): void {
+export function adoptBrowserTab(id: string, url: string, ownerChatId = getSessionState().displayedSessionId || "", background = false, agentRun = ""): void {
   const state = store.getState();
   const safe = allowedBrowserUrl(url);
   const target: PreviewTarget = {kind: "url", source: safe, url: safe, label: "Browser"};
   const index = state.tabs.findIndex(tab => tab.id === id);
+  if (background && index < 0) backgroundPlacements.add(id);
   patch({
-    tabs: index < 0 ? [...state.tabs, {id, target, ownerChatId}] : state.tabs.map((tab, at) => at === index ? {...tab, target} : tab),
-    selectedId: id,
+    tabs: index < 0 ? [...state.tabs, {id, target, ownerChatId, ...(agentRun ? {origin: "agent" as const, agentRunId: agentRun} : {})}]
+      : state.tabs.map((tab, at) => at === index ? {...tab, target} : tab),
+    ...(background ? {} : {selectedId: id}),
   });
 }
 
@@ -264,7 +332,8 @@ export function forgetChatPreviews(chatId:string):string[] {
 export function reopenPreview(id?: string): string | null {
   const index = id ? closedTabs.map(tab => tab.id).lastIndexOf(id) : closedTabs.length - 1;
   if (index < 0) return null;
-  const [tab] = closedTabs.splice(index, 1);
+  // Reopening is the user's choice: the tab is theirs from now on.
+  const tab = userOwned(closedTabs.splice(index, 1)[0]);
   const state = store.getState();
   patch({tabs: state.tabs.some(item => item.id === tab.id) ? state.tabs : [...state.tabs, tab], selectedId: tab.id});
   return tab.id;

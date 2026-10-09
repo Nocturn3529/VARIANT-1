@@ -380,7 +380,7 @@ function createBeforeQuitHandler({
  * @param {() => void} deps.installTray
   * @param {() => void} deps.startBackend
   * @param {() => void|Promise<void>} deps.stopBackend
- * @param {() => any} deps.getAutoUpdater
+ * @param {() => void} [deps.startUpdates]  checks at start and every 24 h; never installs
  * @param {() => import('electron').BrowserWindow|null} deps.getDeckWindow
  * @param {(v: boolean) => void} deps.setQuitting
  * @param {(msg: string) => void} deps.log
@@ -400,7 +400,7 @@ function registerAppLifecycle(deps) {
     installTray,
     startBackend,
     stopBackend,
-    getAutoUpdater,
+    startUpdates,
     getDeckWindow,
     setQuitting,
     log,
@@ -448,11 +448,8 @@ function registerAppLifecycle(deps) {
     log('VARIANT-1 started.');
 
     try {
-      const up = getAutoUpdater();
-      if (up && app.isPackaged) {
-        up.checkForUpdatesAndNotify().catch((e) => log('update check failed: ' + e.message));
-      }
-    } catch (e) { log('auto-update init skipped: ' + e); }
+      if (typeof startUpdates === 'function') startUpdates();
+    } catch (e) { log('update checks skipped: ' + e); }
 
     try {
       const ok = globalShortcut.register('CommandOrControl+Space', () => {

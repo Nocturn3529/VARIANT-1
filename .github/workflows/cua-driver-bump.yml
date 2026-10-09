@@ -1,0 +1,62 @@
+name: cua-driver bump
+
+# Weekly: pin the newest upstream cua-driver and open (or refresh) one draft
+# PR for the owner to review and merge. Nothing is merged or released here.
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Pin this exact cua-driver version instead of the newest'
+        required: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: cua-driver-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Pin the release
+        id: bump
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.event.inputs.version }}
+        run: node scripts/bump-cua-driver.js $VERSION >> "$GITHUB_OUTPUT"
+      - name: Download and verify the new pin
+        if: steps.bump.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          node --test scripts/install-cua-driver.test.js
+          node scripts/install-cua-driver.js
+          CUA_DRIVER_RS_TELEMETRY_ENABLED=0 DO_NOT_TRACK=1 bin/cua-driver/cua-driver --version | grep -F "${{ steps.bump.outputs.version }}"
+      - name: Open or refresh the draft PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: |
+          set -euo pipefail
+          branch=automation/cua-driver-bump
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git checkout -B "$branch"
+          git add scripts/install-cua-driver.js
+          git commit -m "Pin cua-driver $VERSION"
+          git push --force origin "$branch"
+          body="Pins cua-driver $VERSION (trycua/cua cua-driver-rs-v$VERSION) using GitHub's published asset digests. The Linux binary was downloaded, checked against its pin and reported its version. Run CI on this branch (pull requests opened by Actions do not start it on their own), then review and merge."
+          if gh pr view "$branch" --json state --jq .state 2>/dev/null | grep -qx OPEN; then
+            gh pr edit "$branch" --title "Pin cua-driver $VERSION" --body "$body"
+          else
+            gh pr create --draft --base main --head "$branch" --title "Pin cua-driver $VERSION" --body "$body"
+          fi

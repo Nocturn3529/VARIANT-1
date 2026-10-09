@@ -47,6 +47,13 @@ export async function run() {
   assert.equal(goalWorkLabel(working,{...nativeTurn,active:false}),undefined);
   const waiting=parseComposerGoalSnapshot({...makeSnapshot("native",3,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"finished",report:{wait_for_message_ids:["request-a"]}}}})!;
   assert.equal(goalWorkLabel(waiting,{...nativeTurn,active:false}),"Waiting for peer results");
+  assert.deepEqual([waiting.awaitingPeers,waiting.lostUsageRecords,waiting.measuredBudget],[[],null,false],"older backends omit the hold fields");
+  const partial=parseComposerGoalSnapshot({...makeSnapshot("native",4),awaiting_peers:[{chat_id:""},{message_id:"m",chat_id:"B"},"bad"],accounting:{lost_usage_records:-1}})!;
+  assert.deepEqual(partial.awaitingPeers,[{messageId:"m",chatId:"B",displayName:"another chat",state:""}]);
+  assert.equal(partial.lostUsageRecords,null,"a negative count is not a report");
+  const parked=parseComposerGoalSnapshot({...makeSnapshot("native",5,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"finished",report:{wait_for_message_ids:["request-a"]}}},
+    awaiting_peers:[{message_id:"request-a",chat_id:"B",display_name:"Lead",state:"parked"}]})!;
+  assert.equal(goalWorkLabel(parked,{...nativeTurn,active:false}),"Waiting on a paused request");
   const reply=async(request:Record<string,unknown>,result:unknown,type="goal:accepted")=>ingest({type,session_id:request.session_id,request_id:request.request_id,operation:String(request.type).split(":").at(-1),result});
   try {
     await act(async()=>{root.render(<ChatComposer/>);});
@@ -135,6 +142,26 @@ export async function run() {
     await reply(last("goal:finish"),{...cleaned,goal:{...cleaned.goal,version:11},termination:{kind:"user_finished"}});assert.ok(host.textContent?.includes("Ended by you"));assert.ok(host.textContent?.includes("blocked"),"ending goal preserves objective outcome");
     await click("Dismiss goal");assert.equal(last("goal:archive").expected_version,11);
     await reply(last("goal:archive"),{...cleaned,goal:{...cleaned.goal,status:"archived",version:12}});assert.equal(getChatState().goal.snapshot,null);assert.equal(host.querySelector('[aria-label="Durable goal"]'),null);
+
+    // A goal held by a Stop says where to continue it, once per chat.
+    await act(async()=>{activateChatState("E");noteDisplayedSession("E");refreshComposerGoal();});
+    const base=makeSnapshot("held-request",2,"waiting_external","goal-E","E");
+    const held={...base,goal:{...base.goal,budget:{limits:{tokens:5000},usage:{}}},
+      state:{parent_turn:{admission_id:"held-admit",run_id:"held-run",status:"finished",report:{wait_for_message_ids:["m1","m2","m3","m4"]}}},
+      awaiting_peers:[{message_id:"m1",chat_id:"B",display_name:"Lead",state:"parked"},{message_id:"m2",chat_id:"B",display_name:"Lead",state:"parked"},
+        {message_id:"m3",chat_id:"E",display_name:"Self",state:"parked"},{message_id:"m4",chat_id:"F",display_name:"Writer",state:"queued"}],
+      accounting:{lost_usage_records:2}};
+    await reply(last("goal:current:get"),held,"goal:current");
+    assert.equal(host.querySelectorAll('[data-goal-notice="parked"]').length,2,"one notice per paused chat; a queued request is not held");
+    assert.ok(host.textContent?.includes("Waiting on a paused request"));
+    assert.ok(host.textContent?.includes("A request to Lead is paused in its queue"));
+    assert.ok(host.textContent?.includes("A request in this chat's queue is paused"),"a self-message points at this chat's own queue");
+    assert.ok(host.textContent?.includes("2 usage records could not be saved, so this goal's budget can't be checked reliably."));
+    await click("Open Lead");assert.equal(last("chat:session:switch").id,"B","the notice opens the chat holding the request");
+    await act(async()=>{activateChatState("G");noteDisplayedSession("G");refreshComposerGoal();});
+    await reply(last("goal:current:get"),{...makeSnapshot("open-request",2,"running","goal-G","G"),accounting:{lost_usage_records:1}},"goal:current");
+    assert.ok(host.textContent?.includes("1 usage record could not be saved. Usage totals may be low."),"an uncapped goal only warns about totals");
+    assert.equal(host.querySelector('[data-goal-notice="parked"]'),null);
 
   } finally {
     await act(async()=>root.unmount());host.remove();resetWireStatus("chat");

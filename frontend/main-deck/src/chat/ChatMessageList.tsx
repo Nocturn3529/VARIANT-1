@@ -192,10 +192,13 @@ function copyText(value: string, ok: string) {
     .catch(() => notifyChat("Couldn't copy"));
 }
 
-function AttachmentStrip({items}: {items?: ChatAttachment[]}) {
-  if (!items?.length) return null;
+function AttachmentStrip({items, references}: {items?: ChatAttachment[]; references?: ChatMessage["references"]}) {
+  if (!items?.length && !references?.length) return null;
   return <div className="message__attachments" aria-label="Attachments">
-    {items.map(item => (
+    {references?.map(item => <span key={`tab:${item.tabId}`} className="message__attachment-file message__reference" title={item.url}>
+      <Icon name="browser"/>{item.title || item.url}
+    </span>)}
+    {(items || []).map(item => (
       item.kind === "image" && item.previewUrl
         ? <img
             key={item.id}
@@ -256,7 +259,7 @@ function MessageArticle({
     <div className="message__body">
       {isUser ? <>
         <div className="message__prompt">
-          <AttachmentStrip items={message.attachments} />
+          <AttachmentStrip items={message.attachments} references={message.references} />
           {text ? <div className="message__content">
             <RichText value={text} />
           </div> : null}

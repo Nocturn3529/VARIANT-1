@@ -12,6 +12,8 @@ export type ChatWireAttachment = {
   path?: string;
 };
 
+export type ChatTabReference = {kind: "browser_tab"; tab_id: string; owner_chat_id: string; title: string; url: string};
+
 export type ChatSendCommand = {
   type: "chat";
   text: string;
@@ -23,6 +25,8 @@ export type ChatSendCommand = {
   /** Stable client correlation id for active-turn input admission. */
   ticket_id?: string;
   attachments?: ChatWireAttachment[];
+  /** Browser tabs the user mentioned; each resolves only to that exact tab. */
+  references?: ChatTabReference[];
   resume?: boolean;
 };
 

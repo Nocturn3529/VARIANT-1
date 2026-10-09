@@ -83,6 +83,10 @@ _PAGE_METHODS = [
         _INCLUDE_SCREENSHOT,
     ], variadic_kwargs=True),
     _method("close", "Close this page."),
+    _method("show", "Show this tab to the user in the Deck. Browsing otherwise stays in the background; show a page when the user wants to see it or watch."),
+    _method("mark", "Keep this tab after the task ends. Tabs you open close when the task ends unless marked: deliverable (the user should see it) or handoff (continue in a later turn). Marks last for this task only.", [
+        {"name": "kind", "type": "str", "required": True},
+    ]),
 ]
 _ELEMENT_METHODS = [
     _method("click", "Click this element.", [

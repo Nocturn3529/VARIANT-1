@@ -69,15 +69,22 @@ guest.capturePage=async (rect,options)=>{assert.deepEqual({...rect},{x:0,y:0,wid
   guest.hostWebContents=null;guest.getType=()=> 'window';
   guest.executeJavaScript=async()=>({width:1280,height:720});
   guest.capturePage=async()=>image;
+  let lent=0, released=0, lendable=true;
   exported.exports.registerBrowserCapture({getDeckWindow:()=>({webContents:owner}),
     isTrustedIpcSender:event=>event.trusted===true,isNativeHost:()=>false,
-    getRetainedGuest:id=>id===7?{contents:guest,owner,attachmentId:attachment,visible}:null});
+    getRetainedGuest:id=>id===7?{contents:guest,owner,attachmentId:attachment,visible,lent:lent>released}:null,
+    lendCaptureSurface:id=>id===7 && lendable ? (lent++,()=>{released++;}) : null});
   assert.match((await handler({trusted:true,sender:outsider},7)).error,/owner_mismatch/);
   assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,'retained WebContentsView uses canonical ownership');
+  // A hidden tab is captured in the background: it borrows a paint surface
+  // and is unthrottled for this read; both are returned afterwards.
   visible=false;throttled=true;
   guest.capturePage=async()=>{assert.equal(throttled,false,'hidden capture enables its compositor for this read');return image;};
-  assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,'same-owner retained capture works while hidden');
-  assert.equal(throttled,true,'hidden idle throttling is restored');visible=true;
+  assert.equal((await handler({trusted:true,sender:owner},7)).ok,true,"hidden retained tabs capture without being shown");
+  assert.deepEqual([lent,released],[1,1],"the borrowed paint surface is returned");
+  assert.equal(throttled,true,'hidden idle throttling is restored');
+  lendable=false;assert.match((await handler({trusted:true,sender:owner},7)).error,/attachment_hidden.*Open/,"a parked tab still needs its panel");
+  lendable=true;visible=true;
   guest.capturePage=()=>new Promise(resolve=>{finish=resolve});
   const moved=handler({trusted:true,sender:owner},7);await new Promise(setImmediate);
   attachment='retained-b';finish(image);

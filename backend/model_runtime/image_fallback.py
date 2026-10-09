@@ -81,7 +81,7 @@ async def describe_for_text_retry(
     should_stop=None,
 ) -> str:
     """Describe selected images through another configured vision route."""
-    from desktop.vision import VisionUnavailable, available_vision_routes, describe
+    from model_runtime.vision import VisionUnavailable, available_vision_routes, describe
 
     selected = list(images) if isinstance(images, (list, tuple)) else [images]
     selected = [item for item in selected if item]

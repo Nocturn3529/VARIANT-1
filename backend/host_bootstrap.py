@@ -51,8 +51,7 @@ def bootstrap_app_host(
     llm_config_path: str | None = None,
 ) -> AppHost:
     """Construct the process services; runtime installation is a separate step."""
-    import desktop_control
-    from desktop.runtime import DesktopRuntime
+    from desktop_fabric.tool import DesktopSurface
 
     root, data, config = resolve_data_dirs(
         app_root=app_root, data_dir=data_dir, config_dir=config_dir,
@@ -104,7 +103,7 @@ def bootstrap_app_host(
         app_root=root,
         data_dir=data,
         config_dir=config,
-        desktop_control=desktop_control.DesktopControl(DesktopRuntime()),
+        desktop_surface=DesktopSurface(),
         router=router,
     )
     apply_tool_surface_to_host(h, surface)
@@ -176,7 +175,7 @@ def apply_tool_surface_to_host(h: AppHost, surface) -> None:
     h.tools_cfg = surface.tools_cfg
     h.messaging_credentials = surface.messaging_credentials
     h.gateway = surface.gateway
-    h.desktop_control = surface.desktop_control
+    h.desktop_surface = surface.desktop_surface
 
 
 def apply_stores_to_host(h: AppHost, stores) -> None:
