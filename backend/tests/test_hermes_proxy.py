@@ -204,3 +204,27 @@ def test_auth_worker_never_emits_tokens_or_commits_without_acknowledgment(monkey
     output = capsys.readouterr().out
     assert "secret-" not in output
     assert bool(stored) == bool(acknowledgment)
+
+
+def test_longcat_explicit_profile_override_preserves_max_wire_and_default():
+    from model_runtime.context import normalize_model_route
+    from model_runtime.request_policy import project_reasoning_policy
+    model = "meituan/longcat-2.5-preview:free"
+    rule = {"patterns": [model], "effort_field": "reasoning.effort",
+            "efforts": ["low", "medium", "high", "xhigh", "max"],
+            "minimum_fields": {"reasoning_effort": None, "reasoning.effort": None,
+                               "reasoning.enabled": False}}
+    router = _router({"mode": "cloud", "cloud": {"provider": "hermes", "hermes_model": model,
+        "provider_options": {"hermes": {"profile": {"reasoning_model_rules": [rule]}}}}})
+    route = normalize_model_route(router, {"mode": "cloud", "provider": "hermes",
+                                         "model": model, "reasoning_effort": "max"})
+    assert route["reasoning_effort"] == "max"
+    assert route["reasoning_efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    with router.bind_model_route(route):
+        payload = {}
+        assert project_reasoning_policy(router, router.provider_profile("hermes"),
+                                        model, payload, None) == "max"
+        assert payload == {"reasoning": {"effort": "max"}}
+        project_reasoning_policy(router, router.provider_profile("hermes"), model, payload, 0)
+        assert payload == {"reasoning": {"enabled": False}}
+    assert _router().reasoning_efforts("hermes", model) == ()
