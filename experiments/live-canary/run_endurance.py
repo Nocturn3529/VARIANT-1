@@ -318,12 +318,34 @@ class ObserverClient:
         finally:
             self.waiters.pop(request_id,None)
 
+    async def send(self, message):
+        """Send a command that has no correlated reply, such as the chat Stop."""
+        await self.ws.send(json.dumps(message))
+
     async def close(self):
         self.task.cancel()
         try:
             await self.task
         except asyncio.CancelledError:
             pass
+
+
+GOAL_STOPPED = {'complete','blocked','paused','usage_limited','budget_limited'}
+
+
+async def goal_status(client, session_id):
+    row = await client.command({'type':'goal:current:get','session_id':session_id})
+    return row['result']['goal'] or {'status':'cleared','version':0}
+
+
+async def stop_goal(client, session_id, goal_id, version):
+    """Pause the chat goal, then stop its running turn (Stop also pauses)."""
+    paused = await client.command({'type':'goal:control','session_id':session_id,'goal_id':goal_id,
+        'action':'pause','expected_version':version})
+    send = getattr(client, 'send', None)
+    if callable(send):
+        await send({'type':'cancel','session_id':session_id})
+    return paused
 
 
 async def prepare_sessions(client, journal, plan):
@@ -526,21 +548,19 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False, browser_ch
                         'objective':objective},timeout=90)
                     goal_id=accepted['result']['goal']['goal_id']
                     if accepted['result']['goal']['status']=='blocked' and retry_blocked:
-                        await client.command({'type':'goal:continue','session_id':session['id'],'goal_id':goal_id,
-                            'expected_version':accepted['result']['goal']['version'],'message':''},timeout=90)
+                        await client.command({'type':'goal:control','session_id':session['id'],'goal_id':goal_id,
+                            'action':'resume','expected_version':accepted['result']['goal']['version']},timeout=90)
                         journal.append('operator_control',{'action':'admission_retry','model':session['route']['model'],'goal_id':goal_id})
                     started=time.monotonic()
-                    status='queued'
+                    status='active'
                     while time.monotonic()-started < timeout:
-                        row=await client.command({'type':'goal:status:get','session_id':session['id'],'goal_id':goal_id})
-                        status=row['result']['goal']['status']
-                        if status in {'succeeded','failed','blocked','cancelled','archived','paused'}:
+                        status=(await goal_status(client,session['id']))['status']
+                        if status in GOAL_STOPPED or status=='cleared':
                             break
                         await asyncio.sleep(2)
-                    if status in {'queued','running','waiting_external','waiting_user'}:
-                        row=await client.command({'type':'goal:status:get','session_id':session['id'],'goal_id':goal_id})
-                        await client.command({'type':'goal:cancel','session_id':session['id'],'goal_id':goal_id,
-                            'expected_version':row['result']['goal']['version'],'reason':'Admission timeout'})
+                    if status=='active':
+                        current=await goal_status(client,session['id'])
+                        await stop_goal(client,session['id'],goal_id,current['version'])
                         journal.append('observer_intervention',{'action':'admission_timeout','model':session['route']['model']})
                     try:
                         proof=json.loads((workspace/'proof.json').read_text(encoding='utf-8'))
@@ -548,7 +568,7 @@ async def admit(root, *, timeout=600, only=None, retry_blocked=False, browser_ch
                     except (OSError,ValueError,AttributeError):
                         artifact_ok=False
                     requests=ledger.read(goal_id=goal_id,limit=500)['items']
-                    checks={'goal_completed':status=='succeeded','artifact_verified':artifact_ok,'physical_requests_observed':bool(requests),
+                    checks={'goal_completed':status=='complete','artifact_verified':artifact_ok,'physical_requests_observed':bool(requests),
                             'pinned_model':bool(requests) and all(row['provider']==session['route']['provider'] and row['model']==session['route']['model'] for row in requests),
                             'reasoning_policy_on_wire':bool(requests) and all(row['metadata']['reasoning_effort']==session['route'].get('reasoning_effort','') for row in requests)}
                     if browser_check:
@@ -617,13 +637,12 @@ async def run_owned(root, *, tick=30, final_grace=300):
                 expected = publish_feed(plan['project'],cycle)
                 journal.append('feed_revision',{'revision':cycle},identity=f'feed:{cycle}')
                 status_started=time.monotonic()
-                goal = await client.command({'type':'goal:status:get','session_id':sessions[0]['id'],'goal_id':goal_id})
+                goal = await goal_status(client,sessions[0]['id'])
                 status_latency=time.monotonic()-status_started
-                state = goal['result']['goal']['status']
+                state = goal['status']
                 sample=await asyncio.to_thread(resource_sample,backend,plan['project'])
                 sample['goal_status_latency_s']=status_latency
-                sample['runtime']=goal['result'].get('runtime')
-                sample['accounting']=goal['result'].get('accounting')
+                sample['goal_tokens_used']=goal.get('tokens_used')
                 sample['browser']=await asyncio.to_thread(browser_waits,backend.data_dir,sessions)
                 journal.append('sample',sample)
                 artifact_grade = await asyncio.to_thread(grade,plan['project'],expected,now=now,deadline=deadline)
@@ -647,26 +666,28 @@ async def run_owned(root, *, tick=30, final_grace=300):
                 if control:
                     if control['action'] in {'pause','resume','cancel','continue'}:
                         action = control['action']
-                        await client.command({'type':'goal:'+action,'session_id':sessions[0]['id'],'goal_id':goal_id,
-                            'expected_version':goal['result']['goal']['version'],'reason':'Explicit endurance operator control',
-                            'message':control.get('guidance','')})
+                        if action=='cancel':
+                            await stop_goal(client,sessions[0]['id'],goal_id,goal['version'])
+                        else:
+                            await client.command({'type':'goal:control','session_id':sessions[0]['id'],'goal_id':goal_id,
+                                'action':'pause' if action=='pause' else 'resume','expected_version':goal['version']})
                         journal.append('operator_control',{'action':action},identity=control['id'])
                         journal.set('control',None)
                         if action=='cancel':
                             break
-                if state in {'succeeded','failed','cancelled','archived'} or now >= deadline+final_grace:
+                if state=='complete' or now >= deadline+final_grace:
                     break
                 await asyncio.sleep(max(1,tick))
-            if state not in {'succeeded','failed','cancelled','archived'}:
-                goal = await client.command({'type':'goal:status:get','session_id':sessions[0]['id'],'goal_id':goal_id})
-                reason='Browser requires user recovery in an unattended phase' if report.get('requires_human_action') else 'Observation window ended'
-                cancelled=await client.command({'type':'goal:cancel','session_id':sessions[0]['id'],'goal_id':goal_id,
-                    'expected_version':goal['result']['goal']['version'],'reason':reason})
+            if state!='complete':
+                goal = await goal_status(client,sessions[0]['id'])
+                stopped=goal
+                if goal['status']=='active':
+                    stopped=(await stop_goal(client,sessions[0]['id'],goal_id,goal['version']))['result']['goal'] or goal
                 report['goal_status_at_stop']=state
-                report['goal_status']=(cancelled.get('result',{}).get('goal',{}).get('status') or state)
-                journal.append('observer_intervention',{'action':'deadline_cancel'})
-            report.setdefault('end_reason',state if state in {'succeeded','failed','cancelled','archived'} else 'observation_deadline')
-            return 0 if state == 'succeeded' and artifact_grade['passed'] else 1
+                report['goal_status']=stopped.get('status') or state
+                journal.append('observer_intervention',{'action':'deadline_stop'})
+            report.setdefault('end_reason','complete' if state=='complete' else 'observation_deadline')
+            return 0 if state == 'complete' and artifact_grade['passed'] else 1
     except BaseException as exc:
         journal.append('observer_failure',{'type':type(exc).__name__})
         report['end_reason']='observer_failure'

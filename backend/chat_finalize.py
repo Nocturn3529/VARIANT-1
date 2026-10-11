@@ -198,10 +198,21 @@ def _inputs_for_commit(session: Any) -> list[dict]:
     return delivered
 
 
+def _goal_origin(source: Any) -> dict[str, str] | None:
+    event = {"goal:submit": "submission", "goal:continue": "continuation"}.get(str(source or ""))
+    if event is None:
+        return None
+    origin = {"kind": "goal", "event": event}
+    goal_id = str((getattr(current_run_context(), "metadata", None) or {}).get("goal_id") or "")
+    if goal_id:
+        origin["goal_id"] = goal_id[:160]
+    return origin
+
+
 def _peer_origin(source: Any, client_id: Any) -> dict[str, str] | None:
     raw_source = str(source or "")
     if not raw_source.startswith("peer:"):
-        return None
+        return _goal_origin(raw_source)
     raw_client = str(client_id or "")
     return {
         "kind": "peer",
@@ -278,6 +289,14 @@ def _durable_turn_messages(
         for row in rows:
             if row["role"] == "assistant":
                 row["run_id"] = owner_run
+    from chat_goals.events import take_goal_event
+
+    goal_event = take_goal_event(getattr(session.active, "runtime_chat_id", "") or "")
+    if goal_event is not None:
+        for row in reversed(rows):
+            if row["role"] == "assistant":
+                row["goal_event"] = goal_event
+                break
     return rows
 
 
@@ -477,6 +496,7 @@ async def finish_chat_turn(
     # Late import avoids circular import with chat_pipeline (re-exports this module).
     from chat_pipeline import stream_meta
 
+    reply_empty = not str(reply or "").strip()
     reply = str(reply or "…").strip() or "..."
     terminal_status = (
         "cancelled" if interrupted else str(completion_status or "ok").lower()
@@ -491,6 +511,7 @@ async def finish_chat_turn(
         run_ctx.metadata["_terminal_stop_reason"] = str(stop_reason or "")
         run_ctx.metadata["_terminal_reason"] = str(terminal_reason or "")
         run_ctx.metadata["_terminal_cause_class"] = cause_class
+        run_ctx.metadata["_terminal_reply_empty"] = reply_empty
         run_ctx.metadata["_length_recoveries"] = max(
             0, int(length_recoveries or 0)
         )

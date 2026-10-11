@@ -174,13 +174,6 @@ class PeerCommunicationService:
         }
         self._change_event.set()
         self._change_event = asyncio.Event()
-        try:
-            goals = getattr(self.host.require_runtime(), 'goals', None)
-            if goals is not None and goals.parent_session is not None:
-                goals.parent_session.notify_peer_result(row)
-                goals.parent_session.notify_peer_unavailable(row)
-        except Exception:
-            _LOG.exception('Goal peer-result wake unavailable')
         publisher = self._publisher
         if not callable(publisher):
             return
@@ -360,20 +353,6 @@ class PeerCommunicationService:
         # Wake observation waits, not model turns. No unsolicited prompt or
         # fabricated peer reply is added to either session's conversation.
         self._change_event.set(); self._change_event = asyncio.Event()
-        parent = getattr(getattr(self.host.require_runtime(), 'goals', None), 'parent_session', None)
-        if parent is None:
-            return
-        after = ''
-        while True:
-            ids = self.session_runtimes.repository.completed_peer_ticket_ids(chat_id, run_id, admission_id, after=after)
-            if not ids:
-                return
-            for row in self.repository.messages_for_tickets(ids):
-                if requests_work(row):
-                    parent.notify_peer_result({'message_kind':'result','in_reply_to':row['message_id'],
-                        'target_peer_id':row['sender_peer_id'],
-                        'message_id':'native-settlement:'+admission_id+':'+row['message_id']})
-            after = ids[-1]
 
     def notify_native_end(self, chat_id, run_id, admission_id):
         if not run_id or self.session_runtimes.repository.get_run_settlement(chat_id,

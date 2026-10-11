@@ -507,6 +507,9 @@ def register(on):
         try:
             if action == "stop_cell":
                 runtimes = srv.require_runtime().session_runtimes
+                goals = getattr(srv.require_runtime(), "goals", None)
+                if goals is not None:
+                    goals.pause_for_stop(sid)
                 owner = runtimes.active_run_owner(sid)
                 if owner is not None:
                     request_interrupt = getattr(owner[0], "request_interrupt", None)

@@ -128,6 +128,10 @@ async def start_optional_services(h: Any) -> None:
     peers = getattr(runtime, "peers", None)
     if peers is not None:
         await peers.start()
+    goals = getattr(runtime, "goals", None)
+    if goals is not None:
+        # Carries old composer goals over and continues active goals when idle.
+        await goals.start()
 
     # Internal runtime telemetry remains available to Overview, but it is not
     # persisted as a user-facing configuration surface.

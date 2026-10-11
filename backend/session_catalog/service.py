@@ -1928,7 +1928,7 @@ class CatalogService:
         if any(str(method.get("alias") or method.get("name") or "") == "report_outcome"
                for method in session_api.get("methods") or ()):
             current_parts.append(
-                "If working as an active child or owning-session Goal, record a structured outcome before "
+                "If working as an active child session, record a structured outcome before "
                 "your final reply: call session.report_outcome(status=..., summary=...). "
                 "Use completed only when the objective is achieved, continuing for remaining "
                 "authorized work, or blocked for required input. Prose alone is not a report."
@@ -2193,6 +2193,7 @@ class CatalogService:
 
         from kernel_runtime.capabilities import SESSION_KERNEL_METHODS
         from session_catalog.outcomes import REPORT_OUTCOME_METHOD
+        from chat_goals.tools import GOAL_METHODS, goal_handlers
 
         session_methods = (
             {
@@ -2213,6 +2214,7 @@ class CatalogService:
             },
             *SESSION_KERNEL_METHODS,
             REPORT_OUTCOME_METHOD,
+            *GOAL_METHODS,
         )
         async def session_status(_args: dict[str, Any]) -> dict[str, Any]:
             context = current_capability_invocation()
@@ -2271,12 +2273,6 @@ class CatalogService:
         if self.registry.get("session") is None:
             async def report_outcome(args):
                 context = current_capability_invocation()
-                if context is not None and context.work_scope.goal_id and self.host is not None:
-                    goals = self.host.require_runtime().goals
-                    goal = goals.get(context.work_scope.goal_id)
-                    if (goal is not None and goal.owner_chat_id == context.chat_id
-                            and goal.completion_policy.get('execution_owner') == 'parent'):
-                        return goals.parent_session.report(context, **args)
                 if context is None or self.children is None:
                     raise ToolError('session.report_outcome requires an admitted child cell')
                 return self.children.report_outcome(context.chat_id, context.run_id, **args)
@@ -2300,6 +2296,7 @@ class CatalogService:
                         "context": session_context,
                         "status": session_status,
                         'report_outcome': report_outcome,
+                        **goal_handlers(lambda: self.host),
                         **{
                             str(method["name"]): kernel_handler(
                                 str(method["name"])
@@ -2319,8 +2316,8 @@ class CatalogService:
                 methods=session_methods,
                 handler=session,
                 category="session_infrastructure",
-                schema_revision="variant1.session.v5",
-                handler_revision="variant1.session-handler.v6",
+                schema_revision="variant1.session.v6",
+                handler_revision="variant1.session-handler.v7",
                 may_return_secrets=True,
             )
 

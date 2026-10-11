@@ -42,19 +42,21 @@ async def test_activity_bad_tokens_close_cleanly(token):
     assert not socket.accepted
 
 
-def test_oldest_goal_input_survives_global_and_same_chat_flood(tmp_path):
-    from clarification import pending_goal_input, pending_interactions
+def test_oldest_question_survives_global_and_same_chat_flood(tmp_path):
+    from clarification import pending_interactions
     from work_fabric.service import WorkService
     from work_fabric.scope import WorkScope
     work = WorkService.open(str(tmp_path / "work.sqlite3"))
-    target = work.interactions.create(kind="goal_input", prompt="Choose", owner_kind="goal",
-        owner_id="goal-a", scope=WorkScope(chat_id="chat-a", goal_id="goal-a", step_id="step"))
+    target = work.interactions.create(kind="clarification", prompt="Choose", owner_kind="chat",
+        owner_id="first", scope=WorkScope(chat_id="chat-a"),
+        schema={"questions": [{"id": "q1", "question": "Choose"}]})
     for index in range(1002):
         work.interactions.create(kind="clarification", prompt="Other", owner_kind="chat",
-            owner_id=f"other-{index}", scope=WorkScope(chat_id="chat-a" if index % 2 else "chat-b"))
-    assert pending_goal_input(work.interactions, "chat-a") == target
-    assert pending_goal_input(work.interactions, "") is None
-    assert target.interaction_id in {row["id"] for row in pending_interactions(work.interactions, "chat-a")}
+            owner_id=f"other-{index}", scope=WorkScope(chat_id="chat-a" if index % 2 else "chat-b"),
+            schema={"questions": [{"id": "q1", "question": "Other"}]})
+    pending = pending_interactions(work.interactions, "chat-a")
+    assert pending[0]["id"] == target.interaction_id
+    assert pending_interactions(work.interactions, "") == []
 
 
 @pytest.mark.asyncio

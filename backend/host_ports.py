@@ -537,35 +537,17 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         if not admission_id:
             return
         async def publish(payload):
-            note = getattr(current_run_context(), 'metadata', {}).get('goal_budget_error')
-            if note:
-                payload = {**payload, 'reason': note}
             transports = list(registry.attached_transports(_runtime_chat_id()))
             if websocket not in transports:
                 transports.append(websocket)
             await asyncio.gather(*(transport.send_json(payload) for transport in transports),
                                  return_exceptions=True)
-        parent = getattr(getattr(h.require_runtime(), 'goals', None), 'parent_session', None)
-        while True:
-            context = current_run_context()
-            try:
-                budget_paused = (await asyncio.to_thread(parent.boundary_budget, context, admission_id)
-                                 if parent is not None else False)
-            except Exception as exc:
-                _LOG.warning('Goal budget boundary unavailable: %s', type(exc).__name__)
-                budget_paused = False
-                if context is not None and context.metadata.get('goal_budget_limited'):
-                    context.metadata['goal_budget_error'] = 'Goal budget check unavailable; inspect accounting before resuming.'
-                    try:
-                        registry.set_run_paused(_runtime_chat_id(), True,
-                            expected_admission_id=admission_id, expected_run_id=context.run_id)
-                        budget_paused = True
-                    except RuntimeError as stale:
-                        if str(stale) != 'stale_run':
-                            raise
-            await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
-            if not budget_paused:
-                return
+        await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
+
+    def _drain_notes():
+        goals = getattr(h.require_runtime(), 'goals', None)
+        take = getattr(goals, 'take_notes', None)
+        return take(_runtime_chat_id()) if callable(take) else []
 
     return TaskTurnPorts(
         snapshot_store=getattr(h.require_runtime().session_runtimes, "snapshot_store", None),
@@ -592,6 +574,7 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             drain_follow_up=lambda: _drain("follow_up"),
             record_active_input=_record_active_input,
             wait_if_paused=_wait_if_paused,
+            drain_notes=_drain_notes,
         ),
         context=agent_context_ports(h, compress_messages=_compress_with_cancel),
     )

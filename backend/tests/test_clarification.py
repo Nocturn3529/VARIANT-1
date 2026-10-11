@@ -13,7 +13,6 @@ from agent_engine.state import new_run_state
 from clarification import (
     interaction_request,
     normalize_questions,
-    pending_goal_input,
     resolve_response,
     tool_ask_user,
 )
@@ -31,7 +30,7 @@ class FakeChatTransport:
 
 
 @pytest.mark.asyncio
-async def test_scoped_question_snapshot_contains_ordinary_and_goal_questions_and_fences_answers(tmp_path):
+async def test_scoped_question_snapshot_hides_retired_goal_questions_and_fences_answers(tmp_path):
     work = WorkService.open(str(tmp_path/'questions.sqlite3'))
     ordinary = work.interactions.create(kind='clarification', prompt='A?',
         schema={'questions':[{'id':'q1','question':'A?'}]}, owner_kind='run', owner_id='run-a',
@@ -40,14 +39,16 @@ async def test_scoped_question_snapshot_contains_ordinary_and_goal_questions_and
                                     scope=WorkScope(chat_id='chat-a'))
     work.interactions.create(kind='clarification', prompt='B?', owner_kind='run', owner_id='run-b',
                              scope=WorkScope(chat_id='chat-b'))
-    runtime = SimpleNamespace(work=work, goals=None)
+    runtime = SimpleNamespace(work=work)
     srv = SimpleNamespace(require_runtime=lambda:runtime)
     session = SimpleNamespace(viewed_session_id='chat-b', active=SimpleNamespace())
     transport = FakeChatTransport()
     await ws_dispatch.HANDLERS['clarification:list'](srv, transport, session, {'chat_id':'chat-a','request_id':'snapshot-a'})
     snapshot = transport.messages[-1]
     assert snapshot['type'] == 'clarification:snapshot' and snapshot['request_id'] == 'snapshot-a'
-    assert {p['id'] for p in snapshot['pending']} == {ordinary.interaction_id, goal.interaction_id}
+    # Goal questions belonged to the retired step engine; nothing can answer them.
+    assert {p['id'] for p in snapshot['pending']} == {ordinary.interaction_id}
+    assert not resolve_response(work.interactions, goal.interaction_id, {'q1': 'x'}, skipped=False, chat_id='chat-a')
     assert session.viewed_session_id == 'chat-b'
     await ws_dispatch.HANDLERS['clarification:response'](srv, transport, session,
         {'chat_id':'chat-b', 'request_id':'wrong-owner', 'id':ordinary.interaction_id, 'answers':{'q1':'answer'}})
@@ -59,65 +60,26 @@ async def test_scoped_question_snapshot_contains_ordinary_and_goal_questions_and
 
 
 @pytest.mark.asyncio
-async def test_goal_clarification_list_uses_viewed_chat_and_scoped_empty(
-    tmp_path,
-):
+async def test_clarification_list_without_chat_id_snapshots_the_viewed_chat(tmp_path):
     work = WorkService.open(str(tmp_path / "work.sqlite3"))
-    transport = FakeChatTransport()
-    runtime = SimpleNamespace(
-        work=SimpleNamespace(interactions=work.interactions),
-        goals=None,
+    record = work.interactions.create(
+        kind="clarification", prompt="Choose a lane",
+        schema={"questions": [{"id": "q1", "question": "Choose a lane"}]},
+        owner_kind="run", owner_id="run-1", scope=WorkScope(chat_id="chat-viewed"),
     )
+    transport = FakeChatTransport()
+    runtime = SimpleNamespace(work=SimpleNamespace(interactions=work.interactions))
     server = SimpleNamespace(require_runtime=lambda: runtime)
     session = SimpleNamespace(
-        active=SimpleNamespace(
-            runtime_chat_id="chat-active",
-            turn_session_id="chat-turn",
-        ),
+        active=SimpleNamespace(runtime_chat_id="chat-active", turn_session_id="chat-turn"),
         viewed_session_id="chat-viewed",
     )
 
-    await ws_dispatch.HANDLERS["clarification:list"](
-        server, transport, session, {},
-    )
+    await ws_dispatch.HANDLERS["clarification:list"](server, transport, session, {})
 
-    assert transport.messages == [{
-        "type": "clarification:closed",
-        "id": "",
-        "kind": "goal_input",
-        "chat_id": "chat-viewed",
-        "status": "empty",
-    }]
-
-
-@pytest.mark.asyncio
-async def test_goal_clarification_list_projects_matching_interaction(tmp_path):
-    work = WorkService.open(str(tmp_path / "work.sqlite3"))
-    record = work.interactions.create(
-        kind="goal_input",
-        prompt="Choose a lane",
-        owner_kind="goal",
-        owner_id="goal-1",
-        scope=WorkScope(chat_id="chat-a", goal_id="goal-1", step_id="choose"),
-    )
-    transport = FakeChatTransport()
-    runtime = SimpleNamespace(
-        work=SimpleNamespace(interactions=work.interactions),
-        goals=None,
-    )
-    server = SimpleNamespace(require_runtime=lambda: runtime)
-    session = SimpleNamespace(
-        active=SimpleNamespace(runtime_chat_id="", turn_session_id=""),
-        viewed_session_id="chat-a",
-    )
-
-    await ws_dispatch.HANDLERS["clarification:list"](
-        server, transport, session, {},
-    )
-
-    assert transport.messages[0]["type"] == "clarification:request"
-    assert transport.messages[0]["id"] == record.interaction_id
-    assert transport.messages[0]["chat_id"] == "chat-a"
+    assert transport.messages[0]["type"] == "clarification:snapshot"
+    assert transport.messages[0]["chat_id"] == "chat-viewed"
+    assert [row["id"] for row in transport.messages[0]["pending"]] == [record.interaction_id]
 
 
 def test_agent_context_explicitly_inherits_chat_transport():
@@ -278,7 +240,7 @@ def test_ask_user_allows_optional_yes_no_preference():
     assert questions[0]["question"] == "Should the report include a chart?"
 
 
-def test_goal_input_projects_as_freeform_inline_question(tmp_path):
+def test_retired_goal_input_is_not_projected(tmp_path):
     work = WorkService.open(str(tmp_path / "work.sqlite3"))
     record = work.interactions.create(
         kind="goal_input",
@@ -289,8 +251,4 @@ def test_goal_input_projects_as_freeform_inline_question(tmp_path):
         metadata={"title": "Goal input required"},
     )
 
-    assert pending_goal_input(work.interactions, "chat-a") == record
-    projected = interaction_request(record)
-    assert projected["kind"] == "goal_input"
-    assert projected["chat_id"] == "chat-a"
-    assert projected["questions"][0]["options"] == []
+    assert interaction_request(record) is None

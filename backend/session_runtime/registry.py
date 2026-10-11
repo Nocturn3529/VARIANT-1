@@ -1070,6 +1070,10 @@ class SessionRuntimeRegistry:
                 root = {"role": "user", "text": str(text), "ts": admission.reserved_at,
                         "run_id": admission.run_id,
                         "attachments": list(getattr(active, "turn_display_attachments", None) or [])}
+                goal_event = {"goal:submit": "submission", "goal:continue": "continuation"}.get(
+                    str(getattr(active, "turn_source", "") or ""))
+                if goal_event:
+                    root["origin"] = {"kind": "goal", "event": goal_event}
                 ticket_id = str(getattr(active, "turn_ticket_id", "") or "")
             else:
                 ticket_id = ""

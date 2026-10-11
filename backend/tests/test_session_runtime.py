@@ -786,6 +786,23 @@ def test_active_input_projection_is_exact_bounded_and_not_history(tmp_path):
     assert registry.active_input_projection(sid) is None
 
 
+def test_active_goal_turn_root_carries_its_goal_origin(tmp_path):
+    registry, _repository = _runtime(tmp_path)
+    sid = "goal-projection"
+    session = ConnectionSession(viewed_session_id=sid)
+    registry.attach(sid, session.attachment_id, session)
+    admission = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    registry.begin_run(admission, run_id="goal-run", thread_id="goal-run")
+    session.active.runtime_admission_id = admission
+    session.active.turn_display_user_text = "Continue toward the goal"
+    session.active.turn_source = "goal:continue"
+    projected = registry.active_input_projection(sid)
+    assert projected["root"]["origin"] == {"kind": "goal", "event": "continuation"}
+    session.active.turn_source = "chat"
+    assert "origin" not in registry.active_input_projection(sid)["root"]
+    registry.finish_run(admission, status="test-complete")
+
+
 @pytest.mark.parametrize("delivery", ["steer", "follow_up"])
 def test_snapshot_resume_input_uses_the_current_admission_not_old_graph(tmp_path, delivery):
     from agent_engine.runner import prepare_main_chat_run

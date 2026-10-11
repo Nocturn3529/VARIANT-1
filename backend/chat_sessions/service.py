@@ -10,6 +10,7 @@ import os
 import threading
 import time
 from typing import Any, Callable, Mapping
+from chat_goals.events import clean_goal_event
 from observability.run_receipts import sanitize_run_receipt
 from message_context_extents import HOST_CONTEXT_EXTENTS_REVISION
 from project_context import canonical_project_binding, stored_project_binding
@@ -92,6 +93,20 @@ def _peer_origin(value: Any) -> dict[str, str] | None:
     if not peer_id or not message_id:
         return None
     return {"kind": "peer", "peer_id": peer_id, "message_id": message_id}
+
+
+def _message_origin(value: Any) -> dict[str, str] | None:
+    """A stored user row's origin: a peer message or a chat goal turn."""
+    if isinstance(value, Mapping) and str(value.get("kind") or "") == "goal":
+        event = str(value.get("event") or "")
+        if event not in {"submission", "continuation"}:
+            return None
+        origin = {"kind": "goal", "event": event}
+        goal_id = str(value.get("goal_id") or "").strip()[:160]
+        if goal_id:
+            origin["goal_id"] = goal_id
+        return origin
+    return _peer_origin(value)
 
 
 def _compact_evidence(raw: Any) -> list[dict[str, Any]]:
@@ -486,7 +501,7 @@ class ChatSessionService:
                 "text": _content_text(node.content),
                 "ts": float(node.created_at),
             }
-            for key in ("ticket_id", "attachments", "references", "mood", "steps", "receipt", "origin",
+            for key in ("ticket_id", "attachments", "references", "mood", "steps", "receipt", "origin", "goal_event",
                         "peer_display", "run_id", "run_chat_id", "provider_summaries",
                         "text_segments"):
                 if key in node.metadata:
@@ -976,13 +991,16 @@ class ChatSessionService:
                 metadata["attachments"] = attachments
             if references:
                 metadata["references"] = references
-            origin = _peer_origin(raw.get("origin"))
+            origin = _message_origin(raw.get("origin"))
             if origin is not None:
                 metadata["origin"] = origin
         else:
             run_id = str(raw.get("run_id") or "").strip()[:512]
             if run_id:
                 metadata["run_id"] = run_id
+            goal_event = clean_goal_event(raw.get("goal_event"))
+            if goal_event is not None:
+                metadata["goal_event"] = goal_event
             mood = str(raw.get("mood") or "").strip()
             if mood:
                 metadata["mood"] = mood
