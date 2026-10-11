@@ -804,26 +804,6 @@ class SQLiteRunSnapshotStore(RunSnapshotStore):
                 return page(conn, str(chat_id), after_ordinal=int(after_ordinal),
                             through_ordinal=int(through_ordinal), limit=limit)
 
-    def context_heads_page_sync(self, chat_id: str, *, after: str = '', limit: int = 100) -> list[dict]:
-        """Optional bounded diagnostic heads, without checkpoint decoding."""
-        with self._lock, closing(self._connect()) as conn:
-            return [dict(row) for row in conn.execute(
-                'SELECT t.thread_id,t.head_seq AS sequence,t.head_snapshot_id AS snapshot_id,'
-                '(SELECT MAX(s.seq) FROM agent_snapshots s WHERE s.thread_id=t.thread_id) AS retained_through_sequence '
-                'FROM agent_threads t WHERE t.chat_id=? AND t.tombstoned_at IS NULL AND t.head_seq IS NOT NULL AND t.thread_id>? '
-                'ORDER BY t.thread_id LIMIT ?', (str(chat_id), str(after), max(1, min(int(limit), 200))))]
-
-    def context_cursor_page_sync(self, chat_id: str, thread_id: str, *, after_sequence: int = 0,
-                                 through_sequence: int, limit: int = 100) -> list[dict]:
-        """Exact bounded sequence interval, without decoding state blobs."""
-        with self._lock, closing(self._connect()) as conn:
-            return [dict(row) for row in conn.execute(
-                'SELECT t.thread_id,s.seq AS sequence,s.snapshot_id,s.parent_snapshot_id,'
-                's.run_id,t.source,s.completed_node,s.next_node,s.created_at,s.updated_at '
-                'FROM agent_threads t JOIN agent_snapshots s ON s.thread_id=t.thread_id '
-                'WHERE t.chat_id=? AND t.thread_id=? AND t.tombstoned_at IS NULL AND s.seq>? AND s.seq<=? '
-                'ORDER BY s.seq LIMIT ?', (str(chat_id), str(thread_id), int(after_sequence), int(through_sequence), max(1, min(int(limit), 200))))]
-
     def context_cursors_sync(self, chat_id: str) -> list[dict]:
         """Capture retained committed identities without decoding run state."""
         with self._lock, closing(self._connect()) as conn:

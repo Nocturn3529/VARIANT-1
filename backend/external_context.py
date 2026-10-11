@@ -289,7 +289,7 @@ class SessionContextService:
         for row in rows[:cap]:
             text = row["search_text"]
             folded_position = text.casefold().find(query.casefold())
-            # Case folding can expand characters (e.g. Ăź -> ss). Map back to
+            # Case folding can expand characters (e.g. German sharp s -> ss). Map back to
             # the original source so offsets agree with expand().
             folded_length, position = 0, 0
             for position, char in enumerate(text):
@@ -304,7 +304,7 @@ class SessionContextService:
         return {"schema": RESULT_SCHEMA, "view_id": view_id, "items": items, "has_more": len(rows) > cap,
                 "next_cursor": int(rows[cap - 1]["ordinal"]) + 1 if len(rows) > cap else None,
                 "coverage": "canonical text and retained cell source/result text; snapshot metadata only, not all modalities",
-                "search_backend": "fts5-trigram+literal-verification" if self._search_indexed and len(query.casefold()) >= 3 and '\0' not in query else "literal-scan"}
+                "search_backend": "adaptive-fts5-trigram/ordered-literal-keyset" if self._search_indexed and len(query.casefold()) >= 3 and '\0' not in query else "literal-scan"}
 
     def _descriptor(self, chat_id, view_id, source_id):
         view = self._view(chat_id, view_id)

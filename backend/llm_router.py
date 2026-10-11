@@ -1500,7 +1500,12 @@ class LLMRouter:
         efforts = tuple(getattr(profile, "reasoning_efforts", ()) or ())
         selected = str(model or self.get_cloud_model(name) or "").lower()
         if name == "hermes" and selected == "meituan/longcat-2.5-preview:free":
-            return ()  # Catalog advertises reasoning, but no effort-level scale.
+            # Keep the undeclared default, but honor an explicit qualified
+            # per-install wire rule instead of discarding its effort choices.
+            for rule in getattr(profile, "reasoning_model_rules", ()):
+                if selected in rule.get("patterns", ()):
+                    return tuple(rule.get("efforts", efforts) or ())
+            return ()
         if name == "openai-codex" and not selected.startswith("gpt-5.6"):
             efforts = tuple(value for value in efforts if value != "max")
         return efforts
