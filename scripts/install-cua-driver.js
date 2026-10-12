@@ -15,8 +15,8 @@ const path = require('path');
 const {execFileSync, spawnSync} = require('child_process');
 const {downloadPinnedAsset} = require('./download-pinned-asset');
 
-const VERSION = '0.34.0';
-const TAG = 'cua-driver-rs-v0.34.0';
+const VERSION = '0.34.1';
+const TAG = 'cua-driver-rs-v0.34.1';
 const BASE = 'https://github.com/trycua/cua/releases/download/' + TAG + '/';
 const APP_NAME = 'CuaDriver.app';
 const BUNDLE_ID = 'com.trycua.driver';
@@ -24,28 +24,28 @@ const TEAM_IDS = ['4YEC26S9KF', 'YCK386LBJ7'];
 
 const ASSETS = {
   'win32-x64': {
-    name: 'cua-driver-rs-0.34.0-windows-x86_64-binary.zip',
-    sha256: 'bcc520e50861c7092cf775846fec76ae386d7dcd6b5b408608b0ea4423a8b888',
+    name: 'cua-driver-rs-0.34.1-windows-x86_64-binary.zip',
+    sha256: '021bc2e5330c80a6c5e2c347c305fafbd4defe195d6282e0d20436f2f13c19bb',
   },
   'win32-arm64': {
-    name: 'cua-driver-rs-0.34.0-windows-arm64-binary.zip',
-    sha256: 'df5786c6e7841d2f0d88f31c627c487181463ed99614b03efc0e907acfc698c3',
+    name: 'cua-driver-rs-0.34.1-windows-arm64-binary.zip',
+    sha256: '21820a2ae20cb4bb998a340ff87c11007b9eb5cec8d1b8338c7b0d6dc88b01a6',
   },
   'linux-x64': {
-    name: 'cua-driver-rs-0.34.0-linux-x86_64-binary.tar.gz',
-    sha256: '629ac96eff829d4dfd5cf221f3f2165c2d813aed91e5efb7b20777a741cd70a7',
+    name: 'cua-driver-rs-0.34.1-linux-x86_64-binary.tar.gz',
+    sha256: 'a41fe2bdcbeea4501dc594c074f16b0975728e0cc7b08b90acea8564d48fafee',
   },
   'linux-arm64': {
-    name: 'cua-driver-rs-0.34.0-linux-arm64-binary.tar.gz',
-    sha256: '9db8b9084add57eb97be8164367b24b6be54ed4f3dc01213e64b72d7fc09fddb',
+    name: 'cua-driver-rs-0.34.1-linux-arm64-binary.tar.gz',
+    sha256: '1c839d35401bbdea20f3e1cf50ace926ef17be6f32cea7e821b02b263c4933dc',
   },
   'darwin-x64': {
-    name: 'cua-driver-rs-0.34.0-darwin-universal.tar.gz',
-    sha256: '2d0ade531c07b4d16e8078844fe1b63a0dfa0ee19677c9dcc079b4d3460ab387',
+    name: 'cua-driver-rs-0.34.1-darwin-universal.tar.gz',
+    sha256: '4c7edf1ebbad7e4bc9fac90a4dc4f50d544592e00b35f15b681ccf8b41cb4ff1',
   },
   'darwin-arm64': {
-    name: 'cua-driver-rs-0.34.0-darwin-universal.tar.gz',
-    sha256: '2d0ade531c07b4d16e8078844fe1b63a0dfa0ee19677c9dcc079b4d3460ab387',
+    name: 'cua-driver-rs-0.34.1-darwin-universal.tar.gz',
+    sha256: '4c7edf1ebbad7e4bc9fac90a4dc4f50d544592e00b35f15b681ccf8b41cb4ff1',
   },
 };
 
