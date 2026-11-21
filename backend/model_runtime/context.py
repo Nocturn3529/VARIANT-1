@@ -18,8 +18,21 @@ from typing import Any
 
 UNKNOWN_CLOUD_BUDGET_TOKENS = 32768
 _REASONING_EFFORT_ORDER = (
-    "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    "off", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
 )
+
+
+def ordered_efforts(declared) -> list[str]:
+    levels = list(dict.fromkeys(value for value in (declared or ()) if isinstance(value, str) and value))
+    return ([value for value in _REASONING_EFFORT_ORDER if value in levels]
+            + [value for value in levels if value not in _REASONING_EFFORT_ORDER])
+
+
+def default_effort(provider: str, efforts: list[str]) -> str:
+    if not efforts:
+        return ""
+    preferences = {"xai": ("low",), "openai-codex": ("max", "xhigh")}
+    return next((level for level in preferences.get(provider, ("medium",)) if level in efforts), efforts[0])
 
 
 def catalog_context_windows(rows: Any) -> dict[str, int]:
@@ -87,8 +100,10 @@ def _known_cloud_limit(provider: str, model: str) -> int:
     name = str(model or "").strip().lower()
     if not name:
         return 0
-    if provider == "hermes" and name == "meituan/longcat-2.5-preview:free":
-        return 1_048_576
+    if provider == "hermes":
+        from .nous_catalog import DEFAULT_MODEL
+        if name in {DEFAULT_MODEL, "meituan/longcat-2.5-preview:free"}:
+            return 1_048_576
     if str(provider or "").strip().lower() == "openai-codex":
         # The ChatGPT subscription catalog advertises a smaller effective
         # window than the public API model pages. The live Spark entry is
@@ -116,12 +131,11 @@ def _known_cloud_limit(provider: str, model: str) -> int:
     return 0
 
 
-def _reasoning_route_fields(
-    router: Any,
-    provider: str,
-    model: str,
-    raw: dict,
-) -> dict:
+def reasoning_options(router: Any, provider: str, model: str) -> dict:
+    resolver = getattr(router, "model_reasoning_options", None)
+    options = resolver(provider, model) if callable(resolver) else None
+    if isinstance(options, dict):
+        return options
     profile_for = getattr(router, "provider_profile", None)
     profile = profile_for(provider) if callable(profile_for) else None
     resolve = getattr(profile, "for_model", None)
@@ -131,25 +145,32 @@ def _reasoning_route_fields(
     resolver = getattr(router, "reasoning_efforts", None)
     if callable(resolver):
         declared = resolver(provider, model)
-    efforts = tuple(
-        value for value in _REASONING_EFFORT_ORDER if value in declared
-    )
+    efforts = ordered_efforts(declared)
     if provider == "openai-codex" and not str(model or "").lower().startswith("gpt-5.6"):
-        efforts = tuple(value for value in efforts if value != "max")
-    if not efforts:
-        return {}
-    default = (
-        "low" if provider == "xai"
-        else "max" if provider == "openai-codex" and "max" in efforts
-        else "xhigh" if provider == "openai-codex" and "xhigh" in efforts
-        else "medium" if "medium" in efforts
-        else efforts[0]
-    )
+        efforts = [value for value in efforts if value != "max"]
+    default = default_effort(provider, efforts)
+    return {"reasoning_efforts": efforts, **({"default_reasoning_effort": default} if default else {})}
+
+
+def _reasoning_route_fields(router: Any, provider: str, model: str, raw: dict) -> dict:
+    options = reasoning_options(router, provider, model)
+    efforts = options["reasoning_efforts"]
     requested = str(raw.get("reasoning_effort") or "").strip().lower()
-    return {
-        "reasoning_effort": requested if requested in efforts else default,
-        "reasoning_efforts": list(efforts),
-    }
+    fields = {}
+    if efforts:
+        fields["reasoning_efforts"] = efforts
+        choice = requested if requested in efforts else options.get("default_reasoning_effort")
+        if choice:
+            fields["reasoning_effort"] = choice
+    # A reopened chat can be admitted before its first catalog fetch. Retain
+    # its saved intent until dispatch can validate it against the exact model.
+    availability = getattr(router, "nous_model_available", None)
+    cold = provider == "hermes" and callable(availability) and availability(model) is None
+    if cold and not efforts and requested:
+        fields["reasoning_effort"] = requested
+    if (cold or options.get("reasoning_toggle")) and isinstance(raw.get("reasoning_enabled"), bool):
+        fields["reasoning_enabled"] = raw["reasoning_enabled"]
+    return fields
 
 
 def normalize_model_route(

@@ -406,6 +406,51 @@ async def test_grep_skips_ignored_generated_and_binary_files(file_scope):
 
 
 @pytest.mark.asyncio
+async def test_grep_discloses_size_omissions_on_exact_files_and_mixed_results(file_scope):
+    cap = builtin_tools.MAX_SEARCH_FILE_BYTES
+    marker = b"needle"
+    small = file_scope / "at-limit.txt"
+    large = file_scope / "over-limit.txt"
+    small.write_bytes(b"x" * (cap - len(marker)) + marker)
+    large.write_bytes(b"x" * (cap + 1 - len(marker)) + marker)
+    (file_scope / "large.bin").write_bytes(b"\0" + b"x" * cap)
+
+    async def search(path, pattern="needle"):
+        return await builtin_tools.grep_files({"path": str(path), "pattern": pattern})
+
+    assert "1 match(es)" in await search(small)
+    assert "Search incomplete" not in await search(small)
+    assert "No content matches" in await search(small, "missing")
+    negative = await search(large)
+    assert "No matches in the files searched" in negative and "Search incomplete" in negative
+    assert "over-limit.txt" in negative and "2,000,000-byte limit" in negative
+    mixed = await search(file_scope)
+    assert "1 match(es)" in mixed and "at-limit.txt" in mixed
+    assert "Search incomplete" in mixed and "over-limit.txt" in mixed
+    assert "1 over the" in mixed and "large.bin" not in mixed
+
+
+@pytest.mark.asyncio
+async def test_grep_discloses_read_failure_and_bounds_examples(file_scope, monkeypatch):
+    original_open = open
+    for index in range(6):
+        (file_scope / f"failed-{index}.txt").write_text("needle")
+    (file_scope / "readable.txt").write_text("needle")
+
+    def denied(path, *args, **kwargs):
+        if "failed-" in str(path):
+            raise PermissionError("fixture")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtin_tools, "open", denied, raising=False)
+    direct = await builtin_tools.grep_files({"path": str(file_scope / "failed-0.txt"), "pattern": "needle"})
+    assert "1 unreadable" in direct and "failed-0.txt" in direct
+    mixed = await builtin_tools.grep_files({"path": str(file_scope), "pattern": "needle"})
+    assert "1 match(es)" in mixed and "6 unreadable" in mixed
+    assert "failed-2.txt" in mixed and "failed-3.txt" not in mixed
+
+
+@pytest.mark.asyncio
 async def test_glob_uses_the_same_ignore_rules_as_grep(file_scope):
     (file_scope / "kept.txt").write_text("kept", encoding="utf-8")
     ignored = file_scope / "node_modules"

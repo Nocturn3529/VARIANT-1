@@ -7,20 +7,21 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const root = path.resolve(__dirname, '..');
-const output = require('./native-test-artifacts')(root, 'artifacts/frontend-post-rerun-2026-09-06/chat-native', 'chat-ownership');
+const measurePeers = process.argv.includes('--measure-peers');
+const output = require('./native-test-artifacts')(root, measurePeers ? 'artifacts/peer-responsiveness' : 'artifacts/frontend-post-rerun-2026-09-06/chat-native', measurePeers ? 'peer-responsiveness' : 'chat-ownership');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 async function launch() {
   const {spawn} = require('node:child_process');
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'variant1-chat-ownership-'));
   fs.mkdirSync(output, {recursive: true});
-  const child = spawn(require('electron'), [__filename], {
+  const child = spawn(require('electron'), [__filename, ...process.argv.slice(2)], {
     cwd: root, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: {...process.env, VARIANT1_CHAT_TEST_DIR: temporary},
   });
   let log = '';
   for (const stream of [child.stdout, child.stderr]) stream.on('data', chunk => {log += chunk; process.stdout.write(chunk);});
-  const deadline = setTimeout(() => child.kill(), 90000);
+  const deadline = setTimeout(() => child.kill(), measurePeers ? 180000 : 90000);
   try {
     const code = await new Promise((resolve, reject) => {child.once('error', reject); child.once('exit', resolve);});
     process.exitCode = code === 0 ? 0 : 1;
@@ -46,6 +47,7 @@ async function runNative() {
   let win, peer, server, liveSockets = 0, peakSockets = 0, connections = 0, passed = false;
   const commands = [], events = [], checks = [], errors = [];
   const sessions = new Map(['A', 'B'].map(id => [id, {id, title: 'Native chat ' + id, messages: [], runtime: {busy: false}}]));
+  if (measurePeers) require('./measure-native-peer-latency').prepare(sessions);
   const pending = new Map(['A', 'B'].map(id => [id, []]));
   const created = new Map();
   let sharedView = 'A', loseNewAck = true, rejectNew = false, admissionCount = 0;
@@ -65,7 +67,7 @@ async function runNative() {
       multiSelect: false, options: [{label: 'Inspect', description: ''}, {label: 'Continue', description: 'Keep working'}]}]});
   try {
     await app.whenReady();
-    boot.registerVariant1Protocol(protocol, root);
+    boot.registerVariant1Protocol(protocol, measurePeers && process.env.VARIANT1_REPLAY_APP_ROOT ? path.resolve(process.env.VARIANT1_REPLAY_APP_ROOT) : root);
     server = new WebSocketServer({port: 0, host: '127.0.0.1', path: '/ws'});
     await new Promise(resolve => server.once('listening', resolve));
     server.on('connection', socket => {
@@ -161,6 +163,11 @@ async function runNative() {
     async function screenshot(name) {fs.writeFileSync(path.join(output, name + '.png'), (await win.webContents.capturePage()).toPNG());}
     await win.loadURL('variant1://app/frontend/main-deck/index.html'); win.showInactive();
     await until('initial A', () => selected('A'));
+    if (measurePeers) {
+      await require('./measure-native-peer-latency').measure({win, app, output, evaluate, until, select, send, emit, token, complete, route, sessions});
+      passed = true;
+      return;
+    }
     await send('Alpha task');
     await until('A stream', async () => (await messages()).includes('A live prefix'));
     await select('B'); await send('Beta task');

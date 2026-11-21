@@ -370,11 +370,25 @@ def register(on):
             requested_effort = str(msg.get("reasoning_effort") or "").strip().lower()
             target = normalize_model_route(
                 srv.router,
-                {"reasoning_effort": requested_effort} if requested_effort else None,
+                {"reasoning_effort": requested_effort, "reasoning_enabled": msg.get("reasoning_enabled")},
                 mode=mode,
                 provider=str(msg.get("provider") or "") or None,
                 model=str(msg.get("model") or "") or None,
             )
+            if target["provider"] == "hermes" and target["mode"] == "cloud":
+                available = srv.router.nous_model_available(target["model"])
+                if available is False:
+                    await websocket.send_json({"type": "error", "code": "model_unavailable",
+                        "error": "This model is unavailable in the signed-in Nous catalog. Choose another model."})
+                    return
+                if available is True and requested_effort and requested_effort not in target.get("reasoning_efforts", ()):
+                    await websocket.send_json({"type": "error", "code": "unsupported_reasoning_effort",
+                        "error": "This model does not support that reasoning effort."})
+                    return
+                if "reasoning_enabled" in msg and not isinstance(target.get("reasoning_enabled"), bool):
+                    await websocket.send_json({"type": "error", "code": "unsupported_reasoning_toggle",
+                        "error": "This model does not offer that reasoning switch."})
+                    return
             runtimes = srv.require_runtime().session_runtimes
             try:
                 from agent_engine.session_capabilities import (

@@ -17,6 +17,10 @@ export type ComposerModelOption = Readonly<{
   vision: boolean;
   selectable: boolean;
   reasoningEfforts: string[];
+  defaultReasoningEffort?: string;
+  reasoningMandatory?: boolean;
+  reasoningDefaultEnabled?: boolean;
+  reasoningToggle?: boolean;
 }>;
 
 export type ComposerModelProvider = Readonly<{
@@ -41,6 +45,7 @@ export type SessionContextState = Readonly<{
   model: string;
   modelConfigured: boolean | null;
   reasoningEffort: string;
+  reasoningEnabled?: boolean;
   reasoningEfforts: string[];
   measurement: string;
   categoryMeasurement: string;
@@ -158,6 +163,7 @@ function parseSnapshot(message: Record<string, unknown>): SessionContextState | 
     modelConfigured: typeof message.model_configured === "boolean" ? message.model_configured
       : existing.route === message.route && existing.provider === String(message.provider || "") && existing.model === String(message.model || "") ? existing.modelConfigured : null,
     reasoningEffort: String(message.reasoning_effort || ""),
+    reasoningEnabled: typeof message.reasoning_enabled === "boolean" ? message.reasoning_enabled : undefined,
     reasoningEfforts: (Array.isArray(message.reasoning_efforts)
       ? message.reasoning_efforts
       : []).map(value => String(value || "")).filter(Boolean),
@@ -190,7 +196,7 @@ function parseModelProviders(value: unknown): ComposerModelProvider[] {
     const id = String(row.id || "").trim();
     const mode = row.mode === "local" ? "local" : "cloud";
     if (!id) return [];
-    const models = (Array.isArray(row.models) ? row.models : []).flatMap(value => {
+    const models = (Array.isArray(row.models) ? row.models : []).flatMap<ComposerModelOption>(value => {
       if (typeof value === "string") {
         const model = value.trim();
         return model ? [{
@@ -202,14 +208,21 @@ function parseModelProviders(value: unknown): ComposerModelProvider[] {
       const model = value as Record<string, unknown>;
       const modelId = String(model.id || "").trim();
       if (!modelId) return [];
+      const efforts = Array.isArray(model.reasoning_efforts) ? model.reasoning_efforts.filter(
+        (effort): effort is string => typeof effort === "string" && !!effort && !(model.reasoning_mandatory === true && effort === "none"),
+      ) : [];
       return [{
         id: modelId,
         label: String(model.label || modelId),
         detail: String(model.detail || ""),
         vision: !!model.vision,
         selectable: model.selectable !== false,
-        reasoningEfforts: (Array.isArray(model.reasoning_efforts)
-          ? model.reasoning_efforts : []).map(String).filter(Boolean),
+        reasoningEfforts: efforts,
+        defaultReasoningEffort: typeof model.default_reasoning_effort === "string" && efforts.includes(model.default_reasoning_effort)
+          ? model.default_reasoning_effort : undefined,
+        reasoningMandatory: model.reasoning_mandatory === true,
+        reasoningToggle: model.reasoning_toggle === true && model.reasoning_mandatory !== true && !efforts.length,
+        reasoningDefaultEnabled: typeof model.reasoning_default_enabled === "boolean" ? model.reasoning_default_enabled : undefined,
       } satisfies ComposerModelOption];
     });
     return [{
@@ -224,6 +237,16 @@ function parseModelProviders(value: unknown): ComposerModelProvider[] {
       warning: String(row.warning || ""),
     } satisfies ComposerModelProvider];
   });
+}
+
+/** A disabled catalog row is authoritative for this exact route. Other providers
+ * can use the same model name, and free and priced IDs are distinct choices. */
+export function currentCatalogModel(context: SessionContextState): ComposerModelOption | undefined {
+  const provider = context.modelProviders.find(row => row.mode === context.route &&
+    row.id === (context.route === "local" ? "local" : context.provider));
+  if (context.route !== "local") return provider?.models.find(model => model.id === context.model);
+  const pathKey = (value: string) => value.trim().replace(/\\/g, "/").toLowerCase();
+  return provider?.models.find(model => pathKey(model.id) === pathKey(context.model));
 }
 
 export function setSessionContextContext(next: RuntimeContext): void {
@@ -286,9 +309,11 @@ function settingRoute(value:unknown,previous:SessionContextState):Partial<Sessio
   const route=mode==="local"||mode==="cloud" ? mode : previous.route;
   const provider=typeof row.provider==="string" ? row.provider : previous.provider;
   const model=typeof row.model==="string" ? row.model : previous.model;
+  const sameRoute=route===previous.route && provider===previous.provider && model===previous.model;
   return {route,provider,model,
-    modelConfigured:route===previous.route && provider===previous.provider && model===previous.model ? previous.modelConfigured : null,
-    reasoningEffort:typeof row.reasoning_effort==="string" ? row.reasoning_effort : previous.reasoningEffort};
+    modelConfigured:sameRoute ? previous.modelConfigured : null,
+    reasoningEffort:typeof row.reasoning_effort==="string" ? row.reasoning_effort : sameRoute ? previous.reasoningEffort : "",
+    reasoningEnabled:typeof row.reasoning_enabled==="boolean" ? row.reasoning_enabled : undefined};
 }
 
 export function requestSessionContext(sessionId: string | null, activate = true): void {

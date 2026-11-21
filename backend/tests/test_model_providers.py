@@ -89,9 +89,7 @@ def test_bundled_registry_has_hermes_aligned_profiles_and_aliases():
     assert registry.get("minimax-oauth-cn").base_url.startswith("https://api.minimaxi.com/")
     hermes = registry.get("hermes")
     assert hermes.reasoning_effort_field == "reasoning_effort"
-    assert hermes.reasoning_efforts == (
-        "minimal", "low", "medium", "high", "xhigh", "max",
-    )
+    assert hermes.reasoning_efforts == ()  # Each exact Nous model advertises its own scale.
 
 
 def test_opencode_zen_and_go_require_keys_and_explicit_model_selection():

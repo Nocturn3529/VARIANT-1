@@ -931,6 +931,7 @@ async def call_cloud(router, messages: list, sampling: dict, json_mode: bool = F
 
             try:
                 await ensure_proxy(model)
+                await router.prepare_nous_model(model)
             except HermesProxyError as exc:
                 failures.append(f"{provider}: {exc}")
                 continue

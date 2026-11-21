@@ -50,5 +50,9 @@ def save(router, message):
                 efforts = router.reasoning_efforts(route["provider"], route["model"]) if route["mode"] == "cloud" else ()
                 if route["reasoning_effort"] not in efforts:
                     raise SettingsValidation("A route's reasoning effort is unsupported. Choose a declared effort or inherit the route default.")
+            if "reasoning_enabled" in route:
+                options = router.model_reasoning_options(route["provider"], route["model"])
+                if route["mode"] != "cloud" or not options.get("reasoning_toggle"):
+                    raise SettingsValidation("This model does not offer a reasoning switch.")
         router.configure_provider_recovery(normalized)
         return _snapshot(router)

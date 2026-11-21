@@ -168,6 +168,11 @@ function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatSta
     const newer = remote.get(identity(step));
     if (!newer) return step;
     remote.delete(identity(step));
+    if (newer.summaryState && step.summaryState && (newer.summaryRevision !== undefined || step.summaryRevision !== undefined)) {
+      const advances = (newer.summaryRevision ?? -1) > (step.summaryRevision ?? -1);
+      return advances && (step.summaryState === "running" || newer.summaryState !== "running")
+        ? {...step, ...newer, id: step.id} : step;
+    }
     return step.status === "running" && newer.status !== "running" ? {...step, ...newer, id: step.id} : step;
   });
   const oldest=snapshot.steps[0]?.ts ?? 0;

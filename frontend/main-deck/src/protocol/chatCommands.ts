@@ -95,5 +95,5 @@ export type ChatWsCommand =
   | ChatRuntimeMutationSetCommand
   | ChatTtsPreviewCommand
   | {type: "tts:preview:cancel"; request_id: string}
-  | {type: "mode:set"; scope: "session"; id: string; mode: "local" | "cloud"; provider: string; model: string; reasoning_effort?: string}
+  | {type: "mode:set"; scope: "session"; id: string; mode: "local" | "cloud"; provider: string; model: string; reasoning_effort?: string; reasoning_enabled?: boolean}
   | {type: "reasoning:effort:set"; id: string; effort: string};

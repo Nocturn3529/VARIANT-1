@@ -352,29 +352,6 @@
   transition: opacity 120ms ease-out;
 }
 .turn-activity-stack [data-conversation-scaffold]:is(:hover, :focus-within) { opacity: 1; }
-.turn-status {
-  width: 100%;
-  min-height: 25px;
-  display: flex;
-  align-items: center;
-  margin: 0;
-  padding: 2px 0;
-  gap: 7px;
-  border: 0;
-  color: var(--deck-text-muted);
-  background: transparent;
-  font: inherit;
-  line-height: 1.45;
-  text-align: left;
-}
-.turn-status > em {
-  margin-left: auto;
-  flex: none;
-  color: var(--deck-text-muted);
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .turn-process__pulse {
   width: 8px;
   height: 8px;
@@ -390,7 +367,6 @@
   50% { opacity: 1; }
 }
 @keyframes turn-process-shimmer { to { background-position: -220% 0; } }
-.turn-status { width: auto; justify-self: start; }
 @media (prefers-reduced-motion: reduce) {
 .turn-process__pulse { animation: none; }
 .runtime-chat-empty > .kernel-glyph { animation: none; filter: none; }

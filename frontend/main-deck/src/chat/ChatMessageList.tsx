@@ -28,6 +28,7 @@ import {
 import runtimeLib from "./runtimeLib";
 import {RichText} from "./RichText";
 import {TurnActivity} from "./TurnActivity";
+import {currentTraceStep} from "./traceModel";
 import {liveActivitySegments} from "./transcriptTimeline";
 import {getTurnSnapshot} from "../state/turnStore";
 import {
@@ -47,6 +48,7 @@ type IndexedMessage = {
 
 type TranscriptTurn = {
   key: string;
+  runId?: string;
   users: IndexedMessage[];
   assistants: IndexedMessage[];
   live: boolean;
@@ -107,6 +109,7 @@ function addLiveTurn(
   streaming: boolean,
   streamText: string,
   liveIdentity: string,
+  runId: string,
 ): TranscriptTurn[] {
   const next = [...turns];
   let targetIndex = activeTurnId
@@ -134,6 +137,7 @@ function addLiveTurn(
   // The root may arrive after activity (API/Goal admission or reconnect).
   // Its later hydration and steering inputs must not remount the live group.
   if(liveIdentity)target.key=`turn-live-${liveIdentity}`;
+  target.runId = runId;
   target.liveSteps = steps;
   target.streamingMessage = streaming && streamText
     ? {
@@ -320,13 +324,14 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
 }) {
   const steps = stepsForTurn(turn);
   const chronology=liveActivitySegments(turn.users,steps);
+  const currentStep = turn.live ? currentTraceStep(steps) : null;
   const prompts=turn.live ? chronology.prompts : turn.users;
   const hasResponse = turn.assistants.length > 0 || Boolean(turn.streamingMessage);
   const shownPeerMessages = useMemo(() => new Set(turn.users.flatMap(({message}) => message.origin ? [message.origin.message_id] : [])), [turn.users]);
 
-  const turnStartedAt = Math.max(0, Number(
-    turn.users[0]?.message.ts || turn.assistants[0]?.message.ts || Date.now() / 1000,
-  ) * 1000);
+  const mountedAt = useRef(Date.now());
+  const firstTimestamp = turn.users[0]?.message.ts || turn.assistants[0]?.message.ts;
+  const turnStartedAt = firstTimestamp ? firstTimestamp * 1000 : mountedAt.current;
   return <div
     className={`chat-turn${turn.live ? " chat-turn--live" : ""}`}
     role="group"
@@ -347,13 +352,13 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
     {turn.live ? chronology.segments.map((part,index)=><div key={part.key} data-input-boundary={part.input?.message.ticketId}>
       {part.input ? <MessageArticle message={part.input.message} index={part.input.index} speechKey={speechKey} speechPhase={speechPhase}/> : null}
       <TurnActivity steps={part.steps} live streamText={index===chronology.segments.length-1 ? turn.streamingMessage?.text || "" : ""}
-        turnStartedAt={turnStartedAt} scope={turn.key} shownPeerMessages={shownPeerMessages} suppressStatus={index<chronology.segments.length-1}/>
+        turnStartedAt={turnStartedAt} scope={turn.runId || ""} currentStep={currentStep} shownPeerMessages={shownPeerMessages} suppressStatus={index<chronology.segments.length-1}/>
     </div>) : !hasResponse ? <TurnActivity
       steps={steps}
       live={turn.live}
       streamText={turn.streamingMessage?.text || ""}
       turnStartedAt={turnStartedAt}
-      scope={turn.key}
+      scope={turn.runId || turn.key}
       shownPeerMessages={shownPeerMessages}
     /> : null}
 
@@ -392,7 +397,10 @@ export function ChatMessageList() {
   // Another agent's message waits in this chat's queue until the current
   // task ends. Show it where it will land instead of only as a queue count.
   const waitingPeers = useMemo(() => (inputQueue.snapshot?.items || []).filter(item => item.origin), [inputQueue.snapshot]);
-  const liveIdentity=getTurnSnapshot().admissionId || getTurnSnapshot().runId || activeTurnId || "";
+  const snapshot = getTurnSnapshot();
+  const bound = snapshot.active && snapshot.sessionId === sessionId;
+  const liveRunId = bound ? snapshot.runId : "";
+  const liveIdentity = (bound && snapshot.admissionId) || liveRunId || activeTurnId || "";
   const transcriptTurns = useMemo(() => buildTranscriptTurns(messages), [messages]);
   const turns = useMemo(() => (
     streaming || turnActive
@@ -404,12 +412,14 @@ export function ChatMessageList() {
           streaming,
           streamText,
           liveIdentity,
+          liveRunId,
         )
       : lastError && turnSteps.length
         ? addFailedActivityTurn(transcriptTurns, turnSteps)
         : transcriptTurns
   ), [
     liveIdentity,
+    liveRunId,
     activeTurnId,
     lastError,
     messages,

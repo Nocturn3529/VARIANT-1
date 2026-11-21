@@ -1741,7 +1741,7 @@ function testHermesActivityProjection(): void {
     ts: 1_700_000_002,
   });
   steps = getChatState().turnSteps;
-  assert.equal(traceSummary(steps).label, "2 actions · 1 issue");
+  assert.equal(traceSummary(steps).label, "Read b.ts · 1 issue");
 
   const parsed = parseTurnSteps([{...steps[0], call_id: "call-a", duration_ms: 125}]);
   assert.equal(parsed?.[0].callId, "call-a");

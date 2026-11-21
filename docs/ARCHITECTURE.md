@@ -53,10 +53,13 @@ device authorization inside Hermes's installed Python environment, forwarding on
 the verification link, user code and completion receipt. Hermes owns token storage
 and refresh. The helper waits for an owned commit acknowledgment before replacing
 credentials and uses the shared process-tree owner for cancellation. Explicit
-sign-out operates on the shared Hermes account; it does not copy its credentials
-into VARIANT-1. LongCat's exact free route has developer protocol support, an
-advertised 1M context window and no declared effort-level scale; broader task
-qualification is separate.
+sign-out operates on the shared Hermes account; VARIANT-1 leaves credential
+storage to Hermes. The proxy catalog supplies context windows, supported
+reasoning controls and defaults for each exact model ID. The picker and the
+outgoing request use the same effective reasoning rule, with explicit profile
+rules taking precedence. Saved models that leave the catalog appear unavailable.
+The pinned action surface still requires a support-matrix rule that matches
+the route.
 
 `session_catalog.service` publishes categories, mounts, and disclosure; its
 mutation manager delegates disposable execution to the mutation worker client.
@@ -369,8 +372,11 @@ is lost; legacy completion frames wait for the durable append. Session/run/reque
 acknowledgments confirm that separate write. Unconfirmed
 activity saves have bounded retries and reconnect reconciliation; the frontend
 does not claim that an unconfirmed trace is saved merely because its reply is.
-Disclosure state is chat/run/call scoped. Shared elapsed timing and selected
-store subscriptions avoid unrelated control updates during token streaming.
+Disclosure state is chat/run/call scoped. These identities carry expanded rows
+from live activity into settled and reopened turns. An admitted peer reply wait
+updates the active Python row for the duration of the wait. Shared elapsed timing
+and selected store subscriptions avoid unrelated control updates during token
+streaming.
 Idle projection eviction and confirmed deletion coordinate context, receipt,
 disclosure, and turn data without retiring a Python generation. Active work,
 drafts, pending input/preparation, and unfinished settings or annotation requests

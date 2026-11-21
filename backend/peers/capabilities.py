@@ -259,7 +259,7 @@ async def _handle_router(
             if unknown:
                 raise ToolError("peers.message.wait accepts timeout_s")
             return await service.wait_message(
-                caller, handle_id, timeout_s=float(args.get("timeout_s", 30.0)),
+                caller, handle_id, timeout_s=float(args.get("timeout_s", 30.0)), _invocation=context,
             )
         raise ToolError(f"unsupported peers.message method: {method}")
     raise ToolError("unsupported peers handle kind")
