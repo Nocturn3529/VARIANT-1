@@ -2,6 +2,7 @@
 
 Never imports either harness, opens credentials, reads messages, or submits work.
 Hermes aggregates cannot prove that a stored zero was reported by the provider.
+Snapshots retain cumulative records; interval metrics also cover late corrections.
 """
 from __future__ import annotations
 
@@ -19,6 +20,8 @@ FIELDS = ("input_tokens", "output_tokens", "cached_input_tokens",
 HERMES_COUNTERS = ("api_call_count", "input_tokens", "output_tokens", "cache_read_tokens",
                   "cache_write_tokens", "reasoning_tokens", "estimated_cost_usd",
                   "actual_cost_usd")
+SCHEMA = "variant1.prompt-bank-usage.v2"
+LEGACY_SCHEMA = "variant1.prompt-bank-usage.v1"
 
 
 def connection(path):
@@ -31,25 +34,52 @@ def connection(path):
     return conn
 
 
+def variant_values(provider, usage, reported):
+    values = {key: usage.get(key) if key in reported else None for key in FIELDS}
+    raw_input = values["input_tokens"]
+    if raw_input is None:
+        return values
+
+    cache_read = values["cached_input_tokens"]
+    cache_write = values["cache_write_input_tokens"]
+    prompt_volume = usage.get("prompt_token_volume")
+    split_cache = (provider in {"anthropic", "claude"}
+                   or (prompt_volume is not None and prompt_volume > raw_input))
+    # Normalize from observed counters. A sparse receipt may update derived
+    # volumes before the ledger restores previously reported cache counters.
+    if split_cache:
+        values["input_tokens"] = None
+        if cache_read is not None and cache_write is not None:
+            values["input_tokens"] = raw_input + cache_read + cache_write
+        if cache_write is not None:
+            values["uncached_input_tokens"] = raw_input + cache_write
+    elif cache_read is not None:
+        values["uncached_input_tokens"] = max(0, raw_input - cache_read)
+
+    prompt, output = values["input_tokens"], values["output_tokens"]
+    if prompt is not None and output is not None:
+        values["total_tokens"] = max(values["total_tokens"] or 0, prompt + output)
+    elif split_cache:
+        values["total_tokens"] = None
+    return values
+
+
 def variant_records(conn, session_ids):
     records = []
     for identity in session_ids:
         for row in conn.execute(
-            "SELECT manifest_id,session_id,run_id,provider,model,metadata_json,usage_json,"
-            "outcome,started_at,finished_at,duration_s FROM model_usage_request "
+            "SELECT manifest_id,logical_call_id,attempt,session_id,goal_id,run_id,provider,model,"
+            "metadata_json,usage_json,outcome,finished_at,duration_s FROM model_usage_request "
             "WHERE session_id=? ORDER BY ordinal", (identity,)
         ):
             usage = json.loads(row["usage_json"] or "{}")
-            reported = set(usage.get("reported_fields") or [])
-            values = {key: usage.get(key) if key in reported else None for key in FIELDS}
-            # Nous uses inclusive input. Do not derive uncached from a missing
-            # cache counter: the normalizer's fallback zero is not evidence.
-            if values["input_tokens"] is not None and values["cached_input_tokens"] is not None:
-                values["uncached_input_tokens"] = max(
-                    0, values["input_tokens"] - values["cached_input_tokens"])
+            reported = set(usage.get("reported_fields") or []).intersection(FIELDS)
+            values = variant_values(row["provider"], usage, reported)
             metadata = json.loads(row["metadata_json"] or "{}")
             records.append({
                 "key": row["manifest_id"], "session_id": identity, "run_id": row["run_id"],
+                "goal_id": row["goal_id"] or None, "logical_call_id": row["logical_call_id"],
+                "attempt": row["attempt"], "call_category": metadata.get("call_category") or None,
                 "provider": row["provider"], "model": row["model"],
                 "source": metadata.get("source"), "parent_run_id": metadata.get("parent_run_id"),
                 "reasoning_effort": metadata.get("reasoning_effort"),
@@ -79,26 +109,51 @@ def hermes_records(conn, session_ids):
     return records
 
 
+def observed_change(current, previous):
+    if current is None:
+        return None
+    return current - (previous if previous is not None else 0)
+
+
+def summarize_variant(records, previous):
+    deltas = []
+    new_requests = 0
+    for row in records:
+        prior = previous.get(row["key"])
+        if prior is None:
+            deltas.append({**row, "change": "new"})
+            new_requests += 1
+        elif prior != row:
+            values = {field: observed_change(row["values"][field], prior["values"][field])
+                      for field in FIELDS}
+            deltas.append({**row, "change": "updated", "values": values,
+                           "duration_s": observed_change(row["duration_s"], prior["duration_s"])})
+
+    metrics = {}
+    count = len(deltas)
+    for field in FIELDS:
+        known = [row["values"][field] for row in deltas if row["values"][field] is not None]
+        metrics[field] = {
+            "value": sum(known) if count and len(known) == count else None,
+            "known_subtotal": sum(known) if known else None,
+            "coverage": f"{len(known)}/{count} new or updated physical requests",
+        }
+    return {"records": records, "delta_records": deltas, "metrics": metrics,
+            "api_calls": new_requests, "updated_requests": count - new_requests,
+            "pending_requests": sum(row["finished_at"] is None for row in records),
+            "scope": "only explicit session IDs",
+            "duration_sum_s": sum(row["duration_s"] or 0 for row in deltas),
+            "duration_coverage": f"{sum(row['duration_s'] is not None for row in deltas)}/{count}",
+            "delta_note": "New observations and corrections can include earlier requests",
+            "timing_note": "API durations can overlap; not task wall time"}
+
+
 def summarize(harness, records, before=None):
     previous = {row["key"]: row for row in (before or {}).get("records", [])}
+    if previous.keys() - {row["key"] for row in records}:
+        raise ValueError("Current ledger is missing records from the baseline")
     if harness == "variant":
-        records = [row for row in records if row["key"] not in previous]
-        values = [row["values"] for row in records]
-        count = len(records)
-        metrics = {}
-        for field in FIELDS:
-            known = [row[field] for row in values if row.get(field) is not None]
-            metrics[field] = {
-                "value": sum(known) if count and len(known) == count else None,
-                "known_subtotal": sum(known) if known else None,
-                "coverage": f"{len(known)}/{count} physical requests",
-            }
-        pending = sum(row["finished_at"] is None for row in records)
-        return {"records": records, "metrics": metrics, "api_calls": count,
-                "pending_requests": pending, "scope": "only explicit session IDs",
-                "duration_sum_s": sum(row["duration_s"] or 0 for row in records),
-                "duration_coverage": f"{sum(row['duration_s'] is not None for row in records)}/{count}",
-                "timing_note": "API durations can overlap; not task wall time"}
+        return summarize_variant(records, previous)
     deltas = []
     for row in records:
         prior = previous.get(row["key"], {}).get("raw_counters", {})
@@ -133,15 +188,19 @@ def collect(harness, database, session_ids, before=None):
     session_ids = list(dict.fromkeys(session_ids))
     if not session_ids or any(not identity.strip() for identity in session_ids):
         raise ValueError("Explicit nonempty benchmark session IDs are required")
-    if before and (before.get("harness") != harness or before.get("session_ids") != session_ids):
-        raise ValueError("Baseline harness/session identities do not match")
+    if before is not None:
+        if before.get("harness") != harness or before.get("session_ids") != session_ids:
+            raise ValueError("Baseline harness/session identities do not match")
+        accepted = {SCHEMA, LEGACY_SCHEMA} if harness == "hermes" else {SCHEMA}
+        if before.get("schema") not in accepted:
+            raise ValueError(f"Capture a new {harness} baseline with this collector version")
     conn = connection(database)
     try:
         conn.execute("BEGIN")
         rows = (variant_records if harness == "variant" else hermes_records)(conn, session_ids)
     finally:
         conn.close()
-    return {"schema": "variant1.prompt-bank-usage.v1", "harness": harness,
+    return {"schema": SCHEMA, "harness": harness,
             "session_ids": session_ids, "captured_at_unix": time.time(),
             "captured_monotonic_ns": time.monotonic_ns(),
             **summarize(harness, rows, before)}
@@ -163,7 +222,9 @@ def main():
     before = json.loads(Path(args.before).read_text(encoding="utf-8-sig")) if args.before else None
     result = collect(args.harness, args.database, args.session_id, before)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    with output.open("x", encoding="utf-8") as stream:
+        json.dump(result, stream, ensure_ascii=False, indent=2)
+        stream.write("\n")
     print(json.dumps({"output": str(output), "api_calls": result["api_calls"],
                       "pending_requests": result["pending_requests"]}))
 
