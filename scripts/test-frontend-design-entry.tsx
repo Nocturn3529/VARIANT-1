@@ -87,6 +87,8 @@ export async function run() {
     const read={...cells[0],tool:"read_file",argsPreview:JSON.stringify({path:"docs/ARCHITECTURE.md"})};
     const command={...cells[1],tool:"run_command",argsPreview:JSON.stringify({command:"git status"})};
     assert.equal(traceSummary([read,command,{...command,id:"other-command"}]).label,"Read ARCHITECTURE.md, ran 2 commands");
+    assert.equal(traceActionLabel({...command,tool:"execute_code",argsPreview:'{"argv":["ls","src"]}'},false),"Ran ls src");
+    assert.equal(traceActionLabel({...read,tool:"harness.inspect",argsPreview:'{"query":"project files"}'},false),"Explored project files");
     await act(async () => root.render(<TurnActivity key="live-cell-test" steps={[browserCell]} live={true} streamText="" turnStartedAt={Date.now()}/>));
     assert.match(host.querySelector('.trace-entry__name')!.textContent!, /Opening browser page/);
     assert.ok(host.querySelector('.trace-entry.is-running .trace-progress'), 'only running row shows the progress animation');

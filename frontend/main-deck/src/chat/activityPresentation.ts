@@ -25,6 +25,7 @@ export function activityPresentation(step: ChatTurnStep) {
   const number = (value: unknown) => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
   return {
     python,
+    args,
     filePath: typeof path === "string" ? path : undefined,
     input: typeof code === "string" ? code : python ? codePrefix(step.argsPreview) ?? step.argsPreview : step.argsPreview,
     executionCount: python ? number(result?.execution_count) : null,

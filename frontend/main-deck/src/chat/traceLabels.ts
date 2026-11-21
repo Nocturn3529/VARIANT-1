@@ -44,7 +44,7 @@ export function completedAction(step: ChatTurnStep, presentation: ReturnType<typ
 /** Conservative labels for explicit calls; arbitrary Python remains simply “Ran Python”. */
 export function traceActionLabel(step: ChatTurnStep, live: boolean, presentation = activityPresentation(step)): string {
   const action = actionFor(step, presentation);
-  if (!action) return `${currentStepLabel(step, live)}${step.status && !["running","ok","done"].includes(step.status) ? ` · ${activityStatusLabel(step.status)}` : ""}`;
+  if (!action) return `${currentStepLabel(step, live, presentation)}${step.status && !["running","ok","done"].includes(step.status) ? ` · ${activityStatusLabel(step.status)}` : ""}`;
   if (stepFailed(step)) return step.status === "timed_out" ? `${action.present} · timed out` : action.failed;
   if (step.status && !["running","ok","done"].includes(step.status)) return `${action.present} · ${activityStatusLabel(step.status).toLowerCase()}`;
   if (step.status === "running") return live ? withFile(action.present, step, action, presentation) : `${action.present} · interrupted`;

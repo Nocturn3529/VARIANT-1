@@ -26,7 +26,7 @@ export function traceRows(steps: readonly ChatTurnStep[]) {
     const firstLine = presentation.input?.split(/\r?\n/).find(line => line.trim())?.trim() || "";
     const headline = presentation.python
       ? firstLine.replace(/^#\s*/, "") || "Execute Python"
-      : currentStepLabel(step, step.status === "running");
+      : currentStepLabel(step, step.status === "running", presentation);
     return {step, presentation, boundary, headline: headline.length > 96 ? `${headline.slice(0, 95)}…` : headline};
   });
 }
