@@ -105,12 +105,27 @@ class SupportMatrix:
             normalized = dict(row)
             normalized["profile"] = canonical_action_surface(normalized.get("profile"))
             rules.append(SupportRule.from_dict(normalized))
+        existing = cls(rules)
+        legacy_nous = {"upstage/solar-pro4:free", "meituan/longcat-2.5-preview:free"}
+        configured_nous = {rule.model for rule in rules
+                           if rule.provider == "hermes" and rule.model in legacy_nous}
+        legacy_qualifications = [existing.qualification(profile=ACTION_SURFACE, provider="hermes",
+                                  model=model, adapter="openai.chat_completions") for model in configured_nous]
         if any(rule.provider == "hermes" and rule.model == "upstage/solar-pro4:free"
                and rule.status in QUALIFIED_STATUSES for rule in rules) and not any(
                    rule.matches(ACTION_SURFACE, "hermes", "meituan/longcat-2.5-preview:free", "openai.chat_completions") for rule in rules):
             rules.append(SupportRule(ACTION_SURFACE, "hermes",
                 "meituan/longcat-2.5-preview:free", "openai.*", "developer",
                 "Explicit Nous proxy route with Python-tool protocol fixtures; model task benchmark qualification remains pending."))
+        # Older installs that already enabled a bundled Nous route receive the
+        # two exact replacements exercised by the native Python-tool smoke.
+        # Existing rules, including explicit denials, keep their precedence.
+        if any(rule and rule.status in QUALIFIED_STATUSES for rule in legacy_qualifications):
+            for model in ("meituan/longcat-2.5:free", "qwen/qwen4-max:free"):
+                if not any(rule.matches(ACTION_SURFACE, "hermes", model, "openai.chat_completions")
+                           for rule in rules):
+                    rules.append(SupportRule(ACTION_SURFACE, "hermes", model, "openai.*", "developer",
+                        "Native VARIANT-1 Python-tool smoke through the signed-in Nous proxy on 2026-11-21."))
         # Connecting a newly shipped native OAuth route must not leave its
         # model picker unusable behind an older installation's evidence list.
         # These adapters have structural Python-tool protocol coverage, not a
