@@ -144,7 +144,9 @@ async def stream_with_recovery(router, messages, options, *, recovery_profile=No
             changed = route_key(router, candidate) != route_key(router, scope.primary)
             call_messages = portable_messages(messages) if changed or scope.force_portable else messages
             call_options = {**options, "route": candidate["mode"]}
-            if explicit_auxiliary and explicit_auxiliary[index].get("reasoning_effort") and call_options.get("reasoning_budget") == 0:
+            if (explicit_auxiliary and call_options.get("reasoning_budget") == 0
+                    and (explicit_auxiliary[index].get("reasoning_effort")
+                         or "reasoning_enabled" in explicit_auxiliary[index])):
                 # Keep lightweight machinery defaults when no effort is chosen.
                 # An explicit user route effort takes precedence over that default.
                 call_options["reasoning_budget"] = None

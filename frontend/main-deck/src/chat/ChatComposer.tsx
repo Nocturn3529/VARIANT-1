@@ -26,6 +26,7 @@ import {
 import {cancelMic, toggleMic, useMicState} from "../state/micStore";
 import {
   requestSessionContext,
+  currentCatalogModel,
   getContextForSession,
   changeSessionSettings,
   dismissSettingsError,
@@ -376,6 +377,7 @@ export function ChatComposer() {
   const queued = turnActive ? messages.filter(message => message.role === "user" && (message.activeInputState === "queued" || (message.localId && pendingIds.has(message.localId)))) : [];
   const sessionContext = useSessionContextState();
   const composerContext=getContextForSession(sessionId || "");
+  const missingModel = currentCatalogModel(composerContext)?.selectable === false && (!turnActive || goalComposing);
   const pendingSetting=composerContext.settingsPending;
   const engine=useLocalEngine();
   const engineNote=composerContext.route==="local" && engine.missing;
@@ -389,7 +391,8 @@ export function ChatComposer() {
     ? pauseControl.pending.action==="resume" ? "Resuming task…" : "Requesting pause…"
     : pauseControl?.state==="pausing" ? "Pausing after current step…"
     : paused ? "Paused · Messages stay queued until you resume" : "";
-  const composerStatus=!connected ? "Offline · Your draft is kept" : navigating ? "Opening conversation…" : stopPending ? "Stopping task…" : pauseStatus || (pendingSetting ? "Waiting for model confirmation" : "");
+  const composerStatus=!connected ? "Offline · Your draft is kept" : navigating ? "Opening conversation…" : stopPending ? "Stopping task…" : pauseStatus ||
+    (pendingSetting ? "Waiting for model confirmation" : missingModel ? "Saved model unavailable. Choose a model to send." : "");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const zoneRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -407,7 +410,7 @@ export function ChatComposer() {
   // Active-turn input is admitted immediately as steering or a follow-up.
   // In goal mode Send sets the chat goal; its first turn waits for the current one.
   const readyToSend=connected && !navigating && !!sessionId && !attachmentsPreparing && !stopPending && !pendingSetting && !queueAdmissionPending()
-    && !(goalComposing && goalPending) && draftLength <= draftLimit;
+    && !missingModel && !(goalComposing && goalPending) && draftLength <= draftLimit;
   const canActiveInput = readyToSend && turnActive && Boolean(draft.trim()) && !attachments.length && !references.length;
   const canSend = readyToSend && Boolean(draft.trim() || (!goalComposing && (attachments.length || references.length))) && !turnActive;
   const slashQuery = (
@@ -539,6 +542,7 @@ export function ChatComposer() {
       mode: selection.mode,
       provider: selection.mode === "cloud" ? selection.provider : "local",
       model: selection.model,
+      ...(selection.reasoningEnabled !== undefined ? {reasoning_enabled: selection.reasoningEnabled} : {}),
       ...(selection.reasoningEffort
         ? {reasoning_effort: selection.reasoningEffort}
         : {}),

@@ -110,6 +110,9 @@ class LLMRouter:
         self._recovery_cooldowns = RecoveryCooldowns()
         self._recovery_credential_revisions: dict[str, int] = {}
         self._model_context_windows: dict[str, dict[str, int]] = {}
+        self._nous_models: dict[str, dict] | None = None
+        self._nous_catalog_at = 0.0
+        self._nous_catalog_lock = asyncio.Lock()
         self.mode = cfg.get("mode", "local")
         self.sampling = cfg.get("sampling", {})
         self.engine = self.build_inference_runtime(
@@ -463,6 +466,17 @@ class LLMRouter:
 
     async def _record_model_request_manifest(self, manifest: dict) -> None:
         """Durably record the request before I/O and enqueue its display receipt."""
+        route = manifest.get("route") or {}
+        bound = self.bound_model_route()
+        if (route.get("provider") == "hermes" and isinstance(bound, dict)
+                and bound.get("provider") == "hermes" and route.get("model") == bound.get("model")):
+            from model_runtime.context import normalize_model_route
+            selected = normalize_model_route(self, bound)
+            # Live context updates show the chat setting. The generation block
+            # independently records what this physical request actually sent.
+            fields = {key: selected[key] for key in ("reasoning_effort", "reasoning_efforts", "reasoning_enabled")
+                      if key in selected}
+            manifest = {**manifest, "route": {**route, **fields}}
         await self._manifest_bus.record(manifest)
 
     def _patch_model_request_manifest_usage(
@@ -1505,41 +1519,54 @@ class LLMRouter:
         cloud[f"{p}_model"] = model or ""
         self.save_config()
 
-    def reasoning_efforts(self, provider: str = None, model: str = None) -> tuple[str, ...]:
-        """Return the current model route's declared, provider-wire effort scale."""
+    def model_reasoning_rule(self, profile, model: str) -> dict:
+        """Apply the first matching install rule, then the exact advertised model contract."""
+        from model_runtime.request_policy import matching_reasoning_rule
+        rule = matching_reasoning_rule(profile, model)
+        if getattr(profile, "name", "") != "hermes" or self._nous_models is None:
+            return dict(rule)
+        options = ((self.cfg.get("cloud") or {}).get("provider_options") or {}).get("hermes") or {}
+        if rule and "reasoning_model_rules" in (options.get("profile") or {}):
+            return dict(rule)
+        return self._nous_models.get(model, rule)
+
+    def model_reasoning_options(self, provider: str, model: str) -> dict:
+        from model_runtime.context import default_effort, ordered_efforts
         name = self._kn(provider or self.cloud_provider)
         profile = self.provider_profile(name)
-        efforts = tuple(getattr(profile, "reasoning_efforts", ()) or ())
-        selected = str(model or self.get_cloud_model(name) or "").lower()
-        if name == "hermes" and selected == "meituan/longcat-2.5-preview:free":
-            # Keep the undeclared default, but honor an explicit qualified
-            # per-install wire rule instead of discarding its effort choices.
-            for rule in getattr(profile, "reasoning_model_rules", ()):
-                if selected in rule.get("patterns", ()):
-                    return tuple(rule.get("efforts", efforts) or ())
-            return ()
-        if name == "openai-codex" and not selected.startswith("gpt-5.6"):
-            efforts = tuple(value for value in efforts if value != "max")
-        return efforts
+        selected = str(model or self.get_cloud_model(name) or "")
+        rule = self.model_reasoning_rule(profile, selected)
+        efforts = ordered_efforts(rule.get("efforts", getattr(profile, "reasoning_efforts", ())))
+        if rule.get("effort_field") == "":
+            efforts = []
+        if name == "openai-codex" and not selected.lower().startswith("gpt-5.6"):
+            efforts = [value for value in efforts if value != "max"]
+        default = rule.get("default_effort", default_effort(name, efforts))
+        options = {"reasoning_efforts": efforts}
+        if default in efforts:
+            options["default_reasoning_effort"] = default
+        for key, output in (("mandatory", "reasoning_mandatory"), ("default_enabled", "reasoning_default_enabled"),
+                            ("toggle", "reasoning_toggle")):
+            if isinstance(rule.get(key), bool):
+                options[output] = rule[key]
+        return options
+
+    def reasoning_efforts(self, provider: str = None, model: str = None) -> tuple[str, ...]:
+        return tuple(self.model_reasoning_options(provider, model)["reasoning_efforts"])
 
     def get_reasoning_effort(self, provider: str = None, model: str = None) -> str:
         """Resolve one session-bound reasoning effort without provider UI state."""
         name = self._kn(provider or self.cloud_provider)
         selected = str(model or self.get_cloud_model(name) or "")
-        efforts = self.reasoning_efforts(name, selected)
-        if not efforts:
-            return ""
+        options = self.model_reasoning_options(name, selected)
         bound = _BOUND_MODEL_ROUTE.get()
         requested = ""
-        if isinstance(bound, dict) and self._kn(str(bound.get("provider") or "")) == name:
+        if (isinstance(bound, dict) and self._kn(str(bound.get("provider") or "")) == name
+                and bound.get("model") == selected):
             requested = str(bound.get("reasoning_effort") or "").strip().lower()
-        if requested in efforts:
+        if requested in options["reasoning_efforts"]:
             return requested
-        if name == "xai" and "low" in efforts:
-            return "low"
-        if name == "openai-codex":
-            return "max" if "max" in efforts else "xhigh"
-        return "medium" if "medium" in efforts else efforts[0]
+        return options.get("default_reasoning_effort", "")
 
     def _credential_leases(self, provider: str) -> list[CredentialLease]:
         """Ordered credentials: connected OAuth, saved pool, environment, optional auth.
@@ -1618,6 +1645,36 @@ class LLMRouter:
         clean = path.lstrip("/")
         return f"{base}/{clean}" if base.endswith("/v1") else f"{base}/v1/{clean}"
 
+    def nous_model_available(self, model: str) -> bool | None:
+        return model in self._nous_models if self._nous_models is not None else None
+
+    async def _load_nous_catalog(self, *, start_if_needed: bool, refresh: bool):
+        from model_runtime.context import catalog_context_windows
+        from model_runtime.hermes_proxy import available_model_catalog
+        from model_runtime.nous_catalog import reasoning_rules
+
+        async with self._nous_catalog_lock:
+            if refresh or self._nous_models is None or time.monotonic() - self._nous_catalog_at >= 300:
+                rows = await available_model_catalog(start_if_needed=start_if_needed)
+                self._model_context_windows["hermes"] = catalog_context_windows(rows)
+                self._nous_models = reasoning_rules(rows)
+                self._nous_catalog_at = time.monotonic()
+            return self._nous_models
+
+    async def prepare_nous_model(self, model: str) -> None:
+        """Refresh capabilities for headless or reopened chats before preparing the request."""
+        from model_runtime.hermes_proxy import HermesProxyError
+        try:
+            await self._load_nous_catalog(start_if_needed=False, refresh=False)
+        except HermesProxyError:
+            # A transient listing failure is not evidence the user's model
+            # disappeared. Keep its last known contract or omit unknown controls.
+            pass
+        if self.nous_model_available(model) is False:
+            from model_providers import ProviderRequestError
+            raise ProviderRequestError("hermes", f"Model {model} is unavailable in the signed-in Nous catalog. "
+                                       "Choose an available model for this chat.", status_code=400)
+
     async def list_cloud_models(
         self,
         provider: str = None,
@@ -1645,13 +1702,11 @@ class LLMRouter:
             except OllamaCloudError as exc:
                 raise LocalEngineError(str(exc)) from exc
         if prov == "hermes":
-            from model_runtime.hermes_proxy import HermesProxyError, available_model_catalog
-            from model_runtime.context import catalog_context_windows
+            from model_runtime.hermes_proxy import HermesProxyError
 
             try:
-                rows = await available_model_catalog(start_if_needed=start_if_needed)
-                self._model_context_windows[prov] = catalog_context_windows(rows)
-                return sorted({str(row["id"]) for row in rows if row.get("id")})
+                models = await self._load_nous_catalog(start_if_needed=start_if_needed, refresh=True)
+                return sorted(models)
             except HermesProxyError as exc:
                 raise LocalEngineError(str(exc)) from exc
         if prov == 'google-antigravity':

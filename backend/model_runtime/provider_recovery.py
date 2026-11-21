@@ -33,8 +33,8 @@ def normalize_recovery_config(raw=None) -> dict:
             raise ValueError("recovery chains must contain at most four explicit routes")
         result = []
         for entry in value:
-            if not isinstance(entry, dict) or set(entry) - {"mode", "provider", "model", "reasoning_effort"}:
-                raise ValueError("recovery routes accept mode/provider/model/reasoning_effort only")
+            if not isinstance(entry, dict) or set(entry) - {"mode", "provider", "model", "reasoning_effort", "reasoning_enabled"}:
+                raise ValueError("unexpected recovery route field")
             mode = entry.get("mode", "cloud")
             provider = entry.get("provider", "local" if mode == "local" else "")
             model = entry.get("model", "")
@@ -48,6 +48,10 @@ def normalize_recovery_config(raw=None) -> dict:
                 if not isinstance(effort, str) or len(effort) > 32:
                     raise ValueError("recovery route effort must be a bounded string")
                 route["reasoning_effort"] = effort
+            if "reasoning_enabled" in entry:
+                if not isinstance(entry["reasoning_enabled"], bool) or "reasoning_effort" in entry:
+                    raise ValueError("choose a boolean reasoning switch or an effort for a recovery route")
+                route["reasoning_enabled"] = entry["reasoning_enabled"]
             if route not in result:
                 result.append(route)
         return result

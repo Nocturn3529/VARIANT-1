@@ -16,6 +16,7 @@ import io
 import json
 import os
 import shutil
+import stat
 import tempfile
 import threading
 import uuid
@@ -435,34 +436,52 @@ async def grep_files(args):
     except _re.error:
         rx = _re.compile(_re.escape(pattern), _re.IGNORECASE)
 
+    omissions = {"oversized": 0, "unreadable": 0}
+    examples = {reason: [] for reason in omissions}
+
+    def omitted(reason: str, full: str) -> None:
+        omissions[reason] += 1
+        if len(examples[reason]) < 3:
+            name = os.path.relpath(full, rp) if full != rp else os.path.basename(rp)
+            examples[reason].append(repr(name[:160]))
+
     def _search_file(full: str, out: list[str]) -> bool:
-        if os.path.getsize(full) > MAX_SEARCH_FILE_BYTES:
-            return False
-        with open(full, "rb") as probe:
-            if b"\0" in probe.read(4096):
-                return False
-        with open(full, "r", encoding="utf-8", errors="replace") as handle:
-            for number, line in enumerate(handle, 1):
-                if rx.search(line):
-                    out.append(f"{full}:{number}: {line.rstrip()[:500]}")
-                    if len(out) >= limit:
-                        return True
+        try:
+            with open(full, "rb") as probe:
+                if b"\0" in probe.read(4096):
+                    return False
+                if os.fstat(probe.fileno()).st_size > MAX_SEARCH_FILE_BYTES:
+                    omitted("oversized", full)
+                    return False
+            with open(full, "r", encoding="utf-8", errors="replace") as handle:
+                for number, line in enumerate(handle, 1):
+                    if rx.search(line):
+                        out.append(f"{full}:{number}: {line.rstrip()[:500]}")
+                        if len(out) >= limit:
+                            return True
+        except (OSError, UnicodeError):
+            omitted("unreadable", full)
         return False
 
     def _plain():
         from file_ignore import IgnoreMatcher
 
         out: list[str] = []
-        if os.path.isfile(rp):
-            try:
-                capped = _search_file(rp, out)
-            except (OSError, UnicodeError):
-                capped = False
+        try:
+            mode = os.stat(rp).st_mode
+        except FileNotFoundError:
+            raise tools.ToolError(f"not a file or folder: {path}") from None
+        except OSError:
+            omitted("unreadable", rp)
+            return out, False
+        if stat.S_ISREG(mode):
+            capped = _search_file(rp, out)
             return out, capped
-        if not os.path.isdir(rp):
+        if not stat.S_ISDIR(mode):
             raise tools.ToolError(f"not a file or folder: {path}")
         matcher = IgnoreMatcher(rp)
-        for root, dirs, files in os.walk(rp, followlinks=False):
+        walk = os.walk(rp, followlinks=False, onerror=lambda exc: omitted("unreadable", exc.filename or rp))
+        for root, dirs, files in walk:
             rel_folder = os.path.relpath(root, rp).replace("\\", "/")
             if rel_folder == ".":
                 rel_folder = ""
@@ -476,22 +495,28 @@ async def grep_files(args):
                 if (matcher.ignored(rel, False) or _is_reparse_or_link(full)
                         or (path_glob and not _glob_match(rel, path_glob))):
                     continue
-                try:
-                    if _search_file(full, out):
-                        return out, True
-                except (OSError, UnicodeError):
-                    continue
+                if _search_file(full, out):
+                    return out, True
         return out, False
 
     hits, capped = await _thread(_plain)
+    coverage = []
+    if omissions["oversized"]:
+        paths = ", ".join(examples["oversized"])
+        coverage.append(f"{omissions['oversized']} over the {MAX_SEARCH_FILE_BYTES:,}-byte limit ({paths})")
+    if omissions["unreadable"]:
+        coverage.append(f"{omissions['unreadable']} unreadable ({', '.join(examples['unreadable'])})")
+    notice = "\nSearch incomplete. Skipped " + ", ".join(coverage) + "." if coverage else ""
     if not hits:
+        if notice:
+            return f'No matches in the files searched for "{pattern}" under {path}.' + notice
         return f'No content matches for "{pattern}" under {path}.'
     suffix = (
         " (result limit reached; more matches may exist — narrow the path/glob "
         "or raise limit)"
         if capped else ""
     )
-    return f"{len(hits)} match(es){suffix}:\n" + "\n".join(hits)
+    return f"{len(hits)} match(es){suffix}:\n" + "\n".join(hits) + notice
 
 
 def _file_signature(path: str) -> tuple:

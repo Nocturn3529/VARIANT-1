@@ -162,6 +162,52 @@ export async function run() {
     await act(async()=>ingestSessionContext({type:"session:settings:snapshot",session_id:"A",request_id:settledCheck.request_id,pending:false,route:{mode:"local",provider:"local",model:"C:/models/B/shared.gguf",reasoning_effort:"high"}}));
     assert.equal(send().disabled,false);assert.equal(getContextForSession("A").reasoningEffort,"high");
 
+    const missing="meituan/longcat-2.5-preview:free", free="qwen/qwen4-max:free", paid="qwen/qwen4-max", binary="tencent/hy4-flash:free";
+    const nousRows=[{id:missing,selectable:false,detail:"Saved model absent from the live catalog."},
+      {id:free,reasoning_efforts:["xhigh","high","low","none"],default_reasoning_effort:"high"},
+      {id:paid,reasoning_efforts:["low"]},{id:binary,reasoning_toggle:true,reasoning_default_enabled:true},
+      {id:"stepfun/step-3.7-flash:free",reasoning_mandatory:true,reasoning_efforts:["high","medium","low"]}];
+    const openNous=async()=>{
+      await act(async()=>host.querySelector<HTMLButtonElement>("#model-button")!.click());
+      const request=commands.filter(item=>item.type==="model:options").at(-1)!;
+      await act(async()=>ingestSessionContext({type:"model:options",session_id:"A",request_id:request.request_id,
+        providers:[{id:"hermes",name:"Nous Portal",mode:"cloud",models:nousRows}]}));
+      const more=document.querySelector<HTMLButtonElement>(".model-picker__more");
+      if(more)await act(async()=>more.click());
+    };
+    const openEfforts=async(id:string)=>act(async()=>document.querySelector<HTMLButtonElement>(`[aria-label="${id} options"]`)!.click());
+    const choices=()=>[...document.querySelectorAll<HTMLButtonElement>(".model-picker__effort-menu button")];
+    const ack=async(command:Record<string,unknown>,route:Record<string,unknown>)=>act(async()=>ingestSessionContext({
+      type:"session:settings:ack",session_id:"A",request_id:command.request_id,operation:command.type,status:"applied",route:{mode:"cloud",provider:"hermes",...route}}));
+    await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"cloud",provider:"hermes",model:missing,reasoning_effort:"max",status:"ready"}));
+    await openNous();
+    assert.equal(document.querySelector<HTMLButtonElement>(`[data-model-option="${missing}"]`)!.disabled,true);
+    assert.match(host.querySelector("#model-button")!.textContent!,/Unavailable/);
+    assert.equal(send().disabled,true,"a confirmed missing saved model requires a deliberate choice");
+    await openEfforts(free);
+    assert.deepEqual(choices().map(b=>b.textContent),["XHigh","High","Low","None"]);
+    assert.match(document.querySelector(".model-picker__effort-menu")!.textContent!,/Default High/);
+    await act(async()=>choices().find(b=>b.textContent==="None")!.click());
+    const selectFree=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([selectFree.model,selectFree.reasoning_effort,selectFree.reasoning_enabled],[free,"none",undefined]);
+    await ack(selectFree,{model:free,reasoning_effort:"none"});
+    assert.equal(send().disabled,false);assert.match(host.querySelector("#model-button")!.textContent!,/None/);
+    await openNous();await openEfforts(paid);
+    assert.deepEqual(choices().map(b=>b.textContent),["Low"],"the priced variant has its own exact capabilities");
+    await openEfforts(binary);assert.deepEqual(choices().map(b=>b.textContent),["On","Off"]);
+    await act(async()=>choices().find(b=>b.textContent==="Off")!.click());
+    const selectBinary=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([selectBinary.model,selectBinary.reasoning_enabled,selectBinary.reasoning_effort],[binary,false,undefined]);
+    await ack(selectBinary,{model:binary,reasoning_enabled:false});
+    assert.match(host.querySelector("#model-button")!.textContent!,/Reasoning off/);
+    await openNous();await openEfforts("stepfun/step-3.7-flash:free");
+    assert.deepEqual(choices().map(b=>b.textContent),["High","Medium","Low"]);
+    await act(async()=>document.querySelector<HTMLButtonElement>(`[data-model-option="${free}"]`)!.click());
+    const plain=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([plain.model,plain.reasoning_effort,plain.reasoning_enabled],[free,undefined,undefined],"plain selection inherits the new model default");
+    await ack(plain,{model:free,reasoning_effort:"high"});
+    assert.match(host.querySelector("#model-button")!.textContent!,/High/);
+
     await act(async()=>{setChatDelivery("follow_up");activateChatState("B");setChatState({...getChatState(),connected:true});noteDisplayedSession("B");});
     assert.equal(getChatState().deliveryMode,"steer","delivery choice does not leak between chats");
     retainChatDraft("A","Retained voice text","A");

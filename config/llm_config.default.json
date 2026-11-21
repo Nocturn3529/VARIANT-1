@@ -72,7 +72,7 @@
     "xai_model": "grok-4.3",
     "ollama_model": "gemma4:31b-cloud",
     "opencode-zen_model": "x-preview-f-free",
-    "hermes_model": "meituan/longcat-2.5-preview:free",
+    "hermes_model": "meituan/longcat-2.5:free",
     "nvidia_model": "nvidia/nemotron-3-ultra-550b-a55b",
     "gemini_model": "gemini-1.5-pro",
     "keys": {},

@@ -31,7 +31,7 @@ def test_hermes_is_one_fixed_oauth_proxy_provider():
     assert profile.name == "hermes"
     assert profile.display_name == "Hermes Agent (Nous OAuth)"
     assert profile.base_url == "http://127.0.0.1:8645/v1"
-    assert profile.default_model == "meituan/longcat-2.5-preview:free"
+    assert profile.default_model == "meituan/longcat-2.5:free"
     assert profile.auth_style == "optional"
     assert profile.env_vars == ()
     assert profile.supports_reasoning is True

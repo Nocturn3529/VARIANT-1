@@ -641,6 +641,8 @@ class ChatSessionService:
         effort = str(raw.get("reasoning_effort") or "").strip().lower()[:24]
         if effort:
             route["reasoning_effort"] = effort
+        if isinstance(raw.get("reasoning_enabled"), bool):
+            route["reasoning_enabled"] = raw["reasoning_enabled"]
         return route
 
     def set_model_route(self, sid: str, route: dict | None) -> bool:
@@ -657,6 +659,8 @@ class ChatSessionService:
                 "reasoning_effort": str(
                     raw.get("reasoning_effort") or ""
                 ).strip().lower()[:24],
+                **({"reasoning_enabled": raw["reasoning_enabled"]}
+                   if isinstance(raw.get("reasoning_enabled"), bool) else {}),
                 "updated_at": time.time(),
             }
             return True
