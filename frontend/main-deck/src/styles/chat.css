@@ -654,3 +654,9 @@
 .composer-session-tools__content { position: absolute; left: 0; bottom: calc(100% + 8px); width: 300px; max-width: 70vw; padding: 14px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-lg); background: var(--deck-surface-panel); z-index: 30; box-shadow: var(--deck-shadow); animation: dock-panel-in var(--deck-motion-panel) cubic-bezier(.2,.8,.2,1); }
 .composer-session-tools__content p { margin: 12px 0 0; color: var(--deck-text-muted); line-height: 1.55; }
 .composer-session-tools__content small { display: block; margin-top: 8px; color: var(--deck-text-secondary); }
+/* Goal turns: the first message is labelled; continuations are a quiet marker. */
+.message__goal-label { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--deck-text-muted); font-size: var(--deck-text-xs); font-style: normal; letter-spacing: .02em; text-transform: uppercase; }
+.message__goal-label svg, .message__goal-turn svg, .message__goal-achieved svg { width: 12px; height: 12px; }
+.message--goal-turn .message__goal-turn { display: flex; align-items: center; gap: 7px; margin: 0; color: var(--deck-text-muted); font-size: var(--deck-text-compact); }
+.message--goal-turn .message__goal-turn time { margin-left: 4px; color: var(--deck-text-faint); font-size: var(--deck-text-xs); }
+.message__goal-achieved { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; color: var(--deck-text-secondary); font-size: var(--deck-text-compact); font-weight: 600; }

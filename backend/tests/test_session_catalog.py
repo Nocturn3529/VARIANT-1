@@ -408,7 +408,7 @@ def test_public_jobs_root_is_absent_while_returned_handle_dispatch_remains(
     assert _api_method_aliases(document, "goals") == set()
     assert _api_method_aliases(document, "session") == {
         "context", "status", "continuity", "configure_continuity", "checkpoint",
-        "restart", "report_outcome",
+        "restart", "report_outcome", "get_goal", "create_goal", "update_goal",
     }
     prompt = service.runtime_prompt("chat-work", "check the current jobs")
     assert "jobs.list/get" not in prompt
@@ -485,7 +485,7 @@ async def test_kernel_continuity_is_absorbed_by_immutable_session_control(
         "principal_actor_id": "model",
         "run_id": "run-kernel-continuity",
     }
-    assert registry.get("session").schema_revision == "variant1.session.v5"
+    assert registry.get("session").schema_revision == "variant1.session.v6"
     assert registry.get("kernel") is None
     assert not any(
         registry.get(name) is not None
@@ -1527,7 +1527,7 @@ def test_mount_persists_alias_projection_and_cas_allows_one_winner(
     }
     assert _api_method_aliases(document, "session") == {
         "context", "status", "continuity", "configure_continuity", "checkpoint",
-        "restart", "report_outcome",
+        "restart", "report_outcome", "get_goal", "create_goal", "update_goal",
     }
     restarted = SessionRuntimeRegistry(runtimes.repository)
     restored = restarted.ensure_runtime("chat-mount")
@@ -1908,7 +1908,7 @@ def test_delete_removes_mount_history_and_chat_authority_disables_mutation(catal
     }
     assert _api_method_aliases(document, "session") == {
         "context", "status", "continuity", "configure_continuity", "checkpoint",
-        "restart", "report_outcome",
+        "restart", "report_outcome", "get_goal", "create_goal", "update_goal",
     }
     assert service.repository.history("chat-delete")
     service.repository.delete_chat_state("chat-delete")

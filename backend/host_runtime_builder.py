@@ -42,8 +42,7 @@ def install_host_runtime(
     from chat_sessions import build_chat_sessions
     from execution_hosts import create_execution_runtime
     from coding import create_coding_runtime
-    from goals import create_goal_service, recover_goal_supervisors
-    from goals.host_handlers import build_goal_host_handlers
+    from chat_goals import create_chat_goal_service
     from artifacts import create_artifact_runtime
     from browser_fabric import create_browser_fabric, install_browser_fabric
     from desktop_fabric import create_desktop_fabric, install_desktop_fabric
@@ -148,17 +147,10 @@ def install_host_runtime(
         process_service=execution.processes,
     )
     coding.startup()
-    goals = create_goal_service(work)
-    goal_adapters = build_goal_host_handlers(host, goals)
-    from goals.parent_session import ParentSessionGoals
-    parent_goals = ParentSessionGoals(host, goals, goal_adapters)
-    astb.session_runtimes.register_idle_listener(parent_goals.notify_idle)
-    goals.register_cancellation_handler(goal_adapters.cancel_goal_resources)
-    for kind, handler in goal_adapters.handlers().items():
-        goals.executor.register(kind, handler)
-    for source, resolver in goal_adapters.wait_resolvers().items():
-        goals.register_wait_resolver(source, resolver)
-    recover_goal_supervisors(goals)
+    goals = create_chat_goal_service(host, work.repository.path)
+    astb.session_runtimes.register_idle_listener(goals.notify_idle)
+    if getattr(host, "router", None) is not None:
+        host.router.goal_usage_for_request = goals.request_usage
     from peers import PeerCommunicationService, PeerRepository
 
     peers = PeerCommunicationService(

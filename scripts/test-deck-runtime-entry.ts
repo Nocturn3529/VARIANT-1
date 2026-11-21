@@ -54,12 +54,6 @@ import {
   setAutomationContext,
 } from "../frontend/main-deck/src/automationStore";
 import {
-  createLoop,
-  setDraftLoopGoal,
-  setDraftLoopTitle,
-  setGoalsContext,
-} from "../frontend/main-deck/src/goalsStore";
-import {
   disposeTerminalRuntime,
   getTerminalSnapshot,
   ingestTerminal,
@@ -73,7 +67,6 @@ import {
 } from "../frontend/main-deck/src/context/terminalStore";
 import {mutationToggleControlState} from "../frontend/main-deck/src/chat/mutationControl";
 import {
-  REACT_MODULE_MESSAGE_TYPES,
   parseChatWsMessage,
 } from "../frontend/main-deck/src/protocol";
 import {getGeneralState, ingestGeneral} from "../frontend/main-deck/src/generalStore";
@@ -1778,33 +1771,6 @@ function testOfflineWritesKeepDrafts(): void {
     misfire_policy: "latest",
   }), false);
   assert.match(getAutomationState().saveError, /offline/i);
-
-  const sent: Array<Record<string, unknown>> = [];
-  setGoalsContext({
-    send: () => false,
-    notify: message => notices.push(message),
-  });
-  setDraftLoopTitle("Retained run title");
-  setDraftLoopGoal("Retained run goal");
-  assert.equal(createLoop(), false);
-
-  setGoalsContext({
-    send: payload => {
-      sent.push(payload as Record<string, unknown>);
-      return true;
-    },
-    notify: message => notices.push(message),
-  });
-  assert.equal(createLoop(), true, "offline project-run draft must remain retryable");
-  assert.equal(sent.at(-1)?.title, "Retained run title");
-  assert.equal(sent.at(-1)?.goal, "Retained run goal");
-}
-
-function testMemoryProjectRunRouting(): void {
-  const routed = REACT_MODULE_MESSAGE_TYPES["react-runtime-goals"];
-  for (const type of ["goals:loops", "goals:loop"] as const) {
-    assert.ok(routed.includes(type), `${type} must reach the Goals runtime module`);
-  }
 }
 
 function testWorkbenchToggleReopensHiddenPane(): void {
@@ -2209,7 +2175,6 @@ export async function run(): Promise<void> {
   testHermesActivityProjection();
   testEvidenceExtraction();
   testOfflineWritesKeepDrafts();
-  testMemoryProjectRunRouting();
   testSettingsOverlayNavigation();
   testWorkbenchToggleReopensHiddenPane();
   await testAttachmentCommitIsolation();

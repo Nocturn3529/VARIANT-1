@@ -61,7 +61,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-about": ["hello", "config", "engine", "doctor:result"],
   "react-runtime-chat": [
     "children:snapshot", "children:detail", "children:rejected", "children:changed",
-    "goal:accepted", "goal:rejected", "goal:current", "work:event",
+    "goal:accepted", "goal:rejected", "goal:current", "goal:updated", "work:event",
     "hello", "orphaned_task", "config", "engine", "chat:session", "chat:runtime", "chat:execution", "chat:appended", "chat:transcript_failed",
     "chat:session:error", "chat:session:annotated", "chat:queued", "chat:queue_rejected", "chat:queue_progress", "chat:queue_settled", "chat:rejected",
     "chat:runtime:mutation:set:done", "chat:runtime:mutation:set:rejected", "chat:pause_state", "chat:queue_snapshot", "chat:queue_result",
@@ -84,7 +84,6 @@ export const REACT_MODULE_MESSAGE_TYPES = {
     "execution:snapshot", "terminal:accepted", "terminal:rejected",
     "process:accepted", "process:rejected",
   ],
-  "react-runtime-goals": ["goals:loops", "goals:loop"],
   "react-runtime-automations": [
     "automations", "automations:history", "automation:accepted", "automation:error",
   ],

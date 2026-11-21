@@ -11,10 +11,15 @@ import chat_pipeline
 from chat_session import ConnectionSession
 from tests.support.conversation_sessions import open_sessions
 from chat_attachments import MAX_ATTACH_TEXT_TOTAL_CHARS
-from chat_context_stage import project_chat_prompt
+from chat_context_stage import build_chat_context_stage, project_chat_prompt
 from chat_context_lineage import ChatContextEvidence, build_chat_context_receipt
-from chat_setup_stage import prepare_chat_turn_stage
+from chat_goals.prompts import CONTINUATION_DISPLAY, continuation_prompt
+from chat_setup_stage import PreparedChatTurn, prepare_chat_turn_stage
 from chat_stage_result import ChatStageContinue, ChatStageDone
+from chat_turn_plan import AttachmentPlan, ChatTurnPlan
+from message_context_extents import (
+    HOST_CONTEXT_EXTENTS_REVISION, HOST_CONTEXT_SUFFIX_KEY, canonical_user_overlay,
+)
 from prompt_builder import PromptContext, PromptProjection
 
 
@@ -102,6 +107,49 @@ def test_chat_prompt_keeps_instructions_stable_and_fresh_context_beside_raw_user
     assert "Run the complete focused checks." in second_model_text
     assert first_model_text != second_model_text
     assert raw_user_text == "Open the report in the requested viewer."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("submission", [True, False])
+async def test_goal_prompt_recovers_exact_displayed_user_row_after_stop(submission):
+    objective = "Keep the report's <objective> tag & verify it."
+    goal = SimpleNamespace(objective=objective, token_budget=None, tokens_used=0)
+    guidance = continuation_prompt(goal, submission=submission)
+    display = objective if submission else CONTINUATION_DISPLAY
+    prepared = PreparedChatTurn(ChatTurnPlan(
+        session_id="chat-a", source="goal:submit" if submission else "goal:continue",
+        attachments=AttachmentPlan(guidance, guidance, display, (), (), ""),
+    ))
+    ports = SimpleNamespace(
+        tools=SimpleNamespace(
+            provider_specs=lambda _session: [],
+            prompt_context=lambda **_kwargs: PromptContext(),
+            runtime_prompt_projection=lambda _session, _query: PromptProjection(stable="Tool rules"),
+            runtime_identity=lambda _session: {
+                "graph_revision": "fixture", "action_surface": "trusted-local.v1",
+                "provider_tool_schema_revision": "fixture",
+            },
+            build_task_turn_ports=lambda _socket, _session: None,
+        ),
+        io=SimpleNamespace(sessions=None),
+    )
+    result = await build_chat_context_stage(ports, None, ConnectionSession(), prepared)
+    assert isinstance(result, ChatStageContinue)
+    request = result.value
+    assert request.agent_text.startswith(display + "\n\n")
+    assert guidance in request.agent_text
+    if submission:
+        assert request.agent_text.count(objective) == 1
+    else:
+        assert "&lt;objective&gt; tag &amp;" in request.agent_text
+    canonical = [{"role": "user", "content": display}]
+    projected = [{
+        "role": "user", "content": request.agent_text,
+        HOST_CONTEXT_SUFFIX_KEY: request.context_receipt["host_context_suffix_chars"],
+    }]
+    assert canonical_user_overlay(
+        projected, canonical, extent_revision=HOST_CONTEXT_EXTENTS_REVISION
+    ) == canonical
 
 
 @pytest.mark.asyncio

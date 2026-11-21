@@ -1,4 +1,21 @@
-import {parseObjectiveOutcome} from "./goals";
+/** A child's own report of its task: completed, blocked or continuing. */
+export type ObjectiveOutcome=Readonly<{status:"completed"|"blocked"|"continuing"|"unreported"}>;
+export function parseObjectiveOutcome(value:unknown):ObjectiveOutcome {
+  const status=value && typeof value==="object" ? String((value as Record<string,unknown>).status) : "";
+  return {status:["completed","blocked","continuing"].includes(status) ? status as ObjectiveOutcome["status"] : "unreported"};
+}
+
+/** A Work-fabric job or operation event; agent-team views refresh on child jobs. */
+export type WorkEvent = Readonly<{type:"work:event";session_id:string;aggregateKind:string;aggregateId:string;jobKind?:string}>;
+export function parseWorkEvent(row:Record<string,unknown>):WorkEvent|null {
+  const event=row.event as Record<string,unknown>|undefined;
+  const aggregate=event?.aggregate as Record<string,unknown>|undefined;
+  const scope=event?.scope as Record<string,unknown>|undefined;
+  const payload=event?.payload as Record<string,unknown>|undefined;
+  if(!["job","operation"].includes(String(aggregate?.kind)) || typeof aggregate?.id!=="string" || typeof scope?.chat_id!=="string" || !scope.chat_id)return null;
+  return {type:"work:event",session_id:scope.chat_id,aggregateKind:String(aggregate.kind),aggregateId:aggregate.id,
+    ...(aggregate.kind==="job" && typeof payload?.kind==="string"?{jobKind:payload.kind}:{})};
+}
 
 /** Latest broadcast step of a running child; a hint that newer live frames replace. */
 export type ChildActivityHint=Readonly<{event:string;tool:string;status:string;title:string;ts:number;runId:string}>;

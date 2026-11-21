@@ -198,10 +198,21 @@ def _inputs_for_commit(session: Any) -> list[dict]:
     return delivered
 
 
+def _goal_origin(source: Any) -> dict[str, str] | None:
+    event = {"goal:submit": "submission", "goal:continue": "continuation"}.get(str(source or ""))
+    if event is None:
+        return None
+    origin = {"kind": "goal", "event": event}
+    goal_id = str((getattr(current_run_context(), "metadata", None) or {}).get("goal_id") or "")
+    if goal_id:
+        origin["goal_id"] = goal_id[:160]
+    return origin
+
+
 def _peer_origin(source: Any, client_id: Any) -> dict[str, str] | None:
     raw_source = str(source or "")
     if not raw_source.startswith("peer:"):
-        return None
+        return _goal_origin(raw_source)
     raw_client = str(client_id or "")
     return {
         "kind": "peer",
@@ -218,6 +229,7 @@ def _durable_turn_messages(
     mood: str,
     attachments: list | None = None,
     run_id: str = "",
+    goals: Any = None,
 ) -> list[dict]:
     """Build the genuine ordered transcript for a run with active input."""
     initial: dict[str, Any] = {
@@ -278,6 +290,13 @@ def _durable_turn_messages(
         for row in rows:
             if row["role"] == "assistant":
                 row["run_id"] = owner_run
+    if owner_run and goals is not None:
+        try:
+            event = goals.completion_event(getattr(session.active, "runtime_chat_id", "") or "", owner_run)
+            if isinstance(event, dict):
+                rows[-1]["goal_event"] = event
+        except Exception:
+            _LOG.exception("Goal completion could not be projected onto the terminal exchange")
     return rows
 
 
@@ -335,12 +354,16 @@ async def persist_unfinalized_turn(
         runtimes.begin_transcript_commit(delivered)
     try:
         if display_text or display_atts:
+            goals = getattr(host, "goals", None)
+            if goals is None and callable(getattr(host, "require_runtime", None)):
+                goals = getattr(host.require_runtime(), "goals", None)
             transcript = _durable_turn_messages(
                 session,
                 display_text,
                 reply,
                 mood=mood,
                 attachments=display_atts,
+                goals=goals,
             )
         else:
             # Empty/invalid setup requests have no genuine user row, but their
@@ -477,6 +500,7 @@ async def finish_chat_turn(
     # Late import avoids circular import with chat_pipeline (re-exports this module).
     from chat_pipeline import stream_meta
 
+    reply_empty = not str(reply or "").strip()
     reply = str(reply or "…").strip() or "..."
     terminal_status = (
         "cancelled" if interrupted else str(completion_status or "ok").lower()
@@ -491,6 +515,7 @@ async def finish_chat_turn(
         run_ctx.metadata["_terminal_stop_reason"] = str(stop_reason or "")
         run_ctx.metadata["_terminal_reason"] = str(terminal_reason or "")
         run_ctx.metadata["_terminal_cause_class"] = cause_class
+        run_ctx.metadata["_terminal_reply_empty"] = reply_empty
         run_ctx.metadata["_length_recoveries"] = max(
             0, int(length_recoveries or 0)
         )
@@ -544,6 +569,7 @@ async def finish_chat_turn(
         mood=mood,
         attachments=display_atts,
         run_id=str((run or {}).get("id") or getattr(run_ctx, "run_id", "") or ""),
+        goals=getattr(ports.io, "goals", None),
     )
     delivered_inputs = _inputs_for_commit(session)
     last_user_text = str(text or "")

@@ -62,3 +62,34 @@ def test_passive_engagement_is_bounded_metadata_and_does_not_claim_busy(tmp_path
     assert row['peer_exchange_tail'][0]['sequence']==24
     assert 'private' not in json.dumps(sample)
     assert ledger.get('mreq-a')==before
+
+
+def test_passive_engagement_reports_current_goals_after_migration(tmp_path):
+    import sqlite3
+    from contextlib import closing
+    from chat_goals import ChatGoalStore
+
+    spec = importlib.util.spec_from_file_location(
+        "live_resources", Path(__file__).parents[2] / "scripts/observe-live-swarm.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    path = tmp_path / "work.sqlite3"
+    store = ChatGoalStore(str(path))
+    current, _ = store.create("active", "Current fixture")
+    cleared, _ = store.create("cleared", "Cleared fixture")
+    store.clear(cleared.goal_id)
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.executescript("""
+          CREATE TABLE workflow_goal(owner_chat_id,goal_id,status,version,updated_at);
+          INSERT INTO workflow_goal VALUES('active','prior-a','blocked',2,123);
+          INSERT INTO workflow_goal VALUES('cleared','prior-b','blocked',2,124);
+        """)
+
+    snapshot = module.engagement_snapshot(tmp_path, ["active", "cleared"])
+    assert "chat_goal" in snapshot["available_sources"]
+    assert snapshot["sessions"][0]["goal"] == {
+        "goal_id": current.goal_id, "status": "active", "version": current.version,
+        "updated_at": current.updated_at,
+    }
+    assert snapshot["sessions"][1]["goal"] is None

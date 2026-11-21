@@ -13,7 +13,6 @@ from project_context import host_project_context
 from project_context import chat_project_context
 from project_context import ProjectBindingError
 from run_context import Variant1RunContext, bind_run_context
-from work_fabric.scope import WorkScope
 
 
 def test_relative_path_uses_current_project_directory(
@@ -109,9 +108,7 @@ def test_bound_missing_project_fails_instead_of_redirecting(tmp_path: Path):
         chat_project_context(host, "chat-a")
 
 
-def test_new_chat_run_prompt_and_goal_roots_share_bound_project(tmp_path: Path):
-    from goals.host_handlers import GoalHostHandlers
-
+def test_new_chat_run_and_prompt_share_bound_project(tmp_path: Path):
     fallback = tmp_path / "fallback"
     selected = tmp_path / "selected"
     fallback.mkdir()
@@ -147,6 +144,3 @@ def test_new_chat_run_prompt_and_goal_roots_share_bound_project(tmp_path: Path):
         prompt = host_prompt.prompt_context(host, [])
     assert prompt.cwd == str(selected.resolve())
     assert tuple(prompt.project_roots) == (str(selected.resolve()),)
-    assert GoalHostHandlers(host, None)._project_roots(
-        WorkScope(chat_id="chat-a"),
-    ) == (str(selected.resolve()),)

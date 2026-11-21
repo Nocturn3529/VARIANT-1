@@ -14,7 +14,7 @@ import {
   withCachedChatState,
 } from "./stateCore";
 import {refreshInputQueue} from "./inputQueue";
-import {refreshComposerGoal} from "./goals";
+import {disconnectComposerGoal,refreshComposerGoal} from "./goals";
 import {refreshAgentTeam} from "./agentTeam";
 import {invalidateRecoveryNotices} from "./recovery";
 import {traceAnnotationConnection} from "./annotations";
@@ -45,8 +45,7 @@ export function setChatConnection(status: string) {
     const chats=new Map([getChatState(),...cachedChatStates()].map(chat=>[chat.sessionId,chat]));
     for(const chat of chats.values()) if(chat.sessionId) {
       withCachedChatState(chat.sessionId,()=>{const team=getChatState().agentTeam;patchChatState({agentTeam:{...team,synced:false,readId:undefined,detailReadId:undefined,detailDirty:!!team.selectedId}});});
-      withCachedChatState(chat.sessionId,()=>{const goal=getChatState().goal;patchChatState({goal:{...goal,synced:false,refreshRequestId:undefined,refreshAgain:false,
-        pending:goal.pending?{...goal.pending,uncertain:true}:undefined}});});
+      withCachedChatState(chat.sessionId,disconnectComposerGoal);
     }
     for(const chat of chats.values()) if(chat.sessionId && (chat.inputQueue.synced || chat.inputQueue.refreshRequestId)) {
       withCachedChatState(chat.sessionId,()=>{const queue=getChatState().inputQueue;patchChatState({inputQueue:{...queue,synced:false,refreshRequestId:undefined,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import inspect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import prompt_builder
@@ -200,6 +200,7 @@ async def build_chat_context_stage(
         print("[route] unified conversation", flush=True)
 
     attachments = plan.attachments
+    goal_text = attachments.display_text if plan.source in {"goal:submit", "goal:continue"} else ""
     model_images = list(attachments.user_images or ())
     attachment_context = (
         "The user attached one or more images to this message. Look at all of "
@@ -250,8 +251,15 @@ async def build_chat_context_stage(
     runtime_projection = _runtime_prompt_projection(
         ports.tools,
         session,
-        text,
+        prompt_builder.assemble(goal_text, text) if goal_text else text,
     )
+    if goal_text:
+        # Keep the transcript row as the recoverable user text. Record the Goal
+        # guidance together with the other model-only host context that follows it.
+        runtime_projection = replace(
+            runtime_projection, current=prompt_builder.assemble(text, runtime_projection.current)
+        )
+        text = goal_text
     base_system, agent_text = project_chat_prompt(
         prompt_context,
         runtime_projection,
@@ -263,7 +271,7 @@ async def build_chat_context_stage(
         conversation=list(session.convo or []),
         base_system=base_system,
         prompt_context=prompt_context,
-        composer_text=attachments.composer_text,
+        composer_text=goal_text or attachments.composer_text,
         model_text=agent_text,
         attachment_suffix=attachments.attach_suffix,
         display_attachments=list(attachments.display_attachments),

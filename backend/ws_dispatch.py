@@ -20,7 +20,6 @@ from typing import Any, Awaitable, Callable, Dict
 import clarification
 import ws_tools
 import ws_browser
-import ws_goal_loops
 import ws_config
 import ws_surface
 import ws_automations
@@ -525,8 +524,7 @@ async def _queue_command(srv, websocket, session, msg):
         ticket_id = str(msg.get("ticket_id") or "")
         expected_revision = msg.get("expected_revision")
         if operation == "remove":
-            registry.repository.queued_ticket_command(chat_id, ticket_id,
-                expected_revision=expected_revision, operation="remove")
+            registry.remove_queued_ticket(chat_id, ticket_id, expected_revision=expected_revision)
             accepted = True
             peers = getattr(srv.require_runtime(), "peers", None)
             if peers is not None:
@@ -647,6 +645,11 @@ async def _cancel(srv, websocket, session, msg):
     if runtime_registry is not None and admission_id:
         runtime_registry.begin_run_finalization(admission_id)
     turn_task = getattr(owner_session.active, "turn_task", None)
+    if runtime_chat_id:
+        # Stop also pauses the chat's goal, so it doesn't continue on its own.
+        goals = getattr(host.require_runtime(), "goals", None)
+        if goals is not None:
+            goals.pause_for_stop(runtime_chat_id)
     if runtime_registry is not None and runtime_chat_id:
         runtime_task = runtime_registry.cancel_active_run(runtime_chat_id)
     chat_cancelled = bool(turn_task is not None and not turn_task.done()
@@ -795,30 +798,12 @@ async def _cancel(srv, websocket, session, msg):
 @on("clarification:list")
 async def _clarification_list(srv, websocket, session, msg):
     runtime = srv.require_runtime()
-    if "chat_id" in msg or "request_id" in msg:
-        chat_id = str(msg.get("chat_id") or getattr(session, "viewed_session_id", "") or session_chat_id(session) or "")
-        await websocket.send_json({
-            "type": "clarification:snapshot", "chat_id": chat_id,
-            "request_id": str(msg.get("request_id") or "")[:200],
-            "pending": clarification.pending_interactions(runtime.work.interactions, chat_id),
-        })
-        return
-    chat_id = session_chat_id(session)
-    pending = clarification.pending_goal_input(
-        runtime.work.interactions,
-        chat_id,
-    )
-    projected = clarification.interaction_request(pending)
-    if projected is None:
-        await websocket.send_json({
-            "type": "clarification:closed",
-            "id": "",
-            "kind": "goal_input",
-            "chat_id": chat_id,
-            "status": "empty",
-        })
-    else:
-        await websocket.send_json(projected)
+    chat_id = str(msg.get("chat_id") or getattr(session, "viewed_session_id", "") or session_chat_id(session) or "")
+    await websocket.send_json({
+        "type": "clarification:snapshot", "chat_id": chat_id,
+        "request_id": str(msg.get("request_id") or "")[:200],
+        "pending": clarification.pending_interactions(runtime.work.interactions, chat_id),
+    })
 
 
 @on("clarification:response")
@@ -830,7 +815,6 @@ async def _clarification_response(srv, websocket, session, msg):
         str(msg.get("id") or ""),
         msg.get("answers"),
         skipped=bool(msg.get("skipped")),
-        goals=runtime.goals,
         chat_id=chat_id,
     )
     response = {"id": str(msg.get("id") or ""), "chat_id": chat_id,
@@ -845,7 +829,6 @@ async def _clarification_response(srv, websocket, session, msg):
 
 ws_tools.register(on)
 ws_browser.register(on)
-ws_goal_loops.register(on)
 ws_config.register(on)
 ws_surface.register(on)
 ws_automations.register(on)

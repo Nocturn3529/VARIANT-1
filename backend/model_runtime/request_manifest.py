@@ -131,6 +131,11 @@ class _ModelCallScope:
         return self.attempt
 
 
+class PhysicalRequestRef(dict):
+    """Small metadata reference. Its optional live Goal counter dies with this request."""
+    goal_usage = None
+
+
 class ModelRequestEventHooks(dict):
     """HTTPX-compatible hooks plus the exact emitted request receipt reference.
 
@@ -214,13 +219,14 @@ def _run_identity() -> dict:
         or getattr(ctx, "session_id", None)
         or ""
     ).strip()
+    from chat_goals.binding import attributed_scope
     return {
         "run_id": str(getattr(ctx, "run_id", "") or "")[:160],
         "source": str(getattr(ctx, "source", "") or "")[:80],
         "session_id": session_id[:160],
         "thread_id": str(getattr(ctx, "thread_id", "") or "")[:160],
         "parent_run_id": str(getattr(ctx, "parent_run_id", "") or "")[:160],
-        "work_scope": ctx.work_scope.to_dict(include_empty=False),
+        "work_scope": attributed_scope(ctx, ctx.work_scope).to_dict(include_empty=False),
     }
 
 
@@ -765,7 +771,7 @@ def model_request_event_hooks(
 ) -> ModelRequestEventHooks:
     """Return a fail-open HTTPX hook for one finalized provider payload."""
 
-    request_ref: dict[str, str] = {"manifest_id": ""}
+    request_ref = PhysicalRequestRef(manifest_id="")
 
     async def on_request(request: Any) -> None:
         try:
@@ -802,13 +808,22 @@ def model_request_event_hooks(
                 payload_basis=payload_basis,
                 output_budget=output_budget,
             )
-            work_scope = (manifest.get("run") or {}).get("work_scope") or {}
-            if work_scope.get("goal_id"):
-                request_ref["goal_id"] = str(work_scope["goal_id"])[:160]
-            request_ref["manifest_id"] = str(manifest.get("manifest_id") or "")
+            attempt = PhysicalRequestRef(manifest_id=str(manifest.get("manifest_id") or ""))
+            capture = getattr(router, "goal_usage_for_request", None)
+            if callable(capture):
+                try:
+                    attempt.goal_usage = capture(manifest)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("Goal request attribution unavailable")
+            # The HTTP hook may be called again (e.g. for a redirected request).
+            # Keep the settled attempt separate from the adapter's live handle.
+            request_ref.update(attempt)
+            request_ref.goal_usage = attempt.goal_usage
             scope = _MODEL_CALL_SCOPE.get()
             if scope is not None:
-                scope.requests.append((router, request_ref['manifest_id'], time.monotonic()))
+                scope.requests.append((router, attempt if attempt.goal_usage is not None else attempt['manifest_id'],
+                                       time.monotonic()))
             await _emit_manifest(router, manifest)
         except Exception:
             # Observability must never prevent a provider request.

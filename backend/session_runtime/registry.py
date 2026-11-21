@@ -703,8 +703,9 @@ class SessionRuntimeRegistry:
     @contextmanager
     def claim_kernel_retirement(self, chat_id: str):
         """Linearize automatic teardown against admission without holding a lock across await."""
+        clean = self._chat_id(chat_id)
         with self._guard:
-            live = self._live.get(self._chat_id(chat_id))
+            live = self._live.get(clean)
             allowed = bool(live and not live.admission and not live.settings_change_id
                            and live.kernel_retirement is None)
             future = Future() if allowed else None
@@ -718,6 +719,7 @@ class SessionRuntimeRegistry:
                     if live.kernel_retirement is future:
                         live.kernel_retirement = None
                 future.set_result(None)
+                self._notify_idle(clean)
 
     async def reserve_run(self, chat_id: str, **fields: Any) -> str | None:
         """Wait for an already-claimed retirement; ordinary busy admission stays unchanged."""
@@ -1070,6 +1072,10 @@ class SessionRuntimeRegistry:
                 root = {"role": "user", "text": str(text), "ts": admission.reserved_at,
                         "run_id": admission.run_id,
                         "attachments": list(getattr(active, "turn_display_attachments", None) or [])}
+                goal_event = {"goal:submit": "submission", "goal:continue": "continuation"}.get(
+                    str(getattr(active, "turn_source", "") or ""))
+                if goal_event:
+                    root["origin"] = {"kind": "goal", "event": goal_event}
                 ticket_id = str(getattr(active, "turn_ticket_id", "") or "")
             else:
                 ticket_id = ""
@@ -1173,6 +1179,14 @@ class SessionRuntimeRegistry:
 
     def queue_snapshot(self, chat_id: str) -> dict[str, Any]:
         return self.repository.queue_snapshot(self._chat_id(chat_id))
+
+    def remove_queued_ticket(self, chat_id: str, ticket_id: str, *, expected_revision: int) -> None:
+        clean = self._chat_id(chat_id)
+        self.repository.queued_ticket_command(
+            clean, ticket_id, expected_revision=expected_revision, operation="remove",
+        )
+        if not self.is_busy(clean):
+            self._notify_idle(clean)
 
     def park_queued_input_tickets(self, chat_id: str, *, reason: str) -> list[InputTicket]:
         clean = self._chat_id(chat_id)

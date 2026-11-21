@@ -124,10 +124,13 @@ def _merge_live_run_observability(parent: Any, child: Any) -> None:
     for key, limit in (
         ("_terminal_stop_reason", 40),
         ("_terminal_reason", 80),
+        ("_provider_failure_kind", 40),
     ):
         value = str(child_metadata.get(key) or "").strip()
         if value:
             parent_metadata[key] = value[:limit]
+    if isinstance(child_metadata.get("_terminal_reply_empty"), bool):
+        parent_metadata["_terminal_reply_empty"] = child_metadata["_terminal_reply_empty"]
     parent_metadata["_length_recoveries"] = int(
         parent_metadata.get("_length_recoveries") or 0
     ) + int(child_metadata.get("_length_recoveries") or 0)

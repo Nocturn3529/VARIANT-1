@@ -77,7 +77,6 @@ const tests = [
   "test-session-experience.js",
   "test-input-queue.js",
   "test-goal-composer.js",
-  "test-goal-guidance.js",
   "test-chat-notices.js",
   "test-agent-team.js",
   "test-browser-capture-ipc.js",

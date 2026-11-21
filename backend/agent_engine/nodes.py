@@ -12,6 +12,7 @@ from observability import context_lineage
 import tool_calling
 from agent_task import TaskStatus
 from assistant_turn import truncated_tool_outcomes
+from message_context_extents import HOST_CONTEXT_PREFIX_KEY
 
 from .snapshot_utils import (
     build_resume_context_from_run_state,
@@ -248,6 +249,11 @@ def main_model_step_node(config: AgentRunConfig, runtime: MainTaskRuntime):
         if run:
             run["step"] = loop["step"]
             await ports.emit("task:step", **task_progress_emit_fields(step=loop["step"]))
+        notes = ports.drain_notes() if ports.drain_notes is not None else []
+        if notes:
+            # Model-only context, such as a chat goal reaching its budget.
+            text = "\n\n".join(str(note) for note in notes)
+            messages.append({"role": "user", "content": text, HOST_CONTEXT_PREFIX_KEY: len(text)})
 
         execution = await execute_model_step(
             messages,
@@ -264,6 +270,11 @@ def main_model_step_node(config: AgentRunConfig, runtime: MainTaskRuntime):
             exc = execution.exception
             terminal_reason = execution.terminal_reason
             error = f"{type(exc).__name__}: {exc}"
+            failure_context = current_run_context()
+            if failure_context is not None:
+                # A chat goal stops as usage-limited, not blocked, on a quota error.
+                from model_runtime.provider_recovery import classify_provider_error
+                failure_context.metadata["_provider_failure_kind"] = classify_provider_error(exc).kind
             failure_label = (
                 'Model error' if terminal_reason == 'provider_error' else
                 'Runtime error' if terminal_reason in {

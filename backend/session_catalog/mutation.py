@@ -659,6 +659,7 @@ class MutationManager:
         """This chat's proxy surface for mutations (see build_proxy_contracts)."""
 
         enabled = set(self.enabled_resolver() or ())
+        record = None
         try:
             record = self.runtime_registry.ensure_runtime(str(chat_id))
             overlays, _refs = self.active_overlays(
@@ -676,6 +677,7 @@ class MutationManager:
             )
             overlays = []
         hidden_dispatch = self.registry.get("remote_handle_dispatch")
+        from chat_goals.binding import owner_eligible
         return build_proxy_contracts(
             loaded,
             enabled=enabled,
@@ -685,6 +687,8 @@ class MutationManager:
             ),
             exclude_slot_id=exclude_slot_id,
             exclude_proxy=exclude_proxy,
+            current_catalog=getattr(getattr(self, "catalog_repository", None), "current", None),
+            chat_goal_owner=owner_eligible(record),
         )
 
     _draft_target_proxy = staticmethod(draft_target_proxy)

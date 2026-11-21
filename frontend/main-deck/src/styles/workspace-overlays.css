@@ -115,21 +115,11 @@
 .utility-overlay .overview-scroll > .utility-tabs { padding: 5px 12px; }
 .app-shell .overview-shell .utility-tabs button { min-height: 26px; padding: 3px 9px; }
 .utility-overlay .overview-page { width: auto; padding: 18px; }
-.settings-overlay .memory-page { width: 100%; padding: 0; }
-.settings-overlay .memory-page__utilities { margin-bottom: 0; }
 .settings-overlay .memory-workspace-grid, .settings-overlay .memory-management-grid { display: block; margin-top: 16px; }
 .settings-overlay .memory-tabs { margin-bottom: 16px; }
 .settings-overlay .memory-scroll { height: auto; min-height: 0; overflow: visible; }
-.settings-overlay .memory-page { min-height: 0; }
-.settings-overlay .memory-page .deck-instrument__header { min-height: 0; background: transparent; }
-.settings-overlay .memory-page :is(.fact-edit-button, .fact-forget-button, .archive-delete) { opacity: 1; }
-.settings-overlay .memory-section-heading { padding: 0 0 12px; }
-.settings-overlay .memory-page .deck-instrument { padding: 0; border: 0; background: transparent; }
-.settings-overlay .memory-page .deck-data-row { padding: 10px 0; border-radius: 0; }
 .settings-overlay .memory-proposals .deck-data-row { display: flex; flex-wrap: wrap; gap: 10px; }
 .settings-overlay .core-fact-add { margin: 4px 0 12px; }
-.settings-overlay .loop-create-row { grid-template-columns: minmax(0, 1fr); }
-.settings-overlay .loop-layout { grid-template-columns: minmax(0, 1fr); }
 .settings-overlay .core-fact-row { grid-template-columns: minmax(0, 1fr) auto auto; }
 .settings-overlay .fact-category-icon { display: none; }
 .settings-overlay .memory-export-card .management-card-icon { display: none; }

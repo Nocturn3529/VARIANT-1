@@ -456,7 +456,12 @@ async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_pa
                 await asyncio.sleep(0.25)
                 assert pending.call_count == reads  # Waiting for an idle event, not polling.
                 assert calls == []
+            # A normal chat or Goal turn parks input that arrived too late
+            # for injection. Both peer tickets must win the next admission.
+            runtimes.park_queued_input_tickets(second, reason="turn_ok_before_input_delivery")
             runtimes.finish_run(prior_admission, status='ok')
+            assert runtimes.queued_input_count(second) == 2
+            assert runtimes.try_reserve_run(second, require_empty_queue=True) is None
         for _ in range(200):
             if len(calls) == 2:
                 break

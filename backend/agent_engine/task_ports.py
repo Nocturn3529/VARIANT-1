@@ -52,6 +52,9 @@ class TaskLoopCorePorts:
     drain_follow_up: Callable[[], Optional[dict]]
     record_active_input: Callable[[dict, Optional[str]], None]
     wait_if_paused: Optional[Callable[[], Awaitable[None]]] = None
+    # Host notes for the running turn (a chat goal's budget or objective change),
+    # added before the next model call.
+    drain_notes: Optional[Callable[[], list]] = None
 
 
 @dataclass
@@ -85,6 +88,7 @@ class LoopPorts:
     progressive_disclose: Callable[[list, set, set, list], None]
     checkpoint: Optional[Callable[[str], Awaitable[None]]] = None
     wait_if_paused: Optional[Callable[[], Awaitable[None]]] = None
+    drain_notes: Optional[Callable[[], list]] = None
 
 
 def loop_ports_from_task_turn(
@@ -110,6 +114,7 @@ def loop_ports_from_task_turn(
         progressive_disclose=progressive_disclose,
         checkpoint=checkpoint,
         wait_if_paused=loop.wait_if_paused,
+        drain_notes=loop.drain_notes,
     )
 
 

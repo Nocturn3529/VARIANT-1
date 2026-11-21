@@ -49,6 +49,8 @@ from .scope import (
 
 
 SCHEMA_VERSION = 5
+# Applied by ChatGoalStore after the Work DB is open, including legacy data.
+CHAT_GOAL_MIGRATION_VERSION = 6
 _DEFAULT_INLINE_JSON_BYTES = 4 * 1024 * 1024
 _TERMINAL_OPERATION_STATES = frozenset({
     "succeeded", "failed", "cancelled", "unknown_effect"

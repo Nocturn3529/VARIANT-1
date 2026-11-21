@@ -552,6 +552,26 @@ def build_catalog_document(registry: Any) -> dict[str, Any]:
     }
 
 
+def session_infrastructure_contract(loaded, api, current_catalog):
+    """Resolve the v5 base session API to its supported successor, retaining every domain slot."""
+    transport = api.get("transport") or {}
+    if (current_catalog is None or api.get("name") != "session" or
+            (transport.get("schema_revision"), transport.get("handler_revision")) !=
+            ("variant1.session.v5", "variant1.session-handler.v6")):
+        return api, loaded.release_id
+    current = current_catalog()
+    for category in current.document.get("categories", ()):
+        if category.get("category_id") != "base":
+            continue
+        for candidate in category.get("python_apis", ()):
+            target = candidate.get("transport") or {}
+            if (candidate.get("name") == "session" and target.get("capability_id") == transport.get("capability_id")
+                    and (target.get("schema_revision"), target.get("handler_revision")) ==
+                    ("variant1.session.v6", "variant1.session-handler.v7")):
+                return candidate, current.release_id
+    return api, loaded.release_id
+
+
 def handler_only_catalog_follow_allowed(
     pinned: dict[str, Any], current: dict[str, Any]
 ) -> bool:
