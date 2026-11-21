@@ -29,7 +29,6 @@ export type SettingsCategory =
   | "voice"
   | "messaging"
   | "plugins"
-  | "goals"
   | "session-context"
   | "about";
 

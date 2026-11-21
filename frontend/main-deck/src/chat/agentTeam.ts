@@ -1,5 +1,5 @@
 import {parseAgentSnapshot,parseAgentDetail,type ChildrenMessage,type ChildrenChangedMessage} from "../protocol/children";
-import type {GoalWorkEvent} from "../protocol/goals";
+import type {WorkEvent} from "../protocol/children";
 import {getChatState,getChatContext,patchChatState,sendChat,cachedChatStates,getDisplayedChatState,withCachedChatState} from "./stateCore";
 
 export function refreshAgentTeam(manual=false):boolean {
@@ -66,7 +66,7 @@ export function ingestAgentTeam(message:ChildrenMessage):void {
     if(team.detailDirty)refreshAgentDetail();
   }
 }
-export function ingestAgentWorkEvent(message:GoalWorkEvent):void {
+export function ingestAgentWorkEvent(message:WorkEvent):void {
   if(!["job","operation"].includes(message.aggregateKind))return;
   // Supervisor/other job activity does not imply that a child record changed.
   if(message.aggregateKind==="job" && message.jobKind!=="child.execute.v1")return;

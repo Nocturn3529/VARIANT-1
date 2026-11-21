@@ -65,6 +65,8 @@ def run_context_from_state(
     }
     if parent is not None:
         parent_meta = dict(getattr(parent, "metadata", None) or {})
+        if isinstance(runtime, MainTaskRuntime) and "_chat_goal_binding" in parent_meta:
+            meta["_chat_goal_binding"] = parent_meta["_chat_goal_binding"]
         for key in (
             "working_directory",
             "project_root",

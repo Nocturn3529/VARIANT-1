@@ -935,16 +935,6 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         result.pop('outcome_run_id',None)
         return result
 
-    def goal_roots(self, goal_id: str, parent_chat_id: str) -> list[dict]:
-        """Exact direct roots explicitly delegated by an admitted Goal owner."""
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                "SELECT child_id,child_chat_id,parent_chat_id FROM astb_child_handle "
-                "WHERE json_extract(work_scope_json,'$.goal_id')=? AND parent_chat_id=?",
-                (str(goal_id), str(parent_chat_id)),
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     async def spawn(
         self,
         parent_chat_id: str,
@@ -968,7 +958,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         inherited = (invocation.work_scope if invocation and invocation.chat_id == str(parent_chat_id)
                      else getattr(live_context, 'work_scope', None)
                      if live_context and live_context.session_id == str(parent_chat_id) else None)
-        work_scope = coerce_work_scope(inherited)
+        from chat_goals.binding import attributed_scope
+        work_scope = attributed_scope(live_context, inherited)
         if parent_runtime.continuation_state == "paused_budget_exhausted":
             raise RuntimeError("parent continuation budget is exhausted")
         created_revision = None

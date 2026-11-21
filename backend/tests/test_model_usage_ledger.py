@@ -253,7 +253,7 @@ async def test_async_ledger_failure_and_overflow_are_visible():
 
 
 @pytest.mark.asyncio
-async def test_lost_usage_is_charged_only_to_the_requests_goal():
+async def test_lost_request_records_are_counted_not_charged():
     from llm_manifest_bus import ModelRequestManifestBus
     class FailedLedger:
         def record(self, value):
@@ -261,28 +261,26 @@ async def test_lost_usage_is_charged_only_to_the_requests_goal():
     bus = ModelRequestManifestBus(usage_ledger=FailedLedger())
     await bus.record(request("mreq-a", goal="goal-a"))
     await bus.record(request("mreq-unscoped", goal=""))
-    assert bus.goal_usage_lost("goal-a") == 1
-    assert bus.goal_usage_lost("goal-b") == 0
-    assert bus.ledger_failures == 2  # Still counted for diagnostics.
+    # Goals count their own tokens; a lost ledger write is only diagnostics.
+    assert bus.ledger_failures == 2
+    assert not hasattr(bus, "goal_usage_lost")
 
 
 @pytest.mark.asyncio
-async def test_usage_overflow_charges_its_goal_but_metadata_overflow_does_not(tmp_path):
+async def test_usage_write_overflow_is_counted(tmp_path):
     import threading
     from llm_manifest_bus import ModelRequestManifestBus
     gate = threading.Event()
     bus = ModelRequestManifestBus(usage_ledger=ModelUsageLedger(tmp_path / "usage.sqlite3"))
     await bus.record(request("mreq-a", goal="goal-a"))
-    await bus.record(request("mreq-b", goal="goal-b"))
     bus.submit_ledger(lambda: gate.wait(timeout=5))
     await asyncio.sleep(0.05)  # The writer is now blocked; fill its queue.
     try:
         for _ in range(256):
             assert bus.submit_ledger(lambda: None)
-        assert not bus.submit_ledger(lambda: None, manifest_id="mreq-b")
+        assert not bus.submit_ledger(lambda: None)
         bus.patch_usage("mreq-a", {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
-        assert bus.goal_usage_lost("goal-a") == 1
-        assert bus.goal_usage_lost("goal-b") == 0
+        assert bus.ledger_failures == 2
     finally:
         gate.set()
         await bus.stop()

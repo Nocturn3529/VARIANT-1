@@ -100,39 +100,34 @@ checkpointing and restoration are optional and disabled by default.
 Chat history, model continuation records, artifacts, reusable
 tool source, and live Python objects have different persistence contracts.
 
-New composer Goals execute ordinary admitted turns in their visible owning chat.
-The durable session writer, pinned model route, canonical history and Python
-generation remain the same. Optional children are explicitly delegated; existing
-Goal records with a child execution contract retain that contract. A structured
-`session.report_outcome()` claim distinguishes completed, blocked and continuing
-work. A continuing owner may name its outgoing peer requests in
-`wait_for_message_ids`; correlated result messages or exact native turn settlements
-wake the Goal when all named requests settle.
-Notices and unrelated results do not create new Goal turns.
+A chat has at most one goal (`chat_goals`, one `chat_goal` table in the work
+database): an objective, a status (active, paused, blocked, budget_limited,
+usage_limited, complete), an optional token budget, tokens used and active time.
+`/goal` saves the goal and starts its first turn with the objective as the user
+row. Whenever the chat goes idle while its goal is active, the idle listener
+admits one more goal turn through ordinary chat admission; queued input,
+settings changes and running turns always go first. Each goal turn's input is a
+continuation prompt carrying the objective as data, the budget, and the rules
+for progress, verified waits, a requirement-by-requirement completion audit and
+when to report blocked. History shows the objective, or a short "continue"
+marker, with `origin: {kind: "goal"}`; the assistant row of the turn that
+completes the goal carries `goal_event`.
 
-Parent-turn waits release the Work execution slot and use terminal/idle events
-instead of half-second successor jobs. Idle admission gives queued inputs and
-configuration changes priority. Exact admission/run identities fence reports and
-cancellation. Restart recovery reconciles once and blocks an uncertain parent
-turn rather than replaying its effects. Pausing scheduling lets an admitted turn
-settle; cancellation stops Goal-attributed managed processes and delegated roots
-while retaining the parent session. Cleanup covers only registered resources:
-raw Python subprocesses are not attributed to a Goal by ancestry, and the
-parent kernel stays live. Cleanup receipts declare this
-coverage; use managed process handles when Goal cancellation should stop a service.
-Goal usage reads and settlements reconcile the durable physical-request ledger,
-including cancelled Goals. Explicit
-token/provider-call/cost/time budgets are checked at model/tool boundaries and
-before another turn. A boundary pause retains the live task and Python state;
-an in-flight step can finish. Missing measurements or lost ledger records pause
-explicit accounting caps rather than treating unknown cost/tokens as zero.
-Accounting faults pause capped work visibly rather than failing as provider
-errors; unlimited turns continue. Unavailable named peer requests wake and
-block their waiting Goal without a fabricated result or automatic retry. A
-request parked by a recipient Stop is still resumable, so its Goal keeps waiting;
-only a deleted recipient, a failed, cancelled or unadmitted request, or a turn
-that ended without a settlement blocks it.
-Unlimited defaults remain unchanged.
+The owning chat's model reads and sets the goal with `session.get_goal`,
+`create_goal` on explicit user request, and `update_goal` to mark it complete,
+blocked, or paused at the user's request. The composer offers pause, resume,
+edit, clear, and confirmed replacement. Stop pauses the goal before cancelling
+the turn. Each turn binds to the goal it can act on. A provider request carries
+its goal identity from dispatch through settlement, including requests made
+by children with inherited scope. The goal's counter adds uncached input and
+output tokens, with cumulative usage applied once per request independently
+of the usage ledger. Reaching the budget marks the goal `budget_limited` and
+gives the running turn a wrap-up note before its next call. Automatic
+continuations end at that boundary. Three empty automatic turns or three turns
+of failed execution block a goal. A turn-ending error blocks it, and a provider
+quota error marks it `usage_limited`. Resources keep their chat and tool
+lifetimes. After a restart, active goals continue when their chat is idle.
+Unfinished goals from the previous engine are carried over paused.
 
 Provider model listing retains exact-ID context-window metadata for the current
 router lifetime. Explicit `cloud.context_windows` or provider overrides take
@@ -159,8 +154,7 @@ terminal status by exact recipient run/admission identity. This observation
 creates no synthetic reply or prompt and is not independent task verification.
 Explicit replies remain supported and take precedence in message waits.
 Startup reconciles consumed native requests that have exact admission/run proof
-but no settlement into explicit uncertain observations. This blocks awaiting
-Goals for inspection without replaying work. Process-owned finalization remains
+but no settlement into explicit uncertain observations, without replaying work. Process-owned finalization remains
 protected even after admission release; legacy requests without proof are not
 assigned invented identities or outcomes.
 
@@ -203,8 +197,8 @@ its cancellation evidence. Desktop browser selection and kernel deadline policy
 remain separate from this test configuration.
 The former fact/profile memory store, automatic recall, extraction, proposals,
 approvals, and consolidation have been retired. Startup removes only those
-memory tables from the shared ASTB database. Goal records and their controls
-remain available under Goals; `/remember` reports that fact saving is retired.
+memory tables from the shared ASTB database. `/remember` reports that fact saving
+is retired.
 Saving a conversation does not imply that its live Python objects can be restored.
 
 Agents retrieve earlier evidence explicitly through the always-mounted
@@ -439,10 +433,8 @@ Physical-request accounting retains SQLite WAL with FULL durability. Repeated
 provider identity chunks are coalesced per manifest in a bounded cache. Patches
 use a bounded serial writer off the event loop; terminal request boundaries await
 an ordered write fence, independent of future requests from other sessions.
-Pending partial-usage writes coalesce to one per request. A lost request or usage
-write marks only that request's Goal, carried on the request reference, as having
-incomplete accounting, which pauses its explicit caps; other Goals keep their
-exact totals.
+Pending partial-usage writes coalesce to one per request. Lost request or usage
+writes are counted in `usage_ledger_failures`; chat goals count their own tokens.
 Explicit provider cost, including a reported zero, survives normalization;
 missing cost remains unknown. OpenAI-compatible streams retain allowlisted
 end-state, terminal-marker and parser-count diagnostics per physical request,

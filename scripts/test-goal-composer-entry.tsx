@@ -1,14 +1,16 @@
 import assert from "node:assert/strict";
 import {parseGoalCommand} from "../frontend/main-deck/src/chat/goalCommand";
-import {parseComposerGoal,parseComposerGoalSnapshot,goalWorkLabel} from "../frontend/main-deck/src/protocol/goals";
+import {parseChatGoal,parseGoalMessage,goalStatusLabel,formatGoalDuration} from "../frontend/main-deck/src/protocol/goals";
 
 import {act} from "react";
 import {createRoot} from "react-dom/client";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
+import {ChatMessageList} from "../frontend/main-deck/src/chat/ChatMessageList";
 import {__resetChatStoreForTests} from "../frontend/main-deck/src/chatStore";
 import {activateChatState,getCachedChatState,getChatState,getComposerRevision,initialChatState,patchChatState,setChatContext,setChatState} from "../frontend/main-deck/src/chat/stateCore";
 import {setChatDraft,submitUserInput} from "../frontend/main-deck/src/chat/composer";
 import {refreshComposerGoal} from "../frontend/main-deck/src/chat/goals";
+import {parseMessage} from "../frontend/main-deck/src/chat/messages";
 import {ingestChat} from "../frontend/main-deck/src/chat/ingest";
 import {parseChatWsMessage} from "../frontend/main-deck/src/protocol";
 import {setChatConnection} from "../frontend/main-deck/src/chat/connection";
@@ -17,18 +19,41 @@ import {__resetSessionContextStoreForTests} from "../frontend/main-deck/src/sess
 import {__resetTurnStoreForTests} from "../frontend/main-deck/src/state/turnStore";
 import {resetWireStatus} from "../frontend/main-deck/src/connectionUi";
 
+const typeInto=(field:HTMLTextAreaElement,value:string)=>{
+  Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype,"value")!.set!.call(field,value);
+  field.dispatchEvent(new Event("input",{bubbles:true}));
+};
+
 export async function run() {
   assert.deepEqual(parseGoalCommand("/goal Build and verify the app"), {objective:"Build and verify the app"});
   assert.deepEqual(parseGoalCommand(" /goal\nKeep multiline\nrequirements "), {objective:"Keep multiline\nrequirements"});
-  assert.deepEqual(parseGoalCommand("/goal"), {objective:""});
   for (const text of ["My goal is to build the app", "Explain /goal", "/goals list", "/goalkeeper", "`/goal build`", "/goal: build"]) {
     assert.equal(parseGoalCommand(text),null,`ordinary text must not enter goal mode: ${text}`);
   }
-  const record={schema:"variant1.goal.v1",goal_id:"goal-1",owner_chat_id:"A",title:"Build",objective:"Build the app",status:"queued",version:1};
-  assert.equal(parseComposerGoal(record)?.goal_id,"goal-1");
-  for (const extra of [{version:-1},{version:1.5},{owner_chat_id:null},{goal_id:""},{status:"unknown"},{schema:"other"}]) {
-    assert.equal(parseComposerGoal({...record,...extra}),null);
+  const goalRow=(over:Record<string,unknown>={})=>({goal_id:"goal-1",session_id:"A",request_id:"r",objective:"Build the app",status:"active",
+    token_budget:null,tokens_used:0,time_used_s:0,status_reason:"",continuing:false,submission_pending:false,created_at:1,updated_at:1,
+    completed_at:null,completed_run_id:null,version:1,...over});
+  assert.equal(parseChatGoal(goalRow())?.goal_id,"goal-1");
+  for (const extra of [{version:0},{version:1.5},{session_id:""},{goal_id:""},{status:"running"},{objective:null}]) {
+    assert.equal(parseChatGoal(goalRow(extra)),null,`invalid goal: ${JSON.stringify(extra)}`);
   }
+  assert.equal(parseChatGoal(goalRow({token_budget:-5}))?.token_budget,null,"a non-positive budget is no budget");
+  assert.equal(parseGoalMessage({type:"goal:updated",session_id:"A",goal:{bad:true}}),null,"a malformed push is ignored, not read as a clear");
+  assert.equal(parseGoalMessage({type:"goal:updated",session_id:"A",goal:goalRow({session_id:"B"})}),null);
+  assert.deepEqual(parseGoalMessage({type:"goal:updated",session_id:"A",goal:null}),{type:"goal:updated",session_id:"A",goal:null});
+  const label=(over:Record<string,unknown>)=>goalStatusLabel(parseChatGoal(goalRow(over))!);
+  assert.deepEqual([label({}),label({continuing:true}),label({submission_pending:true}),label({status:"paused"}),label({status:"blocked"}),
+    label({status:"budget_limited"}),label({status:"usage_limited"}),label({status:"complete"})],
+    ["Pursuing goal","Continuing goal…","Goal set","Paused goal","Goal stalled","Goal limited","Goal usage limited","Goal achieved"]);
+  assert.deepEqual([formatGoalDuration(42),formatGoalDuration(125),formatGoalDuration(7380)],["42s","2m 5s","2h 3m"]);
+
+  // History marks goal turns by origin; the completing reply carries the achievement.
+  const submitted=parseMessage({role:"user",text:"Build the app",origin:{kind:"goal",event:"submission",goal_id:"goal-1"}})!;
+  assert.deepEqual([submitted.goalOrigin,submitted.origin],[{event:"submission",goal_id:"goal-1"},undefined],"a goal origin is not a peer origin");
+  assert.deepEqual(parseMessage({role:"user",text:"Continue toward the goal",origin:{kind:"goal",event:"continuation"}})!.goalOrigin,{event:"continuation"});
+  assert.equal(parseMessage({role:"user",text:"x",origin:{kind:"goal",event:"other"}})!.goalOrigin,undefined);
+  const achieved=parseMessage({role:"assistant",text:"Done.",goal_event:{event:"achieved",goal_id:"goal-1",time_used_s:754,tokens_used:9000}})!;
+  assert.deepEqual(achieved.goalEvent,{event:"achieved",goal_id:"goal-1",time_used_s:754,tokens_used:9000});
 
   __resetChatStoreForTests();__resetSessionStoreForTests();__resetTurnStoreForTests();__resetSessionContextStoreForTests();resetWireStatus("chat");
   const commands:Array<Record<string,unknown>>=[];let online=true;
@@ -38,133 +63,306 @@ export async function run() {
   const host=document.createElement("div");document.body.appendChild(host);const root=createRoot(host);
   const ingest=async(row:Record<string,unknown>)=>act(async()=>ingestChat(parseChatWsMessage(row)));
   const last=(type:string)=>commands.filter(command=>command.type===type).at(-1)!;
-  const click=async(label:string)=>act(async()=>{const button=Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(b=>b.textContent===label || b.getAttribute("aria-label")===label);assert.ok(button,label);button.click();});
-  const makeSnapshot=(request:string,version:number,status="running",id="goal-1",session="A")=>({schema:"variant1.goal-snapshot.v1",goal:{...record,goal_id:id,owner_chat_id:session,status,version},submission_request_id:request,completion_basis:"agent_report",objective_outcome:{status:status==="succeeded"?"completed":"unreported",basis:"agent_report",independently_verified:false},cleanup:{status:status==="cancelled"?"complete":"not_requested",complete:status==="cancelled"},capabilities:{pause_scheduling:true,pause_active_work:false,resume:true,cancel:status!=="cancelled",continue:false,retry_cleanup:false,finish:false,archive:false},reports:status==="succeeded"?[{child_id:"child-1",step_id:"s1",status:"succeeded",text:"Tests passed. <script>do not execute</script>",truncated:true,completion_basis:"agent_report"}]:[],steps:[{step_id:"s1",title:"Implement and test",status:"running"}]});
-  const working=parseComposerGoalSnapshot({...makeSnapshot("native",2,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"running"}}})!;
-  const nativeTurn={active:true,sessionId:"A",admissionId:"parent-admit",runId:"parent-run"};
-  assert.equal(goalWorkLabel(working,nativeTurn),"Working in this chat");
-  assert.equal(goalWorkLabel(working,{...nativeTurn,admissionId:"different"}),undefined);
-  assert.equal(goalWorkLabel(working,{...nativeTurn,active:false}),undefined);
-  const waiting=parseComposerGoalSnapshot({...makeSnapshot("native",3,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"finished",report:{wait_for_message_ids:["request-a"]}}}})!;
-  assert.equal(goalWorkLabel(waiting,{...nativeTurn,active:false}),"Waiting for peer results");
-  assert.deepEqual([waiting.awaitingPeers,waiting.lostUsageRecords,waiting.measuredBudget],[[],null,false],"older backends omit the hold fields");
-  const partial=parseComposerGoalSnapshot({...makeSnapshot("native",4),awaiting_peers:[{chat_id:""},{message_id:"m",chat_id:"B"},"bad"],accounting:{lost_usage_records:-1}})!;
-  assert.deepEqual(partial.awaitingPeers,[{messageId:"m",chatId:"B",displayName:"another chat",state:""}]);
-  assert.equal(partial.lostUsageRecords,null,"a negative count is not a report");
-  const parked=parseComposerGoalSnapshot({...makeSnapshot("native",5,"waiting_external"),state:{parent_turn:{admission_id:"parent-admit",run_id:"parent-run",status:"finished",report:{wait_for_message_ids:["request-a"]}}},
-    awaiting_peers:[{message_id:"request-a",chat_id:"B",display_name:"Lead",state:"parked"}]})!;
-  assert.equal(goalWorkLabel(parked,{...nativeTurn,active:false}),"Waiting on a paused request");
-  const reply=async(request:Record<string,unknown>,result:unknown,type="goal:accepted")=>ingest({type,session_id:request.session_id,request_id:request.request_id,operation:String(request.type).split(":").at(-1),result});
+  const lastRead=(sessionId:string)=>commands.filter(command=>command.type==="goal:current:get" && command.session_id===sessionId).at(-1)!;
+  const count=(type:string)=>commands.filter(command=>command.type===type).length;
+  const buttons=()=>[...host.querySelectorAll<HTMLButtonElement>("button"),...document.body.querySelectorAll<HTMLButtonElement>("dialog button")];
+  const find=(label:string)=>buttons().find(b=>b.textContent===label || b.getAttribute("aria-label")===label);
+  const click=async(label:string)=>act(async()=>{const button=find(label);assert.ok(button,label);assert.equal(button.disabled,false,`${label} is enabled`);button.click();});
+  const accept=async(request:Record<string,unknown>,goal:unknown,type="goal:accepted")=>ingest({type,schema:"variant1.goal-command.v2",session_id:request.session_id,
+    request_id:request.request_id,operation:request.type==="goal:submit"?"submit":request.type==="goal:control"?"control":"current",result:{goal}});
+  const push=async(goal:unknown,session="A")=>ingest({type:"goal:updated",session_id:session,goal});
+  const enter=async(field:HTMLTextAreaElement)=>act(async()=>{field.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));});
+  const status=()=>host.querySelector(".composer-goal [role=status]")?.textContent;
+  const goalMode=async(draft:string)=>act(async()=>{patchChatState({goal:{...getChatState().goal,composing:true}});setChatDraft(draft);});
+  const reconnect=async()=>{
+    await act(async()=>{online=false;setChatConnection("offline");});
+    await act(async()=>{online=true;setChatConnection("connected");await new Promise(resolve=>setTimeout(resolve,230));});
+  };
   try {
     await act(async()=>{root.render(<ChatComposer/>);});
     const textarea=host.querySelector<HTMLTextAreaElement>("#composer-input")!;
-    await act(async()=>setChatDraft("/go"));
-    await act(async()=>{textarea.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));});
-    assert.equal(getChatState().draft,"/goal ");assert.equal(commands.filter(c=>c.type==="goal:submit").length,0,"menu selection does not submit");
-    await click("Start goal");assert.equal(commands.filter(c=>c.type==="goal:submit").length,0,"empty objective stays local");
-    await act(async()=>setChatDraft("/goal Build and test the app"));
-    await act(async()=>{textarea.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));textarea.dispatchEvent(new KeyboardEvent("keydown",{key:"Enter",bubbles:true,cancelable:true}));});
+
+    // The /goal menu item enters goal mode; it never sends on its own.
+    await act(async()=>setChatDraft("/go"));await enter(textarea);
+    assert.deepEqual([getChatState().goal.composing,getChatState().draft],[true,""]);assert.ok(host.querySelector(".composer-goal-chip"));
+    assert.equal(count("goal:submit"),0,"menu selection does not submit");
+    assert.equal(find("Set goal")?.disabled,true,"an empty objective cannot be set");
+    await act(async()=>{textarea.dispatchEvent(new KeyboardEvent("keydown",{key:"Backspace",bubbles:true,cancelable:true}));});
+    assert.equal(getChatState().goal.composing,false,"Backspace on an empty goal draft leaves goal mode");
+
+    // Typing "/goal ..." enters goal mode with the objective as the draft.
+    await act(async()=>typeInto(textarea,"/goal Build and test the app"));
+    assert.deepEqual([getChatState().goal.composing,getChatState().draft],[true,"Build and test the app"]);
+    await act(async()=>refreshComposerGoal()); const earlierRead = last("goal:current:get");
+    await enter(textarea);await enter(textarea);
     const submit=last("goal:submit"),request=String(submit.request_id);
-    assert.equal(commands.filter(c=>c.type==="goal:submit").length,1);assert.equal(commands.filter(c=>c.type==="chat").length,0);
-    assert.equal(submit.objective,"Build and test the app");assert.equal(submit.session_id,"A");
-    assert.equal(getChatState().messages.length,0);assert.equal(getChatState().turnActive,false);
-    assert.equal(host.querySelector("[data-goal-id]"),null,"pending submit must not fabricate goal identity");
-    assert.equal(getChatState().draft,"/goal Build and test the app");
-    await reply({...submit,request_id:"wrong"},makeSnapshot(request,2));assert.equal(getChatState().goal.snapshot,null);
-    await reply(submit,makeSnapshot(request,2));assert.equal(getChatState().draft,"");
+    assert.equal(count("goal:submit"),1,"a pending submit blocks a second one");assert.equal(count("chat"),0,"no chat message is sent for a goal");
+    assert.deepEqual([submit.objective,submit.session_id,submit.replace],["Build and test the app","A",undefined]);
+    assert.equal(host.querySelector("[data-goal-id]"),null,"a pending submit has no goal yet");
+    await accept({...submit,request_id:"wrong"},goalRow({request_id:request}));assert.equal(getChatState().goal.goal,null,"an unrelated reply is ignored");
+    await accept(earlierRead,null,"goal:current");
+    await act(async()=>refreshComposerGoal());
+    await accept(last("goal:current:get"),null,"goal:current");
+    await accept({...submit,type:"goal:control"},goalRow({request_id:request}));
+    await accept(submit,goalRow({session_id:"B",request_id:request}));
+    assert.equal(getChatState().goal.pending?.requestId,request,"ordinary reads, wrong operations and foreign targets cannot settle a write");
+    await accept(submit,goalRow({request_id:request,submission_pending:true}));
+    assert.deepEqual([getChatState().draft,getChatState().goal.composing],["",false],"a saved goal spends its draft and leaves goal mode");
     assert.equal(host.querySelector("[data-goal-id]")?.getAttribute("data-goal-id"),"goal-1");
-    assert.ok(host.textContent?.includes("A running step may finish"));assert.equal(host.querySelector('[aria-label="Pause task"]'),null);
-    await click("Pause scheduling");const pause=last("goal:pause");assert.equal(pause.expected_version,2);assert.equal(pause.goal_id,"goal-1");
-    assert.equal(host.textContent?.includes("Scheduling paused"),false,"click alone is not paused authority");
-    await reply(pause,makeSnapshot(request,3,"paused"));assert.ok(host.textContent?.includes("Scheduling paused"));
-    await click("Resume goal");const resume=last("goal:resume");assert.equal(resume.expected_version,3);
-    await reply(resume,makeSnapshot(request,4,"running"));assert.ok(host.textContent?.includes("Cancel goal"),"Cancel is available without pausing");
-    await click("Pause scheduling");await reply(last("goal:pause"),makeSnapshot(request,5,"paused"));
-    await click("Cancel goal");const cancel=last("goal:cancel");assert.equal(cancel.expected_version,5);
-    await reply(cancel,makeSnapshot(request,6,"cancelled"));assert.ok(host.textContent?.includes("Stopped"));
-    await reply(resume,makeSnapshot(request,4,"running"));assert.equal(getChatState().goal.snapshot?.goal.version,6,"late control ack cannot revive goal");
+    assert.equal(status(),"Goal set · starts after the current turn");
+    await push(goalRow({request_id:request,continuing:true,version:2,tokens_used:1200,token_budget:50000}));
+    assert.equal(status(),"Continuing goal…");assert.ok(host.textContent?.includes("1.2k / 50k tokens"));
+    await push(goalRow({request_id:request,version:1}));assert.equal(getChatState().goal.goal?.version,2,"an older version never replaces a newer one");
 
-    // A read started before another submission cannot clear the newer identity.
+    // Controls send one fenced control and wait for the backend.
+    await click("Pause");const pause=last("goal:control");
+    assert.deepEqual([pause.action,pause.goal_id,pause.expected_version],["pause","goal-1",2]);
+    assert.equal(find("Pause")?.disabled,true,"controls wait for the reply");
+    assert.equal(status(),"Continuing goal…","a click alone does not pause");
+    await accept(pause,goalRow({request_id:request,status:"paused",submission_pending:true,version:3,tokens_used:752}));
+    assert.equal(status(),"Paused goal");assert.equal(host.querySelector(".composer-goal__tokens")?.textContent,"752 tokens");
+    await click("Resume");const resume=last("goal:control");assert.deepEqual([resume.action,resume.expected_version],["resume",3]);
+    await accept(resume,goalRow({request_id:request,version:4}));assert.equal(status(),"Pursuing goal");
+    await accept(resume,goalRow({request_id:request,status:"paused",version:3}));assert.equal(getChatState().goal.goal?.version,4,"a late reply cannot revert");
+
+    // Edit opens a dialog; a stale version keeps the text and re-reads the goal.
+    await click("Edit goal objective");
+    const field=document.body.querySelector<HTMLTextAreaElement>("dialog.composer-goal-dialog textarea")!;assert.equal(field.value,"Build the app");
+    await act(async()=>typeInto(field,"Build, test and ship the app"));
+    await click("Save objective");const edit=last("goal:control");
+    assert.deepEqual([edit.action,edit.objective,edit.expected_version],["edit","Build, test and ship the app",4]);
+    await ingest({type:"goal:rejected",session_id:"A",request_id:edit.request_id,operation:"control",reason_code:"GoalVersionConflict",error:"The goal changed; try again."});
+    assert.ok(document.body.querySelector("dialog.composer-goal-dialog [role=alert]")?.textContent?.includes("The goal changed"));
+    assert.equal(document.body.querySelector<HTMLTextAreaElement>("dialog.composer-goal-dialog textarea")?.value,"Build, test and ship the app","the edit text is kept");
+    const reread=last("goal:current:get");assert.equal(reread.session_id,"A","a version conflict re-reads the goal");
+    await accept(reread,goalRow({request_id:request,version:5}),"goal:current");
+    await click("Save objective");const edit2=last("goal:control");assert.equal(edit2.expected_version,5);
+    await accept(edit2,goalRow({request_id:request,objective:"Build, test and ship the app",version:6}));
+    assert.equal(document.body.querySelector("dialog.composer-goal-dialog"),null,"a saved edit closes the dialog");
+    assert.equal(host.querySelector(".composer-goal__objective")?.textContent,"Build, test and ship the app");
+
+    // Budget and usage stops: Resume only where the backend allows it.
+    await push(goalRow({request_id:request,status:"budget_limited",status_reason:"Token budget reached",version:7,token_budget:50000,tokens_used:50000}));
+    assert.equal(status(),"Goal limited");assert.ok(host.textContent?.includes("Token budget reached"));
+    assert.equal(find("Resume"),undefined,"a spent budget cannot be resumed");assert.ok(find("Clear goal"));
+    await push(goalRow({request_id:request,status:"usage_limited",version:8}));assert.ok(find("Resume"),"a usage limit can be resumed");
+
+    // /goal over an unfinished goal asks first; Keep sends nothing.
+    await goalMode("Second objective");
+    await enter(textarea);assert.equal(count("goal:submit"),1,"replacing needs confirmation");
+    assert.ok(document.body.querySelector("dialog.composer-goal-dialog")?.textContent?.includes("Replace current goal?"));
+    await click("Keep current goal");assert.equal(getChatState().goal.confirmReplace,undefined);assert.equal(getChatState().draft,"Second objective");
+    await enter(textarea);await click("Replace goal");const replace=last("goal:submit");
+    assert.deepEqual([replace.objective,replace.replace,replace.expected_goal_id],["Second objective",true,"goal-1"]);
+    await accept(replace,goalRow({goal_id:"goal-2",request_id:String(replace.request_id),objective:"Second objective"}));
+    assert.deepEqual([getChatState().goal.goal?.goal_id,getChatState().draft],["goal-2",""]);
+
+    // A complete goal is replaced without asking; a conflict the composer didn't see asks then.
+    await push(goalRow({goal_id:"goal-2",request_id:String(replace.request_id),status:"complete",completed_at:9,time_used_s:754,version:2}));
+    assert.equal(status(),"Goal achieved in 12m 34s");assert.equal(find("Edit goal objective"),undefined,"a complete goal cannot be edited");
+    await goalMode("Third objective");
+    await enter(textarea);const third=last("goal:submit");assert.equal(third.replace,undefined,"a complete goal is replaced without asking");
+    await act(async()=>typeInto(textarea,"My next unsent draft"));
+    await ingest({type:"goal:rejected",session_id:"A",request_id:third.request_id,operation:"submit",reason_code:"GoalConflict",error:"This chat already has an unfinished goal"});
+    assert.equal(getChatState().goal.confirmReplace?.objective,"Third objective");assert.equal(getChatState().goal.error,undefined);
+    assert.equal(find("Replace goal")?.disabled,true,"the conflict read must identify the goal before replacement");
+    await accept(last("goal:current:get"),goalRow({goal_id:"goal-x",request_id:"other"}),"goal:current");
+    await click("Replace goal");const thirdReplace=last("goal:submit");
+    assert.deepEqual([thirdReplace.objective,thirdReplace.replace,thirdReplace.expected_goal_id],["Third objective",true,"goal-x"]);
+    await accept(thirdReplace,goalRow({goal_id:"goal-3",request_id:String(thirdReplace.request_id),objective:"Third objective"}));
+    assert.equal(getChatState().draft,"My next unsent draft","confirmation must not spend the revision typed after the original submission");
+
+    // Clear removes the goal; a push of null clears it in every window.
+    await click("Clear goal");const clear=last("goal:control");assert.equal(clear.action,"clear");
+    await accept(clear,null);assert.equal(getChatState().goal.goal,null);assert.equal(host.querySelector("[data-goal-id]"),null);
+    await push(goalRow({goal_id:"goal-4",request_id:"elsewhere"}));assert.equal(getChatState().goal.goal?.goal_id,"goal-4","another window's goal appears");
+    await push(null);assert.equal(getChatState().goal.goal,null);
+
+    // A goal can be set while a turn runs; its first turn waits for that turn.
+    await act(async()=>patchChatState({turnActive:true}));await goalMode("Mid-turn goal");
+    assert.equal(host.querySelector(".composer-delivery-choice"),null,"steer/queue choices don't apply to a goal");
+    const sentBefore=commands.length;
+    await click("Set goal");const midTurn=last("goal:submit");assert.equal(midTurn.objective,"Mid-turn goal");
+    assert.deepEqual(commands.slice(sentBefore).map(c=>c.type),["goal:submit"],"the goal is not steered into the running turn");
+    await act(async()=>patchChatState({turnActive:false}));
+
+    // A lost reply is settled by the goal's request_id after reconnect; nothing is resent.
+    const submits=count("goal:submit");
+    await reconnect();
+    assert.equal(count("goal:submit"),submits,"reconnect never replays a submit");
+    await accept(last("goal:current:get"),goalRow({goal_id:"goal-5",request_id:String(midTurn.request_id),objective:"Mid-turn goal",submission_pending:true}),"goal:current");
+    assert.deepEqual([getChatState().goal.pending,getChatState().draft,getChatState().goal.goal?.goal_id],[undefined,"","goal-5"]);
+    // ...and a read that doesn't show the submit keeps the draft for a retry.
+    await act(async()=>patchChatState({goal:{...getChatState().goal,goal:null}}));await goalMode("Lost goal");
+    await click("Set goal");
+    await reconnect();
+    await accept(last("goal:current:get"),null,"goal:current");
+    assert.deepEqual([getChatState().goal.pending,getChatState().draft],[undefined,"Lost goal"]);assert.ok(getChatState().goal.error?.includes("may not have been set"));
+
+    // A read that started before a push can't undo it.
     await act(async()=>refreshComposerGoal());const oldRead=last("goal:current:get");
-    await act(async()=>setChatDraft("/goal Next objective"));await click("Start goal");const next=last("goal:submit"),nextId=String(next.request_id);
-    await act(async()=>setChatDraft("new unsent draft"));
-    await reply(next,makeSnapshot(nextId,1,"queued","goal-2"));assert.equal(getChatState().draft,"new unsent draft");
-    await reply(oldRead,null,"goal:current");assert.equal(getChatState().goal.snapshot?.goal.goal_id,"goal-2");
-    await ingest({type:"work:event",event:{aggregate:{kind:"goal",id:"goal-2",version:2},scope:{chat_id:"A"}}});
-    const read=last("goal:current:get");
-    await ingest({type:"work:event",event:{aggregate:{kind:"goal",id:"goal-2",version:3},scope:{chat_id:"A"}}});
-    assert.equal(last("goal:current:get"),read,"event bursts coalesce while reading");
-    await reply(read,makeSnapshot(nextId,2,"running","goal-2"),"goal:current");const freshRead=last("goal:current:get");assert.notEqual(freshRead.request_id,read.request_id);
-    await reply(freshRead,makeSnapshot(nextId,3,"succeeded","goal-2"),"goal:current");assert.ok(host.textContent?.includes("Agent-reported completion"));assert.ok(host.textContent?.includes("Not independently verified"));assert.ok(host.textContent?.includes("Tests passed."));assert.equal(host.querySelector(".composer-goal script"),null);assert.ok(host.textContent?.includes("Report preview truncated"));
-    await reply(read,makeSnapshot(nextId,2,"running","goal-2"),"goal:current");assert.equal(getChatState().goal.snapshot?.goal.version,3);
+    await push(goalRow({goal_id:"goal-6",request_id:"x"}));
+    await accept(oldRead,null,"goal:current");assert.equal(getChatState().goal.goal?.goal_id,"goal-6","a stale empty read keeps the pushed goal");
 
-    // A lost submission acknowledgment is resolved only by exact persisted request identity.
-    await act(async()=>setChatDraft("/goal Survive reconnect"));await click("Start goal");const ambiguous=last("goal:submit"),ambiguousId=String(ambiguous.request_id);
-    await act(async()=>{online=false;setChatConnection("offline");});
-    await act(async()=>{online=true;setChatConnection("connected");await new Promise(resolve=>setTimeout(resolve,230));});
-    const recover=last("goal:current:get");assert.equal(recover.submission_request_id,ambiguousId);
-    assert.equal(commands.filter(c=>c.type==="goal:submit").length,3,"reconnect never replays a submit");
-    await reply(recover,makeSnapshot(ambiguousId,4,"running","goal-3"),"goal:current");assert.equal(getChatState().goal.pending,undefined);assert.equal(getChatState().draft,"");
-    await act(async()=>refreshComposerGoal());const failedRead=last("goal:current:get");
-    await ingest({type:"goal:rejected",session_id:"A",request_id:failedRead.request_id,operation:"current",error:"storage unavailable"});
-    assert.equal(getChatState().goal.snapshot?.goal.goal_id,"goal-3");assert.ok(host.textContent?.includes("storage unavailable"));
-    await act(async()=>refreshComposerGoal());const malformed=last("goal:current:get");await reply(malformed,{garbage:true},"goal:current");
-    assert.equal(getChatState().goal.snapshot?.goal.goal_id,"goal-3");assert.equal(getChatState().goal.refreshRequestId,undefined);
-    await click("Refresh goal");const manual=last("goal:current:get");await click("Refresh goal");const manualNew=last("goal:current:get");assert.notEqual(manual.request_id,manualNew.request_id);
-    const noControls=makeSnapshot(ambiguousId,5,"running","goal-3");noControls.capabilities={pause_scheduling:false,pause_active_work:false,resume:false,cancel:false,continue:false,retry_cleanup:false,finish:false,archive:false};
-    await reply(manualNew,noControls,"goal:current");assert.equal(host.textContent?.includes("Pause scheduling"),false);assert.equal(getChatState().goal.error,undefined);
-    await reply(manual,null,"goal:current");assert.equal(getChatState().goal.snapshot?.goal.goal_id,"goal-3");
-
-    // Offscreen events remain session-owned, including rejected actions and hydration.
-    await act(async()=>{activateChatState("B");noteDisplayedSession("B");refreshComposerGoal();});const readB=last("goal:current:get");
-    await reply(readB,null,"goal:current");await act(async()=>setChatDraft("/goal B objective"));await click("Start goal");const b=last("goal:submit");assert.equal(b.session_id,"B");
-    await act(async()=>{activateChatState("A");noteDisplayedSession("A");});await reply(b,makeSnapshot(String(b.request_id),1,"running","goal-B","B"));
-    assert.equal(getChatState().goal.snapshot?.goal.goal_id,"goal-3");assert.equal(getCachedChatState("B")?.goal.snapshot?.goal.goal_id,"goal-B");
-    await act(async()=>{activateChatState("C");noteDisplayedSession("C");});await act(async()=>setChatDraft("/goal rejected objective"));await click("Start goal");const rejected=last("goal:submit");
-    await ingest({type:"goal:rejected",session_id:"C",request_id:rejected.request_id,operation:"submit",error:"goal unavailable"});
-    assert.equal(getChatState().draft,"/goal rejected objective");assert.equal(getChatState().goal.pending,undefined);assert.equal(getChatState().messages.length,0);
-    await act(async()=>{patchChatState({attachments:[{id:"a",name:"file.txt",kind:"file",size:1,mime:"text/plain",text:"x"}]});});
-    const count=commands.filter(c=>c.type==="goal:submit").length;await click("Start goal");assert.equal(commands.filter(c=>c.type==="goal:submit").length,count);assert.equal(getChatState().attachments.length,1);
-    await act(async()=>{patchChatState({attachments:[]});setChatDraft("My goal is to improve tests");submitUserInput({source:"composer",sessionId:"C",revision:getComposerRevision(),text:getChatState().draft,attachments:[]});});
+    // Goals are text only; ordinary text stays a chat message.
+    await act(async()=>{patchChatState({attachments:[{id:"a",name:"file.txt",kind:"file",size:1,mime:"text/plain",text:"x"}],goal:{...getChatState().goal,goal:null,error:undefined}});});
+    await goalMode("Goal with file");
+    const before=count("goal:submit");await enter(textarea);assert.equal(count("goal:submit"),before,"a goal is text only");
+    assert.equal(getChatState().attachments.length,1);
+    await act(async()=>{patchChatState({attachments:[],goal:{...getChatState().goal,composing:false}});setChatDraft("My goal is to improve tests");
+      submitUserInput({source:"composer",sessionId:"A",revision:getComposerRevision(),text:getChatState().draft,attachments:[]});});
     assert.equal(last("chat").text,"My goal is to improve tests","ordinary text remains ordinary chat");
-    await act(async()=>{activateChatState("D");noteDisplayedSession("D");refreshComposerGoal();});
-    const structured={...makeSnapshot("durable-request",7,"succeeded","goal-D","D"),objective_outcome:{status:"blocked",summary:"Required input absent",basis:"agent_report",independently_verified:false},cleanup:{status:"pending",complete:false},capabilities:{pause_scheduling:false,pause_active_work:false,resume:false,cancel:true,continue:true,retry_cleanup:false,finish:true,archive:false}};
-    await reply(last("goal:current:get"),structured,"goal:current");assert.ok(host.textContent?.includes("blocked"));assert.ok(host.textContent?.includes("Cleanup pending"));assert.equal(host.textContent?.includes("Agent-reported completion"),false,"execution succeeded cannot imply objective completion");
-    await click("Continue goal");assert.equal(last("goal:continue").goal_id,"goal-D");assert.equal(last("goal:continue").expected_version,7);
-    await reply(last("goal:continue"),{...structured,goal:{...structured.goal,status:"running",version:8}});
-    await click("Cancel goal");assert.equal(last("goal:cancel").expected_version,8,"cancel does not require pause");
-    const cleanupFailed={...structured,goal:{...structured.goal,status:"cancelled",version:9},cleanup:{status:"failed",complete:false},capabilities:{...structured.capabilities,continue:false,cancel:false,retry_cleanup:true}};
-    await reply(last("goal:cancel"),cleanupFailed);assert.ok(host.textContent?.includes("Cleanup failed"));assert.equal(host.textContent?.includes("Stopped"),false);
-    await click("Retry cleanup");assert.equal(last("goal:cancel").expected_version,9);
-    const cleaned={...cleanupFailed,goal:{...cleanupFailed.goal,version:10},cleanup:{status:"complete",complete:true},capabilities:{...cleanupFailed.capabilities,retry_cleanup:false,archive:true}};
-    await reply(last("goal:cancel"),cleaned);assert.ok(host.textContent?.includes("Stopped"));
-    await click("End goal");assert.equal(last("goal:finish").expected_version,10);
-    await reply(last("goal:finish"),{...cleaned,goal:{...cleaned.goal,version:11},termination:{kind:"user_finished"}});assert.ok(host.textContent?.includes("Ended by you"));assert.ok(host.textContent?.includes("blocked"),"ending goal preserves objective outcome");
-    await click("Dismiss goal");assert.equal(last("goal:archive").expected_version,11);
-    await reply(last("goal:archive"),{...cleaned,goal:{...cleaned.goal,status:"archived",version:12}});assert.equal(getChatState().goal.snapshot,null);assert.equal(host.querySelector('[aria-label="Durable goal"]'),null);
 
-    // A goal held by a Stop says where to continue it, once per chat.
-    await act(async()=>{activateChatState("E");noteDisplayedSession("E");refreshComposerGoal();});
-    const base=makeSnapshot("held-request",2,"waiting_external","goal-E","E");
-    const held={...base,goal:{...base.goal,budget:{limits:{tokens:5000},usage:{}}},
-      state:{parent_turn:{admission_id:"held-admit",run_id:"held-run",status:"finished",report:{wait_for_message_ids:["m1","m2","m3","m4"]}}},
-      awaiting_peers:[{message_id:"m1",chat_id:"B",display_name:"Lead",state:"parked"},{message_id:"m2",chat_id:"B",display_name:"Lead",state:"parked"},
-        {message_id:"m3",chat_id:"E",display_name:"Self",state:"parked"},{message_id:"m4",chat_id:"F",display_name:"Writer",state:"queued"}],
-      accounting:{lost_usage_records:2}};
-    await reply(last("goal:current:get"),held,"goal:current");
-    assert.equal(host.querySelectorAll('[data-goal-notice="parked"]').length,2,"one notice per paused chat; a queued request is not held");
-    assert.ok(host.textContent?.includes("Waiting on a paused request"));
-    assert.ok(host.textContent?.includes("A request to Lead is paused in its queue"));
-    assert.ok(host.textContent?.includes("A request in this chat's queue is paused"),"a self-message points at this chat's own queue");
-    assert.ok(host.textContent?.includes("2 usage records could not be saved, so this goal's budget can't be checked reliably."));
-    await click("Open Lead");assert.equal(last("chat:session:switch").id,"B","the notice opens the chat holding the request");
-    await act(async()=>{activateChatState("G");noteDisplayedSession("G");refreshComposerGoal();});
-    await reply(last("goal:current:get"),{...makeSnapshot("open-request",2,"running","goal-G","G"),accounting:{lost_usage_records:1}},"goal:current");
-    assert.ok(host.textContent?.includes("1 usage record could not be saved. Usage totals may be low."),"an uncapped goal only warns about totals");
-    assert.equal(host.querySelector('[data-goal-notice="parked"]'),null);
+    // Replies and pushes stay with their own chat.
+    await act(async()=>{activateChatState("B");noteDisplayedSession("B");});
+    await goalMode("B objective");await click("Set goal");const b=last("goal:submit");assert.equal(b.session_id,"B");
+    await act(async()=>{activateChatState("A");noteDisplayedSession("A");});
+    await accept(b,goalRow({goal_id:"goal-B",session_id:"B",request_id:String(b.request_id)}));
+    assert.equal(getChatState().goal.goal,null,"B's reply leaves A's goal alone");assert.equal(getCachedChatState("B")?.goal.goal?.goal_id,"goal-B");
 
+    // Confirmations and edits belong to the displayed goal. An unchanged objective
+    // may use a newer usage version, but a conflicting objective needs a new decision.
+    await push(goalRow({goal_id:"old"}));
+    await goalMode("Proposed replacement"); await enter(textarea);
+    const submitsBeforeSwitch = count("goal:submit");
+    await push(goalRow({goal_id:"different"}));
+    assert.equal(document.querySelector("dialog[open]"),null);
+    assert.equal(count("goal:submit"),submitsBeforeSwitch);
+    assert.equal(getChatState().draft,"Proposed replacement");
+    const editField = () => document.querySelector<HTMLTextAreaElement>("dialog textarea")!;
+    await click("Edit goal objective"); await act(async()=>typeInto(editField(),"Draft from A"));
+    await act(async()=>{activateChatState("B");noteDisplayedSession("B");patchChatState({});});
+    assert.equal(document.querySelector("dialog[open]"),null,"a draft from A is never attached to B's goal");
+    await act(async()=>{activateChatState("A");noteDisplayedSession("A");patchChatState({});});
+    await click("Edit goal objective"); await act(async()=>typeInto(editField(),"Draft for the old identity"));
+    await push(goalRow({goal_id:"edited"})); assert.equal(document.querySelector("dialog[open]"),null);
+    await click("Edit goal objective"); await act(async()=>typeInto(editField(),"My objective"));
+    await push(goalRow({goal_id:"edited",objective:"A remote edit",version:2}));
+    assert.equal(editField().value,"My objective"); assert.equal(find("Save objective")?.disabled,true);
+    await click("Keep editing my draft");
+    await push(goalRow({goal_id:"edited",objective:"A remote edit",tokens_used:1,version:3}));
+    await click("Save objective"); const uncertainEdit = last("goal:control");
+    assert.equal(uncertainEdit.expected_version,3,"usage changes do not invalidate the reviewed objective");
+    await accept(uncertainEdit,goalRow({goal_id:"wrong-target",objective:"My objective",version:4}));
+    assert.equal(getChatState().goal.goal?.goal_id,"edited");
+    assert.equal(getChatState().goal.pending?.requestId,uncertainEdit.request_id);
+    const controlsBeforeRead = count("goal:control");
+    await reconnect();
+    const retryRead = lastRead("A");
+    await ingest({type:"goal:rejected",session_id:"A",request_id:retryRead.request_id,operation:"current",error:"Service unavailable"});
+    assert.equal(getChatState().goal.readRequestId,undefined);
+    assert.ok(document.querySelector("dialog[open]")?.textContent?.includes("Service unavailable"));
+    assert.equal(document.querySelector<HTMLButtonElement>("dialog button[type=submit]")?.disabled,true); assert.equal(find("Close dialog")?.disabled,false);
+    await click("Check saved goal");
+    await accept(last("goal:current:get"),goalRow({goal_id:"edited",objective:"A remote edit",version:3}),"goal:current");
+    assert.equal(editField().value,"My objective");
+    assert.ok(document.querySelector("dialog[open]")?.textContent?.includes("Could not confirm"));
+    assert.equal(count("goal:control"),controlsBeforeRead,"reconciliation never resends an edit");
+    await click("Save objective"); const retriedEdit = last("goal:control");
+    await act(async()=>{online=false;setChatConnection("offline");});
+    await act(async()=>{document.querySelector("dialog[open]")!.dispatchEvent(new Event("cancel",{cancelable:true}));});
+    assert.equal(document.querySelector("dialog[open]"),null,"Escape can dismiss an unconfirmed edit offline");
+    await reconnect(); await accept(lastRead("A"),goalRow({goal_id:"edited",objective:"My objective",version:4}),"goal:current");
+    assert.equal(getChatState().goal.confirmedRequestId,retriedEdit.request_id);
+
+    await click("Clear goal"); const staleClear = last("goal:control");
+    await push(goalRow({goal_id:"other-window"})); await accept(staleClear,null);
+    assert.equal(getChatState().goal.goal?.goal_id,"other-window","a late clear receipt cannot erase another window's new goal");
+    await accept(last("goal:current:get"),goalRow({goal_id:"other-window"}),"goal:current");
+    await push(null);
+
+    // A full, pasted slash command exceeds the native message field's 8K limit.
+    // Replace a selection and retain its suffix, including non-BMP characters.
+    await act(async()=>{patchChatState({goal:{...getChatState().goal,composing:false}});setChatDraft("replace me!");});
+    const longObjective = "🌱".repeat(31999);
+    await act(async()=>{
+      textarea.setSelectionRange(0,10);
+      const paste = new Event("paste",{bubbles:true,cancelable:true});
+      Object.defineProperty(paste,"clipboardData",{value:{files:[],items:[],getData:()=>" /goal\n"+longObjective}});
+      textarea.dispatchEvent(paste);
+      assert.equal(paste.defaultPrevented,true);
+    });
+    assert.equal(getChatState().draft,longObjective+"!");
+    await act(async()=>typeInto(textarea,longObjective+"!!")); assert.equal(find("Set goal")?.disabled,true);
+    await act(async()=>typeInto(textarea,longObjective+"!")); await click("Set goal");
+    const longSubmit=last("goal:submit"); assert.equal(longSubmit.objective,longObjective+"!");
+    await click("Leave goal mode");
+    await accept(longSubmit,goalRow({goal_id:"long",objective:longSubmit.objective,request_id:longSubmit.request_id}));
+    assert.equal(getChatState().draft,longObjective+"!","a late submit cannot spend text the user switched back to a message");
   } finally {
     await act(async()=>root.unmount());host.remove();resetWireStatus("chat");
   }
-  console.log("Goal composer: literal command, durable identity, capability controls, completion disclosure, stale replies, reconnect without replay, event coalescing and session isolation passed");
+
+  // Follow admitted turns through production event parsing. Active input
+  // projections are optional and the append may arrive before or after done.
+  __resetChatStoreForTests();__resetTurnStoreForTests();
+  setChatContext(context);activateChatState("T");noteDisplayedSession("T");
+  setChatState({...initialChatState(),sessionId:"T",connected:true,activeTurnId:"previous-prompt",messages:[
+    {role:"user",text:"Build the app",optimisticTurnId:"previous-prompt"},
+    {role:"assistant",text:"Started.",runId:"older-run",optimisticTurnId:"previous-prompt"},
+  ]});
+  const firstRun = {source:"goal:submit",session_id:"T",run_id:"r1",admission_id:"a1",client_id:"goal-engine"};
+  const firstUser = {role:"user",text:"Build the app",origin:{kind:"goal",event:"submission",goal_id:"g"}};
+  const firstAppend = {type:"chat:appended",...firstRun,messages:[firstUser,
+    {role:"assistant",text:"Preparing.",run_id:"r1"},{role:"user",text:"Check both platforms",ticket_id:"steer-1",delivery:"steer"},
+    {role:"assistant",text:"Started.",run_id:"r1"}]};
+  await ingest({type:"start",...firstRun});
+  await ingest({type:"activity",...firstRun,event:"tool:result",tool:"read_file",call_id:"read-source",status:"ok",text:"Read source"});
+  await ingest({type:"token",...firstRun,token:"Starting"});
+  await ingest({type:"done",...firstRun,text:"Starting"});
+  await ingest(firstAppend);
+  const rows = () => getChatState().messages;
+  assert.deepEqual(rows().map(row=>row.text),["Build the app","Started.","Build the app","Preparing.","Check both platforms","Started."]);
+  assert.equal(rows()[1].runId,"older-run","identical text from an earlier run survives");
+  assert.equal(rows()[0].optimisticTurnId,"previous-prompt","an outstanding ordinary prompt retains its own append group");
+  assert.equal(rows()[2].goalOrigin?.event,"submission");
+  assert.equal(rows()[4].ticketId,"steer-1");
+  assert.ok(rows()[5].steps?.some(step=>step.callId==="read-source"),"the saved reply keeps the live trace when its text differs");
+  assert.ok(rows()[5].receipt,"the saved reply keeps the local run receipt");
+  const secondRun = {source:"goal:continue",session_id:"T",run_id:"r2",admission_id:"a2",client_id:"goal-engine"};
+  const secondUser = {role:"user",text:"Continue toward the goal",origin:{kind:"goal",event:"continuation",goal_id:"g"}};
+  const secondAppend = {type:"chat:appended",...secondRun,messages:[secondUser,{role:"assistant",text:"All requirements met.",run_id:"r2",
+    goal_event:{event:"achieved",goal_id:"g",time_used_s:3725,tokens_used:1}}]};
+  await ingest({type:"start",...secondRun,active_inputs:{schema:"variant1.active-inputs.v1",...secondRun,root:secondUser,inputs:[]}});
+  await ingest({type:"activity",...secondRun,event:"tool:result",tool:"read_file",call_id:"verify-source",status:"ok"});
+  const activeId = getChatState().activeTurnId;
+  await ingest(firstAppend); assert.equal(getChatState().activeTurnId,activeId);
+  assert.equal(rows().filter(row=>row.runId==="r1").length,4,"a replay during the next goal turn is idempotent");
+  await ingest({...secondAppend,admission_id:"wrong"});
+  assert.equal(getChatState().pendingTurnCommit,undefined);
+  await ingest(secondAppend);
+  assert.equal(rows().some(row=>row.goalEvent),false,"a durable append waits for the live turn to finish");
+  await ingest({type:"done",...secondRun,text:"All requirements met."});
+  await ingest(secondAppend);
+  assert.equal(rows().length,8);
+  assert.equal(rows().at(-1)?.goalEvent?.event,"achieved");
+  // History stores the run ID on assistants. Replaying the append after a
+  // session reload must also recognize its adjacent durable goal prompt.
+  patchChatState({messages:rows().map(row=>row.role==="user" ? {...row,runId:undefined,admissionId:undefined} : row)});
+  await ingest(firstAppend); await ingest(secondAppend);
+  assert.equal(rows().length,8,"replayed goal segments merge with restored history");
+  const nextRun = {source:"goal:continue",session_id:"T",run_id:"r3",admission_id:"a3"};
+  await ingest({type:"start",...nextRun});
+  await ingest({type:"activity",...nextRun,event:"tool:result",tool:"read_file",call_id:"verify-last",status:"ok"});
+  const beforeEarly = rows().length;
+  const nextAppend = {type:"chat:appended",...nextRun,user:secondUser,assistant:{role:"assistant",text:"Checked."}};
+  await ingest(nextAppend);
+  assert.equal(rows().length,beforeEarly,"an early append without an active input root is held for done");
+  await ingest({type:"done",...nextRun,text:"Checked."});
+  await ingest(nextAppend);
+  assert.equal(rows().length,beforeEarly+2);
+  const annotations = commands.filter(command=>command.type==="chat:session:annotate" && command.id==="T");
+  assert.deepEqual(annotations.map(command=>command.run_id),["r1","r2","r3"],"replayed appends do not enqueue duplicate annotations");
+  for (const command of annotations) await ingest({type:"chat:session:annotated",id:"T",run_id:command.run_id,request_id:command.request_id,ok:true});
+  const transcriptHost=document.createElement("div");document.body.appendChild(transcriptHost);const transcript=createRoot(transcriptHost);
+  try {
+    await act(async()=>{transcript.render(<ChatMessageList/>);});
+    assert.ok(transcriptHost.querySelector(".message--user .message__goal-label")?.textContent?.includes("Sent as goal"));
+    assert.ok(transcriptHost.querySelector(".message--goal-turn")?.textContent?.includes("Continuing goal"));
+    assert.equal(transcriptHost.textContent?.includes("Continue toward the goal"),false,"the continuation prompt isn't shown as a bubble");
+    assert.ok(transcriptHost.querySelector(".message__goal-achieved")?.textContent?.includes("Goal achieved in 1h 2m"));
+  } finally {
+    await act(async()=>transcript.unmount());transcriptHost.remove();
+  }
+  console.log("Goal composer: fenced controls and replacement, draft ownership, scoped receipts and reads, reconnect recovery, Unicode paste and durable goal transcripts passed");
 }

@@ -174,13 +174,6 @@ class PeerCommunicationService:
         }
         self._change_event.set()
         self._change_event = asyncio.Event()
-        try:
-            goals = getattr(self.host.require_runtime(), 'goals', None)
-            if goals is not None and goals.parent_session is not None:
-                goals.parent_session.notify_peer_result(row)
-                goals.parent_session.notify_peer_unavailable(row)
-        except Exception:
-            _LOG.exception('Goal peer-result wake unavailable')
         publisher = self._publisher
         if not callable(publisher):
             return
@@ -360,20 +353,6 @@ class PeerCommunicationService:
         # Wake observation waits, not model turns. No unsolicited prompt or
         # fabricated peer reply is added to either session's conversation.
         self._change_event.set(); self._change_event = asyncio.Event()
-        parent = getattr(getattr(self.host.require_runtime(), 'goals', None), 'parent_session', None)
-        if parent is None:
-            return
-        after = ''
-        while True:
-            ids = self.session_runtimes.repository.completed_peer_ticket_ids(chat_id, run_id, admission_id, after=after)
-            if not ids:
-                return
-            for row in self.repository.messages_for_tickets(ids):
-                if requests_work(row):
-                    parent.notify_peer_result({'message_kind':'result','in_reply_to':row['message_id'],
-                        'target_peer_id':row['sender_peer_id'],
-                        'message_id':'native-settlement:'+admission_id+':'+row['message_id']})
-            after = ids[-1]
 
     def notify_native_end(self, chat_id, run_id, admission_id):
         if not run_id or self.session_runtimes.repository.get_run_settlement(chat_id,
@@ -519,7 +498,7 @@ class PeerCommunicationService:
             + PEER_REPLY_HINT
         )
 
-    def _sync_native_state(self, row: Mapping[str, Any]) -> dict[str, Any]:
+    def _sync_native_state(self, row: Mapping[str, Any], *, idle: bool = False) -> dict[str, Any]:
         message = dict(row)
         ticket_id = str(message.get("delivery_ticket_id") or "")
         if (message.get('evidence') or {}).get('native_wait_failure'):
@@ -529,6 +508,24 @@ class PeerCommunicationService:
         ticket = self.session_runtimes.repository.get_ticket(ticket_id)
         if ticket is None:
             return message
+        if idle and ticket.state == "parked" and ticket.error == "turn_ok_before_input_delivery":
+            # A successful user, peer or Goal turn can park a request that
+            # arrived too late for injection. Restore queue precedence before
+            # another idle listener can reserve the chat for automatic work.
+            ticket = self.session_runtimes.repository.transition_ticket(
+                ticket_id, "queued", expected=("parked",), error="",
+            )
+            if ticket is None:
+                return message
+            if ticket.state == "queued":
+                message = self.repository.update_message(
+                    str(message["message_id"]), state="queued",
+                    evidence={"ticket_state": "queued",
+                              "receipt_semantics": "continued_after_successful_turn"},
+                    error="",
+                )
+                self._event(message)
+                return message
         state_map = {
             "queued": "queued", "selected": "queued", "preparing": "queued",
             "resume_queued": "parked", "parked": "queued" if ticket.error == 'turn_ok_before_input_delivery' else "parked",
@@ -629,7 +626,7 @@ class PeerCommunicationService:
         if event is not None:
             event.set()
         for row in self.repository.pending_native(chat_id=chat_id):
-            self._sync_native_state(row)
+            self._sync_native_state(row, idle=True)
 
     async def _wake_native(self, chat_id: str) -> None:
         idle_delay = 0.1
@@ -678,7 +675,7 @@ class PeerCommunicationService:
                     if not isinstance(turn_task, asyncio.Task):
                         return
                     await asyncio.gather(turn_task, return_exceptions=True)
-                    self._resume_chainable_native_tickets(chat_id)
+                    self._notify_native_idle(chat_id)
                     idle_delay = 0.1
                     continue
                 if outcome.get("status") in {"parked", "unavailable"}:
@@ -688,36 +685,6 @@ class PeerCommunicationService:
         finally:
             self._wake_tasks.pop(chat_id, None)
             self._idle_events.pop(chat_id, None)
-
-    def _resume_chainable_native_tickets(self, chat_id: str) -> int:
-        """Continue peer work parked only by a successful prior turn boundary."""
-
-        resumed = 0
-        for row in self.repository.pending_native(chat_id=chat_id):
-            ticket_id = str(row.get("delivery_ticket_id") or "")
-            ticket = self.session_runtimes.repository.get_ticket(ticket_id)
-            if (
-                ticket is None
-                or ticket.state != "parked"
-                or str(ticket.error or "") != "turn_ok_before_input_delivery"
-            ):
-                continue
-            updated = self.session_runtimes.repository.transition_ticket(
-                ticket_id, "queued", expected=("parked",), error="",
-            )
-            if updated is None or updated.state != "queued":
-                continue
-            message = self.repository.update_message(
-                str(row["message_id"]), state="queued",
-                evidence={
-                    "ticket_state": "queued",
-                    "receipt_semantics": "continued_after_successful_peer_turn",
-                },
-                error="",
-            )
-            self._event(message)
-            resumed += 1
-        return resumed
 
     def _message_kind(self, sender, request_id, value, default):
         if value is None:

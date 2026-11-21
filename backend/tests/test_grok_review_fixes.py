@@ -129,15 +129,6 @@ async def test_invalid_local_model_switch_leaves_current_runtime_running(tmp_pat
     engine.stop.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_goal_cannot_execute_in_another_chat():
-    from goals.host_handlers import GoalHostHandlers
-    handlers = object.__new__(GoalHostHandlers)
-    result = await handlers.python(SimpleNamespace(step=SimpleNamespace(config={"code": "x=1", "runtime_chat_id": "b"}),
-        goal=SimpleNamespace(owner_chat_id="a")))
-    assert result.status == "blocked" and "owning chat" in result.error
-
-
 @pytest.mark.parametrize("method,path,upstream", [
     ("GET", "/v1/models", "models"), ("GET", "/v1/status", "status"), ("GET", "/status", "status"),
     ("POST", "/v1/chat/completions", "chat_completions"),

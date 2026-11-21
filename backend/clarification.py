@@ -26,19 +26,9 @@ def interaction_request(record: Any) -> dict | None:
     if record is None or getattr(record, "terminal", True):
         return None
     kind = str(getattr(record, "kind", "") or "")
-    if kind == "clarification":
-        questions = list(getattr(record, "schema", {}).get("questions") or ())
-    elif kind == "goal_input":
-        metadata = dict(getattr(record, "metadata", {}) or {})
-        questions = [{
-            "id": "q1",
-            "question": str(getattr(record, "prompt", "") or "Input required"),
-            "header": str(metadata.get("title") or "Goal input"),
-            "multiSelect": False,
-            "options": [],
-        }]
-    else:
+    if kind != "clarification":
         return None
+    questions = list(getattr(record, "schema", {}).get("questions") or ())
     return {
         "type": "clarification:request",
         "id": str(record.interaction_id),
@@ -58,20 +48,6 @@ def pending_interactions(interactions: Any, chat_id: str) -> list[dict]:
             if str(row.scope.chat_id or "") == chat_id
             and (projected := interaction_request(row)) is not None]
 
-
-def pending_goal_input(interactions: Any, chat_id: str) -> Any | None:
-    """Return the oldest open goal question owned by one durable chat."""
-
-    target = str(chat_id or "")
-    if not target:
-        return None
-    rows = interactions.list(status="open", chat_id=target,
-                             kind="goal_input", oldest_first=True, limit=1)
-    matching = [
-        row for row in rows
-        if row.kind == "goal_input" and str(row.scope.chat_id or "") == target
-    ]
-    return min(matching, key=lambda row: row.created_at) if matching else None
 
 def _clean_text(value: object, *, field: str, maximum: int) -> str:
     text = " ".join(str(value or "").split()).strip()
@@ -174,43 +150,16 @@ def resolve_response(
     answers: object,
     *,
     skipped: bool,
-    goals: Any = None,
     chat_id: str | None = None,
 ) -> bool:
     try:
         pending = interactions.get(str(request_id or ""))
     except Exception:
         return False
-    if pending.kind not in {"clarification", "goal_input"} or pending.terminal:
+    if pending.kind != "clarification" or pending.terminal:
         return False
     if chat_id is not None and str(pending.scope.chat_id or "") != chat_id:
         return False
-    if pending.kind == "goal_input":
-        if goals is None:
-            return False
-        raw = answers if isinstance(answers, dict) else {}
-        answer = " ".join(str(raw.get("q1") or "").split()).strip()[:8000]
-        if not skipped and not answer:
-            return False
-        try:
-            if skipped:
-                goals.dismiss_input(
-                    pending.interaction_id,
-                    expected_attention_version=pending.version,
-                )
-            else:
-                goal = goals.get(pending.owner_id)
-                if goal is None:
-                    return False
-                goals.answer_input(
-                    pending.interaction_id,
-                    answer,
-                    expected_version=goal.version,
-                    expected_attention_version=pending.version,
-                )
-            return True
-        except Exception:
-            return False
     questions = list(pending.schema.get("questions") or ())
     try:
         normalized = {} if skipped else _normalize_answers(questions, answers)

@@ -5,6 +5,7 @@ import {Icon, type IconName} from "../ui/Icon";
 import {
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -41,7 +42,10 @@ import {openLocalEngine, useLocalEngine} from "../localEngine";
 import {getComposerRevision,turnApi} from "./stateCore";
 import {currentPause,requestChatPause} from "./pause";
 import {ActivityDock} from "./ActivityDock";
-import {parseGoalCommand} from "./goalCommand";
+import {goalCommandDraft} from "./goalCommand";
+import {setGoalComposing} from "./goals";
+import {goalLength, MAX_GOAL_OBJECTIVE} from "../protocol/goals";
+import {ComposerGoalStatus,GoalReplaceDialog} from "./ComposerGoal";
 import {queueAdmissionPending} from "./inputQueue";
 import {invalidatePendingChatAttachments} from "./attachments";
 import {AnchoredPopover} from "../ui/AnchoredPopover";
@@ -174,7 +178,7 @@ const COMPOSER_COMMANDS = [
   },
   {
     name: "/goal",
-    description: "Start an explicit durable goal",
+    description: "Set a goal for VARIANT-1 to keep working toward",
     insert: "/goal ",
   },
 ] as const;
@@ -365,6 +369,7 @@ export function ChatComposer() {
   const {
     draft, turnActive, connected, attachments, references, attachmentsPreparing, deliveryMode, stopPending, queuedFollowUps, sessionId, messages, pendingActiveInputs, runtime, inputQueue,
   } = useChatSelection(state=>({draft:state.draft,turnActive:state.turnActive,connected:state.connected,attachments:state.attachments,references:state.references,attachmentsPreparing:state.attachmentsPreparing,deliveryMode:state.deliveryMode,stopPending:state.stopPending,queuedFollowUps:state.queuedFollowUps,sessionId:state.sessionId,messages:state.messages,pendingActiveInputs:state.pendingActiveInputs,runtime:state.runtime,inputQueue:state.inputQueue,pause:state.pause}),shallowChatSelection);
+  const {goalComposing,goalPending}=useChatSelection(state=>({goalComposing:!!state.goal.composing,goalPending:!!state.goal.pending}),shallowChatSelection);
   const composerRevision = getComposerRevision(sessionId || "");
   const {phase: micPhase, sessionTitle: micChat, error: micError} = useMicState();
   const pendingIds = new Set(pendingActiveInputs.map(input => input.localId));
@@ -397,14 +402,16 @@ export function ChatComposer() {
   const [commandIndex,setCommandIndex]=useState(0);
   const [dismissedCommand,setDismissedCommand]=useState("");
   const composing=useRef(false);
+  const draftLength = useMemo(() => goalComposing ? goalLength(draft.trim()) : draft.length, [draft, goalComposing]);
+  const draftLimit = goalComposing ? MAX_GOAL_OBJECTIVE : 8000;
   // Active-turn input is admitted immediately as steering or a follow-up.
-  const goalCommand=parseGoalCommand(draft);
+  // In goal mode Send sets the chat goal; its first turn waits for the current one.
   const readyToSend=connected && !navigating && !!sessionId && !attachmentsPreparing && !stopPending && !pendingSetting && !queueAdmissionPending()
-    && !(goalCommand && (turnActive || !!getChatState().goal.pending));
+    && !(goalComposing && goalPending) && draftLength <= draftLimit;
   const canActiveInput = readyToSend && turnActive && Boolean(draft.trim()) && !attachments.length && !references.length;
-  const canSend = readyToSend && Boolean(draft.trim() || attachments.length || references.length) && !turnActive;
+  const canSend = readyToSend && Boolean(draft.trim() || (!goalComposing && (attachments.length || references.length))) && !turnActive;
   const slashQuery = (
-    draft.startsWith("/") && !draft.slice(1).includes(" ")
+    !goalComposing && draft.startsWith("/") && !draft.slice(1).includes(" ")
       ? draft.toLowerCase()
       : ""
   );
@@ -413,7 +420,7 @@ export function ChatComposer() {
     : [];
   // @ lists this chat's open browser tabs; titles and URLs update live.
   usePreviewState();
-  const mentionQuery = !slashQuery && !turnActive && sessionId ? /(?:^|\s)@([^\s@]*)$/.exec(draft)?.[1] : undefined;
+  const mentionQuery = !slashQuery && !turnActive && !goalComposing && sessionId ? /(?:^|\s)@([^\s@]*)$/.exec(draft)?.[1] : undefined;
   const mentionMatches = mentionQuery !== undefined && dismissedCommand!==draft && !modelMenuOpen && !contextMenuOpen
     ? workbenchBrowserTargets(sessionId || "").filter(tab => !references.some(item => item.tabId === tab.id)
       && `${tab.title} ${tab.url}`.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 8)
@@ -485,6 +492,10 @@ export function ChatComposer() {
   };
 
   const chooseCommand = (command: ComposerCommand) => {
+    if (command.name === "/goal") {
+      setGoalComposing(true,sessionId);setChatDraft("",sessionId);setDismissedCommand("");
+      requestAnimationFrame(() => textareaRef.current?.focus());return;
+    }
     setChatDraft(command.insert,sessionId);
     setDismissedCommand(command.insert);
     requestAnimationFrame(() => textareaRef.current?.focus());
@@ -560,6 +571,8 @@ export function ChatComposer() {
     {dragOver ? <div className="composer-drop-hint" aria-hidden="true">Drop files or folders to attach</div> : null}
     <ClarificationCard />
     <ActivityDock/>
+    <ComposerGoalStatus/>
+    <GoalReplaceDialog/>
     <div className="composer" id="composer" data-state={!connected ? "offline" : stopPending ? "stopping" : turnActive ? "working" : "ready"}>
       {composerContext.settingsError && !modelMenuOpen ? <SettingNotice
         label={composerContext.settingsErrorLabel}
@@ -568,6 +581,10 @@ export function ChatComposer() {
         onDismiss={() => dismissSettingsError(sessionId || "")}
       /> : null}
       <div className="composer__supplements">
+        {goalComposing ? <div className="composer-goal-chip" role="group" aria-label="Goal mode">
+          <Icon name="goal"/><span>Goal</span>
+          <button type="button" aria-label="Leave goal mode" title="Send as a normal message instead" onClick={() => {setGoalComposing(false,sessionId);textareaRef.current?.focus();}}><Icon name="close"/></button>
+        </div> : null}
         {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
         {engineNote ? <p className="composer-engine" role="status">{engine.installing!==null
           ? <>Installing the local engine… {engine.installing}%</>
@@ -583,7 +600,7 @@ export function ChatComposer() {
         {!["idle", "error"].includes(micPhase) ? <div className="composer-mic-status" role="status"><Icon name="mic"/><strong>{micPhase === "recording" ? "Recording" : micPhase === "requesting" ? "Opening microphone" : micPhase === "transcribing" ? "Transcribing" : "Preparing audio"}</strong><span>{micChat || "Current chat"}</span><div className="composer-mic-status__actions">{micPhase==="recording" ? <button type="button" onClick={toggleMic}>Finish recording</button> : null}<button type="button" onClick={cancelMic} disabled={micPhase==="encoding"}>{micPhase==="recording" ? "Discard" : "Cancel"}</button></div></div> : null}
         {micPhase === "error" && micError ? <p className="composer-mic-error" role="alert">{micError}</p> : null}
       </div>
-      {turnActive ? <div className="composer-delivery-choice" role="group" aria-label="Active task delivery">
+      {turnActive && !goalComposing ? <div className="composer-delivery-choice" role="group" aria-label="Active task delivery">
         <button type="button" aria-pressed={deliveryMode === "steer"} title="Wait for the current model or tool step to finish; does not interrupt Python" onClick={() => setChatDelivery("steer",sessionId)}><Icon name="send"/>Steer current task</button>
         <button type="button" aria-pressed={deliveryMode === "follow_up"} onClick={() => setChatDelivery("follow_up",sessionId)}><Icon name="queue"/>Queue next message</button>
       </div> : null}
@@ -593,22 +610,30 @@ export function ChatComposer() {
           id="composer-input"
           ref={textareaRef}
           rows={1}
-          maxLength={8000}
+          maxLength={goalComposing ? undefined : draftLimit}
+          aria-invalid={draftLength > draftLimit || undefined}
           placeholder={
-            turnActive
+            goalComposing ? "Describe the goal VARIANT-1 should pursue…"
+            : turnActive
               ? deliveryMode === "steer" ? "Guide the current task at its next safe step…" : "What should happen after this task?"
             : (attachments.length || references.length
               ? "Add a message (optional)…"
               : "Ask VARIANT-1 anything…")
           }
-          aria-label="Message VARIANT-1"
+          aria-label={goalComposing ? "Goal objective" : "Message VARIANT-1"}
           aria-describedby={composerStatus ? "composer-status" : undefined}
           aria-controls={menuItems.length ? "composer-command-menu" : undefined}
           aria-expanded={Boolean(menuItems.length)}
           aria-activedescendant={menuItems.length ? `composer-command-${commandIndex}` : undefined}
           readOnly={navigating}
           value={draft}
-          onChange={event => {setDismissedCommand("");setChatDraft(event.target.value,sessionId);}}
+          onChange={event => {
+            setDismissedCommand("");
+            // Typing or pasting "/goal <objective>" switches to goal mode, as the menu does.
+            const objective = !goalComposing && !composing.current ? goalCommandDraft(event.target.value) : null;
+            if (objective !== null) setGoalComposing(true, sessionId);
+            setChatDraft(objective ?? event.target.value, sessionId);
+          }}
           onCompositionStart={()=>{composing.current=true;}}
           onCompositionEnd={()=>{composing.current=false;}}
           onPaste={event => {
@@ -621,13 +646,32 @@ export function ChatComposer() {
                 return file ? [file] : [];
               });
             }
-            if (!files.length) return;
+            if (!files.length) {
+              if (goalComposing || composing.current || navigating || !sessionId) return;
+              // Inspect the entire plain-text paste before the ordinary message field applies its limit.
+              const input = event.currentTarget;
+              const pasted = clipboard.getData("text/plain").replace(/\r\n?/g, "\n");
+              const suffix = input.value.slice(input.selectionEnd);
+              const objective = goalCommandDraft(input.value.slice(0, input.selectionStart) + pasted + suffix);
+              if (objective === null || !pasted) return;
+              event.preventDefault();
+              setDismissedCommand("");
+              setGoalComposing(true, sessionId);
+              setChatDraft(objective, sessionId);
+              const caret = Math.max(0, objective.length - suffix.length);
+              requestAnimationFrame(() => {
+                if (input.isConnected && input.value === objective && input.ownerDocument.activeElement === input)
+                  input.setSelectionRange(caret, caret);
+              });
+              return;
+            }
             event.preventDefault();
             if(navigating || !sessionId){notifyChat("Wait for this chat to finish loading.");return;}
             void addChatFiles(files,sessionId);
           }}
           onKeyDown={event => {
             if(composing.current || event.nativeEvent.isComposing || event.keyCode===229) return;
+            if(goalComposing && event.key==="Backspace" && !draft && !event.currentTarget.selectionEnd){setGoalComposing(false,sessionId);return;}
             if(menuItems.length && ["ArrowDown","ArrowUp"].includes(event.key)){
               event.preventDefault();setCommandIndex(index=>(index+(event.key==="ArrowDown" ? 1 : -1)+menuItems.length)%menuItems.length);return;
             }
@@ -648,7 +692,8 @@ export function ChatComposer() {
             }
           }}
         />
-        {draft.length>=7200 ? <div className="composer-length" title="Message character limit">{draft.length.toLocaleString()} / 8,000</div> : null}
+        {draftLength >= draftLimit * .9 ? <div className="composer-length" title={goalComposing ? "Goal character limit" : "Message character limit"}>
+          {draftLength.toLocaleString()} / {draftLimit.toLocaleString()}</div> : null}
       </div>
       <div className="composer__toolbar">
           <div className="composer__primary-tools" role="group" aria-label="Input tools">
@@ -733,9 +778,9 @@ export function ChatComposer() {
           {turnActive ? (
             <>
               <button className="composer-delivery-send" type="button" disabled={!canActiveInput}
-                aria-label={deliveryMode === "steer" ? "Send steering message" : "Queue next message"}
-                title={deliveryMode === "steer" ? "Wait for the current model or tool step to finish; does not interrupt Python" : "Queue after the current task"}
-                onClick={() => send(deliveryMode)}><Icon name={deliveryMode === "steer" ? "send" : "queue"}/>{deliveryMode === "steer" ? "Steer" : "Queue"}</button>
+                aria-label={goalComposing ? "Set goal" : deliveryMode === "steer" ? "Send steering message" : "Queue next message"}
+                title={goalComposing ? "Save the goal; it starts after the current turn" : deliveryMode === "steer" ? "Wait for the current model or tool step to finish; does not interrupt Python" : "Queue after the current task"}
+                onClick={() => send(deliveryMode)}><Icon name={goalComposing ? "goal" : deliveryMode === "steer" ? "send" : "queue"}/>{goalComposing ? "Set goal" : deliveryMode === "steer" ? "Steer" : "Queue"}</button>
               {paused ? <button
                 className="composer-delivery-send composer-stop"
                 type="button"
@@ -764,11 +809,11 @@ export function ChatComposer() {
               className="send-button"
               id="send-button"
               type="button"
-              aria-label={goalCommand ? "Start goal" : "Send message"}
+              aria-label={goalComposing ? "Set goal" : "Send message"}
               disabled={!canSend}
               onClick={() => send()}
             >
-              <Icon name="send"/><span>{goalCommand ? "Start goal" : "Send"}</span>
+              <Icon name={goalComposing ? "goal" : "send"}/><span>{goalComposing ? "Set goal" : "Send"}</span>
             </button>
           )}
         </div>

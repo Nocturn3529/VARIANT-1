@@ -35,12 +35,6 @@ import {
   setGeneralContext,
 } from "./generalStore";
 import {
-  ingestGoals,
-  refreshGoalsQuiet,
-  setGoalsConnection,
-  setGoalsContext,
-} from "./goalsStore";
-import {
   enterOverview,
   stopOverview,
   ingestOverview,
@@ -350,14 +344,6 @@ reg("react-runtime-execution", storeModuleHooks({
   setContext: setTerminalContext,
   setConnection: setTerminalConnection,
   ingest: ingestTerminal,
-}));
-
-reg("react-runtime-goals", storeModuleHooks({
-  setContext: setGoalsContext,
-  setConnection: setGoalsConnection,
-  ingest: ingestGoals,
-  settingsCategory: "goals",
-  onSettings: refreshGoalsQuiet,
 }));
 
 reg("react-runtime-automations", storeModuleHooks({

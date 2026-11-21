@@ -431,56 +431,6 @@ export type GeneralState = {
   speechReceipt: {requestId: string; accepted: boolean; error: string} | null;
 };
 
-export type GoalLoopSummary = {
-  id: string;
-  title: string;
-  status: string;
-  created?: number | string | null;
-  updated?: number | string | null;
-  goal?: string;
-  done_count?: number;
-  blocked_count?: number;
-  next_count?: number;
-  session_id?: string;
-};
-
-export type GoalLoopDetail = {
-  id: string;
-  meta?: {
-    id?: string;
-    title?: string;
-    status?: string;
-    created?: number;
-    updated?: number;
-    session_id?: string;
-    last_compact_at?: number;
-  };
-  charter?: {
-    goal?: string;
-    constraints?: string[];
-    success_criteria?: string[];
-  };
-  progress?: {
-    done?: string[];
-    blocked?: string[];
-    next?: string[];
-    notes?: string;
-  };
-  anchors?: {
-    domains?: Record<string, Record<string, unknown>>;
-  };
-};
-
-export type GoalsState = {
-  connected: boolean;
-  loops: GoalLoopSummary[];
-  loopActiveCount: number;
-  selectedLoopId: string;
-  selectedLoop: GoalLoopDetail | null;
-  draftLoopTitle: string;
-  draftLoopGoal: string;
-};
-
 export type RuntimeApi = {
   supportsNativeWindows?: boolean;
   controlNativeWindow?: (id: string, action: "focus" | "minimize" | "maximize" | "pin" | "close" | "ready" | "bounds" | "resize", size?: {width: number; height: number}) => Promise<{ok?: boolean; pinned?: boolean; bounds?: {x: number; y: number; width: number; height: number}}>;

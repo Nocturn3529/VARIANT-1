@@ -200,13 +200,7 @@ def engine_status_msg(h) -> dict:
              ),
              "goals": {
                  "ready": bool(goals is not None),
-                 "active": (
-                     goals.repository.count_goals(status="running")
-                     + goals.repository.count_goals(status="queued")
-                     + goals.repository.count_goals(status="waiting_user")
-                     + goals.repository.count_goals(status="waiting_external")
-                     if goals is not None else 0
-                 ),
+                 "active": len(goals.store.active_chat_ids()) if goals is not None else 0,
              },
              "artifacts": (
                  artifacts.state()

@@ -192,6 +192,11 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   const role = row.role === "user" ? "user" : row.role === "assistant" ? "assistant" : "";
   if (!role) return null;
   const rawOrigin=row.origin && typeof row.origin==="object" ? row.origin as Record<string,unknown> : {};
+  const goalOrigin:ChatMessage["goalOrigin"]=role==="user" && rawOrigin.kind==="goal" && (rawOrigin.event==="submission" || rawOrigin.event==="continuation")
+    ? {event:rawOrigin.event,...(typeof rawOrigin.goal_id==="string" && rawOrigin.goal_id ? {goal_id:rawOrigin.goal_id} : {})} : undefined;
+  const rawGoalEvent=row.goal_event && typeof row.goal_event==="object" ? row.goal_event as Record<string,unknown> : {};
+  const goalEvent:ChatMessage["goalEvent"]=role==="assistant" && rawGoalEvent.event==="achieved" && typeof rawGoalEvent.goal_id==="string"
+    ? {event:"achieved",goal_id:rawGoalEvent.goal_id,time_used_s:Math.max(0,Number(rawGoalEvent.time_used_s)||0),tokens_used:Math.max(0,Number(rawGoalEvent.tokens_used)||0)} : undefined;
   const origin:ChatMessage["origin"]=rawOrigin.kind==="peer" && typeof rawOrigin.peer_id==="string" && rawOrigin.peer_id && typeof rawOrigin.message_id==="string" && rawOrigin.message_id
     ? {kind:"peer",peer_id:rawOrigin.peer_id,message_id:rawOrigin.message_id} : undefined;
   const display=row.peer_display as {display_name?:unknown;content?:unknown}|undefined;
@@ -222,6 +227,8 @@ export function parseMessage(raw: unknown): ChatMessage | null {
     runId: typeof row.run_id === "string" ? row.run_id : undefined,
     ...(origin ? {origin} : {}),
     ...(peerDisplay ? {peerDisplay} : {}),
+    ...(goalOrigin ? {goalOrigin} : {}),
+    ...(goalEvent ? {goalEvent} : {}),
     ts: row.ts != null ? Number(row.ts) : undefined,
     ticketId: row.ticket_id != null ? String(row.ticket_id) : undefined,
     activeInputAccepted: !!delivery || undefined,
@@ -298,12 +305,17 @@ function isOrderedSubset(
 function mergeLocalEnrichment(
   authoritative: ChatMessage[],
   optimistic: ChatMessage[],
+  finalRunId?: string,
 ): ChatMessage[] {
   const localByAuthoritativeIndex = new Map<number, ChatMessage>();
   let cursor = authoritative.length - 1;
   for (let index = optimistic.length - 1; index >= 0; index -= 1) {
     const local = optimistic[index];
-    while (cursor >= 0 && !chatMessagesMatch(local, authoritative[cursor])) {
+    // A durable goal reply can correct the streamed text. The last assistant
+    // row on each side still owns the same run's local trace and receipt.
+    const sameFinal = finalRunId && local.role === "assistant" && local.runId === finalRunId &&
+      cursor === authoritative.length - 1 && authoritative[cursor]?.role === "assistant" && authoritative[cursor].runId === finalRunId;
+    while (cursor >= 0 && !sameFinal && !chatMessagesMatch(local, authoritative[cursor])) {
       cursor -= 1;
     }
     if (cursor < 0) break;
@@ -353,6 +365,7 @@ function mergeLocalEnrichment(
       steps: retainedSteps(remote.steps,local.steps),
       receipt: remote.receipt || local.receipt,
       delivery: remote.delivery || local.delivery,
+      ...(remote.goalOrigin || local.goalOrigin ? {goalOrigin: remote.goalOrigin || local.goalOrigin} : {}),
     };
   });
 }
@@ -363,6 +376,43 @@ export type AuthoritativeTurnReconciliation = {
   optimisticTurnIds: string[];
   committedAssistant?: ChatMessage;
 };
+
+/** Goal turns can start without an optimistic user row. The admission and run
+ * identify their streamed rows even after focus moves to another turn. */
+export function reconcileGoalTurn(local: ChatMessage[], rows: ChatMessage[], runId: string, admissionId: string): AuthoritativeTurnReconciliation {
+  const remote = rows.map(row => ({...row, runId, admissionId}));
+  const tickets = new Set(remote.flatMap(row => row.ticketId ? [row.ticketId] : []));
+  const sameRun = (row: ChatMessage) => row.runId === runId && (!row.admissionId || row.admissionId === admissionId);
+  let lastAssistant = local.length - 1;
+  while (lastAssistant >= 0 && (local[lastAssistant].role !== "assistant" || !sameRun(local[lastAssistant]))) lastAssistant--;
+  const group = local[lastAssistant]?.optimisticTurnId;
+  const owned = new Set(local.filter(row => {
+    if (row.runId && !sameRun(row)) return false;
+    if (row.ticketId) return tickets.has(row.ticketId);
+    return sameRun(row) || (!!group && row.optimisticTurnId === group);
+  }));
+  // A restored transcript has run IDs on assistant rows and durable goal or
+  // ticket identity on users. Anchor its ordered segment at this run's reply.
+  for (let i = lastAssistant, j = remote.length - 1; i >= 0 && j >= 0; i--, j--) {
+    const row = local[i], saved = remote[j];
+    if (owned.has(row) && row.role === saved.role) continue;
+    if (row.runId || row.optimisticTurnId || !row.goalOrigin?.goal_id ||
+        row.goalOrigin.goal_id !== saved.goalOrigin?.goal_id || row.goalOrigin.event !== saved.goalOrigin.event ||
+        !chatMessagesMatch(row, saved)) break;
+    owned.add(row);
+  }
+  const first = local.findIndex(row => owned.has(row));
+  const insert = first < 0 ? local.length : first;
+  const previous = local.filter(row => owned.has(row));
+  const committed = mergeLocalEnrichment(remote, previous, runId).map(row => ({...row, durability: "durable" as const}));
+  return {
+    messages: [...local.slice(0, insert), ...committed, ...local.slice(insert).filter(row => !owned.has(row))],
+    optimisticTurnId: group || null,
+    optimisticTurnIds: [...new Set(previous.flatMap(row => row.optimisticTurnId ? [row.optimisticTurnId] : []))],
+    committedAssistant: lastAssistant >= 0 && local[lastAssistant].durability !== "durable" ?
+      [...committed].reverse().find(row => row.role === "assistant") : undefined,
+  };
+}
 
 /** Merge a full durable prefix without consuming an unmatched in-flight tail. */
 export function reconcileActiveTranscript(local:ChatMessage[],remote:ChatMessage[],activeTurnId:string|null):ChatMessage[] {

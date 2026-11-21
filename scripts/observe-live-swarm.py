@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -14,7 +15,7 @@ import psutil
 def usage_snapshot(path, session_ids):
     if not Path(path).is_file():
         return {'available': False, 'sessions': []}
-    with sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=2) as conn:
+    with closing(sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True, timeout=2)) as conn:
         conn.row_factory = sqlite3.Row
         rows = []
         for identity in session_ids:
@@ -72,14 +73,23 @@ def engagement_snapshot(data_root, session_ids):
     sessions = {identity: {'session_id': identity, 'live_turn_state': None,
                           'last_model_request': None, 'last_settlement': None,
                           'goal': None, 'peer_exchange_tail': []} for identity in session_ids}
-    available = []
+    available = set()
     for path in sorted(Path(data_root).rglob('*.sqlite3')):
         if path.is_symlink():
             continue
-        with sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2) as conn:
+        with closing(sqlite3.connect(path.resolve().as_uri()+'?mode=ro',uri=True,timeout=2)) as conn:
             conn.row_factory=sqlite3.Row
             tables={row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            available.extend(sorted(tables & {'model_usage_request','astb_run_settlement','workflow_goal','peer_message'}))
+            available.update(tables & {'model_usage_request','astb_run_settlement','chat_goal','workflow_goal','peer_message'})
+            goal_query = None
+            if 'chat_goal' in tables:
+                goal_query = ('SELECT goal_id,status,version,updated_at FROM chat_goal '
+                              'WHERE chat_id=? AND cleared_at IS NULL')
+            elif 'workflow_goal' in tables and 'chat_goal' not in available:
+                # Older pinned runs have only the legacy table. Once the new
+                # table is available, cleared goals stay cleared in the report.
+                goal_query = ('SELECT goal_id,status,version,updated_at FROM workflow_goal '
+                              'WHERE owner_chat_id=? ORDER BY updated_at DESC LIMIT 1')
             for identity,row in sessions.items():
                 if 'model_usage_request' in tables:
                     last=conn.execute('SELECT manifest_id,run_id,started_at,finished_at,outcome FROM model_usage_request WHERE session_id=? ORDER BY ordinal DESC LIMIT 1',(identity,)).fetchone()
@@ -87,8 +97,8 @@ def engagement_snapshot(data_root, session_ids):
                 if 'astb_run_settlement' in tables:
                     last=conn.execute('SELECT run_id,admission_id,sequence,settled_at FROM astb_run_settlement WHERE chat_id=? ORDER BY sequence DESC LIMIT 1',(identity,)).fetchone()
                     row['last_settlement']=dict(last) if last else None
-                if 'workflow_goal' in tables:
-                    last=conn.execute('SELECT goal_id,status,version,updated_at FROM workflow_goal WHERE owner_chat_id=? ORDER BY updated_at DESC LIMIT 1',(identity,)).fetchone()
+                if goal_query is not None:
+                    last=conn.execute(goal_query,(identity,)).fetchone()
                     row['goal']=dict(last) if last else None
                 if 'peer_message' in tables:
                     peer='chat:'+identity
@@ -97,7 +107,7 @@ def engagement_snapshot(data_root, session_ids):
                     received=conn.execute('SELECT sequence,message_id,exchange_id,in_reply_to,message_kind,state,created_at FROM peer_message WHERE target_peer_id=? ORDER BY sequence DESC LIMIT 16',(peer,)).fetchall()
                     row['peer_exchange_tail']=sorted({item['message_id']:dict(item) for item in [*sent,*received]}.values(),key=lambda item:item['sequence'])[-16:]
     return {'basis':'read_only_durable_metadata; live_busy_state_not_observed',
-            'available_sources':sorted(set(available)), 'sessions':list(sessions.values())}
+            'available_sources':sorted(available), 'sessions':list(sessions.values())}
 
 
 def database_sizes(root):

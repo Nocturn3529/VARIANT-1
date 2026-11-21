@@ -311,8 +311,8 @@ async def test_unattended_browser_wait_stops_before_observation_deadline_without
             kind=message['type']
             if kind=='browser:settings:get':return {'default':{'selection':{'mode':'embedded'},'revision':0}}
             if kind=='goal:submit':return {'result':{'goal':{'goal_id':'goal-a'}}}
-            if kind=='goal:status:get':return {'result':{'goal':{'status':'waiting_external','version':1}}}
-            if kind=='goal:cancel':return {'result':{'goal':{'status':'cancelled'}}}
+            if kind=='goal:current:get':return {'result':{'goal':{'goal_id':'goal-a','status':'active','version':1}}}
+            if kind=='goal:control':return {'result':{'goal':{'goal_id':'goal-a','status':'paused','version':2}}}
             return {'ok':True}
         async def close(self):pass
     class Connection:
@@ -340,6 +340,6 @@ async def test_unattended_browser_wait_stops_before_observation_deadline_without
     assert await runner.run_owned(tmp_path/'lab')==1
     report=json.loads((tmp_path/'lab/report.json').read_text())
     assert report['requires_human_action'] and report['end_reason']=='browser_user_recovery_wait'
-    assert report['goal_status']=='cancelled'
-    assert 'goal:continue' not in [row['type'] for row in calls]
+    assert report['goal_status']=='paused'
+    assert [row['action'] for row in calls if row['type']=='goal:control']==['pause']
     assert 'backend:stop' in [row['type'] for row in calls]

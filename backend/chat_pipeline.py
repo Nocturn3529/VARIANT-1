@@ -67,6 +67,7 @@ class ChatIoPorts:
     emit: Callable[..., Awaitable[None]]
     runtime_registry: Any = None
     children: Any = None
+    goals: Any = None
 
 
 
@@ -471,6 +472,13 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                     ctx_at_admission.metadata["admission_id"] = admission_id
                     ctx_at_admission.metadata["admission_run_id"] = str(
                         getattr(ctx_at_admission, "run_id", "") or "")
+                    goals = getattr(ports.io, "goals", None)
+                    if goals is not None and not goals.admit_chat_turn(
+                            ctx_at_admission, bound_sid, admission_id, source, task=asyncio.current_task()):
+                        runtime_registry.finish_run(admission_id, status="goal_superseded")
+                        session.busy = False
+                        session.clear_active_turn()
+                        return
             except BaseException:
                 runtime_registry.finish_run(
                     admission_id, status="admission_start_failed"

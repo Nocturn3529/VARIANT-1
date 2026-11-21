@@ -31,15 +31,6 @@ class ModelRequestManifestBus:
         self._ledger_queue: asyncio.Queue | None = None
         self._ledger_task: asyncio.Task | None = None
         self._response_identities: OrderedDict[str, dict] = OrderedDict()
-        # A lost usage record makes only its own Goal's capped accounting
-        # incomplete; other Goals and unscoped chats keep exact totals.
-        # Each request's reference carries its Goal, so attribution never
-        # depends on these maps. They only serve callers holding a bare
-        # manifest id: open requests until they settle, then the last 8192
-        # settled ones, then the durable ledger row.
-        self._inflight_goals: OrderedDict[str, str] = OrderedDict()
-        self._manifest_goals: OrderedDict[str, str] = OrderedDict()
-        self._goal_usage_losses: dict[str, int] = {}
         self._pending_partial: dict[str, dict] = {}
         self._partial_lock = threading.Lock()
         # The receipt window is intentionally small, but usage is cumulative
@@ -100,12 +91,11 @@ class ModelRequestManifestBus:
         if not isinstance(manifest, dict):
             return
         stored = copy.deepcopy(manifest)
-        self._remember_goal(stored)
         if self.usage_ledger is not None:
             try:
                 await asyncio.to_thread(self.usage_ledger.record, stored)
             except Exception:
-                self._usage_lost(self.manifest_id_from_ref(stored), self.goal_id_from_ref(stored))
+                self.ledger_failures += 1
         self._items.append(stored)
         route = stored.get("route") or {}
         messages = (stored.get("messages") or {}).get("rendered") or {}
@@ -167,19 +157,6 @@ class ModelRequestManifestBus:
             return str(manifest_ref.get("manifest_id") or "")[:160]
         return str(getattr(manifest_ref, "manifest_id", "") or "")[:160]
 
-    @staticmethod
-    def goal_id_from_ref(manifest_ref) -> str:
-        """The Goal a physical request ran under, from its reference or manifest."""
-        if isinstance(manifest_ref, dict):
-            goal_id = manifest_ref.get("goal_id")
-            if not goal_id:
-                run = manifest_ref.get("run")
-                scope = run.get("work_scope") if isinstance(run, dict) else None
-                goal_id = scope.get("goal_id") if isinstance(scope, dict) else ""
-        else:
-            goal_id = getattr(manifest_ref, "goal_id", "")
-        return str(goal_id or "")[:160]
-
     def patch_usage(self, manifest_ref, normalized_usage: dict) -> None:
         """Patch and republish the exact bounded request receipt, fail-open."""
         manifest_id = self.manifest_id_from_ref(manifest_ref)
@@ -202,9 +179,7 @@ class ModelRequestManifestBus:
                             'usage': copy.deepcopy(normalized_usage)})
                     except Exception:
                         self.publish_failures += 1
-        self.submit_ledger(persist, manifest_id=manifest_id, usage=True,
-                           goal_id=self.goal_id_from_ref(manifest_ref))
-        self.settle_goal(manifest_id)
+        self.submit_ledger(persist)
         if manifest_id not in self._usage_manifest_ids:
             if (
                 self._usage_manifest_order.maxlen
@@ -312,19 +287,14 @@ class ModelRequestManifestBus:
             self.enqueue(updated)
             return
 
-    def submit_ledger(self, operation, *, manifest_id: str = "", usage: bool = False,
-                      goal_id: str = "") -> bool:
+    def submit_ledger(self, operation) -> bool:
         """Serialize blocking patches off the loop, with a bounded pending queue.
 
-        A lost ``usage`` patch is charged to its request's Goal, which strict
-        accounting then treats as incomplete. Other overflow/failures are only
-        counted. Synchronous callers outside an event loop write immediately.
+        Lost writes are counted in ``ledger_failures``. Synchronous callers
+        outside an event loop write immediately.
         """
         if self.usage_ledger is None:
             return True
-        # The Goal is fixed when the write is queued, so a failure later in the
-        # queue is charged to it however many requests finish meanwhile.
-        goal_id = (goal_id or self._goal_of(manifest_id)) if usage else ""
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -332,19 +302,19 @@ class ModelRequestManifestBus:
                 operation()
                 return True
             except Exception:
-                self._ledger_failed(manifest_id, usage, goal_id)
+                self.ledger_failures += 1
                 return False
         if self._ledger_task is None or self._ledger_task.done():
             self._ledger_queue = asyncio.Queue(maxsize=256)
             self._ledger_task = loop.create_task(self._ledger_loop(), name='model-usage-writer', context=Context())
         try:
-            self._ledger_queue.put_nowait((operation, manifest_id, usage, goal_id))
+            self._ledger_queue.put_nowait(operation)
             return True
         except asyncio.QueueFull:
-            self._ledger_failed(manifest_id, usage, goal_id)
+            self.ledger_failures += 1
             return False
 
-    def submit_partial_usage(self, manifest_id: str, usage: dict, goal_id: str = "") -> bool:
+    def submit_partial_usage(self, manifest_id: str, usage: dict) -> bool:
         """Queue at most one partial-usage write per request; it stores the latest."""
         with self._partial_lock:
             queued = manifest_id in self._pending_partial
@@ -358,57 +328,11 @@ class ModelRequestManifestBus:
             if latest is not None:
                 self.usage_ledger.patch_usage(manifest_id, latest, partial=True)
 
-        if self.submit_ledger(persist, manifest_id=manifest_id, usage=True, goal_id=goal_id):
+        if self.submit_ledger(persist):
             return True
         with self._partial_lock:
             self._pending_partial.pop(manifest_id, None)
         return False
-
-    def _remember_goal(self, manifest: dict) -> None:
-        manifest_id = self.manifest_id_from_ref(manifest)
-        scope = (manifest.get("run") or {}).get("work_scope") or {}
-        goal_id = str(scope.get("goal_id") or "")[:160]
-        if manifest_id and goal_id:
-            self._inflight_goals[manifest_id] = goal_id
-            self._inflight_goals.move_to_end(manifest_id)
-            # Requests settle on final usage or when their call ends, so
-            # only open calls stay here. The bound limits memory only.
-            while len(self._inflight_goals) > 65536:
-                self._inflight_goals.popitem(last=False)
-
-    def settle_goal(self, manifest_id: str) -> None:
-        goal_id = self._inflight_goals.pop(manifest_id, "")
-        if goal_id:
-            self._manifest_goals[manifest_id] = goal_id
-            self._manifest_goals.move_to_end(manifest_id)
-            while len(self._manifest_goals) > 8192:
-                self._manifest_goals.popitem(last=False)
-
-    def _goal_of(self, manifest_id: str) -> str:
-        return self._inflight_goals.get(manifest_id) or self._manifest_goals.get(manifest_id, "")
-
-    def _stored_goal(self, manifest_id: str) -> str:
-        try:
-            row = self.usage_ledger.get(manifest_id) if self.usage_ledger is not None else None
-        except Exception:
-            return ""
-        return str((row or {}).get("goal_id") or "")[:160]
-
-    def _usage_lost(self, manifest_id: str, goal_id: str = "") -> None:
-        self.ledger_failures += 1
-        goal_id = goal_id or self._goal_of(manifest_id) or self._stored_goal(manifest_id)
-        if goal_id:
-            self._goal_usage_losses[goal_id] = self._goal_usage_losses.get(goal_id, 0) + 1
-
-    def _ledger_failed(self, manifest_id: str, usage: bool, goal_id: str = "") -> None:
-        if usage:
-            self._usage_lost(manifest_id, goal_id)
-        else:
-            self.ledger_failures += 1
-
-    def goal_usage_lost(self, goal_id: str) -> int:
-        """Usage records of this Goal's requests that could not be stored."""
-        return self._goal_usage_losses.get(str(goal_id or ""), 0)
 
     async def _ledger_loop(self):
         queue = self._ledger_queue
@@ -419,11 +343,10 @@ class ModelRequestManifestBus:
                     if not item.done():
                         item.set_result(None)
                 else:
-                    operation, manifest_id, usage, goal_id = item
                     try:
-                        await asyncio.to_thread(operation)
+                        await asyncio.to_thread(item)
                     except Exception:
-                        self._ledger_failed(manifest_id, usage, goal_id)
+                        self.ledger_failures += 1
             finally:
                 queue.task_done()
 

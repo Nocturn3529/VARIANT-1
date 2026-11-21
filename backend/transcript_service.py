@@ -72,7 +72,6 @@ class TranscriptService:
         async def _complete(prompt, **kwargs):
             return await llm_router.complete(self.host.router, prompt, **kwargs)
 
-        goal_context = ""
         chat_id = ""
         retry_owner = ""
         try:
@@ -82,17 +81,8 @@ class TranscriptService:
                     getattr(getattr(rctx, "work_scope", None), "chat_id", "") or ""
                 )
                 retry_owner = chat_id or str(getattr(rctx, "run_id", "") or "")
-                goal_id = str(
-                    getattr(getattr(rctx, "work_scope", None), "goal_id", "") or ""
-                )
-                if goal_id:
-                    goal = self.host.require_runtime().goals.get(goal_id)
-                    if goal is not None:
-                        goal_context = (
-                            f"Goal: {goal.title}\nObjective: {goal.objective}"
-                        )[:1400]
         except Exception as exc:
-            print(f"[compress] goal context probe failed: {exc}", flush=True)
+            print(f"[compress] run context probe failed: {exc}", flush=True)
 
         retry_state = None
         if retry_owner:
@@ -144,7 +134,6 @@ class TranscriptService:
             protect_first=protect_first,
             protect_last=protect_last,
             should_stop=should_stop,
-            goal_context=goal_context,
             retry_state=retry_state,
             retain_file_state=retain_state,
             resolve_file_state=resolve_state,

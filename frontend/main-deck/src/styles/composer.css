@@ -271,35 +271,30 @@
 .context-meter-row > em,
 .context-meter-row > strong { font-size: var(--deck-text-xs); }
 
-
-/* Durable goal controls remain within the owning chat composer. */
-.composer-goal { border:1px solid var(--deck-line); border-radius:6px; padding:10px 12px; margin:0 0 8px; font-size:12px; max-height:min(280px, 32vh); overflow:auto; }
-.composer-goal header, .composer-goal header strong, .composer-goal__controls { display:flex; align-items:center; gap:8px; }
-.composer-goal header > span { color:var(--deck-text-muted); flex:1; }
-.composer-goal header strong { font-size:12px; }
-.composer-goal details { margin-top:6px; }
-.composer-goal summary { cursor:pointer; overflow-wrap:anywhere; }
-.composer-goal p { margin:6px 0; color:var(--deck-text-muted); }
-.composer-goal__objective { white-space:pre-wrap; overflow-wrap:anywhere; }
-.composer-goal code { font-size:11px; overflow-wrap:anywhere; }
-.composer-goal ol { padding-left:20px; }
-.composer-goal li { margin:4px 0; }
-.composer-goal li small { margin-left:8px; color:var(--deck-text-muted); }
-.composer-goal__controls { flex-wrap:wrap; margin-top:8px; }
-.composer-goal__controls button { display:inline-flex; align-items:center; gap:6px; min-height:30px; border:1px solid var(--deck-line); border-radius:4px; background:transparent; color:inherit; padding:4px 8px; cursor:pointer; }
-.composer-goal__controls button:hover:not(:disabled) { background:var(--deck-surface-raised); }
-.composer-goal__controls button:disabled { opacity:.45; cursor:default; }
-.composer-goal__controls button:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
-.composer-goal__controls small { flex-basis:100%; color:var(--deck-text-muted); }
-
-.composer-goal__report p { white-space:pre-wrap; overflow-wrap:anywhere; color:inherit; }
-
-.composer-goal__facts { display:flex; flex-wrap:wrap; gap:6px 16px; padding:8px 0 2px; font-size:11px; color:var(--deck-text-secondary); }
-.composer-goal__facts strong { font-weight:500; color:var(--deck-text-primary); margin-left:6px; }
-
-
-.composer-goal__guidance { display:grid; gap:6px; margin:8px 0; font-size:12px; }
-.composer-goal__guidance small { margin-left:6px; color:var(--deck-text-secondary); font-size:11px; }
-.composer-goal__guidance textarea { width:100%; min-height:56px; max-height:140px; box-sizing:border-box; resize:vertical; padding:8px; background:var(--deck-canvas); color:var(--deck-text-primary); border:1px solid var(--deck-line); border-radius:4px; font:inherit; line-height:1.5; }
-.composer-goal__guidance textarea:focus-visible { outline:2px solid var(--deck-text-primary); outline-offset:2px; }
-.composer-goal__guidance textarea:disabled { opacity:.6; }
+/* The chat goal: one quiet line above the composer, Codex-style. */
+.composer-goal { margin: 0 0 6px; color: var(--deck-text-secondary); font: var(--deck-text-sm)/1.4 var(--font-ui); }
+.composer-goal__line { min-width: 0; min-height: 28px; display: flex; align-items: center; gap: 8px; padding: 0 4px 0 9px; border-radius: var(--deck-radius-md); background: rgba(255, 255, 255, .045); }
+.composer-goal__line > strong { flex: none; color: var(--deck-text-primary); font-weight: 600; white-space: nowrap; }
+.composer-goal__objective { min-width: 0; flex: 1; overflow: hidden; color: var(--deck-text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.composer-goal__tokens { flex: none; color: var(--deck-text-faint); font: var(--deck-text-xs) var(--font-mono); white-space: nowrap; }
+.composer-goal__controls { flex: none; display: flex; align-items: center; gap: 2px; }
+.composer-goal__controls button { height: 22px; min-width: 22px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 0 6px; border: 0; border-radius: var(--deck-radius-sm); color: var(--deck-text-muted); background: transparent; font: 500 var(--deck-text-xs)/1 var(--font-ui); cursor: pointer; }
+.composer-goal__controls button:hover:not(:disabled) { color: var(--deck-text-primary); background: rgba(255, 255, 255, .07); }
+.composer-goal__controls button:disabled { opacity: .4; cursor: default; }
+.composer-goal__controls button:focus-visible { outline: 2px solid var(--deck-focus); outline-offset: 1px; }
+.composer-goal__controls .deck-icon { width: 12px; height: 12px; }
+.composer-goal[data-goal-status="complete"] .composer-goal__line > strong { color: var(--deck-text-secondary); }
+.composer-goal :is(.composer-goal__reason, .composer-goal__error) { margin: 4px 9px 0; color: var(--deck-text-muted); font-size: var(--deck-text-xs); overflow-wrap: anywhere; }
+.composer-goal .composer-goal__error, .composer-goal-error { color: var(--deck-danger); }
+.composer-goal-error { margin: 0 0 6px; font-size: var(--deck-text-xs); }
+/* Goal mode: a chip says Send sets the goal; its x returns to a normal message. */
+.composer-goal-chip { width: fit-content; height: 22px; display: inline-flex; align-items: center; gap: 5px; margin: 8px 0 0 12px; padding: 0 2px 0 7px; border-radius: var(--deck-radius-sm); color: var(--deck-text-primary); background: rgba(255, 255, 255, .08); font: 600 var(--deck-text-xs)/1 var(--font-ui); }
+.composer-goal-chip .deck-icon { width: 12px; height: 12px; }
+.composer-goal-chip button { width: 18px; height: 18px; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--deck-radius-sm); color: var(--deck-text-muted); background: transparent; cursor: pointer; }
+.composer-goal-chip button:hover { color: var(--deck-text-primary); background: rgba(255, 255, 255, .08); }
+.composer-goal-chip button .deck-icon { width: 10px; height: 10px; }
+.composer-goal-dialog { width: min(560px, calc(100vw - 32px)); }
+.composer-goal-dialog__objective { width: 100%; min-height: 120px; max-height: 50vh; padding: 8px 9px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); color: inherit; background: var(--deck-canvas); font: inherit; line-height: 1.5; resize: vertical; }
+.composer-goal-dialog__objective:focus-visible { outline: 2px solid var(--deck-text-primary); outline-offset: 2px; }
+.composer-goal-dialog__text { margin: 0 0 10px; color: var(--deck-text-secondary); }
+.composer-goal-dialog__quote { max-height: 120px; margin: 0; padding: 8px 10px; overflow: auto; border-left: 2px solid var(--deck-line-strong); color: var(--deck-text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }

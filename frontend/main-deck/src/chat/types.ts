@@ -91,6 +91,10 @@ export type ChatMessage = {
   role: "user" | "assistant";
   text: string;
   origin?:{kind:"peer";peer_id:string;message_id:string};
+  /** A turn the chat goal started: its first message, or an automatic continuation. */
+  goalOrigin?:{event:"submission"|"continuation";goal_id?:string};
+  /** The reply in which the model marked the chat goal complete. */
+  goalEvent?:{event:"achieved";goal_id:string;time_used_s:number;tokens_used:number};
   peerDisplay?:{display_name:string;content:string};
   ts?: number;
   /** Local-only optimistic / stream markers (not persisted). */
@@ -188,7 +192,7 @@ export type SpeechPhase = "idle" | "loading" | "playing";
 
 export type ChatState = {
   agentTeam: import("../protocol/children").AgentTeamState;
-  goal: import("../protocol/goals").ComposerGoalState;
+  goal: import("../protocol/goals").ChatGoalState;
   inputQueue: {
     snapshot:InputQueueSnapshot|null;
     synced:boolean;

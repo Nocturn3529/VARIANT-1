@@ -120,8 +120,6 @@ async def test_explicit_child_keeps_parent_goal_scope_across_queued_dispatch(tmp
         child=await manager.spawn('parent',task='Explicitly delegated work')
     assert child['work_scope']['goal_id']=='goal-attribution'
     assert child['work_scope']['chat_id']==child['child_chat_id']
-    assert manager.goal_roots('goal-attribution','parent')[0]['child_id']==child['child_id']
-    assert manager.goal_roots('another-goal','parent')==[]
     job_id=manager._admit_job(child['child_id'])
     assert manager.work.jobs.get(job_id).scope.goal_id=='goal-attribution'
 

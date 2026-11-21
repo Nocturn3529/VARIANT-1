@@ -1,4 +1,4 @@
-import {useEffect, useId, useState, useSyncExternalStore} from "react";
+import {useEffect, useId, useState} from "react";
 import {useChatSelection, shallowChatSelection} from "../chatStore";
 import {useTerminalState, processFinished} from "../context/terminalStore";
 import {Icon} from "../ui/Icon";
@@ -6,30 +6,16 @@ import {Overlay} from "../ui/Overlay";
 import {ActivityMark, type MarkState} from "../motion/ActivityMark";
 import {AgentTeamPanel} from "./AgentTeamPanel";
 import {InputQueuePanel} from "./InputQueuePanel";
-import {ComposerGoalPanel} from "./ComposerGoalPanel";
 import {BackgroundProcesses, processMark, useProcessRefresh} from "./BackgroundProcesses";
 import {queueAdmissionPending} from "./inputQueue";
 import {closeTeamAgent} from "./agentTeam";
-import {goalWorkLabel} from "../protocol/goals";
-import {getTurnSnapshot,subscribeTurn} from "../state/turnStore";
 
-type Section = "agents" | "queue" | "goal" | "processes";
+type Section = "agents" | "queue" | "processes";
 type Chip = {section: Section; title: string; mark: MarkState; text: string; label: string};
 
 /* The open section per chat survives chat switches within this window. */
 const openByChat = new Map<string, Section | null>();
 const plural = (count: number, one: string, many = `${one}s`) => `${count} ${count === 1 ? one : many}`;
-const DONE_STEP = /succeed|complete|done|finish/;
-
-function goalMark(status: string, pending: boolean): MarkState {
-  if (pending) return "queued";
-  if (["running", "queued"].includes(status)) return "live";
-  if (["waiting_user", "blocked"].includes(status)) return "attention";
-  if (status === "failed") return "failed";
-  if (status === "cancelled") return "stopped";
-  if (["succeeded", "archived"].includes(status)) return "done";
-  return "idle";
-}
 
 /**
  * Minimal live activity above the composer: one faded chip per kind of work.
@@ -37,9 +23,8 @@ function goalMark(status: string, pending: boolean): MarkState {
  * mounted (hidden) while closed so their state and controls persist.
  */
 export function ActivityDock() {
-  const turn=useSyncExternalStore(subscribeTurn,getTurnSnapshot,getTurnSnapshot);
-  const {sessionId, connected, agentTeam: team, inputQueue: queue, goal} = useChatSelection(state => ({
-    sessionId: state.sessionId, connected: state.connected, agentTeam: state.agentTeam, inputQueue: state.inputQueue, goal: state.goal,
+  const {sessionId, connected, agentTeam: team, inputQueue: queue} = useChatSelection(state => ({
+    sessionId: state.sessionId, connected: state.connected, agentTeam: state.agentTeam, inputQueue: state.inputQueue,
   }), shallowChatSelection);
   const chatId = sessionId || "";
   const processes = useTerminalState(chatId || undefined).processes;
@@ -66,14 +51,6 @@ export function ActivityDock() {
     chips.push({section: "queue", title: parked ? "Saved messages" : "Queued", mark: parked || queue.error ? "attention" : "queued",
       text: parked === items.length && parked ? `${parked} waiting` : parked ? `${items.length-parked} queued · ${parked} waiting` : `${items.length} queued`,
       label: `Queued messages: ${items.length}${parked ? `, ${parked} waiting for you` : ""}`});
-  }
-  if (goal.snapshot || goal.pending || goal.error) {
-    const record = goal.snapshot?.goal, steps = goal.snapshot?.steps || [];
-    const done = steps.filter(step => DONE_STEP.test(step.status)).length, status = record?.status || "";
-    const cleanupFailed = goal.snapshot?.cleanup.status === "failed";
-    chips.push({section: "goal", title: "Goal", mark: goal.error || cleanupFailed ? "failed" : goalMark(status, !!goal.pending && !record),
-      text: steps.length ? `Goal ${done}/${steps.length}` : "Goal",
-      label: `Goal${record ? `: ${record.title || record.objective}` : ""}, ${record ? goalWorkLabel(goal.snapshot,turn) || status.replaceAll("_", " ") : "awaiting confirmation"}${steps.length ? `, ${done} of ${steps.length} steps` : ""}`});
   }
   if (processes.length) {
     const running = processes.filter(process => !processFinished(process.state)).length;
@@ -109,7 +86,6 @@ export function ActivityDock() {
       <div className="activity-overlay__body">
         <div hidden={shown !== "agents"}><AgentTeamPanel/></div>
         <div hidden={shown !== "queue"}><InputQueuePanel/></div>
-        <div hidden={shown !== "goal"}><ComposerGoalPanel/></div>
         <div hidden={shown !== "processes"}>{shown === "processes" ? <BackgroundProcesses chatId={chatId} processes={processes}/> : null}</div>
       </div>
     </Overlay>

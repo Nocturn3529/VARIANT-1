@@ -118,13 +118,21 @@ async def prepare_chat_turn_stage(
             apply_chat_turn_plan(session, plan)
             return ChatStageDone(_done(mood=mood, text=message))
 
+    goal_turn = source in {"goal:submit", "goal:continue"}
+    if goal_turn:
+        # The model gets the goal prompt; the chat shows the objective or a marker.
+        from run_context import current_run_context
+
+        shown = str((getattr(current_run_context(), "metadata", None) or {}).get("goal_display_text") or "")
+        if shown:
+            attachment = replace(attachment, display_text=shown)
     plan = ChatTurnPlan(
         client_id=client_id or "",
         source=infer_turn_source(client_id, source),
         session_id=session_id,
         attachments=attachment,
         resume=ResumePlan(requested=(
-            bool(resume) or bool(is_resume_request(attachment.model_text))
+            bool(resume) or (not goal_turn and bool(is_resume_request(attachment.model_text)))
         )),
     )
     # Bind display/session identity before any user-visible setup gate can
@@ -135,6 +143,11 @@ async def prepare_chat_turn_stage(
     direct_command = is_direct_command(attachment.model_text)
     engine = check_engine_ready(ports.io.router)
     if not engine.ok and not direct_command:
+        if goal_turn:
+            from run_context import current_run_context
+            context = current_run_context()
+            if context is not None:
+                context.metadata["_terminal_reason"] = "host_preflight_error"
         return ChatStageDone(_done(mood=engine.mood, text=engine.text))
 
     try:
