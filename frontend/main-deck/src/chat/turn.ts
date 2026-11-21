@@ -192,6 +192,20 @@ function activityShowsOnMainChat(message: StreamActivityMessage): boolean {
 }
 
 export function ingestActivityMessage(message: StreamActivityMessage) {
+  if (message.event === "peer:wait") {
+    const {session_id, run_id, outer_call_id, call_id, message_id, status} = message;
+    const state = getChatState(), turn = turnApi().snapshot();
+    if (message.durable_replay || !turn.active || !run_id || run_id !== turn.runId || !session_id || session_id !== state.sessionId
+      || !outer_call_id || !call_id || !message_id || (status !== "running" && status !== "done")) return;
+    const waits = state.peerWaits || [];
+    const matches = (wait: typeof waits[number]) => wait.runId === run_id && wait.outerCallId === outer_call_id && wait.callId === call_id && wait.messageId === message_id;
+    if (status === "done") {
+      if (waits.some(matches)) patchChatState({peerWaits: waits.filter(wait => !matches(wait))});
+    } else if (!waits.some(matches) && state.turnSteps.some(step => step.kind === "tool" && step.status === "running" && step.callId === outer_call_id)) {
+      patchChatState({peerWaits: [...waits, {runId: run_id, outerCallId: outer_call_id, callId: call_id, messageId: message_id}]});
+    }
+    return;
+  }
   if(message.event==="peer:sent" && message.peer_message){
     if(message.durable_replay)return;
     const peer=message.peer_message;
@@ -457,6 +471,7 @@ export function finishStream(message: StreamDoneMessage) {
     ...state,
     messages: cleaned,
     turnActive: false,
+    peerWaits: undefined,
     stopPending: false,
     pause: null,
     streaming: false,

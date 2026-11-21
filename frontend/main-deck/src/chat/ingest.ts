@@ -385,6 +385,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
         lastError: "",
         turnSteps: [],
         pendingTurnCommit: undefined,
+        peerWaits: undefined,
         runtime:getChatState().runtime ? {...getChatState().runtime!,busy:true,activeAdmissionId:message.admission_id || "",activeRunId:message.run_id || ""} : null,
       });
       beginTurnReceipt();

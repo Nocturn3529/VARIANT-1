@@ -240,6 +240,8 @@ export type ChatState = {
   speechPhase: SpeechPhase;
   /** Live STEPS for the in-flight turn (cleared when the reply commits). */
   turnSteps: ChatTurnStep[];
+  /** Actual nested peer waits in a live kernel call. Never part of saved messages. */
+  peerWaits?: readonly {runId: string; outerCallId: string; callId: string; messageId: string}[];
   /** Follow-ups acknowledged by the backend for the active turn. */
   queuedFollowUps: number;
   /** Local group currently collecting optimistic initial/follow-up/final bubbles. */

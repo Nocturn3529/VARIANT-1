@@ -44,6 +44,7 @@ export function setChatConnection(status: string) {
     invalidateRecoveryNotices();
     const chats=new Map([getChatState(),...cachedChatStates()].map(chat=>[chat.sessionId,chat]));
     for(const chat of chats.values()) if(chat.sessionId) {
+      if (chat.peerWaits?.length) withCachedChatState(chat.sessionId, () => patchChatState({peerWaits: undefined}));
       withCachedChatState(chat.sessionId,()=>{const team=getChatState().agentTeam;patchChatState({agentTeam:{...team,synced:false,readId:undefined,detailReadId:undefined,detailDirty:!!team.selectedId}});});
       withCachedChatState(chat.sessionId,disconnectComposerGoal);
     }

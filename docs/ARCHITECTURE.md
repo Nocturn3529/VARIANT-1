@@ -372,8 +372,11 @@ is lost; legacy completion frames wait for the durable append. Session/run/reque
 acknowledgments confirm that separate write. Unconfirmed
 activity saves have bounded retries and reconnect reconciliation; the frontend
 does not claim that an unconfirmed trace is saved merely because its reply is.
-Disclosure state is chat/run/call scoped. Shared elapsed timing and selected
-store subscriptions avoid unrelated control updates during token streaming.
+Disclosure state is chat/run/call scoped. These identities carry expanded rows
+from live activity into settled and reopened turns. An admitted peer reply wait
+updates the active Python row for the duration of the wait. Shared elapsed timing
+and selected store subscriptions avoid unrelated control updates during token
+streaming.
 Idle projection eviction and confirmed deletion coordinate context, receipt,
 disclosure, and turn data without retiring a Python generation. Active work,
 drafts, pending input/preparation, and unfinished settings or annotation requests

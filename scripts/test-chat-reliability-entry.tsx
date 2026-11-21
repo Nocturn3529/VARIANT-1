@@ -95,12 +95,31 @@ export async function run() {
   assert.equal(getChatState().messages.length,bCount);assert.equal(getChatState().sessionId,"B");assert.equal(sharedTurnActive(),true);
   assert.equal(getCachedChatState("A")?.messages.filter(row=>row.text==="Final active reply").length,1);
   reset();sendUserMessage("Send a peer message");start("peer-send");
-  const peer={message_id:"canonical-send",sender_peer_id:"chat:A",target_peer_id:"grok:native",target_display_name:"Grok Build",content:"Check the boundary conditions",state:"queued",sender_invocation:{chat_id:"A",run_id:"run-peer-send",outer_tool_call_id:"outer-cell",nested_call_id:"nested-send",cell_execution_id:"cell-1"}};
+  const peer={message_id:"canonical-send",sender_peer_id:"chat:A",target_peer_id:"grok:native",target_display_name:"Grok Build",content:"Check the boundary conditions",message_kind:"request",state:"queued",sender_invocation:{chat_id:"A",run_id:"run-peer-send",outer_tool_call_id:"outer-cell",nested_call_id:"nested-send",cell_execution_id:"cell-1"}};
   const event={type:"activity",...route("peer-send"),event:"peer:sent",call_id:"nested-send",peer_message:peer};incoming(event);incoming(event);
   assert.equal(getChatState().turnSteps.filter(step=>step.peerMessage).length,1,"duplicate send events create only one outgoing trace row");
   assert.equal(getChatState().turnSteps[0].peerMessage?.content,peer.content);
-  done("peer-send","Message queued");append("peer-send",[{role:"user",text:"Send a peer message"},{role:"assistant",text:"Message queued",peer_sent:[peer],run_id:"run-peer-send"}]);
-  assert.equal(getChatState().messages.at(-1)?.steps?.filter(step=>step.peerMessage).length,1,"canonical historical sends merge without duplicate trace rows");
+  const waitFrame={type:"activity",...route("peer-send"),event:"peer:wait",outer_call_id:"wait-cell",call_id:"wait-1",message_id:peer.message_id,status:"running"};
+  incoming(waitFrame);
+  assert.equal(getChatState().peerWaits,undefined,"a queued send and an unknown outer call cannot claim a wait");
+  incoming({type:"tool:activity",...route("peer-send"),event:"tool:start",tool:"ipython",call_id:"wait-cell",args_preview:'{"code":"request.wait()"}'});
+  incoming({...waitFrame,run_id:"other-run"});incoming({...waitFrame,durable_replay:true});
+  assert.equal(getChatState().peerWaits,undefined);
+  incoming(waitFrame);incoming(waitFrame);
+  incoming({...waitFrame,call_id:"another-wait",status:"done"});incoming({...waitFrame,message_id:"another-request",status:"done"});
+  assert.equal(getChatState().peerWaits?.length,1,"duplicate starts and unrelated ends leave one correlated wait");
+  incoming({...waitFrame,call_id:"second-wait"});incoming({...waitFrame,status:"done"});
+  assert.deepEqual(getChatState().peerWaits?.map(wait=>wait.callId),["second-wait"]);
+  incoming({...waitFrame,call_id:"second-wait",status:"done"});
+  assert.equal(getChatState().peerWaits?.length,0);
+  assert.equal(getChatState().turnSteps.length,2,"a wait is a transient hint on the Python call");
+  const publicStep={kind:"thinking",id:"summary_"+"b".repeat(32),label:"Thought",source:"provider_summary",status:"done",detail:"Checking the response.",ts:Date.now()};
+  done("peer-send","Message queued");append("peer-send",[{role:"user",text:"Send a peer message"},{role:"assistant",text:"Message queued",steps:[publicStep],peer_sent:[{...peer,state:"replied"}],run_id:"run-peer-send"}]);
+  const saved=getChatState().messages.at(-1)?.steps || [];
+  assert.equal(saved.filter(step=>step.peerMessage).length,1,"canonical historical sends merge without duplicate trace rows");
+  assert.equal(saved.find(step=>step.peerMessage)?.peerMessage?.state,"replied");
+  assert.ok(saved.findIndex(step=>step.callId==="wait-cell")>saved.findIndex(step=>step.peerMessage),"a commit containing only server summaries and receipts retains the original tool sequence");
+  assert.equal(getChatState().peerWaits,undefined);
 
   reset();sendUserMessage("Keep this live");start("snapshot");
   incoming({type:"token",...route("snapshot"),token:"still streaming"});
@@ -232,7 +251,7 @@ export async function run() {
   assert.equal(getChatState().turnSteps[0].omittedBefore,13);
   assert.equal(getChatState().turnSteps.at(-1)?.label,"Progress 59");
   assert.equal(traceSummary(getChatState().turnSteps).errors,1);
-  assert.ok(traceSummary(getChatState().turnSteps).label.includes("47 actions"),"progress notes are not actions");
+  assert.equal(traceSummary(getChatState().turnSteps).label,"Read files 46 times · 1 issue · 13 earlier events omitted","46 successful reads and one failed call; progress notes are not actions");
   const retained=parseTurnSteps(Array.from({length:60},(_,index)=>({id:`history-${index}`,label:"Action",status:index===59?"error":"ok"})))!;
   assert.equal(retained[0].id,"history-12");assert.equal(retained[0].omittedBefore,12);
   done("trace-audit");
@@ -301,6 +320,16 @@ export async function run() {
   busySession({admission_id:"admission-busy",revision:6,segment:0,text:"",steps:[{id:"n3",kind:"text",label:"Narration",detail:"Writing the report.",status:"done",ts:3000,segment:3}]});
   assert.equal(getChatState().streamText,"","text the backend saved as narration is not also the live reply");
   assert.equal(getChatState().turnSteps.filter(step=>step.kind==="text" && step.segment===3).length,1);
+  const restored={...publicStep,status:"running",summary_revision:1,ts:4000};
+  busySession({admission_id:"admission-busy",revision:7,steps:[restored]});
+  const observed=()=>getChatState().turnSteps.filter(step=>step.id===restored.id);
+  assert.equal(observed()[0].status,"running","a bound live snapshot can carry a running provider summary");
+  incoming({type:"thinking",session_id:"C",run_id:"run-busy",summary_id:restored.id,summary_source:"provider_summary",status:"running",summary_revision:2,text:"Counting the rows."});
+  assert.deepEqual(observed().map(step=>step.detail),["Counting the rows."],"the next streamed revision updates the restored row in place");
+  busySession({admission_id:"admission-busy",revision:8,steps:[{...restored,status:"done",summary_revision:1}]});
+  assert.equal(observed()[0].status,"running","a stale thought snapshot cannot settle a newer one");
+  busySession({admission_id:"admission-busy",revision:9,steps:[{...restored,status:"done",summary_revision:3,detail:"Rows counted."}]});
+  assert.deepEqual(observed().map(step=>[step.status,step.detail]),[["done","Rows counted."]]);
 
   // The revision moves on bindings and step changes, not as one call's text
   // grows. These two snapshots were captured from backend run_snapshot() over

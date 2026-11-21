@@ -193,6 +193,8 @@ export type StreamThinkingMessage = Readonly<{
 /** Main-chat STEPS activity for tool traces and task steps. */
 export type StreamActivityMessage = Readonly<{
   peer_message?:PeerActivity;
+  outer_call_id?:string;
+  message_id?:string;
   type: "activity" | "tool:activity";
   event: string;
   tool: string;
@@ -542,6 +544,7 @@ export function parseChatWsMessage(
         type,
         event: str(row.event),
         peer_message:parsePeerActivity(row.peer_message),
+        ...(row.event === "peer:wait" ? {outer_call_id: optStr(row.outer_call_id), message_id: optStr(row.message_id)} : {}),
         tool: str(row.tool),
         call_id: optStr(row.call_id),
         status: str(row.status),
