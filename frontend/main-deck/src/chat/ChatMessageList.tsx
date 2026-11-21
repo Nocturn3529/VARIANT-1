@@ -1,6 +1,7 @@
 import {PeerTranscriptMessage} from "../peers/PeerTranscriptMessage";
 import {CopyButton} from "../ui/CopyButton";
 import {Icon} from "../ui/Icon";
+import {formatGoalDuration} from "../protocol/goals";
 import {KernelGlyph} from "../motion/KernelGlyph";
 /**
  * Virtualized transcript and safe Markdown rendering for the Chat destination.
@@ -237,6 +238,10 @@ function MessageArticle({
   latest?: boolean;
 }) {
   if(message.origin)return <PeerTranscriptMessage message={{...message,origin:message.origin}}/>;
+  // The full continuation prompt is model-only; the transcript marks where it ran.
+  if(message.role==="user" && message.goalOrigin?.event==="continuation") return <article className="message message--goal-turn" aria-label="Goal continuation">
+    <p className="message__goal-turn"><Icon name="goal"/>Continuing goal<time>{formatTime(message.ts)}</time></p>
+  </article>;
   const role = message.role === "user" ? "user" : "assistant";
   const isUser = role === "user";
   const text = streaming ? (message.text || "…") : (message.text || "");
@@ -266,6 +271,7 @@ function MessageArticle({
         </div>
         <div className="message__meta">
           <time>{formatTime(message.ts)}</time>
+          {message.goalOrigin?.event === "submission" ? <em className="message__goal-label"><Icon name="goal"/>Sent as goal</em> : null}
           {message.delivery ? (
             <em className={`message__delivery message__delivery--${message.delivery}`}>
               {message.activeInputState === "delivered"
@@ -279,6 +285,7 @@ function MessageArticle({
           {outcome === "error" ? <Icon name="error" className="message__outcome-icon"/> : null}
           <RichText value={text} streaming={streaming} />
         </div>
+        {message.goalEvent ? <p className="message__goal-achieved" role="status"><Icon name="check"/>Goal achieved in {formatGoalDuration(message.goalEvent.time_used_s)}</p> : null}
         {!streaming ? <div className={`message-actions runtime-message-actions${latest ? " is-latest" : ""}`}>
           {message.durability === "failed" ? (
             <span role="status" title="This reply was not committed to chat history">Not saved</span>
@@ -423,6 +430,8 @@ export function ChatMessageList() {
     .filter(index => index >= 0), [transcriptTurns]);
   const timelineEntries = useMemo(() => transcriptTurns.flatMap((turn, turnIndex) => (
     turn.users.flatMap(({message, index}) => {
+      // Automatic goal continuations are not prompts the user wrote.
+      if (message.goalOrigin?.event === "continuation") return [];
       const id = message.localId || message.optimisticTurnId || `${turn.key}:${index}:${message.ts || 0}`;
       const entry = conversationTimelineEntry(id, message.text || "", turnIndex);
       return entry ? [entry] : [];

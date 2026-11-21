@@ -38,6 +38,3 @@
 /* A subagent's live step crossfades as it changes. */
 .agent-team__current { animation: step-change 240ms var(--deck-ease-out); }
 @keyframes step-change { from { opacity: 0; transform: translateX(-3px); } to { opacity: 1; transform: none; } }
-
-/* Finished goal steps fill in rather than snapping. */
-.composer-goal__progress > i { transition: background-color var(--deck-motion-slow) var(--deck-ease-out); }

@@ -7,6 +7,7 @@ import type {
   StreamErrorMessage,
 } from "../protocol";
 import {CHAT_STREAM_TYPES} from "../protocol";
+import {isGoalTurnSource} from "../protocol/goals";
 import {
   beginSharedTurn,
   emit,
@@ -32,7 +33,7 @@ import {acknowledgeTrace} from "./annotations";
 import {ingestPauseState,currentPause} from "./pause";
 import {applyInputQueue,ingestInputQueueResult,refreshInputQueue,ingestInputDelivery,hydrateActiveInputs,isQueueContinueStart,canAdoptQueueStart,startQueueContinuation,finishQueueContinuation} from "./inputQueue";
 import {activeTurnSessionIds,isSettledTurnEvent} from "../state/turnStore";
-import {ingestComposerGoal,invalidateComposerGoal} from "./goals";
+import {ingestComposerGoal} from "./goals";
 import {recordRecoveryNotice,dismissRecoveryNotice} from "./recovery";
 import {ingestAgentTeam,ingestAgentWorkEvent,ingestAgentChanged} from "./agentTeam";
 import {noteChildActivity} from "./childActivity";
@@ -121,7 +122,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
     // Only explicit chat/admission identities permit this UI-lane projection;
     // voice and subagent provenance keep their separate routing boundaries.
     const nativeChat=!!original.session_id && !!original.admission_id
-      && (original.source==="goal" || original.source==="peer" || original.source?.startsWith("peer:"));
+      && (original.source?.startsWith("goal") || original.source==="peer" || original.source?.startsWith("peer:"));
     const routing = {...message,source:original.source==="queue_continue" || nativeChat ? "chat":original.source};
     if (isForeignStream(routing)) return;
     if((message.type==="activity" || message.type==="tool:activity") && message.durable_replay) {
@@ -143,9 +144,9 @@ function ingestOwnedChat(message: ChatWsMessage) {
     case "goal:accepted":
     case "goal:rejected":
     case "goal:current":
+    case "goal:updated":
       ingestComposerGoal(message);return;
     case "work:event":
-      if(message.aggregateKind==="goal" && (state.goal.snapshot?.goal.goal_id!==message.goal_id || state.goal.snapshot.goal.version<message.version))invalidateComposerGoal();
       return;
     case "chat:unknown":
       if(message.originalType==="chat:queue_snapshot" && message.request_id && message.session_id) {
@@ -350,6 +351,11 @@ function ingestOwnedChat(message: ChatWsMessage) {
 
     case "start": {
       const followed=turn.snapshot();
+      if (isGoalTurnSource(message.source) && message.session_id === state.sessionId && message.admission_id && message.run_id) {
+        // The preceding turn's durable append can arrive after this goal starts.
+        const group = "active-root-" + message.admission_id;
+        if (state.activeTurnId !== group) patchChatState({activeTurnId: group});
+      }
       if(followed.active && message.admission_id && message.admission_id===followed.admissionId
         && message.run_id===followed.runId) {
         hydrateActiveInputs(message.active_inputs);

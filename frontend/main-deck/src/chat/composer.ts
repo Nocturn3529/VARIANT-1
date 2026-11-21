@@ -298,8 +298,9 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     return false;
   }
   const value = String(input.text || "").trim();
-  const goalCommand=ownsComposer ? parseGoalCommand(value) : null;
-  if(goalCommand)return submitComposerGoal(goalCommand.objective);
+  // Goal mode (or a literal /goal line) sets the chat goal instead of sending a message.
+  const goalObjective=!ownsComposer ? null : state.goal.composing ? value : parseGoalCommand(value)?.objective ?? null;
+  if(goalObjective!==null)return submitComposerGoal(goalObjective);
   const pending = input.source === "composer" ? input.attachments : [];
   const references = ownsComposer ? state.references : [];
   if (!value && !pending.length && !references.length) return false;

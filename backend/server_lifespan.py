@@ -292,6 +292,9 @@ async def shutdown(h: Any) -> dict:
             return False
 
     peer_publication = getattr(h, "peer_bridge_publication", None)
+    goals = getattr(runtime, "goals", None)
+    if goals is not None and callable(getattr(goals, "shutdown", None)):
+        await close("goals", goals.shutdown)
     if peer_publication is not None:
         await close("peer_bridge_ingress", peer_publication.close, sync=True)
     gateway = getattr(h, "gateway", None)

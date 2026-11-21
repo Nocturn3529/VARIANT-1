@@ -1,182 +1,144 @@
-/** Durable goal data is backend-owned; a submitted command is not a goal. */
-export const GOAL_STATUSES = ["draft", "queued", "running", "waiting_user", "waiting_external", "blocked", "paused", "succeeded", "failed", "cancelled", "archived"] as const;
+/** One standing goal per chat. The backend owns it; the composer mirrors it. */
+export const GOAL_STATUSES = ["active", "paused", "blocked", "budget_limited", "usage_limited", "complete"] as const;
 export type GoalStatus = typeof GOAL_STATUSES[number];
-export type ComposerGoal = Readonly<{
+export const MAX_GOAL_OBJECTIVE = 32000;
+export const isGoalTurnSource = (source?: string) => source === "goal" || source === "goal:submit" || source === "goal:continue";
+// The backend counts Unicode code points, including each non-BMP character once.
+export const goalLength = (text: string) => Array.from(text).length;
+
+export type ChatGoal = Readonly<{
   goal_id: string;
-  owner_chat_id: string;
-  title: string;
+  session_id: string;
+  /** The goal:submit request that created it; settles a submit whose reply was lost. */
+  request_id: string;
   objective: string;
   status: GoalStatus;
+  token_budget: number | null;
+  tokens_used: number;
+  time_used_s: number;
+  status_reason: string;
+  /** A goal turn is running now. */
+  continuing: boolean;
+  /** Saved and waiting for the chat to go idle before its first turn. */
+  submission_pending: boolean;
+  created_at: number;
+  updated_at: number;
+  completed_at: number | null;
+  completed_run_id: string | null;
   version: number;
-  pause_reason: string;
 }>;
 
-export function parseComposerGoal(value: unknown): ComposerGoal | null {
+const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+
+export function parseChatGoal(value: unknown): ChatGoal | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row.schema !== "variant1.goal.v1" || typeof row.goal_id !== "string" || !row.goal_id
-    || typeof row.owner_chat_id !== "string" || !row.owner_chat_id
-    || typeof row.objective !== "string" || typeof row.title !== "string"
-    || !GOAL_STATUSES.includes(row.status as GoalStatus)
+  if (typeof row.goal_id !== "string" || !row.goal_id || typeof row.session_id !== "string" || !row.session_id
+    || typeof row.objective !== "string" || !GOAL_STATUSES.includes(row.status as GoalStatus)
     || !Number.isSafeInteger(row.version) || Number(row.version) < 1) return null;
-  return {goal_id:row.goal_id,owner_chat_id:row.owner_chat_id,title:row.title,objective:row.objective,
-    status:row.status as GoalStatus,version:Number(row.version),pause_reason:typeof row.pause_reason === "string" ? row.pause_reason : ""};
+  return {goal_id: row.goal_id, session_id: row.session_id, request_id: typeof row.request_id === "string" ? row.request_id : "",
+    objective: row.objective, status: row.status as GoalStatus,
+    token_budget: Number.isSafeInteger(row.token_budget) && Number(row.token_budget) > 0 ? Number(row.token_budget) : null,
+    tokens_used: count(row.tokens_used), time_used_s: count(row.time_used_s),
+    status_reason: typeof row.status_reason === "string" ? row.status_reason : "",
+    continuing: row.continuing === true, submission_pending: row.submission_pending === true,
+    created_at: count(row.created_at), updated_at: count(row.updated_at),
+    completed_at: typeof row.completed_at === "number" && Number.isFinite(row.completed_at) ? row.completed_at : null,
+    completed_run_id: typeof row.completed_run_id === "string" && row.completed_run_id ? row.completed_run_id : null,
+    version: Number(row.version)};
 }
 
-export function goalIsTerminal(goal: ComposerGoal): boolean {
-  return ["succeeded", "failed", "cancelled", "archived"].includes(goal.status);
+/** Anything short of complete still holds the chat's one goal slot. */
+export const goalUnfinished = (goal: ChatGoal | null | undefined): goal is ChatGoal => !!goal && goal.status !== "complete";
+/** A spent budget is final: only Clear or a new /goal moves on. */
+export const goalCanResume = (goal: ChatGoal) => ["paused", "blocked", "usage_limited"].includes(goal.status);
+export const goalCanEdit = (goal: ChatGoal) => goal.status !== "complete";
+
+export function goalStatusLabel(goal: ChatGoal): string {
+  if (goal.status === "active") return goal.submission_pending ? "Goal set" : goal.continuing ? "Continuing goal…" : "Pursuing goal";
+  return {paused: "Paused goal", blocked: "Goal stalled", budget_limited: "Goal limited",
+    usage_limited: "Goal usage limited", complete: "Goal achieved"}[goal.status];
 }
 
-/** Scheduler waits and an admitted owning turn are distinct facts. */
-export function goalWorkLabel(snapshot:ComposerGoalSnapshot|undefined|null,
-  turn:{active:boolean;sessionId:string;admissionId:string;runId:string}):string|undefined {
-  if(snapshot?.goal.status!=="waiting_external")return undefined;
-  const parent=snapshot.parentTurn;
-  if(parent && turn.active && turn.sessionId===snapshot.goal.owner_chat_id
-    && parent.admissionId===turn.admissionId && parent.runId===turn.runId && !!parent.admissionId && !!parent.runId)
-    return "Working in this chat";
-  if(snapshot.awaitingPeers.some(peer=>peer.state==="parked"))return "Waiting on a paused request";
-  return parent?.waitingForPeers ? "Waiting for peer results" : undefined;
+export function formatGoalTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (value >= 1000) return `${(value / 1000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(value));
 }
 
-/** Budget limits the usage ledger has to measure, as opposed to a deadline. */
-const MEASURED_LIMITS=["tokens","cost_usd","provider_calls"];
-
-/** A peer request the Goal waits on; a Stop in its recipient chat parks it. */
-export type AwaitedPeer=Readonly<{messageId:string;chatId:string;displayName:string;state:string}>;
-
-function parseAwaitedPeers(value:unknown):readonly AwaitedPeer[] {
-  return (Array.isArray(value)?value:[]).slice(0,20).flatMap(value=>{
-    if(!value || typeof value!=="object")return [];
-    const row=value as Record<string,unknown>;
-    if(typeof row.message_id!=="string" || typeof row.chat_id!=="string" || !row.chat_id)return [];
-    return [{messageId:row.message_id,chatId:row.chat_id,
-      displayName:typeof row.display_name==="string" && row.display_name.trim()?row.display_name.trim():"another chat",
-      state:typeof row.state==="string"?row.state:""}];
-  });
+export function formatGoalDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), rest = total % 60;
+  return hours ? `${hours}h ${minutes}m` : minutes ? `${minutes}m ${rest}s` : `${rest}s`;
 }
 
-export type ComposerGoalState = {
-  snapshot: ComposerGoalSnapshot|null;
+export type GoalAction = "pause" | "resume" | "clear" | "edit";
+
+export type GoalDraft = Readonly<{sessionId: string; objective: string; draft: string; draftRevision: number}>;
+export type GoalReplacement = GoalDraft & {expectedGoalId?: string};
+export type PendingGoal = {requestId: string; uncertain?: boolean; observedUpdate?: boolean} & (
+  | {operation: "submit"; submission: GoalDraft; expectedGoalId?: string}
+  | {operation: GoalAction; goalId: string; version: number; objective?: string}
+);
+
+export type ChatGoalState = {
+  goal: ChatGoal | null;
+  /** The goal shown matches the backend's latest answer for this chat. */
   synced: boolean;
   error?: string;
-  refreshRequestId?: string;
-  refreshAgain?: boolean;
-  guidance?: {goalId:string;text:string;revision:number};
-  pending?: {requestId:string;operation:"submit"|GoalControl;goalId?:string;draft?:string;draftRevision?:number;uncertain?:boolean;guidanceRevision?:number;guidanceText?:string};
+  readError?: string;
+  readRequestId?: string;
+  /** Only a read opened to reconcile this particular write may settle it. */
+  readForRequestId?: string;
+  /** A push or reply landed while a read was in flight, so that read may be older. */
+  readStale?: boolean;
+  pending?: PendingGoal;
+  confirmedRequestId?: string;
+  /** The composer is in goal mode (the Goal chip is shown). */
+  composing?: boolean;
+  /** A /goal over an unfinished goal waits for "Replace current goal?". */
+  confirmReplace?: GoalReplacement;
 };
-export type GoalControl="pause"|"resume"|"cancel"|"continue"|"finish"|"archive";
-export type ObjectiveOutcome=Readonly<{status:"completed"|"blocked"|"continuing"|"unreported";summary:string;basis:string|null;executionStatus:string}>;
-export function parseObjectiveOutcome(value:unknown):ObjectiveOutcome {
-  const row=(value && typeof value==="object"?value:{}) as Record<string,unknown>;
-  return {status:["completed","blocked","continuing","unreported"].includes(String(row.status))?row.status as ObjectiveOutcome["status"]:"unreported",
-    summary:typeof row.summary==="string"?row.summary:"",basis:typeof row.basis==="string"?row.basis:null,
-    executionStatus:typeof row.execution_status==="string"?row.execution_status:""};
-}
-
-export type ComposerGoalSnapshot = Readonly<{
-  goal: ComposerGoal;
-  submission_request_id:string;
-  completion_basis:string;
-  historyLimited?:boolean;
-  parentTurn?:Readonly<{admissionId:string;runId:string;waitingForPeers:boolean}>;
-  awaitingPeers:readonly AwaitedPeer[];
-  /** Usage records the ledger lost for this Goal; null when unreported. */
-  lostUsageRecords:number|null;
-  /** A token, cost or call limit, which needs every usage record to hold. */
-  measuredBudget:boolean;
-  admittedContinuation:Readonly<{requestId:string;message:string;stepId:string;previousAttempt:number;jobId:string}>|null;
-  capabilities: Readonly<{pause_scheduling:boolean;pause_active_work:boolean;resume:boolean;cancel:boolean;continue:boolean;retry_cleanup:boolean;finish:boolean;archive:boolean}>;
-  objectiveOutcome:ObjectiveOutcome;
-  cleanup:Readonly<{status:"not_requested"|"pending"|"complete"|"failed"|"unknown";complete:boolean}>;
-  terminationKind:string;
-  steps:readonly {id:string;title:string;status:string}[];
-  reports:readonly {childId:string;stepId:string;status:string;text:string;truncated:boolean;artifactRef:string;outcome:ObjectiveOutcome}[];
-}>;
-
-/** Only the exact backend Work-job receipt can turn stored intent into admission evidence. */
-function admittedContinuation(row:Record<string,unknown>):ComposerGoalSnapshot["admittedContinuation"] {
-  const record=(value:unknown):Record<string,unknown>=>value && typeof value==="object" && !Array.isArray(value)?value as Record<string,unknown>:{};
-  const admission=record(row.continuation_admission),request=record(record(row.state).continuation_request);
-  const nonempty=(value:unknown):value is string=>typeof value==="string" && !!value.trim();
-  if(admission.status!=="admitted" || admission.basis!=="work_job" || !nonempty(admission.job_id)
-    || !nonempty(admission.request_id) || !nonempty(admission.step_id)
-    || !Number.isSafeInteger(admission.previous_attempt) || Number(admission.previous_attempt)<0
-    || request.request_id!==admission.request_id || request.step_id!==admission.step_id
-    || request.previous_attempt!==admission.previous_attempt || typeof request.message!=="string")return null;
-  return {requestId:admission.request_id,message:request.message,stepId:admission.step_id,previousAttempt:Number(admission.previous_attempt),jobId:admission.job_id};
-}
-
-export function parseComposerGoalSnapshot(value:unknown):ComposerGoalSnapshot|null {
-  if(!value || typeof value!=="object" || Array.isArray(value))return null;
-  const row=value as Record<string,unknown>,goal=parseComposerGoal(row.goal);
-  if(!goal || row.schema!=="variant1.goal-snapshot.v1" || typeof row.submission_request_id!=="string")return null;
-  const capabilities=(row.capabilities && typeof row.capabilities==="object" ? row.capabilities : {}) as Record<string,unknown>;
-  const cleanup=(row.cleanup && typeof row.cleanup==="object"?row.cleanup:{}) as Record<string,unknown>;
-  const termination=(row.termination && typeof row.termination==="object"?row.termination:{}) as Record<string,unknown>;
-  const state=(row.state && typeof row.state==="object"?row.state:{}) as Record<string,unknown>;
-  const parent=(state.parent_turn && typeof state.parent_turn==="object"?state.parent_turn:{}) as Record<string,unknown>;
-  const report=(parent.report && typeof parent.report==="object"?parent.report:{}) as Record<string,unknown>;
-  const accounting=(row.accounting && typeof row.accounting==="object"?row.accounting:{}) as Record<string,unknown>;
-  const lost=accounting.lost_usage_records;
-  const budget=((row.goal as Record<string,unknown>).budget || {}) as Record<string,unknown>;
-  const limits=(budget.limits && typeof budget.limits==="object"?budget.limits:{}) as Record<string,unknown>;
-  return {goal,
-    awaitingPeers:parseAwaitedPeers(row.awaiting_peers),
-    lostUsageRecords:Number.isSafeInteger(lost) && (lost as number)>=0 ? lost as number : null,
-    measuredBudget:MEASURED_LIMITS.some(key=>limits[key]!==undefined && limits[key]!==null),submission_request_id:row.submission_request_id,completion_basis:typeof row.completion_basis==="string"?row.completion_basis:"",
-    parentTurn:typeof parent.admission_id==="string" && typeof parent.run_id==="string"
-      ? {admissionId:parent.admission_id,runId:parent.run_id,waitingForPeers:parent.status==="finished" && Array.isArray(report.wait_for_message_ids) && report.wait_for_message_ids.length>0}
-      : undefined,
-    admittedContinuation:admittedContinuation(row),
-    historyLimited:!!row.history_coverage && (row.history_coverage as Record<string,unknown>).complete===false,
-    capabilities:{pause_scheduling:capabilities.pause_scheduling===true,pause_active_work:capabilities.pause_active_work===true,
-      resume:capabilities.resume===true,cancel:capabilities.cancel===true,continue:capabilities.continue===true,retry_cleanup:capabilities.retry_cleanup===true,finish:capabilities.finish===true,archive:capabilities.archive===true},
-    objectiveOutcome:parseObjectiveOutcome(row.objective_outcome),terminationKind:typeof termination.kind==="string"?termination.kind:"",
-    cleanup:{status:["not_requested","pending","complete","failed"].includes(String(cleanup.status))?cleanup.status as ComposerGoalSnapshot["cleanup"]["status"]:"unknown",complete:cleanup.status==="complete" && cleanup.complete===true},
-    reports:(Array.isArray(row.reports)?row.reports:[]).slice(0,20).flatMap(value=>{
-      if(!value || typeof value!=="object")return [];
-      const report=value as Record<string,unknown>;
-      if(typeof report.child_id!=="string" || typeof report.text!=="string" || report.completion_basis!=="agent_report")return [];
-      return [{childId:report.child_id,stepId:typeof report.step_id==="string"?report.step_id:"",status:typeof report.status==="string"?report.status:"",
-        text:report.text.slice(0,16000),truncated:report.truncated===true || report.text.length>16000,artifactRef:typeof report.artifact_ref==="string"?report.artifact_ref:"",outcome:parseObjectiveOutcome(report.outcome)}];
-    }),
-    steps:(Array.isArray(row.steps)?row.steps:[]).slice(0,50).flatMap(value=>{
-      if(!value || typeof value!=="object")return [];
-      const step=value as Record<string,unknown>;
-      return typeof step.step_id==="string" && typeof step.status==="string" ? [{id:step.step_id,title:typeof step.title==="string"?step.title:step.step_id,status:step.status}] : [];
-    })};
-}
 
 export type GoalCommand =
-  | {type:"goal:submit";session_id:string;request_id:string;objective:string}
-  | {type:"goal:current:get";session_id:string;request_id:string;submission_request_id?:string}
-  | {type:`goal:${GoalControl}`;session_id:string;goal_id:string;request_id:string;expected_version:number;message?:string};
+  | ({type: "goal:submit"; session_id: string; request_id: string; objective: string} & (
+    | {replace?: false; expected_goal_id?: never}
+    | {replace: true; expected_goal_id: string}
+  ))
+  | {type: "goal:current:get"; session_id: string; request_id?: string}
+  | {type: "goal:control"; session_id: string; request_id: string; goal_id: string; action: GoalAction; expected_version: number; objective?: string};
 
 export type GoalMessage = Readonly<{
-  type:"goal:accepted"|"goal:rejected"|"goal:current";
-  session_id:string;
-  request_id:string;
-  operation:string;
-  result:unknown;
-  error:string;
+  type: "goal:accepted" | "goal:rejected" | "goal:current";
+  session_id: string;
+  request_id: string;
+  operation: string;
+  /** Undefined when an accepted reply carried no readable goal. */
+  goal: ChatGoal | null | undefined;
+  reason_code: string;
+  error: string;
 }>;
 
-export function parseGoalMessage(row:Record<string,unknown>):GoalMessage|null {
-  if (!["goal:accepted","goal:rejected","goal:current"].includes(String(row.type))
-    || typeof row.session_id!=="string" || !row.session_id || typeof row.request_id!=="string") return null;
-  return {type:row.type as GoalMessage["type"],session_id:row.session_id,request_id:row.request_id,
-    operation:typeof row.operation==="string"?row.operation:"",result:row.result,
-    error:typeof row.error==="string"?row.error:""};
+export type GoalUpdatedMessage = Readonly<{type: "goal:updated"; session_id: string; goal: ChatGoal | null}>;
+
+function replyGoal(result: unknown): ChatGoal | null | undefined {
+  if (!result || typeof result !== "object" || !("goal" in result)) return undefined;
+  const value = (result as Record<string, unknown>).goal;
+  return value === null ? null : parseChatGoal(value) ?? undefined;
 }
 
-export type GoalWorkEvent = Readonly<{type:"work:event";session_id:string;goal_id:string;version:number;aggregateKind:string;aggregateId:string;jobKind?:string}>;
-export function parseGoalWorkEvent(row:Record<string,unknown>):GoalWorkEvent|null {
-  const event=row.event as Record<string,unknown>|undefined;
-  const aggregate=event?.aggregate as Record<string,unknown>|undefined;
-  const scope=event?.scope as Record<string,unknown>|undefined;
-  const payload=event?.payload as Record<string,unknown>|undefined;
-  if(!["goal","job","operation"].includes(String(aggregate?.kind)) || typeof aggregate?.id!=="string" || typeof scope?.chat_id!=="string" || !scope.chat_id)return null;
-  return {type:"work:event",session_id:scope.chat_id,goal_id:aggregate.kind==="goal"?aggregate.id:"",version:Number(aggregate.version)||0,aggregateKind:String(aggregate.kind),aggregateId:aggregate.id,
-    ...(aggregate.kind==="job" && typeof payload?.kind==="string"?{jobKind:payload.kind}:{})};
+export function parseGoalMessage(row: Record<string, unknown>): GoalMessage | GoalUpdatedMessage | null {
+  if (typeof row.session_id !== "string" || !row.session_id) return null;
+  if (row.type === "goal:updated") {
+    const goal = row.goal === null ? null : parseChatGoal(row.goal);
+    if (goal ? goal.session_id !== row.session_id : row.goal !== null) return null;
+    return {type: "goal:updated", session_id: row.session_id, goal};
+  }
+  if (!["goal:accepted", "goal:rejected", "goal:current"].includes(String(row.type)) || typeof row.request_id !== "string") return null;
+  const goal = replyGoal(row.result);
+  if (goal && goal.session_id !== row.session_id) return null;
+  return {type: row.type as GoalMessage["type"], session_id: row.session_id, request_id: row.request_id,
+    operation: typeof row.operation === "string" ? row.operation : "", goal,
+    reason_code: typeof row.reason_code === "string" ? row.reason_code : "",
+    error: typeof row.error === "string" ? row.error : ""};
 }

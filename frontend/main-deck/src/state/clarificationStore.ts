@@ -6,7 +6,7 @@ import {subscribeTurn} from "./turnStore";
 
 export type ClarificationOption = Readonly<{label: string; description: string}>;
 export type ClarificationQuestion = Readonly<{id: string; question: string; header: string; multiSelect: boolean; options: readonly ClarificationOption[]}>;
-export type PendingClarification = Readonly<{id: string; chatId: string; runId: string; kind: "clarification" | "goal_input"; questions: readonly ClarificationQuestion[]}>;
+export type PendingClarification = Readonly<{id: string; chatId: string; runId: string; kind: "clarification"; questions: readonly ClarificationQuestion[]}>;
 export type ClarificationDraft = Readonly<{index: number; selected: Record<string,string[]>; other: Record<string,string>}>;
 type State = Readonly<{
   connected: boolean; byChat: Record<string, readonly PendingClarification[]>;
@@ -37,7 +37,7 @@ function parsePending(value: unknown): PendingClarification | null {
   const message = value as Record<string,unknown>;
   const id=String(message.id || ""),chatId=String(message.chat_id || message.session_id || "");
   const questions=(Array.isArray(message.questions) ? message.questions : []).map(parseQuestion).filter((row):row is ClarificationQuestion=>!!row);
-  return id && chatId && questions.length ? {id,chatId,runId:String(message.run_id || ""),kind:message.kind==="goal_input" ? "goal_input" : "clarification",questions} : null;
+  return id && chatId && questions.length ? {id,chatId,runId:String(message.run_id || ""),kind:"clarification",questions} : null;
 }
 function clearTimer(key: string) { clearTimeout(timers.get(key));timers.delete(key); }
 function recordQuestions(chatId: string, pending: readonly PendingClarification[], event = false) {

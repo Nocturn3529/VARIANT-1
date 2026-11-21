@@ -11,14 +11,14 @@ usage limit.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from .events import record_goal_event
+from .binding import GoalBinding, turn_binding
+from .usage import GoalRequestUsage, goal_tokens
 from .prompts import (
     CONTINUATION_DISPLAY,
     budget_reached_note,
@@ -55,7 +55,9 @@ _MAX_NOTES = 8
 class _GoalTurn:
     goal_id: str
     run: Any
-    submission: bool
+    source: str
+    admission_id: str
+    next_requested: bool = False
 
 
 @dataclass
@@ -71,16 +73,6 @@ class _Push:
     extra: dict = field(default_factory=dict)
 
 
-def goal_tokens(usage: dict) -> int:
-    """Tokens a request charges to a goal: uncached input plus output."""
-    def number(key: str) -> int:
-        try:
-            return max(0, int(usage.get(key) or 0))
-        except (TypeError, ValueError, OverflowError):
-            return 0
-    return max(0, number("input_tokens") - number("cached_input_tokens")) + number("output_tokens")
-
-
 class ChatGoalService:
     def __init__(self, host: Any, store: ChatGoalStore, *, clock=time.monotonic) -> None:
         self.host = host
@@ -88,11 +80,12 @@ class ChatGoalService:
         self._clock = clock
         self._guard = threading.Lock()
         self._running: dict[str, _GoalTurn] = {}
-        self._notes: dict[str, list[str]] = {}
+        self._notes: dict[tuple[str, str], list[str]] = {}
         self._streaks: dict[str, _Streaks] = {}
         self._pushes: dict[str, _Push] = {}
         self._chat_locks: dict[str, asyncio.Lock] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._closed = False
 
     # ── reads ──────────────────────────────────────────────────────────────
     def current(self, chat_id: str) -> dict | None:
@@ -104,7 +97,7 @@ class ChatGoalService:
             return None
         with self._guard:
             turn = self._running.get(goal.chat_id)
-        return goal.to_dict(continuing=bool(turn and turn.goal_id == goal.goal_id))
+        return goal.to_dict(continuing=bool(turn and turn.goal_id == goal.goal_id and turn.source in GOAL_SOURCES))
 
     def _chat_goal(self, chat_id: str, goal_id: str) -> ChatGoal:
         goal = self.store.current(chat_id)
@@ -118,17 +111,20 @@ class ChatGoalService:
             raise ChatUnavailable("The chat is unavailable or archived")
 
     # ── user commands ──────────────────────────────────────────────────────
-    async def submit(self, chat_id: str, request_id: str, objective: str, *, replace: bool = False) -> dict:
+    async def submit(self, chat_id: str, request_id: str, objective: str, *, replace: bool = False,
+                     expected_goal_id: str | None = None) -> dict | None:
         self._require_chat(chat_id)
         if not request_id:
             raise GoalValidationError("request_id is required")
         goal, created = await asyncio.to_thread(
-            self.store.create, chat_id, objective, request_id=request_id, replace=bool(replace))
+            self.store.create, chat_id, objective, request_id=request_id, replace=replace,
+            expected_goal_id=expected_goal_id)
         if created:
             self._forget(goal.goal_id, chat_id)
             self.publish(chat_id)
-        await self.continue_if_idle(chat_id)
-        return self._view(self.store.get(goal.goal_id))
+        if created or goal.submission_pending:
+            await self.continue_if_idle(chat_id, expected_goal_id=goal.goal_id)
+        return self.current(chat_id)
 
     async def control(self, chat_id: str, goal_id: str, action: str, *,
                       expected_version: int | None = None, objective: str = "") -> dict | None:
@@ -153,13 +149,13 @@ class ChatGoalService:
             return None
         elif action == "edit":
             updated = self.store.edit(goal.goal_id, objective, expected_version=expected_version)
-            if updated.status == "active" and self._is_running(chat_id, goal.goal_id):
-                self._add_note(chat_id, objective_changed_note(updated))
+            if updated.status == "active":
+                self._add_note(chat_id, goal.goal_id, objective_changed_note(updated))
         else:
             raise GoalValidationError("action must be pause, resume, clear or edit")
         self.publish(chat_id)
         if action == "resume":
-            await self.continue_if_idle(chat_id)
+            await self.continue_if_idle(chat_id, expected_goal_id=goal.goal_id)
         return self.current(chat_id)
 
     def pause_for_stop(self, chat_id: str) -> None:
@@ -176,6 +172,8 @@ class ChatGoalService:
     # ── continuation ───────────────────────────────────────────────────────
     def notify_idle(self, chat_id: str) -> None:
         """Session-runtime idle listener; it may run inside registry callbacks."""
+        if self._closed:
+            return
         loop = self._loop
         try:
             running = asyncio.get_running_loop()
@@ -194,22 +192,31 @@ class ChatGoalService:
                 lock = self._chat_locks[chat_id] = asyncio.Lock()
             return lock
 
-    async def continue_if_idle(self, chat_id: str) -> bool:
+    async def continue_if_idle(self, chat_id: str, *, expected_goal_id: str = "") -> bool:
         """Start the next goal turn if the chat is idle and its goal is active."""
         async with self._chat_lock(chat_id):
             goal = self.store.current(chat_id)
-            if goal is None or goal.status != "active" or self._is_running(chat_id):
+            if (self._closed or goal is None or goal.status != "active"
+                    or (expected_goal_id and expected_goal_id != goal.goal_id)):
                 return False
+            with self._guard:
+                previous = self._running.get(chat_id)
+                if previous is not None:
+                    if expected_goal_id:
+                        # A new submit or resume can arrive while Stop settles.
+                        previous.next_requested = True
+                    return False
             try:
                 return self._launch(chat_id, goal)
             except Exception:
                 _LOG.exception("goal turn could not start")
+                try:
+                    self.store.transition(goal.goal_id, "blocked", reason="Goal turn could not start",
+                                          from_statuses={"active"})
+                    self.publish(chat_id)
+                except GoalNotFound:
+                    pass
                 return False
-
-    def _is_running(self, chat_id: str, goal_id: str = "") -> bool:
-        with self._guard:
-            turn = self._running.get(chat_id)
-        return bool(turn and (not goal_id or turn.goal_id == goal_id))
 
     def _launch(self, chat_id: str, goal: ChatGoal) -> bool:
         from chat_session import ConnectionSession
@@ -237,12 +244,12 @@ class ChatGoalService:
                           "work_scope": {"chat_id": chat_id, "goal_id": goal.goal_id},
                           "goal_id": goal.goal_id,
                           "goal_display_text": goal.objective if submission else CONTINUATION_DISPLAY})
-            turn = _GoalTurn(goal.goal_id, run, submission)
+            turn = _GoalTurn(goal.goal_id, run, source, admission)
             with self._guard:
                 self._running[chat_id] = turn
             with bind_run_context(run):
                 task = runtime.chat.launch_reserved_turn(
-                    transport, continuation_prompt(goal), session,
+                    transport, continuation_prompt(goal, submission=submission), session,
                     runtime_admission_id=admission, source=source,
                     task_name=f"goal-turn:{goal.goal_id}")
         except BaseException:
@@ -251,18 +258,19 @@ class ChatGoalService:
                     self._running.pop(chat_id, None)
             runtime.session_runtimes.finish_run(admission, status="goal_admission_failed")
             raise
-        if submission:
-            self.store.mark_submission_started(goal.goal_id)
         task.add_done_callback(lambda done: self._turn_finished(chat_id, turn, done))
         self.publish(chat_id)
         return True
 
     def _turn_finished(self, chat_id: str, turn: _GoalTurn, task: asyncio.Task) -> None:
-        # Runs before the idle continuation that the same finish schedules, so
-        # an automatic stop is in place before the next goal turn is considered.
         with self._guard:
             if self._running.get(chat_id) is turn:
                 self._running.pop(chat_id, None)
+        if self._closed:
+            return
+        binding = turn_binding(turn.run, chat_id)
+        if binding is not None:
+            turn.goal_id = binding.attributed_id
         try:
             goal = self.store.current(chat_id)
             if goal is not None and goal.goal_id == turn.goal_id and goal.status == "active":
@@ -273,6 +281,13 @@ class ChatGoalService:
         except Exception:
             _LOG.exception("goal turn evaluation failed")
         self.publish(chat_id)
+        # Admission release can precede durable settlement / task completion.
+        # The early idle callback saw _running; reevaluate once after deciding
+        # the terminal status, including when the user replaced this goal.
+        if not task.cancelled() or turn.next_requested:
+            current = self.store.current(chat_id)
+            if current is not None and current.status == "active":
+                self.notify_idle(chat_id)
 
     def _automatic_stop(self, chat_id: str, turn: _GoalTurn, task: asyncio.Task) -> tuple[str, str] | None:
         metadata = dict(getattr(turn.run, "metadata", None) or {})
@@ -286,10 +301,10 @@ class ChatGoalService:
             if str(metadata.get("_provider_failure_kind") or "") == "quota":
                 return "usage_limited", "The model provider reported a usage limit"
             return "blocked", "The last goal turn ended with an error"
-        receipt = self._receipt(chat_id, str(getattr(turn.run, "run_id", "") or ""))
+        receipt = self._receipt(chat_id, str(getattr(turn.run, "run_id", "") or ""), turn.admission_id)
         streaks = self._streaks_for(turn.goal_id)
         # Empty output counts only for turns the goal started by itself.
-        if (not turn.submission and metadata.get("_terminal_reply_empty") is True
+        if (turn.source == SOURCE_CONTINUE and metadata.get("_terminal_reply_empty") is True
                 and int(receipt.get("tool_calls") or 0) == 0):
             streaks.empty += 1
         else:
@@ -300,15 +315,23 @@ class ChatGoalService:
                 streaks.failed_execution = 0
             else:
                 streaks.failed_execution += 1
+        else:
+            streaks.failed_execution = 0
         if streaks.empty >= STOP_AFTER:
             return "blocked", "Three goal turns in a row produced no output"
         if streaks.failed_execution >= STOP_AFTER:
             return "blocked", "Execution failed in three goal turns in a row"
         return None
 
-    def _receipt(self, chat_id: str, run_id: str) -> dict:
+    def _receipt(self, chat_id: str, run_id: str, admission_id: str) -> dict:
         try:
-            receipt = self.host.require_runtime().sessions.get_last_run_receipt(chat_id) or {}
+            runtime = self.host.require_runtime()
+            lookup = getattr(getattr(runtime.session_runtimes, "repository", None), "get_run_settlement", None)
+            if callable(lookup):
+                settled = lookup(chat_id, run_id=run_id, admission_id=admission_id)
+                if settled:
+                    return settled["receipt"]
+            receipt = runtime.sessions.get_last_run_receipt(chat_id) or {}
         except Exception:
             return {}
         return receipt if run_id and receipt.get("run_id") == run_id else {}
@@ -321,47 +344,61 @@ class ChatGoalService:
         with self._guard:
             self._streaks.pop(goal_id, None)
             if chat_id:
-                self._notes.pop(chat_id, None)
+                for key in [key for key in self._notes if key[0] == chat_id]:
+                    del self._notes[key]
 
     # ── usage and notes ────────────────────────────────────────────────────
-    def record_usage(self, usage: dict) -> None:
-        """Router hook, called inside the requesting run's context."""
-        try:
-            tokens = goal_tokens(usage or {})
-            if not tokens:
-                return
-            from run_context import current_run_context
-            context = current_run_context()
-            if context is None:
-                return
-            scope = getattr(context, "work_scope", None)
-            goal_id = str(getattr(scope, "goal_id", "") or "")
-            chat_id = str(getattr(scope, "chat_id", "") or context.metadata.get("chat_id") or "")
-            goal = self.store.get(goal_id) if goal_id else (
-                self.store.current(chat_id) if chat_id else None)
-            if goal is None:
-                return
-            updated, reached = self.store.add_tokens(goal.goal_id, tokens)
-            if updated is None:
-                return
-            if reached:
-                self._add_note(updated.chat_id, budget_reached_note(updated))
-                self.publish(updated.chat_id)
-            else:
-                self.publish(updated.chat_id, usage_only=True)
-        except Exception:
-            _LOG.exception("goal usage accounting failed")
+    def admit_chat_turn(self, context, chat_id: str, admission_id: str, source: str, *, task=None) -> bool:
+        """Bind this writer to its Goal before its first model request or effect."""
+        if source in GOAL_SOURCES:
+            expected = str(context.metadata.get("goal_id") or "")
+            if self._closed or not self.store.admit_turn(chat_id, expected, context.run_id,
+                                                        submission=source == SOURCE_SUBMIT):
+                return False
+        goal = self.store.current(chat_id)
+        if source in GOAL_SOURCES and (goal is None or goal.goal_id != expected):
+            return False
+        goal_id = goal.goal_id if goal else ""
+        attributed = goal_id if goal and goal.status == "active" else ""
+        context.metadata["_chat_goal_binding"] = GoalBinding(chat_id, admission_id, goal_id, attributed)
+        context.work_scope = context.work_scope.with_updates(goal_id=attributed)
+        context.metadata["work_scope"] = context.work_scope.to_dict(include_empty=False)
+        if source not in GOAL_SOURCES and task is not None:
+            # User and peer turns get first admission; evaluate their failures
+            # (and any goal created during them) before scheduling more work.
+            turn = _GoalTurn(attributed, context, source, admission_id)
+            with self._guard:
+                self._running[chat_id] = turn
+            task.add_done_callback(lambda done: self._turn_finished(chat_id, turn, done))
+        if source == SOURCE_SUBMIT:
+            self.publish(chat_id)
+        return True
 
-    def _add_note(self, chat_id: str, note: str) -> None:
+    def request_usage(self, manifest: dict) -> GoalRequestUsage | None:
+        """Freeze attribution at physical request dispatch, including inherited child scope."""
+        goal_id = ((manifest.get("run") or {}).get("work_scope") or {}).get("goal_id")
+        if not goal_id or not self.store.chargeable(goal_id):
+            return None
+        return GoalRequestUsage(goal_id, self._charge)
+
+    def _charge(self, goal_id: str, delta: int) -> None:
+        updated, reached = self.store.apply_token_delta(goal_id, delta)
+        if updated is None:
+            return
+        if reached:
+            self._add_note(updated.chat_id, goal_id, budget_reached_note(updated))
+        self.publish(updated.chat_id, usage_only=not reached)
+
+    def _add_note(self, chat_id: str, goal_id: str, note: str) -> None:
         with self._guard:
-            notes = self._notes.setdefault(chat_id, [])
+            notes = self._notes.setdefault((chat_id, goal_id), [])
             notes.append(note)
             del notes[:-_MAX_NOTES]
 
-    def take_notes(self, chat_id: str) -> list[str]:
+    def take_notes(self, chat_id: str, goal_id: str) -> list[str]:
         """Notes for the chat's running turn, delivered before its next model call."""
         with self._guard:
-            return self._notes.pop(str(chat_id or ""), [])
+            return self._notes.pop((chat_id, goal_id), [])
 
     # ── model tools (session.get_goal / create_goal / update_goal) ─────────
     def tool_get(self, chat_id: str) -> dict:
@@ -370,13 +407,20 @@ class ChatGoalService:
             return {"goal": None}
         return {"goal": self._view(goal), "remaining_tokens": goal.remaining_tokens()}
 
-    def tool_create(self, chat_id: str, objective: str, token_budget: Any = None) -> dict:
-        current = self.store.current(chat_id)
-        if current is not None and current.status != "complete":
-            raise GoalConflict("This chat already has an unfinished goal; use update_goal for its status")
-        goal, _created = self.store.create(chat_id, objective, token_budget=token_budget, replace=True)
-        # The user asked inside this turn, so the request is already in the chat.
-        self.store.mark_submission_started(goal.goal_id)
+    @staticmethod
+    def _invocation_binding(chat_id: str, context):
+        from run_context import current_run_context
+        return turn_binding(current_run_context(), chat_id) if context is not None else None
+
+    def tool_create(self, chat_id: str, objective: str, token_budget: Any = None, *, context=None) -> dict:
+        binding = self._invocation_binding(chat_id, context)
+        expected = (binding.goal_id if binding is not None else
+                    getattr(getattr(context, "work_scope", None), "goal_id", None) or None)
+        run_id = str(getattr(context, "run_id", "") or "")
+        goal, _created = self.store.create(chat_id, objective, token_budget=token_budget,
+                                          expected_goal_id=expected, creator_run_id=run_id)
+        if binding is not None:
+            binding.goal_id = binding.attributed_id = goal.goal_id
         self._forget(goal.goal_id)
         self.publish(chat_id)
         return {"goal": self.current(chat_id)}
@@ -391,6 +435,12 @@ class ChatGoalService:
         if allowed is None:
             raise GoalValidationError("status must be complete, blocked or paused")
         run_id = str(getattr(context, "run_id", "") or "")
+        if context is not None:
+            binding = self._invocation_binding(chat_id, context)
+            expected = (binding.goal_id if binding is not None else
+                        getattr(getattr(context, "work_scope", None), "goal_id", ""))
+            if expected != goal.goal_id and not (not expected and run_id and goal.first_run_id == run_id):
+                raise GoalConflict("This turn belongs to an earlier goal; the current goal was not changed")
         reason = {"blocked": "Reported blocked by the model",
                   "paused": "Paused at your request"}.get(status, "")
         updated = self.store.transition(goal.goal_id, status, reason=reason,
@@ -398,10 +448,7 @@ class ChatGoalService:
         if updated is None:
             raise GoalConflict(f"The goal is {goal.status.replace('_', ' ')}; it can't become {status}")
         if status == "complete":
-            # The assistant row of this turn carries the durable "achieved" marker.
-            record_goal_event(chat_id, {
-                "event": "achieved", "goal_id": updated.goal_id,
-                "time_used_s": updated.time_used(), "tokens_used": updated.tokens_used})
+            self._forget(updated.goal_id, chat_id)
         self.publish(chat_id)
         return {"goal": self._view(updated), "tokens_used": updated.tokens_used,
                 "token_budget": updated.token_budget, "time_used_s": updated.time_used()}
@@ -414,12 +461,14 @@ class ChatGoalService:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             pass
-        if loop is None or loop.is_closed():
+        if self._closed or loop is None or loop.is_closed():
             return
         # Timers belong to the loop thread; tool handlers publish from workers.
         loop.call_soon_threadsafe(self._schedule_push, loop, chat_id, usage_only)
 
     def _schedule_push(self, loop: asyncio.AbstractEventLoop, chat_id: str, usage_only: bool) -> None:
+        if self._closed:
+            return
         now = self._clock()
         state = self._pushes.setdefault(chat_id, _Push())
         if usage_only and now - state.last < _USAGE_PUSH_INTERVAL_S:
@@ -456,6 +505,13 @@ class ChatGoalService:
         for transport in transports:
             background_tasks.spawn(_send(transport, payload), name="goal-updated")
 
+    def completion_event(self, chat_id: str, run_id: str) -> dict | None:
+        goal = self.store.completed_by(chat_id, run_id)
+        if goal is None:
+            return None
+        return {"event": "achieved", "goal_id": goal.goal_id,
+                "time_used_s": goal.time_used(), "tokens_used": goal.tokens_used}
+
     # ── lifecycle ──────────────────────────────────────────────────────────
     async def start(self) -> None:
         """Bind to the server loop, carry over old composer goals, resume active goals."""
@@ -464,66 +520,27 @@ class ChatGoalService:
             await asyncio.to_thread(self.migrate_legacy_goals)
         except Exception:
             _LOG.exception("legacy goal migration failed")
+            raise
         for chat_id in await asyncio.to_thread(self.store.active_chat_ids):
             await self.continue_if_idle(chat_id)
 
     def migrate_legacy_goals(self) -> int:
-        """Carry unfinished composer goals from the old engine over as paused goals."""
-        import sqlite3
+        return self.store.migrate_legacy_goals()
 
-        from core_invariants import sqlite_wal_connection
-        conn = sqlite_wal_connection(self.store.path)
-        try:
-            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if "workflow_goal" not in tables:
-                return 0
-            conn.execute("CREATE TABLE IF NOT EXISTS chat_goal_meta(key TEXT PRIMARY KEY, value TEXT)")
-            if conn.execute("SELECT 1 FROM chat_goal_meta WHERE key='legacy_migrated'").fetchone():
-                return 0
-            rows = conn.execute(
-                "SELECT goal_id, owner_chat_id, objective, status, completion_policy_json "
-                "FROM workflow_goal ORDER BY updated_at").fetchall()
-        except sqlite3.Error:
-            return 0
-        finally:
-            conn.close()
-        carried = 0
-        for row in rows:
-            try:
-                policy = json.loads(row["completion_policy_json"] or "{}")
-            except ValueError:
-                policy = {}
-            if policy.get("entrypoint") != "composer_goal" or not row["owner_chat_id"]:
-                continue
-            old = str(row["status"])
-            if old in {"failed", "cancelled", "archived"}:
-                continue
-            chat_id = str(row["owner_chat_id"])
-            if self.store.current(chat_id) is not None:
-                continue
-            try:
-                goal, _ = self.store.create(chat_id, row["objective"], request_id="legacy:" + row["goal_id"])
-                if old == "succeeded":
-                    self.store.transition(goal.goal_id, "complete")
-                else:
-                    self.store.transition(goal.goal_id, "paused",
-                                          reason="Carried over from the previous goal engine; resume to continue")
-                self.store.mark_submission_started(goal.goal_id)
-                carried += 1
-            except Exception:
-                _LOG.exception("legacy goal could not be carried over")
-        conn = sqlite_wal_connection(self.store.path)
-        try:
-            conn.execute("INSERT OR IGNORE INTO chat_goal_meta(key, value) VALUES('legacy_migrated', ?)",
-                         (str(carried),))
-        finally:
-            conn.close()
-        return carried
+    async def shutdown(self) -> None:
+        """Fence scheduling before other host services start shutting down."""
+        self._closed = True
+        self.host.require_runtime().session_runtimes.unregister_idle_listener(self.notify_idle)
+        for push in self._pushes.values():
+            if push.pending is not None:
+                push.pending.cancel()
+        self._pushes.clear()
 
     def delete_chat(self, chat_id: str) -> None:
         with self._guard:
-            self._notes.pop(chat_id, None)
             self._running.pop(chat_id, None)
+            for key in [key for key in self._notes if key[0] == chat_id]:
+                del self._notes[key]
         self.store.delete_chat(chat_id)
 
 

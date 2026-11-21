@@ -169,16 +169,10 @@ assert.match(shellCss, /\.app-shell\s*\{[^}]*grid-template-rows:\s*var\(--titleb
 assert.doesNotMatch(shellCss + designSystem + automationCss, /\.(?:has-working-bar|deck-destination-view|automations-view)\b/,
   'retired page-layout scaffolding must stay removed');
 
-const memoryDestination = read(path.join('frontend', 'main-deck', 'src', 'GoalsDestination.tsx'));
-const memoryCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'goals.css'));
-assert.doesNotMatch(memoryDestination, /deck-destination-header|memory-header|memory-privacy-note/,
-  'Memory must remain a deliberate single-page route without the retired header or privacy promotion');
-assert.match(memoryDestination, /memory-page__utilities[\s\S]*id="goals-refresh"/,
-  'Goals must retain a compact refresh control');
-assert.match(memoryDestination, /memory-loops-section[\s\S]*loop-layout/,
-  'Goals must preserve the run list and detail controls');
-assert.doesNotMatch(memoryDestination + memoryCss, /memory-primary-layout/,
-  'the retired centered Memory column layout must stay deleted');
+// The chat goal is a composer line, not a page: no Goals destination or stylesheet.
+for (const retired of ['GoalsDestination.tsx', 'styles/goals.css']) {
+  assert.equal(fs.existsSync(path.join(root, 'frontend', 'main-deck', 'src', retired)), false, `${retired} stays retired`);
+}
 
 const overviewDestination = read(path.join('frontend', 'main-deck', 'src', 'OverviewDestination.tsx'));
 const overviewCss = read(path.join('frontend', 'main-deck', 'src', 'styles', 'overview.css'));
@@ -201,8 +195,8 @@ assert.doesNotMatch(settingsApp, /settings-header|settings-saved-state|settings-
 for (const kind of ['overview', 'automations']) {
   assert.ok(settingsApp.includes(`<UtilitySurface kind="${kind}"`), `${kind} must use a utility overlay`);
 }
-assert.match(read('frontend/main-deck/src/SettingsPageContent.tsx'), /goals: <GoalsDestination\/>/,
-  'Memory stays in Settings rather than an unused primary-page wrapper');
+assert.doesNotMatch(read('frontend/main-deck/src/SettingsPageContent.tsx'), /Goals?Destination|goals:/,
+  'Settings has no Goals page; each chat holds its own goal');
 assert.match(settingsApp, /<main className="workbench-view"><Workbench api=\{api\}/,
   'the Chat workbench stays mounted beneath every utility overlay');
 assert.match(settingsOverlay, /<Overlay[\s\S]*labelledBy="settings-overlay-title"[\s\S]*settings-overlay__close/,
@@ -336,7 +330,6 @@ const literalCeilings = {
   'composer-motion.css': {hex: 0, radius: 1, size: 0},
   'composer.css': {hex: 3, radius: 30, size: 6},
   'design-system.css': {hex: 2, radius: 3, size: 0},
-  'goals.css': {hex: 0, radius: 3, size: 0},
   'local-models.css': {hex: 0, radius: 1, size: 0},
   'overview.css': {hex: 0, radius: 5, size: 10},
   'refinement.css': {hex: 0, radius: 1, size: 14},

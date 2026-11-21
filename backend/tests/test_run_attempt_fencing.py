@@ -202,5 +202,3 @@ def test_a_cancel_during_launch_still_retires_the_gate():
     request._thread.join(5)
     assert gates[0].stopped.is_set()
     assert not request.granted.is_set()
-
-

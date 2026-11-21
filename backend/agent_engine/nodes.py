@@ -12,6 +12,7 @@ from observability import context_lineage
 import tool_calling
 from agent_task import TaskStatus
 from assistant_turn import truncated_tool_outcomes
+from message_context_extents import HOST_CONTEXT_PREFIX_KEY
 
 from .snapshot_utils import (
     build_resume_context_from_run_state,
@@ -251,7 +252,8 @@ def main_model_step_node(config: AgentRunConfig, runtime: MainTaskRuntime):
         notes = ports.drain_notes() if ports.drain_notes is not None else []
         if notes:
             # Model-only context, such as a chat goal reaching its budget.
-            messages.append({"role": "user", "content": "\n\n".join(str(note) for note in notes)})
+            text = "\n\n".join(str(note) for note in notes)
+            messages.append({"role": "user", "content": text, HOST_CONTEXT_PREFIX_KEY: len(text)})
 
         execution = await execute_model_step(
             messages,

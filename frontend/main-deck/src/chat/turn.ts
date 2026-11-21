@@ -27,6 +27,7 @@ import {
   parseMessage,
   parseMessages,
   reconcileAuthoritativeTurn,
+  reconcileGoalTurn,
   chatMessagesMatch,
 } from "./messages";
 import {
@@ -40,6 +41,7 @@ import {syncPaneFromActivity} from "../workbench/activityRouting";
 import {normalizeActivityStatus} from "./activityModel";
 import {boundedPreview, retainTurnSteps} from "./preview";
 import {persistTrace} from "./annotations";
+import {isGoalTurnSource} from "../protocol/goals";
 
 function activityTimeMs(value: number | undefined): number {
   const numeric = Number(value) || 0;
@@ -412,7 +414,9 @@ export function settleRunningThinking(): void {
 export function finishStream(message: StreamDoneMessage) {
   if(!sharedTurnActive())return;
   const state = getChatState();
-  const runId = message.run_id || turnApi().snapshot().runId || undefined;
+  const turn = turnApi().snapshot();
+  const runId = message.run_id || turn.runId || undefined;
+  const admissionId = message.admission_id || (runId === turn.runId ? turn.admissionId : undefined);
   const pending = state.pendingTurnCommit?.owner === (state.activeTurnId || runId) ? state.pendingTurnCommit : undefined;
   const finalText = (message.text || state.streamText || "…").trim() || "…";
   const cancelled = message.cancelled;
@@ -439,6 +443,7 @@ export function finishStream(message: StreamDoneMessage) {
   cleaned.push({
     role: "assistant",
     runId,
+    ...(isGoalTurnSource(message.source) && admissionId ? {admissionId} : {}),
     text: finalText,
     ts: now,
     steps,
@@ -552,31 +557,48 @@ export function handleAppended(message: ChatAppendedMessage) {
   const user = parseMessage(message.user);
   const assistant = parseMessage(message.assistant);
   const authoritative = parseMessages(message.messages);
+  const isGoal = isGoalTurnSource(message.source);
+  const goalRun = isGoal && sessionId && message.admission_id ? message.run_id : undefined;
+  if (isGoal && !goalRun) return;
+  if (goalRun && !authoritative.length) {
+    if (user) authoritative.push(user);
+    if (assistant) authoritative.push(assistant);
+  }
   const continuedTicket = user?.ticketId || authoritative.find(row=>row.role==="user" && row.ticketId)?.ticketId;
   const nativeTurn=turnApi().snapshot();
   const sameNativeRun=!!message.run_id && message.run_id===nativeTurn.runId
     && (!message.admission_id || message.admission_id===nativeTurn.admissionId);
+  if (goalRun) {
+    if ((nativeTurn.runId === goalRun && nativeTurn.admissionId && !sameNativeRun) ||
+        authoritative.some(row => row.runId && row.runId !== goalRun) ||
+        state.messages.some(row => row.runId === goalRun && row.admissionId && row.admissionId !== message.admission_id)) return;
+    if (sameNativeRun && nativeTurn.active && authoritative.length) {
+      patchChatState({pendingTurnCommit: {owner: state.activeTurnId || goalRun, appended: message}});
+      return;
+    }
+  }
   const sameClient = (!!eventClient && activeTurnClientIds().has(eventClient))
     || sameNativeRun
     || (message.source==="queue_continue" && !!continuedTicket && state.messages.some(row=>row.role==="user" && row.ticketId===continuedTicket));
   const now = Date.now() / 1000;
 
-  if (sameClient) {
+  if (sameClient || goalRun) {
     // Replace exactly this optimistic turn with the backend's genuine ordered
     // transcript, including intermediate assistant and queued-user boundaries.
     if (authoritative.length) {
       const current = getChatState();
       const turn = turnApi().snapshot();
       const group = current.messages.filter(row => row.optimisticTurnId === current.activeTurnId);
-      if (turn.active && current.activeTurnId && !group.some(row => row.role === "assistant")
+      if (!goalRun && turn.active && current.activeTurnId && !group.some(row => row.role === "assistant")
         && (!message.run_id || !turn.runId || message.run_id === turn.runId)
         && (!message.admission_id || !turn.admissionId || message.admission_id === turn.admissionId)
         && group.some(row => row.role === "user" && authoritative.some(remote => chatMessagesMatch(row, remote)))) {
         patchChatState({pendingTurnCommit: {owner: current.activeTurnId, appended: message}});
         return;
       }
-      const reconciled = reconcileAuthoritativeTurn(current.messages, authoritative);
-      if (reconciled.optimisticTurnId) {
+      const reconciled = goalRun ? reconcileGoalTurn(current.messages, authoritative, goalRun, message.admission_id!) :
+        reconcileAuthoritativeTurn(current.messages, authoritative);
+      if (goalRun || reconciled.optimisticTurnId) {
         const deliveredActiveInputs = reconciled.optimisticTurnIds.filter(
           id => id !== reconciled.optimisticTurnId,
         ).length;

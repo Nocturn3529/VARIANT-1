@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import {act,Profiler} from "react";
 import {createRoot} from "react-dom/client";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
-import {ComposerGoalPanel} from "../frontend/main-deck/src/chat/ComposerGoalPanel";
+import {ComposerGoalStatus} from "../frontend/main-deck/src/chat/ComposerGoal";
 import {InputQueuePanel} from "../frontend/main-deck/src/chat/InputQueuePanel";
 import {AgentTeamPanel} from "../frontend/main-deck/src/chat/AgentTeamPanel";
 import {TurnActivity} from "../frontend/main-deck/src/chat/TurnActivity";
@@ -20,7 +20,7 @@ export async function run() {
   const host=document.createElement("div");document.body.appendChild(host);const root=createRoot(host);
   const commits:Record<string,number>={};
   const track=(id:string)=>{commits[id]=(commits[id]||0)+1;};
-  const components=[['composer',<ChatComposer/>],['goal',<ComposerGoalPanel/>],['queue',<InputQueuePanel/>],['team',<AgentTeamPanel/>],['transcript',<ChatMessageList/>]] as const;
+  const components=[['composer',<ChatComposer/>],['goal',<ComposerGoalStatus/>],['queue',<InputQueuePanel/>],['team',<AgentTeamPanel/>],['transcript',<ChatMessageList/>]] as const;
   try {
     await act(async()=>root.render(<>{components.map(([id,element])=><Profiler key={id} id={id} onRender={()=>track(id)}>{element}</Profiler>)}</>));
     for(const id of Object.keys(commits))commits[id]=0;

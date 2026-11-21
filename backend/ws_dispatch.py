@@ -524,8 +524,7 @@ async def _queue_command(srv, websocket, session, msg):
         ticket_id = str(msg.get("ticket_id") or "")
         expected_revision = msg.get("expected_revision")
         if operation == "remove":
-            registry.repository.queued_ticket_command(chat_id, ticket_id,
-                expected_revision=expected_revision, operation="remove")
+            registry.remove_queued_ticket(chat_id, ticket_id, expected_revision=expected_revision)
             accepted = True
             peers = getattr(srv.require_runtime(), "peers", None)
             if peers is not None:

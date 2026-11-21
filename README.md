@@ -60,20 +60,20 @@ Use the release notes for the behavior and qualification of a downloaded build.
   register its own helpers as tools or replace a failing tool method. What it
   registers stays until it or you roll it back. Authoring is off by default and
   does not train model weights.
-- **Run a Goal in its owning session.** The session agent retains its conversation,
-  model route, peer identity, and live Python state while working toward the
-  objective. It can explicitly delegate children or coordinate other sessions.
-  Goal completion records the agent's claim and the available evidence.
-  Cancellation cleans up Goal-attributed managed resources while keeping the
-  parent Python kernel. Use managed process handles for services that should
-  stop with the Goal; raw Python subprocesses need their own lifecycle management.
+- **Run a Goal in its owning session.** Set one objective with `/goal` in the
+  composer. The agent takes another turn when the chat is idle and the Goal is
+  active. It retains its conversation, model route, peer identity, and live
+  Python state and can delegate to child agents or coordinate other chats.
+  Pause, resume, edit, or clear the Goal from the chat. Stop pauses the Goal and
+  interrupts the current turn. The agent checks the work against the objective
+  before marking it complete. Managed processes and other resources have their
+  own chat and tool lifetimes.
   Admitted Goal and peer work appears live in that same chat, with session,
   admission and run identities keeping separate executions isolated.
   Addressed peer requests wake idle sessions or reach an active turn at its next
   safe step. Request handles expose the recipient's settled answer and outcome.
-  Explicit Goal budgets pause at model/tool boundaries; defaults remain unlimited.
-  Unavailable peer work blocks an awaiting Goal for inspection. Provider usage
-  is durably recorded off the event loop before terminal budget reconciliation.
+  An optional Goal token budget asks the running turn to wrap up and prevents
+  further continuation once reached. Goals are unlimited by default.
   Restart recovery surfaces consumed peer work without a settlement as uncertain,
   preserving its evidence for inspection.
   Delivered steering appears between the work before and after it. Opening an
@@ -131,7 +131,7 @@ separate contracts, and not every live object is restorable. Agents retrieve
 earlier session evidence through `session.context()`; the harness does not inject
 stored profiles or inferred fact memories, or extract memories after turns.
 Settings includes a Session context browser for frozen views, search, source
-details, and JSONL or Markdown exports. Goal controls remain separately available.
+details, and JSONL or Markdown exports. Goal controls are in the chat composer.
 Cross-session memory is deferred.
 Portable checkpointing and
 restoration are disabled by default. See [state lifetimes](docs/ARCHITECTURE.md#state-lifetimes).

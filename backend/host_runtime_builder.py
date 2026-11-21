@@ -150,7 +150,7 @@ def install_host_runtime(
     goals = create_chat_goal_service(host, work.repository.path)
     astb.session_runtimes.register_idle_listener(goals.notify_idle)
     if getattr(host, "router", None) is not None:
-        host.router.goal_usage_hook = goals.record_usage
+        host.router.goal_usage_for_request = goals.request_usage
     from peers import PeerCommunicationService, PeerRepository
 
     peers = PeerCommunicationService(

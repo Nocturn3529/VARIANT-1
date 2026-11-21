@@ -229,6 +229,7 @@ def _durable_turn_messages(
     mood: str,
     attachments: list | None = None,
     run_id: str = "",
+    goals: Any = None,
 ) -> list[dict]:
     """Build the genuine ordered transcript for a run with active input."""
     initial: dict[str, Any] = {
@@ -289,14 +290,13 @@ def _durable_turn_messages(
         for row in rows:
             if row["role"] == "assistant":
                 row["run_id"] = owner_run
-    from chat_goals.events import take_goal_event
-
-    goal_event = take_goal_event(getattr(session.active, "runtime_chat_id", "") or "")
-    if goal_event is not None:
-        for row in reversed(rows):
-            if row["role"] == "assistant":
-                row["goal_event"] = goal_event
-                break
+    if owner_run and goals is not None:
+        try:
+            event = goals.completion_event(getattr(session.active, "runtime_chat_id", "") or "", owner_run)
+            if isinstance(event, dict):
+                rows[-1]["goal_event"] = event
+        except Exception:
+            _LOG.exception("Goal completion could not be projected onto the terminal exchange")
     return rows
 
 
@@ -354,12 +354,16 @@ async def persist_unfinalized_turn(
         runtimes.begin_transcript_commit(delivered)
     try:
         if display_text or display_atts:
+            goals = getattr(host, "goals", None)
+            if goals is None and callable(getattr(host, "require_runtime", None)):
+                goals = getattr(host.require_runtime(), "goals", None)
             transcript = _durable_turn_messages(
                 session,
                 display_text,
                 reply,
                 mood=mood,
                 attachments=display_atts,
+                goals=goals,
             )
         else:
             # Empty/invalid setup requests have no genuine user row, but their
@@ -565,6 +569,7 @@ async def finish_chat_turn(
         mood=mood,
         attachments=display_atts,
         run_id=str((run or {}).get("id") or getattr(run_ctx, "run_id", "") or ""),
+        goals=getattr(ports.io, "goals", None),
     )
     delivered_inputs = _inputs_for_commit(session)
     last_user_text = str(text or "")

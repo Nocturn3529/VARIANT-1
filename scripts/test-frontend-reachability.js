@@ -32,9 +32,12 @@ const corpus=files.map(file=>fs.readFileSync(file,'utf8')).join('\n');
 assert.doesNotMatch(corpus,/BrowserPopoutApp|setPreviewPopped|bindBrowserHostSurface|ensureTerminalStarted|appendTerminalOutput|react-runtime-memory/,
   'retired views, subscriptions, and implicit terminal startup must not return');
 for(const file of ['memoryStore.ts','MemoryDestination.tsx','ui/fabricPresentation.ts','workbench/BrowserPopoutApp.tsx','styles/knowledge-surfaces.css'])assert.equal(fs.existsSync(path.join(source,file)),false,file+' is retired');
-const goals=fs.readFileSync(path.join(source,'goalsStore.ts'),'utf8');
-assert.match(goals,/goals:loops:create/,'durable goal controls remain reachable');
-assert.doesNotMatch(goals,/memory:|core:set|proposal:|consolidate/,'Goals cannot write or approve fact memory');
+// One goal per chat lives in the composer; the Goals page and step-graph panel are retired.
+for(const file of ['goalsStore.ts','GoalsDestination.tsx','chat/ComposerGoalPanel.tsx','styles/goals.css'])assert.equal(fs.existsSync(path.join(source,file)),false,file+' is retired');
+assert.doesNotMatch(corpus,/goals:loops|react-runtime-goals|goal:(?:finish|archive|cancel|retry|verify|plan|create|start)\b/,'retired goal surfaces and commands must not return');
+// goal:continue is a backend turn source. The Deck cannot issue it as a command.
+assert.doesNotMatch(corpus,/\btype["']?\s*:\s*["']goal:continue["']/,'goal continuation is owned by the backend');
+assert.match(fs.readFileSync(path.join(source,'chat/ChatComposer.tsx'),'utf8'),/<ComposerGoalStatus\/>/,'the chat goal status is reachable from the composer');
 const electron=['deck-preload.js','electron-deck-ipc.js','electron-app-boot.js'].map(file=>fs.readFileSync(path.join(root,file),'utf8')).join('\n');
 assert.doesNotMatch(electron,/workbench:browser:(?:popout|location|closed)|__variant1BrowserPopout/,'Native panels are the sole browser detachment path');
 // These remain live entry points, not legacy workspace copies.

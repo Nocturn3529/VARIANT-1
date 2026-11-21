@@ -199,13 +199,13 @@ class LLMRouter:
             # Usage lineage is observability only.  Never fail inference,
             # telemetry accounting, or a caller because correlation failed.
             pass
-        hook = getattr(self, "goal_usage_hook", None)
-        if callable(hook) and normalized is not None:
-            # Charges the requesting chat's active goal; fail-open like lineage.
+        charge = getattr(manifest_ref, "goal_usage", None)
+        if charge is not None and normalized is not None:
             try:
-                hook(normalized)
+                charge.settle(normalized)
             except Exception:
-                pass
+                import logging
+                logging.getLogger(__name__).exception("Goal usage could not be recorded")
 
     def _record_usage_outcome(self, provider: str, model: str, *, status="error",
                               latency_ms=None):
@@ -475,6 +475,9 @@ class LLMRouter:
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
         self._manifest_bus.submit_ledger(lambda: self._manifest_bus.usage_ledger.patch_terminal(
             identity, outcome=outcome, duration_s=duration_s))
+        charge = getattr(manifest_ref, "goal_usage", None)
+        if charge is not None:
+            charge.settle()
 
     def _patch_model_request_manifest_partial_usage(self, manifest_ref, raw_usage):
         normalized = normalize_manifest_usage('openrouter', raw_usage=raw_usage)
@@ -485,6 +488,9 @@ class LLMRouter:
         # Incomplete observations must not preempt the final UI/CloudUsage count.
         identity = self._manifest_bus.manifest_id_from_ref(manifest_ref)
         self._manifest_bus.submit_partial_usage(identity, normalized)
+        charge = getattr(manifest_ref, "goal_usage", None)
+        if charge is not None:
+            charge.observe_partial(normalized)
 
     def _patch_model_request_stream(self, manifest_ref, value):
         self._manifest_bus.patch_stream_diagnostics(manifest_ref, value)

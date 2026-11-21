@@ -143,6 +143,11 @@ async def prepare_chat_turn_stage(
     direct_command = is_direct_command(attachment.model_text)
     engine = check_engine_ready(ports.io.router)
     if not engine.ok and not direct_command:
+        if goal_turn:
+            from run_context import current_run_context
+            context = current_run_context()
+            if context is not None:
+                context.metadata["_terminal_reason"] = "host_preflight_error"
         return ChatStageDone(_done(mood=engine.mood, text=engine.text))
 
     try:

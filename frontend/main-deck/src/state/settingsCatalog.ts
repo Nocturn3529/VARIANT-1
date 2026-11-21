@@ -98,12 +98,6 @@ export const SETTINGS_PAGES: readonly SettingsPageDefinition[] = [
     path: "M5 3h10l4 4v14H5Zm10 0v5h4M8 12h8m-8 4h8",
   },
   {
-    id: "goals",
-    label: "Goals",
-    description: "Create and manage long-running goals.",
-    path: "M5 5c0 2 14 2 14 0v12c0 2-14 2-14 0zM5 11c0 2 14 2 14 0",
-  },
-  {
     id: "about",
     label: "About VARIANT-1",
     description: "Version, health, updates, and storage.",

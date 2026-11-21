@@ -13,7 +13,7 @@ from typing import AbstractSet, Any, Iterable, Mapping
 from capability_broker import CapabilityRef
 from kernel_runtime.proxy_arguments import binding_param_specs, declared_parameter_order
 
-from .catalog import LoadedCatalog
+from .catalog import LoadedCatalog, session_infrastructure_contract
 from .mutation_contracts import (
     MUTATION_REMOTE_HANDLE_PROXY,
     MUTATION_REMOTE_HANDLE_ROLE,
@@ -30,6 +30,8 @@ def build_proxy_contracts(
     hidden_dispatch: Any = None,
     exclude_slot_id: str = "",
     exclude_proxy: str = "",
+    current_catalog=None,
+    chat_goal_owner: bool = True,
 ) -> dict[str, dict[str, Any]]:
     """Build the ordinary Python proxy surface available to mutations.
 
@@ -53,6 +55,7 @@ def build_proxy_contracts(
         slot_version: int = 0,
         effect_class: str = "",
         signature: str = "",
+        contract_release: str = "",
     ) -> None:
         name = str(qualified_name or "").strip()
         if not name or name in contracts:
@@ -61,11 +64,11 @@ def build_proxy_contracts(
             capability_id=str(binding.get("capability_id") or ""),
             schema_revision=str(binding.get("schema_revision") or ""),
             handler_revision=str(binding.get("handler_revision") or ""),
-            catalog_release_id=loaded.release_id,
+            catalog_release_id=contract_release or loaded.release_id,
             slot_id=str(slot_id or ""),
             slot_version=max(0, int(slot_version or 0)),
         )
-        contract_params = dict(params or binding.get("params") or {})
+        contract_params = dict(params if params is not None else binding.get("params") or {})
         contracts[name] = {
             "proxy": name,
             "ref": ref.to_dict(),
@@ -131,6 +134,9 @@ def build_proxy_contracts(
             root = str(api.get("name") or "")
             if not root or root == "toolbelt":
                 continue
+            contract_release = loaded.release_id
+            if category_id == "base" and root == "session":
+                api, contract_release = session_infrastructure_contract(loaded, api, current_catalog)
             transport = dict(api.get("transport") or {})
             if str(api.get("tool_name") or transport.get("tool_name") or "") not in enabled:
                 continue
@@ -142,14 +148,17 @@ def build_proxy_contracts(
                     or root
                 ),
             }
-            slot_id = f"{loaded.release_id}/{category_id}/api-{root}"
+            slot_id = f"{contract_release}/{category_id}/api-{root}"
             for method in api.get("methods") or ():
                 if not isinstance(method, Mapping):
+                    continue
+                if method.get("condition") == "chat_goal_owner" and not chat_goal_owner:
                     continue
                 alias = str(method.get("alias") or "")
                 add(
                     f"{root}.{alias}",
                     binding=binding,
+                    contract_release=contract_release,
                     params=dict(method.get("params") or {}),
                     fixed_arguments={
                         "operation": str(method.get("operation") or alias)

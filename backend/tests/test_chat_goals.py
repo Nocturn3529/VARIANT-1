@@ -16,7 +16,7 @@ from chat_goals import (
     GoalVersionConflict,
     goal_tokens,
 )
-from chat_goals.events import clean_goal_event, take_goal_event
+from chat_goals.events import clean_goal_event
 from run_context import Variant1RunContext, bind_run_context
 
 
@@ -43,7 +43,7 @@ def test_one_current_goal_per_chat_with_idempotent_submission(tmp_path):
         store.create("chat", "Something else", request_id="r1")
     with pytest.raises(GoalConflict):
         store.create("chat", "Second goal", request_id="r2")
-    replaced, _ = store.create("chat", "Second goal", request_id="r2", replace=True)
+    replaced, _ = store.create("chat", "Second goal", request_id="r2", replace=True, expected_goal_id=goal.goal_id)
     assert store.current("chat").goal_id == replaced.goal_id
     store.transition(replaced.goal_id, "complete")
     # A complete goal is replaced without confirmation.
@@ -53,18 +53,19 @@ def test_one_current_goal_per_chat_with_idempotent_submission(tmp_path):
         store.create("other", "   ", request_id="r4")
 
 
-def test_token_budget_flips_once_and_paused_goals_are_not_charged(tmp_path):
+def test_token_budget_flips_once_and_late_usage_does_not_reactivate_a_paused_goal(tmp_path):
     store = _store(tmp_path)
     goal, _ = store.create("chat", "Do work", token_budget=100)
-    updated, reached = store.add_tokens(goal.goal_id, 60)
+    updated, reached = store.apply_token_delta(goal.goal_id, 60)
     assert updated.tokens_used == 60 and not reached and updated.status == "active"
-    updated, reached = store.add_tokens(goal.goal_id, 50)
+    updated, reached = store.apply_token_delta(goal.goal_id, 50)
     assert reached and updated.status == "budget_limited" and updated.tokens_used == 110
-    updated, reached = store.add_tokens(goal.goal_id, 5)
+    updated, reached = store.apply_token_delta(goal.goal_id, 5)
     assert not reached and updated.tokens_used == 115
     other, _ = store.create("chat2", "Other")
     store.transition(other.goal_id, "paused")
-    assert store.add_tokens(other.goal_id, 10) == (None, False)
+    late, reached = store.apply_token_delta(other.goal_id, 10)
+    assert late.status == "paused" and late.tokens_used == 10 and not reached
 
 
 def test_time_counts_only_while_active_and_edit_rules(tmp_path):
@@ -135,6 +136,8 @@ class Host:
     def _launch(self, transport, text, session, *, runtime_admission_id, source, task_name):
         from run_context import current_run_context
         done = asyncio.get_running_loop().create_future()
+        chat_id = session.viewed_session_id
+        assert self.runtime.goals.admit_chat_turn(current_run_context(), chat_id, runtime_admission_id, source)
 
         async def turn():
             await done
@@ -157,8 +160,8 @@ async def _finish(host, service, chat_id, *, metadata=None, receipt=None, error=
     except Exception:
         pass
     await asyncio.sleep(0)
-    # The registry finishes the admission and fires the idle listener.
-    await service.continue_if_idle(chat_id)
+    # Let the production task completion callback hand the chat to the next turn.
+    await asyncio.sleep(0)
 
 
 def _service(tmp_path):
@@ -175,7 +178,7 @@ async def test_submit_starts_a_goal_turn_and_idle_continues_it(tmp_path):
     assert len(host.launched) == 1
     first = host.launched[0]
     assert first.source == "goal:submit"
-    assert "<objective>\nMake the tests pass\n</objective>" in first.text
+    assert "standing goal" in first.text and "Make the tests pass" not in first.text
     assert first.run.metadata["goal_display_text"] == "Make the tests pass"
     assert first.run.work_scope.goal_id == goal["goal_id"]
     assert service.current("chat")["continuing"] is True
@@ -231,14 +234,17 @@ async def test_three_empty_continuation_turns_block_the_goal(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_repeated_failed_execution_blocks_and_success_resets(tmp_path):
+@pytest.mark.parametrize("successful_receipt", [
+    {"tool_calls": 1, "tool_results_by_status": {"ok": 1}}, {"tool_calls": 0},
+])
+async def test_repeated_failed_execution_blocks_and_success_resets(tmp_path, successful_receipt):
     host, service = _service(tmp_path)
     await service.submit("chat", "req-1", "Objective")
     failed = {"tool_calls": 2, "tool_results_by_status": {"error": 2}}
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"}, receipt=failed)
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"}, receipt=failed)
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"},
-                  receipt={"tool_calls": 1, "tool_results_by_status": {"ok": 1}})
+                  receipt=successful_receipt)
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"}, receipt=failed)
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"}, receipt=failed)
     assert service.current("chat")["status"] == "active"
@@ -268,17 +274,15 @@ async def test_usage_charges_the_goal_and_budget_sends_one_wrap_up_note(tmp_path
     service.tool_create("chat", "Bounded work", token_budget=50)
     goal = service.current("chat")
     assert goal["submission_pending"] is False and goal["token_budget"] == 50
-    context = Variant1RunContext.create(source="chat", work_scope={"chat_id": "chat"},
-                                        metadata={"chat_id": "chat"})
-    with bind_run_context(context):
-        service.record_usage({"input_tokens": 30, "cached_input_tokens": 10, "output_tokens": 5})
-        assert service.current("chat")["tokens_used"] == 25
-        service.record_usage({"input_tokens": 40, "output_tokens": 0})
+    manifest = {"run": {"work_scope": {"chat_id": "chat", "goal_id": goal["goal_id"]}}}
+    service.request_usage(manifest).settle({"input_tokens": 30, "cached_input_tokens": 10, "output_tokens": 5})
+    assert service.current("chat")["tokens_used"] == 25
+    service.request_usage(manifest).settle({"input_tokens": 40, "output_tokens": 0})
     goal = service.current("chat")
     assert goal["status"] == "budget_limited" and goal["tokens_used"] == 65
-    notes = service.take_notes("chat")
+    notes = service.take_notes("chat", goal["goal_id"])
     assert len(notes) == 1 and "reached its token budget" in notes[0]
-    assert service.take_notes("chat") == []
+    assert service.take_notes("chat", goal["goal_id"]) == []
     assert not await service.continue_if_idle("chat")
 
 
@@ -295,11 +299,11 @@ async def test_model_tools_follow_the_codex_status_rules(tmp_path):
     with pytest.raises(GoalConflict):
         service.tool_update("chat", "complete")
     await service.control("chat", service.current("chat")["goal_id"], "resume")
-    take_goal_event("chat")
-    result = service.tool_update("chat", "complete", context=SimpleNamespace(run_id="run-7"))
+    result = service.tool_update("chat", "complete", context=SimpleNamespace(
+        run_id="run-7", work_scope=host.launched[-1].run.work_scope))
     assert result["goal"]["status"] == "complete"
     assert result["goal"]["completed_run_id"] == "run-7"
-    event = take_goal_event("chat")
+    event = service.completion_event("chat", "run-7")
     assert event["event"] == "achieved" and event["goal_id"] == result["goal"]["goal_id"]
     # A complete goal can be replaced by the model when the user asks again.
     assert service.tool_create("chat", "Next goal")["goal"]["status"] == "active"
@@ -312,7 +316,7 @@ async def test_editing_a_running_goal_notes_the_change_and_publishes(tmp_path):
     edited = await service.control("chat", goal["goal_id"], "edit", objective="Better objective",
                                    expected_version=service.current("chat")["version"])
     assert edited["objective"] == "Better objective"
-    notes = service.take_notes("chat")
+    notes = service.take_notes("chat", goal["goal_id"])
     assert len(notes) == 1 and "Better objective" in notes[0]
     await asyncio.sleep(0.01)
     updates = [msg for msg in host.transport.sent if msg["type"] == "goal:updated"]
@@ -402,28 +406,28 @@ def test_history_keeps_goal_origins_and_achieved_events():
     assert clean_goal_event({"event": "achieved"}) is None
 
 
-def test_goal_turn_rows_carry_origin_and_the_achieved_event():
+def test_goal_turn_rows_carry_origin_and_the_achieved_event(tmp_path):
     from chat_finalize import _durable_turn_messages
-    from chat_goals.events import record_goal_event
-
+    _, goals = _service(tmp_path)
+    goal, _ = goals.store.create("chat-x", "Achieve")
+    goals.store.transition(goal.goal_id, "complete", run_id="run-x")
     session = SimpleNamespace(active=SimpleNamespace(
         transcript_id="", turn_ticket_id="", turn_source="goal:continue", turn_client_id="",
         delivered_inputs=[], runtime_chat_id="chat-x"))
-    record_goal_event("chat-x", {"event": "achieved", "goal_id": "goal_9",
-                                 "time_used_s": 3.0, "tokens_used": 10})
-    context = Variant1RunContext.create(source="goal", run_id="run-x", metadata={"goal_id": "goal_9"})
+    context = Variant1RunContext.create(source="goal", run_id="run-x", metadata={"goal_id": goal.goal_id})
     with bind_run_context(context):
-        rows = _durable_turn_messages(session, "Continue toward the goal", "All done", mood="happy")
-    assert rows[0]["origin"] == {"kind": "goal", "event": "continuation", "goal_id": "goal_9"}
-    assert rows[-1]["goal_event"]["goal_id"] == "goal_9"
-    assert take_goal_event("chat-x") is None
+        rows = _durable_turn_messages(session, "Continue toward the goal", "All done", mood="happy", goals=goals)
+    assert rows[0]["origin"] == {"kind": "goal", "event": "continuation", "goal_id": goal.goal_id}
+    assert rows[-1]["goal_event"]["goal_id"] == goal.goal_id
+    assert goals.completion_event("chat-x", "unrelated-run") is None
+    assert goals.completion_event("chat-x", "run-x") == rows[-1]["goal_event"]
 
 
 @pytest.mark.asyncio
 async def test_replacing_a_goal_mid_turn_starts_the_new_goal_when_idle(tmp_path, caplog):
     host, service = _service(tmp_path)
     first = await service.submit("chat", "req-1", "First goal")
-    second = await service.submit("chat", "req-2", "Second goal", replace=True)
+    second = await service.submit("chat", "req-2", "Second goal", replace=True, expected_goal_id=first["goal_id"])
     assert second["goal_id"] != first["goal_id"] and second["submission_pending"] is True
     assert len(host.launched) == 1
     await _finish(host, service, "chat", metadata={"_terminal_status": "ok"})

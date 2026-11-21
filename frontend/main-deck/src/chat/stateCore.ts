@@ -37,7 +37,7 @@ export let state: ChatState = {
   stopPending: false,
   pause: null,
   inputQueue: {snapshot:null,synced:false,recent:[]},
-  goal: {snapshot:null,synced:false},
+  goal: {goal:null,synced:false},
   speechKey: null,
   speechPhase: "idle",
   turnSteps: [],
@@ -77,8 +77,7 @@ export function activateChatState(id: string): void {
   sessions.set(id, state);focusTurnSession(id);
   for (const [key, value] of sessions) {
     if (sessions.size <= 8) break;
-    const goalStatus=value.goal.snapshot?.goal?.status;
-    const activeGoal=!!goalStatus && !["succeeded","failed","cancelled","archived"].includes(goalStatus);
+    const activeGoal=!!value.goal.goal && value.goal.goal.status!=="complete";
     const unconfirmedTrace=value.messages.some(message=>message.tracePersistence==="pending" || message.tracePersistence==="failed");
     if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.references.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
       sessions.delete(key);revisions.delete(key);revokeRemovedAttachmentUrls(value, initialChatState());releaseChatProjection(key,"idle");
@@ -144,7 +143,10 @@ export function subscribe(listener: () => void): () => void {
 
 export const getComposerRevision = (sessionId = state.sessionId || "") => revisions.get(sessionId) || 0;
 function noteComposerChange(next: ChatState) {
-  if (next.draft !== state.draft || next.attachments !== state.attachments || next.references !== state.references || next.sessionId !== state.sessionId) revisions.set(next.sessionId || "", (revisions.get(next.sessionId || "") || 0) + 1);
+  if (next.draft !== state.draft || next.attachments !== state.attachments || next.references !== state.references ||
+      next.sessionId !== state.sessionId || !!next.goal.composing !== !!state.goal.composing) {
+    revisions.set(next.sessionId || "", (revisions.get(next.sessionId || "") || 0) + 1);
+  }
 }
 
 export function getChatState(): ChatState {
@@ -266,7 +268,7 @@ export function initialChatState(): ChatState {
     stopPending: false,
     pause: null,
     inputQueue: {snapshot:null,synced:false,recent:[]},
-  goal: {snapshot:null,synced:false},
+    goal: {goal:null,synced:false},
     speechKey: null,
     speechPhase: "idle",
     turnSteps: [],

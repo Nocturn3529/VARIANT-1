@@ -958,7 +958,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         inherited = (invocation.work_scope if invocation and invocation.chat_id == str(parent_chat_id)
                      else getattr(live_context, 'work_scope', None)
                      if live_context and live_context.session_id == str(parent_chat_id) else None)
-        work_scope = coerce_work_scope(inherited)
+        from chat_goals.binding import attributed_scope
+        work_scope = attributed_scope(live_context, inherited)
         if parent_runtime.continuation_state == "paused_budget_exhausted":
             raise RuntimeError("parent continuation budget is exhausted")
         created_revision = None

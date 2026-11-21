@@ -1,6 +1,7 @@
 import {parseDeliveredInput,parseInputQueueSnapshot,type DeliveredInput,type InputQueueSnapshot,type InputQueueResult} from "./chatQueue";
 import {parsePeerActivity,type PeerActivity} from "./peerActivity";
-import {parseGoalMessage,parseGoalWorkEvent,type GoalMessage,type GoalWorkEvent} from "./goals";
+import {parseGoalMessage,type GoalMessage,type GoalUpdatedMessage} from "./goals";
+import {parseWorkEvent,type WorkEvent} from "./children";
 import {parseChildrenMessage,parseChildrenChanged,type ChildrenMessage,type ChildrenChangedMessage} from "./children";
 /**
  * High-churn Chat inbound events — shaped at the DeckRuntime edge.
@@ -286,8 +287,9 @@ export type ChatWsMessage =
   | ChatSessionAnnotatedMessage
   | ChildrenChangedMessage
   | ChildrenMessage
-  | GoalWorkEvent
+  | WorkEvent
   | GoalMessage
+  | GoalUpdatedMessage
   | InputQueueSnapshot
   | InputQueueResult
   | ChatHelloMessage
@@ -381,10 +383,11 @@ export function parseChatWsMessage(
     case "children:rejected":
       return parseChildrenMessage(row) || {type:"chat:unknown",originalType:type,...r};
     case "work:event":
-      return parseGoalWorkEvent(row) || {type:"chat:unknown",originalType:type,...r};
+      return parseWorkEvent(row) || {type:"chat:unknown",originalType:type,...r};
     case "goal:accepted":
     case "goal:rejected":
     case "goal:current":
+    case "goal:updated":
       return parseGoalMessage(row) || {type:"chat:unknown",originalType:type,...r};
     case "chat:queue_snapshot":
       return parseInputQueueSnapshot(row) || {type:"chat:unknown",originalType:type,...r};

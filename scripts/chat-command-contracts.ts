@@ -5,20 +5,25 @@ import {sendChat} from "../frontend/main-deck/src/chat/stateCore";
 function checkChatContract() {
   sendChat({type:"children:snapshot:get",session_id:"chat",request_id:"agents",limit:100});
   sendChat({type:"children:detail:get",session_id:"chat",request_id:"child",child_id:"owned-child",limit:100});
-  sendChat({type:"goal:finish",session_id:"chat",goal_id:"goal",request_id:"end",expected_version:4});
-  sendChat({type:"goal:continue",session_id:"chat",goal_id:"goal",request_id:"continue",expected_version:4});
-  sendChat({type:"goal:archive",session_id:"chat",goal_id:"goal",request_id:"dismiss",expected_version:4});
   // @ts-expect-error child detail must identify the requested child
   sendChat({type:"children:detail:get",session_id:"chat",request_id:"child"});
   // @ts-expect-error child roster must be session scoped
   sendChat({type:"children:snapshot:get",request_id:"agents"});
   sendChat({type:"goal:submit",session_id:"chat",request_id:"goal-request",objective:"Build and verify"});
-  sendChat({type:"goal:current:get",session_id:"chat",request_id:"read",submission_request_id:"goal-request"});
-  sendChat({type:"goal:pause",session_id:"chat",goal_id:"goal",request_id:"pause",expected_version:3});
-  // @ts-expect-error durable goal admission requires an objective
+  sendChat({type:"goal:submit",session_id:"chat",request_id:"goal-request",objective:"Build and verify",replace:true,expected_goal_id:"shown-goal"});
+  // @ts-expect-error a replacement must name the goal the user confirmed
+  sendChat({type:"goal:submit",session_id:"chat",request_id:"goal-request",objective:"Build and verify",replace:true});
+  sendChat({type:"goal:current:get",session_id:"chat",request_id:"read"});
+  sendChat({type:"goal:control",session_id:"chat",goal_id:"goal",request_id:"pause",action:"pause",expected_version:3});
+  sendChat({type:"goal:control",session_id:"chat",goal_id:"goal",request_id:"edit",action:"edit",objective:"Ship it",expected_version:3});
+  // @ts-expect-error a goal needs an objective
   sendChat({type:"goal:submit",session_id:"chat",request_id:"goal-request"});
   // @ts-expect-error goal control requires an optimistic version fence
-  sendChat({type:"goal:cancel",session_id:"chat",goal_id:"goal",request_id:"cancel"});
+  sendChat({type:"goal:control",session_id:"chat",goal_id:"goal",request_id:"clear",action:"clear"});
+  // @ts-expect-error the step-graph goal commands are retired
+  sendChat({type:"goal:continue",session_id:"chat",goal_id:"goal",request_id:"continue",expected_version:4});
+  // @ts-expect-error unknown goal actions are not sendable
+  sendChat({type:"goal:control",session_id:"chat",goal_id:"goal",request_id:"x",action:"archive",expected_version:1});
   // @ts-expect-error current goal reads belong to an explicit session
   sendChat({type:"goal:current:get",request_id:"read"});
   sendChat({type: "chat", text: "hello", client_id: "client", session_id: "chat"});

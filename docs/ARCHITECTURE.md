@@ -113,19 +113,21 @@ when to report blocked. History shows the objective, or a short "continue"
 marker, with `origin: {kind: "goal"}`; the assistant row of the turn that
 completes the goal carries `goal_event`.
 
-The model reads and sets the goal with `session.get_goal`, `create_goal` (only
-when the user asks) and `update_goal` (complete, blocked, or paused on request);
-it cannot resume a goal or lift a budget. The user pauses, resumes, edits or
-clears it, and Stop pauses it before cancelling the turn. Every provider request
-of a chat charges its active goal uncached input plus output tokens in-process,
-so lost usage-ledger writes never affect goals. Reaching the budget marks the
-goal budget_limited and gives the running turn one wrap-up note, delivered
-before its next model call; no further goal turns start. Three empty automatic
-turns or three turns of failed execution block a goal, a turn-ending error
-blocks it, and a provider quota error marks it usage_limited. Goals own no
-resources: clearing or completing one cleans nothing up. After a restart, active
-goals continue when their chat is idle; unfinished goals from the previous
-engine are carried over paused.
+The owning chat's model reads and sets the goal with `session.get_goal`,
+`create_goal` on explicit user request, and `update_goal` to mark it complete,
+blocked, or paused at the user's request. The composer offers pause, resume,
+edit, clear, and confirmed replacement. Stop pauses the goal before cancelling
+the turn. Each turn binds to the goal it can act on. A provider request carries
+its goal identity from dispatch through settlement, including requests made
+by children with inherited scope. The goal's counter adds uncached input and
+output tokens, with cumulative usage applied once per request independently
+of the usage ledger. Reaching the budget marks the goal `budget_limited` and
+gives the running turn a wrap-up note before its next call. Automatic
+continuations end at that boundary. Three empty automatic turns or three turns
+of failed execution block a goal. A turn-ending error blocks it, and a provider
+quota error marks it `usage_limited`. Resources keep their chat and tool
+lifetimes. After a restart, active goals continue when their chat is idle.
+Unfinished goals from the previous engine are carried over paused.
 
 Provider model listing retains exact-ID context-window metadata for the current
 router lifetime. Explicit `cloud.context_windows` or provider overrides take

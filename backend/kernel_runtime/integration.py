@@ -306,11 +306,8 @@ def register_ipython_tool(registry: Any, runtime_provider) -> None:
         from project_context import current_project_context
 
         roots = current_project_context(runtime.kernel.app_root).roots
-        work_scope = (
-            ctx.work_scope.to_dict()
-            if callable(getattr(getattr(ctx, "work_scope", None), "to_dict", None))
-            else dict(getattr(ctx, "work_scope", None) or {})
-        )
+        from chat_goals.binding import attributed_scope
+        work_scope = attributed_scope(ctx, getattr(ctx, "work_scope", None)).to_dict()
         roots, work_scope = preserve_persistent_kernel_workspace(
             runtime.kernel, chat_id, roots, work_scope,
         )

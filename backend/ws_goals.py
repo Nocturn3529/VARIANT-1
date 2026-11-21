@@ -49,7 +49,8 @@ def register(on):
         async def action():
             goal = await _goals(srv).submit(
                 _chat_id(msg), _request_id(msg), msg.get("objective"),
-                replace=msg.get("replace") is True)
+                replace=msg.get("replace") is True,
+                expected_goal_id=str(msg.get("expected_goal_id") or "") if msg.get("replace") is True else None)
             return {"goal": goal}
 
         await _respond(websocket, msg, "submit", action)
@@ -70,4 +71,3 @@ def register(on):
             return {"goal": goal}
 
         await _respond(websocket, msg, "control", action)
-

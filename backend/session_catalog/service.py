@@ -24,6 +24,7 @@ from .catalog import (
     build_catalog_document,
     category_ids,
     handler_only_catalog_follow_allowed,
+    session_infrastructure_contract,
     iter_bindings,
 )
 from .children import ChildSessionManager, register_children_tool
@@ -1129,6 +1130,9 @@ class CatalogService:
             api_name = str(api.get("name") or "")
             if not api_name:
                 continue
+            contract_release = loaded.release_id
+            if category_id == "base" and api_name == "session":
+                api, contract_release = session_infrastructure_contract(loaded, api, self.repository.current)
             transport = api.get("transport") if isinstance(api.get("transport"), dict) else {}
             tool_name = str(api.get("tool_name") or transport.get("tool_name") or "")
             if tool_name and tool_name not in enabled:
@@ -1136,12 +1140,12 @@ class CatalogService:
             capability_id = str(
                 transport.get("capability_id") or tool_name or api_name
             )
-            slot_id = f"{loaded.release_id}/{category_id}/api-{api_name}"
+            slot_id = f"{contract_release}/{category_id}/api-{api_name}"
             ref = CapabilityRef(
                 capability_id=capability_id,
                 schema_revision=str(transport.get("schema_revision") or ""),
                 handler_revision=str(transport.get("handler_revision") or ""),
-                catalog_release_id=loaded.release_id,
+                catalog_release_id=contract_release,
                 slot_id=slot_id,
                 slot_version=0,
             )
@@ -1167,7 +1171,10 @@ class CatalogService:
                     "capability_id": ref.capability_id,
                     "schema_revision": ref.schema_revision,
                     "handler_revision": ref.handler_revision,
-                    "catalog_release_id": ref.catalog_release_id,
+                    # The cell is fenced to its pinned mount. The opaque ref
+                    # identifies the actual verified infrastructure contract.
+                    "catalog_release_id": loaded.release_id,
+                    "contract_catalog_release_id": contract_release,
                     "category_id": category_id,
                     "position": 0,
                     "slot_id": ref.slot_id,
@@ -1317,7 +1324,8 @@ class CatalogService:
             if creation_marker.startswith("worker:")
             else ""
         )
-        condition_flags = {"mutation_write": mutation_available}
+        from chat_goals.binding import owner_eligible
+        condition_flags = {"mutation_write": mutation_available, "chat_goal_owner": owner_eligible(record)}
         current_catalog = (
             str(loaded.document.get("schema_revision") or "")
             == CATALOG_SCHEMA_REVISION
@@ -2296,7 +2304,7 @@ class CatalogService:
                         "context": session_context,
                         "status": session_status,
                         'report_outcome': report_outcome,
-                        **goal_handlers(lambda: self.host),
+                        **goal_handlers(lambda: self.host, self.runtime_registry),
                         **{
                             str(method["name"]): kernel_handler(
                                 str(method["name"])

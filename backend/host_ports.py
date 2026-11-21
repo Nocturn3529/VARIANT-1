@@ -216,6 +216,7 @@ def chat_ports(h) -> chat_pipeline.ChatPorts:
             emit=h.emit_activity,
             runtime_registry=runtime.session_runtimes,
             children=runtime.catalog.children,
+            goals=getattr(runtime, "goals", None),
         ),
         vision=chat_pipeline.ChatVisionPorts(
             vision_state=chat.vision_state,
@@ -545,9 +546,13 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         await registry.wait_if_paused(_runtime_chat_id(), admission_id, publish)
 
     def _drain_notes():
+        from chat_goals.binding import attributed_scope
         goals = getattr(h.require_runtime(), 'goals', None)
         take = getattr(goals, 'take_notes', None)
-        return take(_runtime_chat_id()) if callable(take) else []
+        context = current_run_context()
+        if not callable(take) or context is None:
+            return []
+        return take(_runtime_chat_id(), attributed_scope(context, context.work_scope).goal_id)
 
     return TaskTurnPorts(
         snapshot_store=getattr(h.require_runtime().session_runtimes, "snapshot_store", None),
