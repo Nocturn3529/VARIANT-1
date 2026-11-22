@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
+const {execFileSync} = require('node:child_process');
 const {createRequire} = require('node:module');
 const root = path.resolve(__dirname, '..');
 const file = path.join(root, 'electron-deck-ipc.js');
@@ -57,6 +58,37 @@ moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
       assert.equal((await handler({sender:overlay},scratch,{})).error,'untrusted_sender');
       assert.equal((await handler({sender:deck},'relative/path',{})).error,'invalid_path');
     }
+    const repo = fs.mkdtempSync(path.join(scratch, 'git-'));
+    const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'), ...args], {
+      cwd: repo, windowsHide: true, encoding: 'utf8', env: {...process.env, GIT_CONFIG_NOSYSTEM:'1', GIT_CONFIG_GLOBAL:process.platform === 'win32' ? 'NUL' : '/dev/null'},
+    });
+    const mutate = async (action, file) => {
+      const result = await handlers.get('workbench:git:run')({sender:deck}, action, repo, {file});
+      assert.equal(result.ok, true, result.error);
+    };
+    git('init', '-q');
+    git('config', 'core.autocrlf', 'false');
+    const oldPath = 'First name.txt', newPath = 'Renamed file.txt';
+    fs.writeFileSync(path.join(repo, oldPath), 'first\n');
+    git('add', '--', oldPath);
+    await mutate('unstage', oldPath);
+    assert.equal(git('ls-files'), '', 'an unborn branch can unstage an initial file');
+    assert.equal(fs.readFileSync(path.join(repo, oldPath), 'utf8'), 'first\n');
+    git('add', '--', oldPath);
+    git('-c','user.name=Deck fixture','-c','user.email=fixture@example.test','-c','commit.gpgSign=false','commit','-qm','Initial');
+    fs.writeFileSync(path.join(repo, oldPath), 'staged version\n');
+    git('add', '--', oldPath);
+    fs.unlinkSync(path.join(repo, oldPath));
+    await mutate('revert', oldPath);
+    assert.equal(fs.readFileSync(path.join(repo, oldPath), 'utf8'), 'staged version\n', 'discard restores a tracked deletion from the index');
+    assert.equal(git('show', ':' + oldPath), 'staged version\n');
+    assert.equal(git('diff','--cached','--name-only').trim(), oldPath);
+    git('restore', '--staged', '--worktree', '--', oldPath);
+    git('mv', '--', oldPath, newPath);
+    await mutate('unstage', newPath);
+    assert.equal(git('diff', '--cached', '--name-only'), '', 'unstaging a rename resets both sides');
+    assert.equal(fs.existsSync(path.join(repo, oldPath)), false);
+    assert.equal(fs.readFileSync(path.join(repo, newPath), 'utf8'), 'first\n');
     const executable = path.join(scratch, 'sample.cmd');
     fs.writeFileSync(executable, 'This fixture must never be executed.');
     for (const sender of [overlay, monitor]) {

@@ -395,6 +395,11 @@ async def test_detached_chat_disconnect_keeps_run_and_durable_output(
     assert hello["orphan"] is None
     assert hello["view_role"] == "detached_chat"
     assert hello["view_chat_id"] == chat_id
+    assert hello["submission_origin"] == session.attachment_id
+    new_socket = ConnectionSession()
+    runtimes.open_submission_origin(new_socket.attachment_id)
+    test_ticket = session.attachment_id + ".00000000-0000-4000-8000-000000000001"
+    assert runtimes.submission_observation(chat_id, test_ticket, connection_id=new_socket.attachment_id)["status"] == "absent"
     assert any(
         row.get("error") == "detached_chat_browser_host_forbidden"
         for row in socket.sent

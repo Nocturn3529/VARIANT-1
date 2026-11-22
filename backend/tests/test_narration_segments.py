@@ -73,12 +73,14 @@ async def test_each_model_call_is_a_segment_and_tool_call_text_is_saved(tmp_path
         "Let me check peers.", "Now the files.",
     ]
     sessions.annotate_last_assistant(sid, steps=[{
-        "id": "cell-1", "label": "Run Python", "kind": "tool",
+        "id": "cell-1", "label": "Run Python", "kind": "tool", "tool": "ipython",
+        "callId": "call-1", "cellAction": "Read process logs", "status": "ok",
         "ts": (narration[0]["ts"] + narration[1]["ts"]) / 2,
     }])
     reopened = open_sessions(tmp_path / "chats")
     saved = reopened.get_session(sid)["messages"][-1]["steps"]
     assert [step["kind"] for step in saved] == ["text", "tool", "text"]
+    assert (saved[1]["cell_action"], saved[1]["call_id"]) == ("Read process logs", "call-1")
     assert saved[0]["segment"] == 1 and saved[2]["segment"] == 2
     session.active.clear()
     assert session.active.text_segments == [] and session.active.model_segment == 0

@@ -681,7 +681,7 @@ class Variant1RemoteHandle:
     revision: int
     _metadata_json: str = field(repr=False)
     _dispatch_json: str = field(repr=False)
-    _methods_json: str = field(repr=False)
+    _methods_json: str | None = field(repr=False)
     _router_id: str = field(repr=False)
 
     @property
@@ -705,7 +705,7 @@ class Variant1RemoteHandle:
         # ``handle.methods`` remains the immutable rich descriptor tuple used
         # by existing callers.  Making that tuple callable also lets models use
         # the same ``object.methods()`` discovery idiom as mounted APIs.
-        return _RemoteHandleMethods(json.loads(self._methods_json))
+        return _RemoteHandleMethods(json.loads(self._methods_json) if self._methods_json is not None else ())
 
     def describe(self, name: str | None = None) -> dict[str, Any]:
         """Inspect this handle or one exact method without host dispatch."""
@@ -738,18 +738,17 @@ class Variant1RemoteHandle:
         }
 
     def _method_descriptor(self, name: str) -> dict[str, Any] | None:
-        for item in json.loads(self._methods_json):
+        for item in self.methods:
             if str(item.get("name") or "") == name:
                 return dict(item)
         return None
 
     def _validate_method(self, name: str, arguments: dict[str, Any]) -> None:
-        methods = self.methods
-        if not methods:
+        if self._methods_json is None:
             return
         descriptor = self._method_descriptor(name)
         if descriptor is None:
-            available = ", ".join(item["name"] for item in methods)
+            available = ", ".join(item["name"] for item in self.methods) or "none"
             raise AttributeError(
                 f"{self.service}.{self.kind} has no method {name!r}; "
                 f"available: {available}"
@@ -815,8 +814,8 @@ class Variant1RemoteHandle:
         if name.startswith("_") or not name.isidentifier() or keyword.iskeyword(name):
             raise AttributeError(name)
         descriptor = self._method_descriptor(name)
-        if self.methods and descriptor is None:
-            available = ", ".join(item["name"] for item in self.methods)
+        if self._methods_json is not None and descriptor is None:
+            available = ", ".join(item["name"] for item in self.methods) or "none"
             raise AttributeError(
                 f"{self.service}.{self.kind} has no method {name!r}; "
                 f"available: {available}"
@@ -860,6 +859,7 @@ class Variant1RemoteHandle:
         if self.service == "execution" and metadata.get("signal_receipt"):
             attributes.append(f"signal_receipt={metadata['signal_receipt']!r}")
         if self.service == 'execution' and self.kind == 'process':
+            attributes.insert(0, f"id={self.id!r}")
             health = metadata.get('health') or {}
             if health.get('leader_alive') is False:
                 attributes.append('leader_alive=False')
@@ -1586,10 +1586,10 @@ def _parse_remote_handle(value: Any, bridge: Any) -> Variant1RemoteHandle | None
     try:
         metadata_json = _canonical_json(metadata)
         dispatch_json = _canonical_json(descriptor)
-        methods_json = _canonical_json(normalized_methods)
+        methods_json = _canonical_json(normalized_methods) if methods is not None else None
     except (TypeError, ValueError):
         return None
-    if len(methods_json.encode("utf-8")) > 64 * 1024:
+    if methods_json is not None and len(methods_json.encode("utf-8")) > 64 * 1024:
         return None
     handle_type = (
         Variant1ResourceHandle

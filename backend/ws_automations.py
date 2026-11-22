@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from automation.store import AutomationPersistenceError
+from automation.store import AutomationCreateConflict, AutomationPersistenceError
 
 
 def _automation_items(srv):
@@ -59,19 +59,21 @@ def _automation_items(srv):
 def register(on):
     # ---- Automations ------------------------------------------------------
 
-    async def persistence_error(websocket, msg, action: str) -> None:
+    async def persistence_error(websocket, msg, action: str, *, code="automation_persistence_failed") -> None:
         await websocket.send_json({
             "type": "automation:error",
             "request_id": str(msg.get("request_id") or ""),
             "action": str(action),
-            "error": "automation_persistence_failed",
+            "error": code,
         })
 
     @on("automation:list")
     async def _automation_list(srv, websocket, session, msg):
+        request_id = msg.get("request_id", "")
         await websocket.send_json({
             "type": "automations",
             "items": _automation_items(srv),
+            **({"request_id": request_id} if isinstance(request_id, str) and request_id else {}),
         })
 
     @on("automations:history")
@@ -95,14 +97,23 @@ def register(on):
         )
         if "misfire_policy" in msg:
             kwargs["misfire_policy"] = msg.get("misfire_policy")
+        create_request_id = msg.get("create_request_id", "")
+        if not isinstance(create_request_id, str) or len(create_request_id) > 128:
+            await persistence_error(websocket, msg, "add", code="invalid_create_request_id")
+            return
+        if create_request_id:
+            kwargs["create_request_id"] = create_request_id
         try:
-            srv.automations.add(
+            created = srv.automations.add(
                 msg.get("name", ""),
                 msg.get("prompt", ""),
                 msg.get("trigger", {}) or {},
                 bool(msg.get("enabled", True)),
                 **kwargs,
             )
+        except AutomationCreateConflict:
+            await persistence_error(websocket, msg, "add", code="automation_create_conflict")
+            return
         except AutomationPersistenceError:
             await persistence_error(websocket, msg, "add")
             return
@@ -110,6 +121,7 @@ def register(on):
             "type": "automation:accepted",
             "request_id": str(msg.get("request_id") or ""),
             "action": "add",
+            **({"id": created["id"], "create_request_id": create_request_id} if create_request_id else {}),
         })
         await srv.hub.broadcast({
             "type": "automations",

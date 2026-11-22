@@ -20,6 +20,17 @@ def request_id(message: Mapping[str, Any]) -> str:
     return str(message.get("request_id") or "").strip()[:512]
 
 
+def input_reply_fields(message: Mapping[str, Any], session_id: str = "") -> dict:
+    fields = {"session_id": str(session_id or message.get("session_id") or ""),
+              "client_id": str(message.get("client_id") or "")}
+    ticket_id = message.get("ticket_id")
+    if isinstance(ticket_id, str) and len(ticket_id) <= 96:
+        fields["ticket_id"] = ticket_id
+    if message.get("request_id"):
+        fields["request_id"] = request_id(message)
+    return fields
+
+
 def session_chat_id(session: Any) -> str:
     """Return the one chat identity used by every Deck domain adapter."""
 

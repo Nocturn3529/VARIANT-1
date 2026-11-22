@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import heapq
 import json
 import os
 import threading
@@ -14,7 +13,7 @@ from chat_goals.events import clean_goal_event
 from observability.run_receipts import sanitize_run_receipt
 from message_context_extents import HOST_CONTEXT_EXTENTS_REVISION
 from project_context import canonical_project_binding, stored_project_binding
-from reasoning_summaries import SUMMARY_TEXT_LIMIT, SUMMARY_STEP_LIMIT
+from reasoning_summaries import DISPLAY_THOUGHT_SOURCES, SUMMARY_TEXT_LIMIT, SUMMARY_STEP_LIMIT
 
 from .models import (
     BranchRecord,
@@ -23,7 +22,7 @@ from .models import (
     ConversationTombstoned,
 )
 from .repository import ConversationRepository, _json, _new_id
-from .projection import coverage, digest_rows, history_rows, verified_prefix
+from .projection import coverage, digest_rows, display_excerpt, display_origin_text, history_order, history_rows, rows_for_ids, verified_prefix
 
 
 DEFAULT_TITLE = "New chat"
@@ -157,7 +156,7 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
         if kind not in {"tool", "note", "step", "thinking", "text"}:
             kind = "note"
         status = str(raw.get("status") or "done").strip().lower() or "done"
-        public_summary = kind == "thinking" and raw.get("source") == "provider_summary"
+        public_summary = kind == "thinking" and raw.get("source") in DISPLAY_THOUGHT_SOURCES
         if public_summary and status == "running":
             status = "cancelled"  # A persisted unfinished snapshot is not a live provider stream.
         if status not in ({"ok", "error", "done", "cancelled", "discarded"} if public_summary else {
@@ -172,8 +171,10 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
             "status": status,
             "ts": float(raw.get("ts") or 0) or 0,
         }
-        if public_summary and type(raw.get("summary_revision")) is int:
-            row["summary_revision"] = max(0, raw["summary_revision"])
+        if public_summary:
+            row["source"] = raw["source"]
+            if type(raw.get("summary_revision")) is int:
+                row["summary_revision"] = max(0, raw["summary_revision"])
         if type(raw.get("segment")) is int and raw["segment"] > 0:
             row["segment"] = raw["segment"]
         for key, aliases, limit in (
@@ -183,6 +184,7 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
             ("call_id", ("call_id", "callId"), 128),
             ("raw_status", ("raw_status", "rawStatus"), 64),
             ("args_preview", ("args_preview", "argsPreview"), 600),
+            ("cell_action", ("cell_action", "cellAction"), 140),
             ("result_preview", ("result_preview", "resultPreview"), 800),
         ):
             value = str(next(
@@ -227,10 +229,10 @@ def _compact_steps(raw_steps: Any, *, limit: int = MAX_TURN_STEPS) -> list[dict[
 def _provider_summary_steps(value: Any) -> list[dict]:
     if not isinstance(value, list):
         return []
-    return [{**row, "source": "provider_summary"} for row in _compact_steps([
+    return _compact_steps([
         item for item in value if isinstance(item, Mapping) and item.get("kind") == "thinking"
-        and item.get("source") == "provider_summary" and str(item.get("id") or "").strip()
-    ], limit=SUMMARY_STEP_LIMIT)]
+        and item.get("source") in DISPLAY_THOUGHT_SOURCES and str(item.get("id") or "").strip()
+    ], limit=SUMMARY_STEP_LIMIT)
 
 
 def _text_segment_steps(value: Any) -> list[dict]:
@@ -493,10 +495,9 @@ class ChatSessionService:
         annotations = state.get("message_annotations")
         overlays = annotations if isinstance(annotations, Mapping) else {}
         messages: list[dict[str, Any]] = []
-        for node in self.repository.history_nodes(branch.branch_id, limit=20_000):
-            if node.role not in {"user", "assistant"}:
-                continue
+        for node in self.repository.history_nodes(branch.branch_id, limit=self.max_messages, display_only=True):
             message: dict[str, Any] = {
+                "node_id": node.node_id,
                 "role": node.role,
                 "text": _content_text(node.content),
                 "ts": float(node.created_at),
@@ -544,30 +545,38 @@ class ChatSessionService:
     def _summary(
         self, conversation: ConversationRecord, branch: BranchRecord
     ) -> dict[str, Any]:
-        session = self._full_session(conversation, branch)
-        summary = {
-            "id": branch.runtime_chat_id,
-            "title": conversation.title,
-            "created_at": conversation.created_at,
-            "updated_at": max(conversation.updated_at, branch.updated_at),
-            "message_count": len(session["messages"]),
-        }
-        for key in ("pinned", "archived", "project"):
-            if key in session:
-                summary[key] = copy.deepcopy(session[key])
-        return summary
+        # Append receipts describe the exact head committed by that writer.
+        target = (branch.runtime_chat_id, conversation.conversation_id, branch.head_node_id,
+                  conversation.title, conversation.created_at, max(conversation.updated_at, branch.updated_at),
+                  conversation.pinned, conversation.archived)
+        return self._summaries(target)[0]
 
     def list_sessions(self) -> list[dict[str, Any]]:
-        pairs: list[tuple[ConversationRecord, BranchRecord]] = []
-        for conversation in self.repository.list_conversations(limit=None):
-            for branch in self.repository.list_branches(conversation.conversation_id):
-                pairs.append((conversation, branch))
-        pairs.sort(key=lambda item: (
-            0 if item[0].pinned else 1,
-            -max(item[0].updated_at, item[1].updated_at),
-            item[1].runtime_chat_id,
-        ))
-        return [self._summary(conversation, branch) for conversation, branch in pairs]
+        return self._summaries()
+
+    def _summaries(self, target: tuple | None = None) -> list[dict]:
+        source = "VALUES(?,?,?,?,?,?,?,?)" if target is not None else (
+            "SELECT b.runtime_chat_id,c.conversation_id,b.head_node_id,c.title,c.created_at,"
+            "MAX(c.updated_at,b.updated_at),c.pinned,c.archived FROM conversation c "
+            "JOIN conversation_branch b ON b.conversation_id=c.conversation_id "
+            "WHERE c.tombstoned_at IS NULL AND b.tombstoned_at IS NULL")
+        with self.repository._read() as conn:
+            rows = conn.execute(
+                "WITH RECURSIVE targets(id,cid,head,title,created,updated,pinned,archived) AS ("
+                + source + "), ancestry(id,cid,node) AS (SELECT id,cid,head FROM targets WHERE head<>'' UNION "
+                "SELECT a.id,a.cid,e.from_node_id FROM ancestry a CROSS JOIN conversation_edge e "
+                "WHERE e.conversation_id=a.cid AND e.to_node_id=a.node AND e.from_node_id IS NOT NULL), "
+                "counts AS (SELECT a.id,COUNT(*) AS total FROM ancestry a CROSS JOIN conversation_node n "
+                "WHERE n.node_id=a.node AND n.conversation_id=a.cid AND n.role IN ('user','assistant') GROUP BY a.id) "
+                "SELECT t.*,COALESCE(counts.total,0) AS total,CASE WHEN json_valid(s.state_json) THEN "
+                "json_extract(s.state_json,'$.project') END AS project FROM targets t "
+                "LEFT JOIN counts ON counts.id=t.id LEFT JOIN conversation_session_state s ON s.runtime_chat_id=t.id "
+                "ORDER BY t.pinned DESC,t.updated DESC,t.id", target or ()).fetchall()
+        return [{"id": row["id"], "title": row["title"], "created_at": row["created"],
+                 "updated_at": row["updated"], "message_count": row["total"],
+                 "project": stored_project_binding(_load_state(row["project"])),
+                 **({"pinned": True} if row["pinned"] else {}), **({"archived": True} if row["archived"] else {})}
+                for row in rows]
 
     def get_session(self, sid: str) -> dict[str, Any] | None:
         resolved = self._resolve(sid)
@@ -641,6 +650,8 @@ class ChatSessionService:
         effort = str(raw.get("reasoning_effort") or "").strip().lower()[:24]
         if effort:
             route["reasoning_effort"] = effort
+        if isinstance(raw.get("reasoning_enabled"), bool):
+            route["reasoning_enabled"] = raw["reasoning_enabled"]
         return route
 
     def set_model_route(self, sid: str, route: dict | None) -> bool:
@@ -657,6 +668,8 @@ class ChatSessionService:
                 "reasoning_effort": str(
                     raw.get("reasoning_effort") or ""
                 ).strip().lower()[:24],
+                **({"reasoning_enabled": raw["reasoning_enabled"]}
+                   if isinstance(raw.get("reasoning_enabled"), bool) else {}),
                 "updated_at": time.time(),
             }
             return True
@@ -1434,40 +1447,8 @@ class ChatSessionService:
             owner = self._context_owner(conn, sid)
             if owner is None:
                 return {"cursor": None, "items": []}
-            rows = conn.execute(
-                "WITH RECURSIVE ancestry(node_id) AS (SELECT ? UNION "
-                "SELECT e.from_node_id FROM ancestry a CROSS JOIN conversation_edge e "
-                "WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL) "
-                "SELECT n.* FROM conversation_node n JOIN ancestry a "
-                "ON n.node_id=a.node_id WHERE n.conversation_id=?",
-                (owner["head_node_id"], owner["conversation_id"], owner["conversation_id"]),
-            ).fetchall() if owner["head_node_id"] else []
-            # Unique-node traversal avoids exponential paths through merged DAGs.
-            # Topological ordering respects causality even when clocks coincide
-            # or timestamps were imported from another host.
-            by_id = {row["node_id"]: row for row in rows}
-            parents = {node: set() for node in by_id}
-            children = {node: set() for node in by_id}
-            for edge in conn.execute(
-                "SELECT from_node_id,to_node_id FROM conversation_edge WHERE conversation_id=?",
-                (owner["conversation_id"],),
-            ):
-                parent, child = edge["from_node_id"], edge["to_node_id"]
-                if parent in by_id and child in by_id:
-                    parents[child].add(parent)
-                    children[parent].add(child)
-            ready = [(by_id[node]["created_at"], node) for node in by_id if not parents[node]]
-            heapq.heapify(ready)
-            ordered = []
-            while ready:
-                _, node = heapq.heappop(ready)
-                ordered.append(by_id[node])
-                for child in children[node]:
-                    parents[child].remove(node)
-                    if not parents[child]:
-                        heapq.heappush(ready, (by_id[child]["created_at"], child))
-            if len(ordered) != len(rows):
-                raise ValueError("Session context ancestry contains a cycle")
+            ids = history_order(conn, owner["conversation_id"], owner["head_node_id"])
+            ordered = rows_for_ids(conn, owner["conversation_id"], ids, full=True)
             return {"cursor": coverage(owner, ordered), "items": [dict(row) for row in ordered]}
 
     def context_source(self, sid: str, head_node_id: str, node_id: str) -> dict:
@@ -1488,23 +1469,48 @@ class ChatSessionService:
     ) -> list[dict[str, Any]]:
         if not str(query or "").strip():
             return []
-        hits = self.repository.search(str(query), limit=max(1, int(limit)))
-        out = []
-        for hit in hits:
-            conversation = self.repository.get_conversation(hit.conversation_id)
-            if conversation is None:
-                continue
-            branch = self.repository.get_branch(conversation.default_branch_id)
-            if branch is None:
-                continue
-            out.append({
-                "session_id": branch.runtime_chat_id,
-                "title": conversation.title,
-                "ts": hit.created_at,
-                "role": hit.role,
-                "snippet": hit.preview,
-                "score": hit.score,
-            })
-        return out[:max(1, int(limit))]
+        hits = self.repository.search(str(query), limit=max(1, int(limit)), resolve_peer=self._peer_display)
+        return [{"session_id": hit.session_id, "branch_id": hit.branch_id, "title": hit.title,
+                 "ts": hit.created_at, "role": hit.role, "snippet": hit.preview, "score": hit.score,
+                 "kind": "message" if hit.node_id else "title", **({"node_id": hit.node_id} if hit.node_id else {})}
+                for hit in hits]
+
+    def history_window(self, sid: str, node_id: str, *, query: str = "") -> dict | None:
+        """Display the exact reachable hit and at most two messages on each side."""
+        query = str(query or "").strip()[:1000]
+        with self.repository._read() as conn:
+            conn.execute("BEGIN")
+            owner = self._context_owner(conn, sid)
+            if owner is None:
+                return None
+            cid = owner["conversation_id"]
+            order = history_order(conn, cid, owner["head_node_id"], display_only=True)
+            try:
+                index = order.index(node_id)
+            except ValueError:
+                return None
+            start, end = max(0, index - 2), min(len(order), index + 3)
+            rows = conn.execute(
+                "WITH selected AS (SELECT keys.key AS pos,n.node_id,n.role,n.created_at,n.content_text,"
+                "CASE WHEN json_type(n.metadata_json,'$.origin')='object' THEN json_extract(n.metadata_json,'$.origin') END AS origin,"
+                "CASE WHEN json_type(n.metadata_json,'$.peer_display')='object' THEN json_extract(n.metadata_json,'$.peer_display') END AS peer,"
+                "CASE WHEN n.node_id=? AND ?<>'' THEN max(0,instr(lower(n.content_text),lower(?))-161) ELSE 0 END AS off "
+                "FROM json_each(?) keys CROSS JOIN conversation_node n ON n.node_id=keys.value WHERE n.conversation_id=?) "
+                "SELECT node_id,role,created_at,origin,peer,off,length(content_text) AS total,"
+                "substr(content_text,off+1,4096) AS text FROM selected ORDER BY pos",
+                (node_id, query, query, json.dumps(order[start:end]), cid)).fetchall()
+        messages = []
+        for row in rows:
+            origin = json.loads(row["origin"] or "null")
+            special = display_origin_text(row["role"], origin, json.loads(row["peer"] or "null"), self._peer_display)
+            text, offset, total = row["text"], row["off"], row["total"]
+            if special is not None:
+                text, offset = display_excerpt(special, query if row["node_id"] == node_id else "", 4096)
+                total = len(special)
+            messages.append({"node_id": row["node_id"], "role": row["role"], "ts": row["created_at"],
+                             "text": text, "text_offset": offset, "text_total_chars": total,
+                             **({"display_kind": origin["kind"]} if special is not None else {})})
+        return {"branch_id": owner["branch_id"], "messages": messages,
+                "has_before": start > 0, "has_after": end < len(order)}
 
 __all__ = ["ChatSessionService"]

@@ -227,6 +227,8 @@ class WorkRepository:
                     );
                     CREATE INDEX IF NOT EXISTS idx_work_outbox_delivery
                         ON work_outbox(status, available_at, event_sequence);
+                    CREATE INDEX IF NOT EXISTS idx_work_outbox_unsettled_sequence
+                        ON work_outbox(event_sequence) WHERE status IN ('pending','leased');
 
                     CREATE TABLE IF NOT EXISTS work_job (
                         job_id TEXT PRIMARY KEY,
@@ -768,11 +770,15 @@ class WorkRepository:
                 (at, at),
             )
             rows = conn.execute(
-                "SELECT outbox_id FROM work_outbox WHERE status='pending' "
-                "AND available_at<=? ORDER BY event_sequence LIMIT ?",
-                (at, take),
+                "SELECT outbox_id, status, available_at FROM work_outbox "
+                "WHERE status IN ('pending','leased') ORDER BY event_sequence LIMIT ?",
+                (take,),
             ).fetchall()
-            ids = [str(row["outbox_id"]) for row in rows]
+            ids = []
+            for row in rows:
+                if row["status"] != "pending" or row["available_at"] > at:
+                    break
+                ids.append(str(row["outbox_id"]))
             for outbox_id in ids:
                 changed = conn.execute(
                     "UPDATE work_outbox SET status='leased', lease_owner=?, "
@@ -823,6 +829,7 @@ class WorkRepository:
         consumer_id: str,
         lease_epoch: int,
         error: str,
+        unattempted: Sequence[OutboxItem] = (),
         retry_delay_s: float = 1.0,
         max_attempts: int = 20,
         now: float | None = None,
@@ -852,6 +859,13 @@ class WorkRepository:
                     _text(error, "outbox error", limit=4000),
                     str(outbox_id),
                 ),
+            )
+            conn.executemany(
+                "UPDATE work_outbox SET status='pending', lease_owner='', lease_expires_at=NULL, "
+                "attempts=attempts-1 WHERE outbox_id=? AND status='leased' AND lease_owner=? "
+                "AND lease_epoch=? AND event_sequence>?",
+                [(item.outbox_id, consumer_id, item.lease_epoch, row["event_sequence"])
+                 for item in unattempted],
             )
             return status
 

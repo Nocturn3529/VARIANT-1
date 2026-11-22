@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import copy
 import logging
@@ -290,18 +291,20 @@ async def project_session_conversation(
     exactly once. A reference never resolves a mutable snapshot head.
     """
     getter = getattr(sessions, "get_context_projection", None)
-    state = getter(session_id) if callable(getter) else {}
+    state = await asyncio.to_thread(getter, session_id) if callable(getter) else {}
     state = state if isinstance(state, dict) else {}
     try:
         snapshot = (await snapshot_store.load_cursor(_cursor(state))
                     if snapshot_store is not None and state.get("kind") == "native_snapshot" else None)
         if snapshot_store is not None and state.get("kind") == "native_snapshot" and snapshot is None:
-            _clear_invalid(sessions, session_id, state)
-        projected, source_count, source_cursor = _apply_projection(sessions, session_id, state, snapshot, model_route)
+            await asyncio.to_thread(_clear_invalid, sessions, session_id, state)
+        projected, source_count, source_cursor = await asyncio.to_thread(
+            _apply_projection, sessions, session_id, state, snapshot, model_route)
     except Exception as exc:
-        projected, source_count, source_cursor = _projection_error(sessions, session_id, state, exc)
+        projected, source_count, source_cursor = await asyncio.to_thread(
+            _projection_error, sessions, session_id, state, exc)
     threshold = ctx_compress_threshold(mode=mode, ctx_size=context_limit_tokens)
-    if approx_tokens(projected) <= threshold:
+    if await asyncio.to_thread(approx_tokens, projected) <= threshold:
         return projected
     compacted = await _call_compressor(compress_messages, projected)
     if len(compacted) >= len(projected):
@@ -314,15 +317,15 @@ async def project_session_conversation(
     # graph is promoted after the normal terminal commit, never flattened here.
     has_native_history = any(row.get("role") == "tool" or row.get("tool_calls") for row in compacted)
     if callable(setter) and not has_native_history:
-        stored = setter(
-            session_id,
+        stored = await asyncio.to_thread(
+            setter, session_id,
             compacted,
             source_message_count=source_count,
             context_limit_tokens=context_limit_tokens,
             source_cursor=source_cursor,
         )
         if stored is False:
-            return canonical_conversation(sessions, session_id)
+            return await asyncio.to_thread(canonical_conversation, sessions, session_id)
     return compacted
 
 

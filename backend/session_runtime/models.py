@@ -43,6 +43,14 @@ class BudgetExhausted(RuntimeError):
     """The host-owned continuation budget does not permit another run."""
 
 
+class SubmissionAlreadyRecorded(Exception):
+    """The socket can reconcile this ticket without submitting another input."""
+
+    def __init__(self, chat_id: str, ticket_id: str, *, conflict: bool):
+        super().__init__("submission_ticket_conflict" if conflict else "submission_already_recorded")
+        self.chat_id, self.ticket_id, self.conflict = chat_id, ticket_id, conflict
+
+
 @dataclass(frozen=True)
 class RuntimeIdentity:
     """Pinned identity assigned before a chat's first model request."""
@@ -144,6 +152,8 @@ class InputTicket:
     completed_at: float = 0.0
     proof: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    submission_fingerprint: str = ""
+    initial_admission_id: str = ""
 
     @property
     def terminal(self) -> bool:

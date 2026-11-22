@@ -158,6 +158,8 @@ jobs:
         run: npm run build:deck
       - name: Build the frozen backend
         run: npm run build:backend
+      - name: Exercise the freshly frozen kernel
+        run: npm run test:kernel:frozen
       - name: Check native runtime inputs
         run: node scripts/check-native-runtime.js
       - name: Unsigned dmg and zip
@@ -226,6 +228,8 @@ jobs:
         run: npm run build:deck
       - name: Build the frozen backend
         run: npm run build:backend
+      - name: Exercise the freshly frozen kernel
+        run: npm run test:kernel:frozen
       - name: Check native runtime inputs
         run: node scripts/check-native-runtime.js
       - name: Unsigned AppImage and deb
@@ -476,6 +480,8 @@ jobs:
         run: npm run build:deck
       - name: Build the frozen backend
         run: npm run build:backend
+      - name: Exercise the freshly frozen kernel
+        run: npm run test:kernel:frozen
       - name: Check native runtime inputs
         run: node scripts/check-native-runtime.js
       - name: Unsigned NSIS installer

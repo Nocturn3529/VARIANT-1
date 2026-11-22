@@ -5,6 +5,7 @@ import {ProviderRoutingSettings} from "../frontend/main-deck/src/ProviderRouting
 import {ExternalContextSettings} from "../frontend/main-deck/src/ExternalContextSettings";
 import * as routing from "../frontend/main-deck/src/providerRoutingStore";
 import * as context from "../frontend/main-deck/src/externalContextSettingsStore";
+import {setSessionContextContext, ingestSessionContext, __resetSessionContextStoreForTests} from "../frontend/main-deck/src/sessionContextStore";
 import {setSessionContext,setSessionConnection,ingestSessions} from "../frontend/main-deck/src/state/sessionStore";
 import {getAppState,navigateTo} from "../frontend/main-deck/src/state/appStore";
 import type {RuntimeContext} from "../frontend/main-deck/src/types";
@@ -19,13 +20,31 @@ export async function run(){
   const replyContext=(request:Record<string,unknown>,result:unknown,ok=true)=>context.ingestExternalContextSettings({type:'external-context:result',operation:request.operation,request_id:request.request_id,chat_id:request.chat_id,ok,result,error:{code:'test',message:'Retained source unavailable.'}});
   const button=(text:string)=>[...host.querySelectorAll<HTMLButtonElement>('button')].find(row=>row.textContent===text)!;
   const config=routing.defaultRecovery();
-  routing.setProviderRoutingContext(runtime);context.setExternalContextSettingsContext(runtime);setSessionContext(runtime);
+  routing.setProviderRoutingContext(runtime);context.setExternalContextSettingsContext(runtime);setSessionContext(runtime);setSessionContextContext(runtime);
   await act(async()=>{routing.setProviderRoutingConnection('connected');context.setExternalContextSettingsConnection('connected');setSessionConnection('connected');ingestSessions({type:'chat:sessions',active_id:'chat-a',items:[{id:'chat-a',title:'First session'},{id:'chat-b',title:'Second session'}]});root.render(<ProviderRoutingSettings/>);});
   try{
     await act(async()=>replyRouting(last('provider-recovery:get'),{config,revision:'r1'}));
     assert.equal(host.querySelector('[aria-label="Enable configured recovery"]')?.getAttribute('aria-checked'),'false','recovery defaults off');
     const draft={...config,enabled:true,fallback_routes:[{mode:'cloud' as const,provider:'fixture',model:'one'},{mode:'local' as const,provider:'local',model:'two'}]};
+    const modelRequest=last('model:options');
+    await act(async()=>ingestSessionContext({type:'model:options',session_id:'chat-a',request_id:modelRequest.request_id,providers:[{id:'fixture',mode:'cloud',
+      models:[{id:'one:free',reasoning_efforts:['xhigh','high','low','none'],default_reasoning_effort:'high'},
+        {id:'one',reasoning_efforts:['low']},{id:'switch',reasoning_toggle:true,reasoning_default_enabled:true},
+        {id:'removed',selectable:false,detail:'Saved model absent from the catalog.'}]}]}));
+    await act(async()=>routing.editProviderRouting({...draft,fallback_routes:[{mode:'cloud',provider:'fixture',model:'one:free'}]}));
+    const recoveryEfforts=()=>[...host.querySelectorAll<HTMLOptionElement>('[aria-label="Main backups route 1 effort"] option')];
+    assert.deepEqual(recoveryEfforts().map(row=>row.value),['','xhigh','high','low','none']);
+    assert.equal(recoveryEfforts()[0].text,'Provider default · high');
+    assert.deepEqual([...host.querySelectorAll<HTMLOptionElement>('datalist option')].map(row=>row.value),['one:free','one','switch']);
+    await act(async()=>routing.editProviderRouting({...draft,fallback_routes:[{mode:'cloud',provider:'fixture',model:'switch'}]}));
+    assert.deepEqual(recoveryEfforts().map(row=>row.text),['Provider default · on','On','Off']);
+    await act(async()=>{
+      const field=host.querySelector<HTMLSelectElement>('[aria-label="Main backups route 1 effort"]')!;
+      field.value='toggle:off';field.dispatchEvent(new Event('change',{bubbles:true}));
+    });
+    assert.deepEqual(routing.getProviderRouting().draft.fallback_routes[0],{mode:'cloud',provider:'fixture',model:'switch',reasoning_enabled:false});
     await act(async()=>routing.editProviderRouting(draft));
+    assert.deepEqual(recoveryEfforts().map(row=>row.value),['','low'],'recovery choices use the exact model ID');
     await act(async()=>host.querySelector<HTMLButtonElement>('[aria-label="Move Main backups route 2 earlier"]')!.click());
     assert.equal(routing.getProviderRouting().draft.fallback_routes[0].model,'two','route order is meaningful');
     await act(async()=>button('Save routing').click());const save=last('provider-recovery:set');assert.equal(save.expected_revision,'r1');
@@ -78,6 +97,6 @@ export async function run(){
     navigateTo('memory');assert.equal(getAppState().settingsCategory,'session-context','old Memory deep link opens context browser');
     console.log('Context/routing Settings: bounded reads, source identity/Unicode, stale replies, deletion, cancel/export receipts, ordered chains, revision conflicts, failed-save and reconnect drafts passed');
   }finally{
-    await act(async()=>{root.unmount();routing.setProviderRoutingConnection('offline');context.setExternalContextSettingsConnection('offline');setSessionConnection('offline');});host.remove();
+    await act(async()=>{root.unmount();routing.setProviderRoutingConnection('offline');context.setExternalContextSettingsConnection('offline');setSessionConnection('offline');__resetSessionContextStoreForTests();});host.remove();
   }
 }

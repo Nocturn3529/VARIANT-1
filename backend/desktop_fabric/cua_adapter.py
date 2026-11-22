@@ -122,6 +122,21 @@ def windows_desktop_locked() -> bool:
         return False
 
 
+def _windows_foreground_hwnd() -> int:
+    if not sys.platform.startswith("win"):
+        return 0
+    try:
+        import ctypes
+        from ctypes.wintypes import HWND
+
+        foreground = ctypes.windll.user32.GetForegroundWindow
+        foreground.argtypes = []
+        foreground.restype = HWND
+        return int(foreground() or 0)
+    except (AttributeError, OSError):
+        return 0
+
+
 def _current_run_id() -> str:
     try:
         from run_context import current_run_context
@@ -218,44 +233,73 @@ class CuaDesktopAdapter:
                 continue
             if int(row.get("window_id") or 0) != native_id:
                 continue
-            return {
+            state = {
                 "live": True,
                 "hwnd": native_id,
                 "pid": int(window.pid),
                 "pid_started_at": window.pid_started_at,
             }
+            foreground_hwnd = _windows_foreground_hwnd() if self.platform.startswith("win") else 0
+            if foreground_hwnd:
+                state.update(foreground=foreground_hwnd == native_id, foreground_hwnd=foreground_hwnd)
+            elif "focused" in row or "foreground" in row:
+                state["foreground"] = bool(row.get("focused") or row.get("foreground"))
+            return state
         return {"live": False, "reason": "window_missing"}
 
     # Observation -------------------------------------------------------
 
     async def observe(self, window: WindowRecord, *, mode: str) -> AdapterObservation:
+        return await self._observe(window, mode=mode, include_image=False)
+
+    async def observe_with_capture(self, window: WindowRecord, *, mode: str) -> AdapterObservation:
+        return await self._observe(window, mode=mode, include_image=True)
+
+    async def _observe(
+        self, window: WindowRecord, *, mode: str, include_image: bool,
+    ) -> AdapterObservation:
         self._refuse_locked()
+        # One driver snapshot must own both the pixels and the element tokens.
         state = await self._atool("get_window_state", {
             "pid": int(window.pid),
             "window_id": int(window.hwnd),
-            "include_screenshot": False,
+            "include_screenshot": include_image,
             "include_accessibility_tree": True,
+            # Desktop Fabric consumes structured rows and handles its own paging.
+            # The compact MCP defaults render Markdown and stop after 250 nodes.
+            "tree_format": "elements",
+            "max_elements": 5000,
+            **({"max_image_dimension": 0} if include_image else {}),
         }, read_only=True)
-        elements = [
-            _element(row, index)
-            for index, row in enumerate(_element_rows(state))
-        ]
+        elements = [_element(row) for row in _element_rows(state, "elements")]
+        elements.extend(_element(row, display_only=True) for row in _element_rows(state, "observations"))
         metadata: dict[str, Any] = {
             "adapter": "cua-driver",
             "snapshot_id": str(state.get("snapshot_id") or ""),
             "window_rect": list(window.bounds or ()),
             "degraded": bool(state.get("degraded")),
-            "elements_complete": bool(state.get("elements_complete", True)),
+            "elements_complete": (
+                bool(state.get("elements_complete", not state.get("truncated")))
+                and not state.get("observations_truncated")
+            ),
             "mode": mode,
         }
         for key in _STATE_CONTEXT_FIELDS:
             if state.get(key) not in (None, ""):
                 metadata[key] = state.get(key)
+        image, image_error = None, ""
+        if include_image:
+            try:
+                image = self._capture_result(window, state)
+            except DesktopUnavailable as exc:
+                image_error = str(exc)
         return AdapterObservation(
             uia=tuple(elements),
             uia_generation=1,
             completeness="accessibility",
             metadata=metadata,
+            image=image,
+            image_error=image_error,
         )
 
     async def capture(self, window: WindowRecord) -> AdapterCapture:
@@ -269,6 +313,10 @@ class CuaDesktopAdapter:
             # which then equal window-local pixels.
             "max_image_dimension": 0,
         }, read_only=True)
+        return self._capture_result(window, state)
+
+    @staticmethod
+    def _capture_result(window: WindowRecord, state: Mapping[str, Any]) -> AdapterCapture:
         error = state.get("screenshot_error") or {}
         code = str(error.get("code") or "") if isinstance(error, dict) else ""
         if code == _UNPROVEN_CAPTURE or state.get("screenshot_frame_valid") is False:
@@ -328,23 +376,29 @@ class CuaDesktopAdapter:
             payload["delivery_mode"] = "foreground"
             result = await self._atool(tool, payload)
         effect = str(result.get("effect") or "").casefold()
-        if effect == "refused" or result.get("ok") is False:
-            return AdapterDispatch(
-                delivered=False,
-                method=f"cua-driver:{tool}",
-                readback=result.get("value_readback"),
-                metadata={"effect": effect or "refused", "route": result.get("route"),
-                          "delivery_mode": payload.get("delivery_mode")},
-            )
+        delivered = effect != "refused" and result.get("ok") is not False
+        path = str(result.get("path") or result.get("route") or "").casefold()
+        # The pinned Windows driver respects the explicit mode in the final
+        # request, including any foreground retry after a refused background call.
+        observed_mode = result.get("delivery_mode")
+        if not observed_mode and self.platform.startswith("win"):
+            observed_mode = payload.get("delivery_mode")
+        metadata = {
+            "effect": effect or ("unverifiable" if delivered else "refused"),
+            "route": result.get("route"),
+            "delivery_mode": observed_mode or payload.get("delivery_mode"),
+        }
+        if tool == "set_value" or path in {"ax", "uia", "accessibility"} or path.startswith("uia_"):
+            metadata["selected_delivery"] = "semantic"
+        elif observed_mode == "foreground":
+            metadata["selected_delivery"] = "physical"
+        elif observed_mode == "background":
+            metadata["selected_delivery"] = "background"
         return AdapterDispatch(
-            delivered=True,
+            delivered=delivered,
             method=f"cua-driver:{tool}",
             readback=result.get("value_readback"),
-            metadata={
-                "effect": effect or "unverifiable",
-                "route": result.get("route"),
-                "delivery_mode": payload.get("delivery_mode"),
-            },
+            metadata=metadata,
         )
 
     async def focus(self, window: WindowRecord) -> AdapterFocus:
@@ -516,8 +570,8 @@ def _window_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     return [row for row in rows if isinstance(row, Mapping)]
 
 
-def _element_rows(payload: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    rows = payload.get("elements")
+def _element_rows(payload: Mapping[str, Any], field: str) -> list[Mapping[str, Any]]:
+    rows = payload.get(field)
     if not isinstance(rows, list):
         return []
     return [row for row in rows if isinstance(row, Mapping)]
@@ -528,8 +582,8 @@ def _rect(raw: Any) -> tuple[int, int, int, int] | None:
         try:
             left = int(raw.get("x"))
             top = int(raw.get("y"))
-            width = int(raw.get("width"))
-            height = int(raw.get("height"))
+            width = int(raw.get("width", raw.get("w")))
+            height = int(raw.get("height", raw.get("h")))
         except (TypeError, ValueError):
             return None
         if width <= 0 or height <= 0:
@@ -543,13 +597,12 @@ def _rect(raw: Any) -> tuple[int, int, int, int] | None:
 
 
 def _bounds(row: Mapping[str, Any]) -> tuple[int, int, int, int] | None:
-    return _rect(row.get("bounds")) or _rect({
-        key: row.get(key) for key in ("x", "y", "width", "height")
-    })
+    return _rect(row.get("bounds")) or _rect(row)
 
 
-def _element(row: Mapping[str, Any], index: int) -> dict[str, Any]:
-    token = str(row.get("element_token") or row.get("id") or index)
+def _element(row: Mapping[str, Any], *, display_only: bool = False) -> dict[str, Any]:
+    token = row.get("element_token") or row.get("id")
+    display_only = display_only or token is None or token == ""
     patterns = []
     actions = row.get("actions") or ()
     for action in actions:
@@ -569,7 +622,7 @@ def _element(row: Mapping[str, Any], index: int) -> dict[str, Any]:
             patterns.append("selection_item")
         elif "scroll" in label:
             patterns.append("scroll_item")
-    enabled = bool(row.get("enabled", True))
+    enabled = not display_only and bool(row.get("enabled", True))
     if enabled and "invoke" not in patterns:
         patterns.append("invoke")
     rect = _rect(row.get("frame") or row.get("bounds"))
@@ -577,9 +630,10 @@ def _element(row: Mapping[str, Any], index: int) -> dict[str, Any]:
         "role": str(row.get("role") or "control"),
         "name": str(row.get("label") or row.get("name") or ""),
         "value": str(row.get("value") or ""),
-        "backend_key": token,
-        "automation_id": token,
-        "patterns": patterns,
+        "backend_key": "" if display_only else str(token),
+        "automation_id": str(row.get("automation_id") or ""),
+        "patterns": [] if display_only else patterns,
+        **({"states": {"display_only": True}} if display_only else {}),
         "actionable": enabled,
         "bounds": list(rect) if rect else None,
         "provenance": "uia",

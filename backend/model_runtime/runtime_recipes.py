@@ -21,6 +21,9 @@ from process_tree import (
     settle_process,
 )
 from model_runtime.platform_store import AtomicJsonStore
+from model_runtime.external_runtime import advertised_model_ids
+from model_runtime.remote_nodes import node_request_headers
+from model_runtime.runtime_catalog import runtime_config
 from work_fabric.jobs import JobExecutionContext, JobResult
 from work_fabric.scope import WorkScope
 
@@ -116,6 +119,7 @@ class RuntimeRecipeManager:
         self.process: asyncio.subprocess.Process | None = None
         self._process_job: OwnedProcessTree | None = None
         self.active_recipe_id = ""
+        self._owned_remote_node: dict | None = None
         self.launching_recipe_id = ""
         self.last_error = ""
         self.started_at = 0.0
@@ -314,45 +318,62 @@ class RuntimeRecipeManager:
             "phase": "launching",
             "recipe_id": recipe_id,
         })
-        await self._launch(recipe)
+        endpoint = await self._launch(recipe)
         return JobResult(progress={
             "phase": "ready",
             "recipe_id": recipe_id,
-            "endpoint": str(recipe.get("endpoint") or ""),
+            "endpoint": endpoint,
         })
 
-    async def _launch(self, recipe: dict) -> None:
+    async def _launch(self, recipe: dict) -> str:
         recipe_id = str(recipe["id"])
         self._event("info", f"Launching {recipe['name']}", {"recipe_id": recipe_id})
-        await self._broadcast_state()
         try:
-            async with self._lock:
+            await self._broadcast_state()
+            return await self._launch_owned(recipe)
+        finally:
+            if self.launching_recipe_id == recipe_id:
+                self.launching_recipe_id = ""
+                self._launch_job_id = ""
+            await self._broadcast_state()
+
+    async def _launch_owned(self, recipe: dict) -> str:
+        recipe_id = str(recipe["id"])
+        async with self._lock:
+            prior = self.get(self.active_recipe_id) if self.active_recipe_id else None
+            prior_started = self.started_at
+            try:
                 await self._evict_unlocked(clear_adapter=False)
                 if recipe.get("node_id"):
-                    await self.remote_nodes.launch(str(recipe["node_id"]), str(recipe.get("remote_recipe_id") or recipe_id))
                     node = self.remote_nodes.get(str(recipe["node_id"]))
                     if not node:
                         raise RuntimeError("remote node disappeared during launch")
-                    recipe = {**recipe, "endpoint": node["base_url"]}
-                    if not await self._wait_ready(recipe["endpoint"], timeout=180.0):
+                    node = dict(node)
+                    model = str(recipe.get("model") or recipe.get("source_repo") or "")
+                    if not model:
+                        raise ValueError("A remote recipe needs its served model ID")
+                    await self._begin_remote_launch(node, str(recipe.get("remote_recipe_id") or recipe_id))
+                    recipe = {**recipe, "endpoint": node["base_url"], "api_key_env": node.get("api_key_env", "")}
+                    if not await self._wait_ready(recipe["endpoint"], timeout=180.0,
+                                                  headers=node_request_headers(node), model=model):
                         raise RuntimeError(f"remote runtime did not become ready at {recipe['endpoint']}")
                     await self._attach_recipe(recipe)
                     self.active_recipe_id = recipe_id
                     self.started_at = time.time()
                     self._event("ok", f"Remote runtime ready: {recipe['name']}", {"recipe_id": recipe_id})
-                    return
+                    return recipe["endpoint"]
                 elif recipe["runtime_id"] == "llamacpp":
                     await self._launch_llamacpp(recipe)
                     self.active_recipe_id = recipe_id
                     self.started_at = time.time()
                     self._event("ok", f"Runtime ready: {recipe['name']}", {"recipe_id": recipe_id})
-                    return
+                    return recipe["endpoint"]
                 elif recipe["runtime_id"] == "openai_compatible":
                     await self._attach_recipe(recipe)
                     self.active_recipe_id = recipe_id
                     self.started_at = time.time()
                     self._event("ok", f"Runtime attached: {recipe['name']}", {"recipe_id": recipe_id})
-                    return
+                    return recipe["endpoint"]
                 else:
                     target = self._resolve_target(recipe)
                     command, env = self._command(recipe, target)
@@ -384,23 +405,47 @@ class RuntimeRecipeManager:
                     self.active_recipe_id = recipe_id
                     self.started_at = time.time()
                     self._event("ok", f"Runtime ready: {recipe['name']}", {"recipe_id": recipe_id})
-        except asyncio.CancelledError:
-            self._event("info", f"Launch cancelled: {recipe['name']}", {"recipe_id": recipe_id})
-            async with self._lock:
+                    return recipe["endpoint"]
+            except asyncio.CancelledError:
+                self._event("info", f"Launch cancelled: {recipe['name']}", {"recipe_id": recipe_id})
                 await self._evict_unlocked(clear_adapter=True)
-            raise
-        except Exception as exc:
-            self.last_error = str(exc)[:500]
-            self._record_failure(recipe_id)
-            self._log("error", self.last_error)
-            self._event("error", f"Launch failed for {recipe['name']}: {exc}", {"recipe_id": recipe_id})
-            async with self._lock:
+                raise
+            except Exception as exc:
+                self.last_error = str(exc)[:500]
+                self._record_failure(recipe_id)
+                self._log("error", self.last_error)
+                self._event("error", f"Launch failed for {recipe['name']}: {exc}", {"recipe_id": recipe_id})
                 await self._evict_unlocked(clear_adapter=True)
-            raise
+                raise
+            finally:
+                if not self.active_recipe_id and self._loaded_native_recipe(prior):
+                    self.active_recipe_id, self.started_at = prior["id"], prior_started
+
+    def _loaded_native_recipe(self, recipe: dict | None) -> bool:
+        if not recipe or recipe.get("node_id") or recipe["runtime_id"] != "llamacpp" or self.host is None:
+            return False
+        router = self.host.router
+        engine = router.engine
+        loaded = str(getattr(engine, "model", "") or "")
+        return bool(router.inference_runtime_id == "llamacpp" and engine.ready and loaded
+                    and os.path.normcase(os.path.realpath(loaded)) == os.path.normcase(os.path.realpath(recipe["model_path"])))
+
+    async def _begin_remote_launch(self, node: dict, remote_recipe_id: str) -> None:
+        # The controller owns the request once sent. Wait for its acknowledgement
+        # even if the user stops, so cleanup knows whether this launch owns eviction.
+        task = asyncio.create_task(self.remote_nodes.launch_node(node, remote_recipe_id))
+        stopped = None
+        while not task.done():
+            try:
+                await asyncio.wait({task})
+            except asyncio.CancelledError as exc:
+                stopped = exc
+        try:
+            task.result()
+            self._owned_remote_node = node
         finally:
-            self.launching_recipe_id = ""
-            self._launch_job_id = ""
-            await self._broadcast_state()
+            if stopped is not None:
+                raise stopped
 
     async def _launch_llamacpp(self, recipe: dict) -> None:
         if self.host is None:
@@ -420,19 +465,33 @@ class RuntimeRecipeManager:
             )
             if projector:
                 mmproj_path = os.path.join(os.path.dirname(path), projector)
-        await self.host.require_runtime().models.restart_engine(path, mmproj_path)
+        outcome = await self.host.require_runtime().models.restart_engine(path, mmproj_path)
+        if outcome != "switched":
+            raise RuntimeError(f"GGUF model switch did not complete ({outcome})")
 
     async def _attach_recipe(self, recipe: dict) -> None:
         if self.host is None:
             raise RuntimeError("recipe manager is not bound to the application host")
         runtime_id = str(recipe["runtime_id"])
-        self.host.router.configure_inference_runtime(runtime_id, {
+        if recipe.get("node_id") and runtime_id == "llamacpp":
+            runtime_id = "openai_compatible"
+        router = self.host.router
+        prior = runtime_config(getattr(router, "cfg", {}), runtime_id)
+        updates = {
             "endpoint": recipe["endpoint"],
             "model": recipe.get("model") or recipe.get("source_repo"),
             "context_size": recipe.get("context_size") or 32768,
-        })
+        }
+        if "api_key_env" in recipe or prior["endpoint"].rstrip("/") != recipe["endpoint"].rstrip("/"):
+            updates["api_key_env"] = recipe.get("api_key_env", "")
+        configured = router.configure_inference_runtime(runtime_id, updates)
         from model_runtime import engine_manager
-        await engine_manager.switch_inference_runtime(self.host.router, runtime_id)
+        try:
+            await engine_manager.switch_inference_runtime(router, runtime_id)
+        except BaseException:
+            if runtime_config(getattr(router, "cfg", {}), runtime_id) == configured:
+                router.configure_inference_runtime(runtime_id, prior)
+            raise
 
     def _resolve_target(self, recipe: dict) -> dict:
         target_id = str(recipe.get("target_id") or "")
@@ -537,15 +596,16 @@ class RuntimeRecipeManager:
             source="crash_restart",
         )
 
-    async def _wait_ready(self, endpoint: str, timeout: float) -> bool:
+    async def _wait_ready(self, endpoint: str, timeout: float, *, headers: dict | None = None,
+                          model: str = "") -> bool:
         deadline = asyncio.get_event_loop().time() + timeout
-        async with httpx.AsyncClient(timeout=3.0, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=3.0, trust_env=False, headers=headers) as client:
             while asyncio.get_event_loop().time() < deadline:
                 if self.process is not None and self.process.returncode is not None:
                     return False
                 try:
                     response = await client.get(f"{endpoint.rstrip('/')}/v1/models")
-                    if response.status_code == 200:
+                    if response.status_code == 200 and (not model or model in advertised_model_ids(response.json())):
                         return True
                 except Exception:
                     pass
@@ -567,12 +627,13 @@ class RuntimeRecipeManager:
 
     async def _evict_unlocked(self, *, clear_adapter: bool) -> None:
         recipe_id = self.active_recipe_id
-        recipe = self.get(recipe_id) if recipe_id else None
-        if recipe and recipe.get("node_id"):
+        if self._owned_remote_node is not None:
             try:
-                await self.remote_nodes.evict(str(recipe["node_id"]))
+                await self.remote_nodes.evict_node(self._owned_remote_node)
             except Exception as exc:
                 self._log("error", f"remote eviction warning: {exc}")
+                raise
+            self._owned_remote_node = None
         process = self.process
         self.process = None
         owner, self._process_job = self._process_job, None

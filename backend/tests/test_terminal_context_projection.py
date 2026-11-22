@@ -1,9 +1,11 @@
 """Compacted checkpoints survive turn/restart boundaries without duplicating input."""
+import asyncio
 from copy import deepcopy
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 import sqlite3
+import threading
 
 import pytest
 
@@ -29,6 +31,63 @@ from transcript_economy import COMPACT_SUMMARY_MARKER
 
 ROUTE = {"mode": "cloud", "provider": "openai-codex", "model": "gpt-5.6-luna"}
 ROUTER = SimpleNamespace(bound_model_route=lambda: ROUTE)
+
+
+def test_canonical_history_work_scales_with_ancestry_size(tmp_path):
+    from chat_sessions.projection import history_rows
+
+    sessions = open_sessions(tmp_path / "chats")
+    sid = sessions.create_session()
+    previous = 0
+    steps = []
+    for count in (200, 400, 800):
+        sessions.append_messages(sid, [
+            {"role": "user", "text": f"message {i}"} for i in range(previous, count)
+        ])
+        head = sessions.context_head(sid)
+        samples = 0
+        def measure():
+            nonlocal samples
+            samples += 1
+            return 0
+        with sessions.repository._read() as conn:
+            conn.set_progress_handler(measure, 100)
+            rows = history_rows(conn, head["conversation_id"], head["head_node_id"])
+        assert [json.loads(r["content_json"]) for r in rows] == [f"message {i}" for i in range(count)]
+        steps.append(samples * 100)
+        previous = count
+    assert steps[-1] < 6 * steps[0], steps
+
+
+@pytest.mark.asyncio
+async def test_second_chat_can_open_while_first_history_read_is_pending(tmp_path, monkeypatch):
+    sessions = open_sessions(tmp_path / "chats")
+    first, other = sessions.create_session(), sessions.create_session()
+    sessions.append_messages(other, [{"role": "user", "text": "other chat"}])
+    original = sessions.context_projection_view
+    entered = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    host_thread = threading.get_ident()
+
+    def stalled_read(sid, coverage):
+        if sid == first:
+            assert threading.get_ident() != host_thread
+            loop.call_soon_threadsafe(entered.set)
+            assert release.wait(5)
+        return original(sid, coverage)
+
+    monkeypatch.setattr(sessions, "context_projection_view", stalled_read)
+    async def open_chat(sid):
+        return await project_session_conversation(sessions, sid, mode="cloud", context_limit_tokens=32000)
+    pending = asyncio.create_task(open_chat(first))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        assert await asyncio.wait_for(open_chat(other), 3) == [{"role": "user", "content": "other chat"}]
+        assert not pending.done()
+    finally:
+        release.set()
+        await pending
 
 
 @pytest.mark.asyncio

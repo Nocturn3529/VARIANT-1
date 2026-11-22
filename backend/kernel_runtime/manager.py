@@ -12,6 +12,7 @@ import secrets
 import sys
 import time
 import uuid
+from weakref import WeakValueDictionary
 from typing import Any, Callable
 
 from capability_broker import CapabilityRef
@@ -102,6 +103,7 @@ class KernelRuntimeManager:
             self._last_exits: dict[str, dict[str, Any]] = {}
             self.continuity = KernelContinuityCoordinator(self)
             self._boot_locks: dict[str, asyncio.Lock] = {}
+            self._cell_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
             self._boot_slots = asyncio.Semaphore(max(1, self.limits.max_boot_concurrency))
             self._boot_tasks: set[asyncio.Task] = set()
             self._guard = asyncio.Lock()
@@ -323,6 +325,14 @@ class KernelRuntimeManager:
             current = self._leases.get(str(lease.chat_id))
             if current is not lease or lease._closed:
                 return {}
+            if reason in {"operator_restart", "operator_release"}:
+                policy = self.continuity._effective_checkpoint_policy(lease.chat_id)
+                if policy.enabled and reason in policy.reasons:
+                    # This lock prevents new callers from obtaining the lease
+                    # until capture and close finish. Cells that already have
+                    # it announce themselves before their next suspension.
+                    if lease.admitted_cells or lease.state == "busy":
+                        return {}
             automatic = reason in {"capacity_eviction", "idle_or_absolute_eviction", "operator_release"}
             registry = getattr(getattr(self, "catalog_service", None), "runtime_registry", None)
             claim = getattr(registry, "claim_kernel_retirement", None)
@@ -576,107 +586,112 @@ class KernelRuntimeManager:
             namespace_document=namespace_document,
             cancellation=cancellation,
         )
-        source_artifact = None
-        ledger_pre_error = ""
+        # Serialize the worker effect and its receipt for this chat. Other chats
+        # can run while either side of this one waits for artifact or ledger I/O.
+        lease.admitted_cells += 1
         try:
-            source_artifact = self.artifact_store.put_text(
-                str(code),
-                kind="kernel_cell_source",
-                scope=str(chat_id),
-            )
-        except Exception as exc:
-            # Evidence storage is deliberately outside the execution effect.
-            # A full artifact disk must not convert an otherwise executable
-            # cell into a preflight failure.
-            ledger_pre_error = f"{type(exc).__name__}: {exc}"[:500]
+            async with self._cell_locks.setdefault(str(chat_id), asyncio.Lock()):
+                return await self._execute_admitted(lease, admission, str(code), on_chunk, timeout_s)
+        finally:
+            lease.admitted_cells -= 1
+
+    async def _execute_admitted(self, lease, admission, code, on_chunk, timeout_s):
         started_at = time.time()
-        evidence = dict(execution_id=admission.execution_id, chat_id=str(chat_id),
-            run_id=str(run_id or 'kernel-run'), outer_tool_call_id=str(outer_tool_call_id or 'ipython-call'),
-            kernel_generation=lease.generation, workspace_revision=workspace_revision,
-            workspace_fingerprint=workspace_fingerprint, workspace_root_ids=effective_roots,
-            work_scope=admitted_scope.to_dict(), source_ref=str(source_artifact.ref) if source_artifact else '',
-            source_sha256=str(source_artifact.sha256) if source_artifact else '', started_at=started_at,
-            storage_owner=dict(self._storage_owner.identity))
-        try:
-            self.cell_ledger.admit(self.instance_id, evidence)
-        except Exception as exc:
-            ledger_pre_error = f'{type(exc).__name__}: {exc}'[:500]
-            self.emit('kernel:cell_admission_evidence_failed', status='unknown_effect',
-                      execution_id=admission.execution_id, error=ledger_pre_error)
+        context = dict(
+            execution_id=admission.execution_id, chat_id=admission.chat_id,
+            run_id=admission.run_id, outer_tool_call_id=admission.outer_tool_call_id,
+            kernel_generation=lease.generation, workspace_revision=admission.work_scope.workspace_revision,
+            workspace_fingerprint=lease.workspace_fingerprint, workspace_root_ids=admission.workspace_root_ids,
+            work_scope=admission.work_scope.to_dict(), started_at=started_at,
+        )
         interrupted = None
+
+        async def owned_write(write):
+            # SQLite transactions and CAS writes cannot be cancelled half-way.
+            # Observe their completion before acknowledging Stop or dispatching.
+            nonlocal interrupted
+            task = asyncio.create_task(asyncio.to_thread(write))
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError as exc:
+                    interrupted = interrupted or exc
+            return task.result()
+
+        def admit():
+            source_error = ""
+            try:
+                source = self.artifact_store.put_text(code, kind="kernel_cell_source", scope=admission.chat_id)
+            except Exception as exc:
+                # Source storage is best effort. Persist the identity even when
+                # CAS is full so an eventual execution remains attributable.
+                source = None
+                source_error = f"{type(exc).__name__}: {exc}"[:500]
+            context["source_ref"] = str(source.ref) if source else ""
+            context["source_sha256"] = str(source.sha256) if source else ""
+            self.cell_ledger.admit(self.instance_id, {**context, "storage_owner": dict(self._storage_owner.identity)})
+            return source_error
+
+        pre_error = ""
         try:
-            result = await lease.execute(str(code), admission, on_chunk=on_chunk, timeout_s=timeout_s)
-        except BaseException as exc:
-            interrupted = exc
-            result = getattr(exc, 'kernel_result', None)
-            if not isinstance(result, KernelExecutionResult):
-                result = KernelExecutionResult(execution_id=admission.execution_id, chat_id=str(chat_id),
-                    generation=lease.generation, status='cancelled' if isinstance(exc, asyncio.CancelledError) else 'unknown_effect',
-                    output=CellOutput(), error_code='cancelled' if isinstance(exc, asyncio.CancelledError) else 'kernel_execution_interrupted',
-                    error_message='Execution was interrupted; inspect existing effects before retrying.',
-                    duration_ms=(time.time()-started_at)*1000, hard_restarted=lease._closed)
+            pre_error = await owned_write(admit)
+        except Exception as exc:
+            pre_error = f"{type(exc).__name__}: {exc}"[:500]
+            self.emit("kernel:cell_admission_evidence_failed", status="failed",
+                      execution_id=admission.execution_id, error=pre_error)
+            result = KernelExecutionResult(
+                execution_id=admission.execution_id, chat_id=admission.chat_id, generation=lease.generation,
+                status="error", output=CellOutput(), error_code="cell_admission_failed",
+                error_message="Cell could not be admitted to the execution ledger. No code ran.",
+            )
+        else:
+            try:
+                if interrupted is not None:
+                    raise interrupted
+                result = await lease.execute(code, admission, on_chunk=on_chunk, timeout_s=timeout_s)
+            except BaseException as exc:
+                interrupted = exc
+                result = getattr(exc, "kernel_result", None)
+                if not isinstance(result, KernelExecutionResult):
+                    cancelled = isinstance(exc, asyncio.CancelledError)
+                    result = KernelExecutionResult(
+                        execution_id=admission.execution_id, chat_id=admission.chat_id, generation=lease.generation,
+                        status="cancelled" if cancelled else "unknown_effect", output=CellOutput(),
+                        error_code="cancelled" if cancelled else "kernel_execution_interrupted",
+                        error_message="Execution was interrupted; inspect existing effects before retrying.",
+                        duration_ms=(time.time() - started_at) * 1000, hard_restarted=lease._closed,
+                    )
         completed_at = time.time()
-        try:
-            output_evidence = self.artifact_store.put_json(
-                result.output.evidence(),
-                kind="kernel_output_evidence",
-                scope=str(chat_id),
-            )
-            result.output_evidence_ref = str(output_evidence.ref)
-            result.output_evidence_sha256 = str(output_evidence.sha256)
-            result.output_evidence_bytes = int(output_evidence.bytes)
-            if source_artifact is None:
-                raise RuntimeError(
-                    "kernel cell source artifact is unavailable: "
-                    + ledger_pre_error
-                )
-            result_artifact = self.artifact_store.put_json(
-                result.to_dict(),
-                kind="kernel_cell_result",
-                scope=str(chat_id),
-            )
+
+        def settle():
+            output = self.artifact_store.put_json(result.output.evidence(), kind="kernel_output_evidence", scope=admission.chat_id)
+            result.output_evidence_ref = str(output.ref)
+            result.output_evidence_sha256 = str(output.sha256)
+            result.output_evidence_bytes = int(output.bytes)
+            if not context.get("source_ref"):
+                raise RuntimeError(f"Kernel cell source artifact is unavailable: {pre_error}")
+            artifact = self.artifact_store.put_json(result.to_dict(), kind="kernel_cell_result", scope=admission.chat_id)
             record = self.cell_ledger.append(
-                execution_id=result.execution_id,
-                chat_id=str(chat_id),
-                run_id=str(run_id or "kernel-run"),
-                outer_tool_call_id=str(outer_tool_call_id or "ipython-call"),
-                kernel_generation=int(result.generation),
-                workspace_revision=workspace_revision,
-                workspace_fingerprint=workspace_fingerprint,
-                workspace_root_ids=effective_roots,
-                work_scope=admitted_scope.to_dict(),
-                source_ref=str(source_artifact.ref),
-                source_sha256=str(source_artifact.sha256),
-                result_ref=str(result_artifact.ref),
-                result_sha256=str(result_artifact.sha256),
-                status=result.status,
-                execution_count=int(result.execution_count),
-                started_at=started_at,
-                completed_at=completed_at,
-                duration_ms=float(result.duration_ms),
-                error_code=result.error_code,
+                **context, result_ref=str(artifact.ref), result_sha256=str(artifact.sha256),
+                status=result.status, execution_count=int(result.execution_count), completed_at=completed_at,
+                duration_ms=float(result.duration_ms), error_code=result.error_code,
             )
             result.ledger_sequence = int(record.sequence)
-            result.source_ref = str(source_artifact.ref)
-            result.result_ref = str(result_artifact.ref)
+            result.source_ref = context["source_ref"]
+            result.result_ref = str(artifact.ref)
+
+        try:
+            await owned_write(settle)
         except Exception as exc:
-            # The cell has already taken effect. Preserve that truth and make
-            # the missing evidence explicit instead of converting it into a
-            # false execution failure that callers might replay.
-            result.source_ref = (
-                str(source_artifact.ref) if source_artifact is not None else ""
-            )
-            result.ledger_error = (
-                ledger_pre_error or f"{type(exc).__name__}: {exc}"[:500]
-            )
-            self.emit(
-                "kernel:cell_ledger_failed",
-                status="unknown_effect",
-                chat_id=str(chat_id),
-                execution_id=result.execution_id,
-                error=result.ledger_error,
-            )
+            # Keep the actual worker outcome. A failed receipt cannot authorize
+            # a retry of a cell whose effects have already happened.
+            result.source_ref = context.get("source_ref", "")
+            result.ledger_error = pre_error or f"{type(exc).__name__}: {exc}"[:500]
+            self.emit("kernel:cell_ledger_failed", status="unknown_effect", chat_id=admission.chat_id,
+                      execution_id=admission.execution_id, error=result.ledger_error)
         if interrupted is not None:
+            if isinstance(interrupted, asyncio.CancelledError):
+                interrupted.kernel_result = result
             raise interrupted
         return result
 
@@ -871,7 +886,9 @@ class KernelRuntimeManager:
                 "status": "idle",
                 "kernel_generation": int(lease.generation),
             }
-        if not lease._admissions:
+        selected_intent = "steer" if str(intent) == "steer" else "stop"
+        execution_id = lease._request_interrupt(intent=selected_intent, send=False)
+        if not execution_id:
             return {
                 "schema": "variant1.kernel-control.v1",
                 "runtime_chat_id": chat_id,
@@ -879,8 +896,6 @@ class KernelRuntimeManager:
                 "status": "host_operation_not_interruptible",
                 "kernel_generation": int(lease.generation),
             }
-        selected_intent = "steer" if str(intent) == "steer" else "stop"
-        lease._request_interrupt(intent=selected_intent, send=False)
         self.emit(
             "kernel:interrupt_requested",
             status="ok",
@@ -896,7 +911,7 @@ class KernelRuntimeManager:
             "intent": selected_intent,
             "hard_kill_on_grace": selected_intent == "stop",
             "kernel_generation": int(lease.generation),
-            "execution_ids": sorted(str(item) for item in lease._admissions),
+            "execution_ids": [execution_id],
         }
 
     async def restart(
@@ -921,10 +936,16 @@ class KernelRuntimeManager:
                 "next_generation": "lazy",
             }
         previous = int(lease.generation)
+        selected_reason = str(reason or "operator_restart")
+        if selected_reason == "operator_restart" and lease.state == "busy":
+            policy = self.continuity._effective_checkpoint_policy(chat_id)
+            if policy.enabled and selected_reason in policy.reasons:
+                return {"schema": "variant1.kernel-control.v1", "runtime_chat_id": chat_id,
+                        "operation": "restart", "status": "busy", "previous_generation": previous,
+                        "next_generation": previous}
         if lease.state == "busy" and lease._admissions:
             with suppress(Exception):
                 lease._send_interrupt(intent="stop")
-        selected_reason = str(reason or "operator_restart")
         checkpoint = await self._close_lease_serialized(
             lease,
             reason=selected_reason,
@@ -934,9 +955,10 @@ class KernelRuntimeManager:
             "schema": "variant1.kernel-control.v1",
             "runtime_chat_id": chat_id,
             "operation": "restart",
-            "status": "closed",
+            "status": ("closed" if lease._closed else
+                       "checkpoint_failed" if checkpoint.get("status") == "failed" else "busy"),
             "previous_generation": previous,
-            "next_generation": "lazy",
+            "next_generation": "lazy" if lease._closed else previous,
             "checkpoint": checkpoint,
         }
 
@@ -1219,6 +1241,7 @@ class KernelRuntimeManager:
                     output_event_bounds = dict(evidence["bounds"])
             cells.append({
                 "cell_type": "code",
+                "id": f"cell-{row.sequence}",
                 "execution_count": (
                     int(row.execution_count) if row.execution_count else None
                 ),
@@ -1362,7 +1385,9 @@ class KernelRuntimeManager:
             return {"status": "busy"}
         checkpoint = await self._close_lease_serialized(
             lease, reason="operator_release", hard=True)
-        return {"status": "closed" if lease._closed else "busy",
+        if lease._closed:
+            return {"status": "closed", "checkpoint": checkpoint}
+        return {"status": "checkpoint_failed" if checkpoint.get("status") == "failed" else "busy",
                 "checkpoint": checkpoint}
 
     def status(self, chat_id: str) -> dict[str, Any]:
@@ -1395,6 +1420,8 @@ class KernelRuntimeManager:
             "resources": self._lease_resource_status(lease),
             "background_output": {
                 "events": len(lease._background_events),
+                "retained_bytes": lease._background_bytes,
+                "tail": list(lease._background_events[-4:]),
                 "latest_at": (
                     lease._background_events[-1].get("received_at")
                     if lease._background_events else None

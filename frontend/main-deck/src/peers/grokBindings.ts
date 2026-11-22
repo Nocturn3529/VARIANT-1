@@ -1,3 +1,5 @@
+import {peerCapabilities} from "./peerModels";
+
 export type GrokBinding=Readonly<{
   binding_id:string;request_id:string;viewer_chat_id:string;owner_chat_id:string;terminal_chat_id:string;peer_id:string;
   session_id:string;terminal_id:string;status:string;error:unknown;
@@ -17,7 +19,7 @@ export function parseGrokBinding(value:unknown,chatId:string):GrokBinding|null {
     delivery_mode:typeof row.delivery_mode==="string" ? row.delivery_mode : "",session_activity:typeof row.session_activity==="string" ? row.session_activity : "unknown",
     preferred_delivery_mode:row.preferred_delivery_mode==="agent_context_prompt" ? "agent_context_prompt" : "inbox",
     automatic_wake_available:row.automatic_wake_available===true,native_agent_origin:row.native_agent_origin===true,
-    capabilities:row.capabilities && typeof row.capabilities==="object" && !Array.isArray(row.capabilities) ? row.capabilities as Record<string,unknown> : {},
+    capabilities:peerCapabilities(row),
     pending_permissions:Array.isArray(row.pending_permissions) ? row.pending_permissions : []};
 }
 export function grokBindingError(value:unknown):string {

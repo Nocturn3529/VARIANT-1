@@ -14,6 +14,8 @@ import execution_hosts.service as execution_service
 import execution_hosts.repository as execution_repository
 from execution_hosts.local import inherited_environment, run_bounded_child
 from execution_hosts.local import PipeTerminalProcess, StructuredChildProcess
+from execution_hosts.models import ProcessRecipe
+from execution_hosts.profiles import ExecutionProfileRegistry
 from process_tree import OwnedProcessTree
 
 from artifacts import ContentAddressedArtifactStore
@@ -55,6 +57,47 @@ def _owner() -> ExecutionOwner:
             workspace_revision=7, worktree_id="worktree-2",
         ),
     )
+
+
+def test_git_bash_resolution_ignores_windows_wsl_launcher(tmp_path, monkeypatch):
+    for key in ("ProgramW6432", "ProgramFiles(x86)", "LOCALAPPDATA"):
+        monkeypatch.delenv(key, raising=False)
+    standard = tmp_path / "Program Files"
+    monkeypatch.setenv("ProgramFiles", str(standard))
+    installed = standard / "Git" / "bin" / "bash.exe"
+    installed.parent.mkdir(parents=True)
+    installed.touch()
+    launcher = tmp_path / "Windows" / "System32" / "bash.exe"
+    launcher.parent.mkdir(parents=True)
+    launcher.touch()
+    monkeypatch.setattr("execution_hosts.profiles.shutil.which", lambda name: str(launcher) if name == "bash.exe" else None)
+
+    profiles = ExecutionProfileRegistry()
+    assert profiles.resolve("git-bash").argv == (str(installed), "--login", "-i")
+    installed.unlink()
+    with pytest.raises(ExecutionValidationError, match="Git Bash is not installed"):
+        profiles.resolve("git-bash")
+
+    portable = tmp_path / "portable" / "Git"
+    shell_bin = portable / "usr" / "bin" / "bash.exe"
+    shell_bin.parent.mkdir(parents=True)
+    shell_bin.touch()
+    git = portable / "cmd" / "git.exe"
+    git.parent.mkdir()
+    git.touch()
+    for entries in ({"git.exe": launcher, "bash.exe": shell_bin}, {"git.exe": git, "bash.exe": launcher}):
+        monkeypatch.setattr("execution_hosts.profiles.shutil.which", lambda name: str(entries[name]) if name in entries else None)
+        assert profiles.resolve("git-bash").argv == (str(shell_bin), "--login", "-i")
+
+
+def test_remote_profile_normalizes_the_kind_and_preserves_target_case(monkeypatch):
+    monkeypatch.setattr("execution_hosts.profiles.shutil.which", lambda name: name)
+    profiles = ExecutionProfileRegistry()
+    ssh = profiles.resolve("SSH:DeployAdmin@example.test")
+    assert ssh.argv == ("ssh.exe", "DeployAdmin@example.test")
+    assert ssh.name == "ssh:DeployAdmin@example.test"
+    wsl = profiles.resolve("WSL:DevLinux")
+    assert wsl.argv == ("wsl.exe", "-d", "DevLinux")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows suspended Job admission")
@@ -963,6 +1006,14 @@ def test_windows_conpty_is_real_when_kernel_exports_are_available(tmp_path):
         resized = runtime.terminals.resize(
             terminal.terminal_id, cols=132, rows=41)
         assert resized["supported"] is True
+        assert (resized["previous_cols"], resized["previous_rows"]) == (terminal.cols, terminal.rows)
+        assert (resized["effective_cols"], resized["effective_rows"]) == (132, 41)
+        events = runtime.events(entity_kind="terminal", entity_id=terminal.terminal_id)
+        durable = next(event for event in events if event.event_type == "terminal.resized")
+        assert durable.payload == {
+            "previous_cols": terminal.cols, "previous_rows": terminal.rows,
+            "cols": 132, "rows": 41,
+        }
         assert runtime.terminals.get(terminal.terminal_id).cols == 132
     finally:
         runtime.shutdown()
@@ -1018,6 +1069,44 @@ def test_health_wait_is_bounded_and_persists_wake_evidence(tmp_path):
         assert healthy.health["status"] == "healthy"
         stopped = runtime.processes.stop(process.process_id)
         assert stopped.state == "terminated"
+    finally:
+        runtime.shutdown()
+
+
+def test_process_readiness_wait_fences_restart_backoff_and_stale_probe(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path)
+    manager = runtime.processes
+    repository = manager.repository
+    record = repository.create_process(
+        process_id="fixture-readiness", owner=_owner(),
+        recipe=ProcessRecipe(argv=(sys.executable,), cwd=str(tmp_path)),
+        pid=111, pid_started_at=10, backend_instance_id="fixture",
+    )
+    identifier = record.process_id
+    probes = []
+
+    def health(candidate):
+        probes.append(candidate.attempt)
+        if candidate.attempt == 2:
+            repository.transition_process(identifier, "restarting", exit_code=1)
+            repository.transition_process(identifier, "running", attempt=3, pid=111, pid_started_at=30)
+        return True, {"fixture_attempt": candidate.attempt}
+
+    monkeypatch.setattr(manager, "_check_health", health)
+    try:
+        repository.transition_process(identifier, "restarting", exit_code=1)
+        assert manager.wait(identifier, condition="running", timeout=0).state == "restarting"
+        assert manager.wait(identifier, condition="healthy", timeout=0).state == "restarting"
+        assert probes == []
+
+        repository.transition_process(identifier, "running", attempt=2, pid=111, pid_started_at=20)
+        checked = manager.wait(identifier, condition="healthy", timeout=0)
+        assert checked.state == "running" and checked.attempt == 3
+        assert "fixture_attempt" not in checked.health
+        assert manager.wait(identifier, condition="running", timeout=0).attempt == 3
+        healthy = manager.wait(identifier, condition="healthy", timeout=0)
+        assert healthy.state == "healthy" and healthy.health["fixture_attempt"] == 3
+        assert probes == [2, 3]
     finally:
         runtime.shutdown()
 

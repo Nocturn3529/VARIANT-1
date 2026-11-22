@@ -26,6 +26,7 @@ import {
 import {cancelMic, toggleMic, useMicState} from "../state/micStore";
 import {
   requestSessionContext,
+  currentCatalogModel,
   getContextForSession,
   changeSessionSettings,
   dismissSettingsError,
@@ -40,6 +41,7 @@ import {keepBrowserTab, usePreviewState} from "../workbench/previewStore";
 import {workbenchBrowserTargets} from "../workbench/browserBridge";
 import {openLocalEngine, useLocalEngine} from "../localEngine";
 import {getComposerRevision,turnApi} from "./stateCore";
+import {checkInitialSubmission} from "./executionRecovery";
 import {currentPause,requestChatPause} from "./pause";
 import {ActivityDock} from "./ActivityDock";
 import {goalCommandDraft} from "./goalCommand";
@@ -370,12 +372,15 @@ export function ChatComposer() {
     draft, turnActive, connected, attachments, references, attachmentsPreparing, deliveryMode, stopPending, queuedFollowUps, sessionId, messages, pendingActiveInputs, runtime, inputQueue,
   } = useChatSelection(state=>({draft:state.draft,turnActive:state.turnActive,connected:state.connected,attachments:state.attachments,references:state.references,attachmentsPreparing:state.attachmentsPreparing,deliveryMode:state.deliveryMode,stopPending:state.stopPending,queuedFollowUps:state.queuedFollowUps,sessionId:state.sessionId,messages:state.messages,pendingActiveInputs:state.pendingActiveInputs,runtime:state.runtime,inputQueue:state.inputQueue,pause:state.pause}),shallowChatSelection);
   const {goalComposing,goalPending}=useChatSelection(state=>({goalComposing:!!state.goal.composing,goalPending:!!state.goal.pending}),shallowChatSelection);
+  const initialSend=useChatSelection(state=>state.initialSubmission);
+  const waitingForMessage = !goalComposing && initialSend;
   const composerRevision = getComposerRevision(sessionId || "");
   const {phase: micPhase, sessionTitle: micChat, error: micError} = useMicState();
   const pendingIds = new Set(pendingActiveInputs.map(input => input.localId));
   const queued = turnActive ? messages.filter(message => message.role === "user" && (message.activeInputState === "queued" || (message.localId && pendingIds.has(message.localId)))) : [];
   const sessionContext = useSessionContextState();
   const composerContext=getContextForSession(sessionId || "");
+  const missingModel = currentCatalogModel(composerContext)?.selectable === false && (!turnActive || goalComposing);
   const pendingSetting=composerContext.settingsPending;
   const engine=useLocalEngine();
   const engineNote=composerContext.route==="local" && engine.missing;
@@ -389,7 +394,11 @@ export function ChatComposer() {
     ? pauseControl.pending.action==="resume" ? "Resuming task…" : "Requesting pause…"
     : pauseControl?.state==="pausing" ? "Pausing after current step…"
     : paused ? "Paused · Messages stay queued until you resume" : "";
-  const composerStatus=!connected ? "Offline · Your draft is kept" : navigating ? "Opening conversation…" : stopPending ? "Stopping task…" : pauseStatus || (pendingSetting ? "Waiting for model confirmation" : "");
+  const composerStatus=!connected ? "Offline · Your draft is kept" : navigating ? "Opening conversation…" : waitingForMessage
+    ? waitingForMessage.checkFailed ? "Delivery is unconfirmed. Your submitted message is kept." :
+      waitingForMessage.uncertain ? "Checking whether your message was received…" : "Waiting for the task to start…"
+    : stopPending ? "Stopping task…" : pauseStatus ||
+    (pendingSetting ? "Waiting for model confirmation" : missingModel ? "Saved model unavailable. Choose a model to send." : "");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const zoneRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -406,8 +415,8 @@ export function ChatComposer() {
   const draftLimit = goalComposing ? MAX_GOAL_OBJECTIVE : 8000;
   // Active-turn input is admitted immediately as steering or a follow-up.
   // In goal mode Send sets the chat goal; its first turn waits for the current one.
-  const readyToSend=connected && !navigating && !!sessionId && !attachmentsPreparing && !stopPending && !pendingSetting && !queueAdmissionPending()
-    && !(goalComposing && goalPending) && draftLength <= draftLimit;
+  const readyToSend=connected && !waitingForMessage && !navigating && !!sessionId && !attachmentsPreparing && !stopPending && !pendingSetting && !queueAdmissionPending()
+    && !missingModel && !(goalComposing && goalPending) && draftLength <= draftLimit;
   const canActiveInput = readyToSend && turnActive && Boolean(draft.trim()) && !attachments.length && !references.length;
   const canSend = readyToSend && Boolean(draft.trim() || (!goalComposing && (attachments.length || references.length))) && !turnActive;
   const slashQuery = (
@@ -539,6 +548,7 @@ export function ChatComposer() {
       mode: selection.mode,
       provider: selection.mode === "cloud" ? selection.provider : "local",
       model: selection.model,
+      ...(selection.reasoningEnabled !== undefined ? {reasoning_enabled: selection.reasoningEnabled} : {}),
       ...(selection.reasoningEffort
         ? {reasoning_effort: selection.reasoningEffort}
         : {}),
@@ -585,7 +595,8 @@ export function ChatComposer() {
           <Icon name="goal"/><span>Goal</span>
           <button type="button" aria-label="Leave goal mode" title="Send as a normal message instead" onClick={() => {setGoalComposing(false,sessionId);textareaRef.current?.focus();}}><Icon name="close"/></button>
         </div> : null}
-        {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}</p> : null}
+        {composerStatus ? <p className="composer-status" id="composer-status" role="status">{composerStatus}
+          {waitingForMessage && waitingForMessage.checkFailed && connected && <button type="button" onClick={()=>checkInitialSubmission(true)}>Check delivery</button>}</p> : null}
         {engineNote ? <p className="composer-engine" role="status">{engine.installing!==null
           ? <>Installing the local engine… {engine.installing}%</>
           : <>Local models need the llama.cpp engine. <button type="button" onClick={openLocalEngine}>Install the local engine</button></>}</p> : null}

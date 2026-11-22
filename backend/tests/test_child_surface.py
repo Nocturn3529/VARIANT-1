@@ -4,9 +4,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from agent_engine.shared_ports import AgentContextPorts, HeadlessAgentPorts, ToolSurfacePorts
+from browser_fabric.binding import BrowserBinding, bind_browser_binding
+from desktop_fabric.binding import DesktopBinding
 from session_catalog.profiles import ACTION_SURFACE, IPYTHON_SCHEMA_REVISION
 from session_catalog.child_worker import ChildWorkerPorts, run_child_worker
 from run_context import Variant1RunContext, bind_run_context
+from work_fabric.scope import WorkScope
 
 
 @pytest.mark.asyncio
@@ -54,8 +57,13 @@ async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision(
         active_session=lambda: session,
         template_dirs=(".",),
     )
+    child_scope = WorkScope(chat_id="child-chat")
+    parent_browser = BrowserBinding(owner_kind="chat", scope=WorkScope(chat_id="parent"),
+                                    fabric_session_id="parent-browser")
     ctx = Variant1RunContext.create(
         source="subagent",
+        work_scope=child_scope,
+        desktop_binding=DesktopBinding(owner_kind="run", scope=child_scope),
         metadata={
             "_server_bound_kind": "subagent",
             "parent_thread_id": "parent-thread",
@@ -65,9 +73,11 @@ async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision(
                 "provider_tool_schema_revision": IPYTHON_SCHEMA_REVISION,
             },
             "runtime_prompt": "CHILD RUNTIME CARD",
+            "working_directory": "/example/child-project",
         },
     )
     with (
+        bind_browser_binding(parent_browser),
         bind_run_context(ctx),
         patch("agent_engine.executor.execute_headless_worker", new=AsyncMock(side_effect=graph)),
         patch("agent_engine.snapshot_utils.prior_incomplete_run_for_thread", return_value=None),
@@ -83,5 +93,10 @@ async def test_admitted_astb_child_uses_one_ipython_surface_and_worker_revision(
     assert captured["config"].graph_revision == "worker.ipython.v2"
     assert [row["name"] for row in captured["full_tspec"]] == ["ipython"]
     assert "CHILD RUNTIME CARD" in captured["messages"][0]["content"]
+    assert "/example/child-project" in captured["messages"][0]["content"]
+    assert captured["browser"]["binding_id"] != parent_browser.binding_id
+    assert captured["browser"]["fabric_session_id"] is None
+    for binding in (captured["browser"], captured["desktop"]):
+        assert binding["scope"]["chat_id"] == "child-chat" and binding["owner_kind"] == "run"
     assert ctx.run_config is captured["config"]
 

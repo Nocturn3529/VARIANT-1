@@ -335,7 +335,25 @@ function focusDeckForSecondInstance(app, openDeckWindow) {
   return open();
 }
 
+function closeDeckBeforeQuit(win) {
+  if (!win || win.isDestroyed()) return true;
+  return new Promise(resolve => {
+    const contents = win.webContents;
+    const finish = ok => {
+      win.removeListener('closed', closed);
+      contents.removeListener('will-prevent-unload', cancelled);
+      resolve(ok);
+    };
+    const closed = () => finish(true);
+    const cancelled = () => finish(false);
+    win.once('closed', closed);
+    contents.once('will-prevent-unload', cancelled);
+    win.close();
+  });
+}
+
 function createBeforeQuitHandler({
+  closeDeck,
   setQuitting,
   stopBackend,
   unregisterShortcuts,
@@ -345,23 +363,25 @@ function createBeforeQuitHandler({
   let cleanupStarted = false;
   let cleanupComplete = false;
   return function beforeQuit(event) {
-    setQuitting(true);
-    try { unregisterShortcuts(); } catch (_) {}
     if (cleanupComplete) return;
     if (event && typeof event.preventDefault === 'function') event.preventDefault();
     if (cleanupStarted) return;
     cleanupStarted = true;
-    Promise.resolve()
-      .then(() => stopBackend())
-      .catch((error) => {
-        log('backend shutdown failed: ' + String(error && error.message || error));
-      })
-      .finally(() => {
-        cleanupComplete = true;
-        try { quit(); } catch (error) {
-          log('final app quit failed: ' + String(error && error.message || error));
-        }
-      });
+    const finish = async () => {
+      try {
+        if (closeDeck && !await closeDeck()) { cleanupStarted = false; return; }
+      } catch (error) {
+        cleanupStarted = false;
+        log('deck close failed: ' + String(error?.message || error));
+        return;
+      }
+      setQuitting(true);
+      try { unregisterShortcuts(); } catch (_) {}
+      try { await stopBackend(); } catch (error) { log('backend shutdown failed: ' + String(error?.message || error)); }
+      cleanupComplete = true;
+      try { quit(); } catch (error) { log('final app quit failed: ' + String(error?.message || error)); }
+    };
+    void finish();
   };
 }
 
@@ -470,6 +490,7 @@ function registerAppLifecycle(deps) {
   });
 
   app.on('before-quit', createBeforeQuitHandler({
+    closeDeck: () => closeDeckBeforeQuit(getDeckWindow()),
     setQuitting,
     stopBackend,
     unregisterShortcuts: () => globalShortcut.unregisterAll(),
@@ -489,5 +510,6 @@ module.exports = {
   createInitDataDir,
   focusDeckForSecondInstance,
   createBeforeQuitHandler,
+  closeDeckBeforeQuit,
   registerAppLifecycle,
 };

@@ -19,11 +19,11 @@ from urllib.parse import urlparse
 
 import httpx
 from process_tree import CREATE_SUSPENDED, resume_owned_process_and_reap, dispose_process_tree
+from .nous_catalog import DEFAULT_MODEL as DEFAULT_HERMES_MODEL
 
 
 HERMES_PROXY_ENDPOINT = "http://127.0.0.1:8645"
 HERMES_PROXY_OPENAI_BASE = HERMES_PROXY_ENDPOINT + "/v1"
-DEFAULT_HERMES_MODEL = "meituan/longcat-2.5-preview:free"
 
 
 class HermesProxyError(RuntimeError):

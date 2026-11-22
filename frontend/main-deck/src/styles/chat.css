@@ -249,6 +249,13 @@
   display: flex;
   flex-direction: column;
 }
+.history-item__match { display: grid; min-width: 0; flex: 1; padding: 5px 0; gap: 2px; text-align: left; }
+.history-item__match small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--deck-text-secondary); font-size: var(--deck-text-xs); }
+.history-match-nav { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--deck-line); color: var(--deck-text-secondary); font-size: var(--deck-text-compact); }
+.history-match-nav button { border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); padding: 3px 6px; background: var(--deck-surface-raised); color: var(--deck-text-primary); }
+.history-match-active { outline: 1px solid var(--deck-line-strong); outline-offset: 3px; }
+.history-excerpt { color: var(--deck-text-secondary); font-size: var(--deck-text-xs); }
+::highlight(history-match) { background-color: var(--deck-warning); color: var(--deck-canvas); }
 .chat-completion-announcement {
   position: absolute;
   width: 1px;
@@ -283,6 +290,7 @@
 .chat-turn__prompts,
 .chat-turn__responses { display: flex; flex-direction: column; gap: 10px; }
 .chat-turn__prompts { margin-bottom: 12px; }
+:root[data-density="comfortable"] .chat-turn__prompts { margin-bottom: 18px; }
 .message { display: flex; margin: 0; }
 .message__body { min-width: 0; width: 100%; }
 .message--user {
@@ -352,29 +360,6 @@
   transition: opacity 120ms ease-out;
 }
 .turn-activity-stack [data-conversation-scaffold]:is(:hover, :focus-within) { opacity: 1; }
-.turn-status {
-  width: 100%;
-  min-height: 25px;
-  display: flex;
-  align-items: center;
-  margin: 0;
-  padding: 2px 0;
-  gap: 7px;
-  border: 0;
-  color: var(--deck-text-muted);
-  background: transparent;
-  font: inherit;
-  line-height: 1.45;
-  text-align: left;
-}
-.turn-status > em {
-  margin-left: auto;
-  flex: none;
-  color: var(--deck-text-muted);
-  font-style: normal;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
 .turn-process__pulse {
   width: 8px;
   height: 8px;
@@ -390,7 +375,6 @@
   50% { opacity: 1; }
 }
 @keyframes turn-process-shimmer { to { background-position: -220% 0; } }
-.turn-status { width: auto; justify-self: start; }
 @media (prefers-reduced-motion: reduce) {
 .turn-process__pulse { animation: none; }
 .runtime-chat-empty > .kernel-glyph { animation: none; filter: none; }

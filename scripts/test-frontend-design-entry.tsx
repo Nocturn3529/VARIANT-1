@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
 import {TurnActivity} from "../frontend/main-deck/src/chat/TurnActivity";
+import {RunResults} from "../frontend/main-deck/src/chat/RunResults";
 import {traceRows, traceSummary} from "../frontend/main-deck/src/chat/traceModel";
 import {kernelSamples, kernelSeed, MUTATION_INK} from "../frontend/main-deck/src/motion/kernelField";
 import {AppearanceBindings, getAppearance, setAppearance} from "../frontend/main-deck/src/state/appearanceStore";
@@ -40,7 +41,7 @@ export async function run() {
     assert.equal(traceSummary(cells).cells, 2);
     await act(async () => root.render(<TurnActivity steps={cells} live={false} streamText="" turnStartedAt={100}/>));
     const summary = host.querySelector<HTMLButtonElement>('.execution-trace__summary')!;
-    assert.match(summary.getAttribute("aria-label")!, /2 Python cells/);
+    assert.match(summary.getAttribute("aria-label")!, /Ran Python 2 times/);
     assert.equal(summary.getAttribute("aria-expanded"), "false");
     assert.equal(host.querySelectorAll(".trace-entry").length, 0);
     await act(async () => summary.click());
@@ -81,9 +82,26 @@ export async function run() {
     assert.equal(activityPresentation({...cells[0], tool: 'search', argsPreview: '{"code":"raw'}).input, '{"code":"raw', 'only Python inputs unwrap code previews');
     const browserCell = {...cells[0], id: 'live-browser-cell', callId: 'live-browser-call', status: 'running' as const, argsPreview: JSON.stringify({code: "page = browser.navigate('https://example.com')"})};
     assert.equal(traceActionLabel(browserCell, true), 'Opening browser page');
+    const measured = {...cells[0], cellAction:"Read process logs", argsPreview: JSON.stringify({code:"tools.read_file('other.txt')"})};
+    assert.equal(traceActionLabel(measured, false), "Read process logs");
+    assert.equal(traceActionLabel({...measured,cellAction:"Read file"}, false), "Read file", "a cell receipt does not identify a source-code filename");
+    assert.equal(traceSummary([measured, {...measured,id:"more-logs"}]).label, "Read process logs (2 cells)");
+    await act(async () => root.render(<RunResults steps={[]}/>));
+    assert.equal(host.querySelector(".message-results"), null, "ordinary replies have no tool report");
+    await act(async () => root.render(<RunResults steps={[
+      {...measured, callId:"confirmed", omittedBefore:2},
+      {...measured, id:"skipped", callId:"skipped", status:"skipped", rawStatus:"skipped", cellAction:undefined},
+      {...measured, id:"unobserved", callId:"pending", rawStatus:"running", cellAction:undefined, resultPreview:"partial output"},
+    ]}/>));
+    assert.equal(host.querySelector(".message-results summary")?.textContent,"2 retained tool results · 1 skipped");
     assert.equal(traceActionLabel({...browserCell, status: 'ok'}, false), 'Opened browser page');
     assert.equal(traceActionLabel({...browserCell, status: 'error'}, false), 'Browser navigation failed');
     assert.equal(traceActionLabel({...browserCell, argsPreview: JSON.stringify({code: 'print("browser.navigate()")'})}, true), 'Running Python');
+    const read={...cells[0],tool:"read_file",argsPreview:JSON.stringify({path:"docs/ARCHITECTURE.md"})};
+    const command={...cells[1],tool:"run_command",argsPreview:JSON.stringify({command:"git status"})};
+    assert.equal(traceSummary([read,command,{...command,id:"other-command"}]).label,"Read ARCHITECTURE.md, ran 2 commands");
+    assert.equal(traceActionLabel({...command,tool:"execute_code",argsPreview:'{"argv":["ls","src"]}'},false),"Ran ls src");
+    assert.equal(traceActionLabel({...read,tool:"harness.inspect",argsPreview:'{"query":"project files"}'},false),"Explored project files");
     await act(async () => root.render(<TurnActivity key="live-cell-test" steps={[browserCell]} live={true} streamText="" turnStartedAt={Date.now()}/>));
     assert.match(host.querySelector('.trace-entry__name')!.textContent!, /Opening browser page/);
     assert.ok(host.querySelector('.trace-entry.is-running .trace-progress'), 'only running row shows the progress animation');
@@ -133,7 +151,27 @@ export async function run() {
     assert.equal(host.querySelector(".tool-run code.trace-entry__headline")!.textContent, "Load measurements", "a cell names its first line");
     await act(async () => root.render(<TurnActivity key="ordered-live" steps={[...cells, {...cells[1], id: "cell-3", callId: "call-3", status: "running"}]} live={true} streamText="" turnStartedAt={Date.now()}/>));
     assert.equal(host.querySelector(".tool-run .execution-trace__summary")!.getAttribute("aria-expanded"), "false", "a live run stays folded");
-    assert.ok(host.querySelector(".tool-run__ticker .trace-entry.is-running"), "the ticker shows the running call");
+    assert.match(host.querySelector(".execution-trace__summary")!.textContent!, /Running Python/);
+    assert.equal(host.querySelectorAll(".trace-progress").length, 1, "only the current action animates in a folded group");
+    await act(async () => host.querySelector<HTMLButtonElement>(".execution-trace__summary")!.click());
+    assert.equal(host.querySelectorAll(".trace-progress").length, 1, "opening the group moves its live cue to the actual call");
+    assert.ok(host.querySelector('[data-trace-id="cell-3"] .trace-progress'));
+    await act(async () => root.render(<TurnActivity key="growing-group" steps={[read]} scope="growing" live streamText="" turnStartedAt={100}/>));
+    await act(async () => host.querySelector<HTMLButtonElement>(".trace-entry__disclosure")!.click());
+    await act(async () => root.render(<TurnActivity key="growing-group" steps={[read,command]} scope="growing" live streamText="" turnStartedAt={100}/>));
+    assert.equal(host.querySelector(".execution-trace__summary")?.getAttribute("aria-expanded"),"true","adding a call keeps an explicitly opened single result visible");
+    assert.match(host.querySelector(".trace-entry__body")!.textContent!,/ARCHITECTURE.md/);
+    const failed={...read,id:"early-failure",status:"error" as const};
+    const renderFailure=(scope:string)=>act(async()=>root.render(<TurnActivity key={scope} steps={[failed]} scope={scope} live={!scope} streamText="" turnStartedAt={100}/>));
+    await renderFailure("");
+    await act(async()=>host.querySelector<HTMLButtonElement>(".trace-entry__disclosure")!.click());
+    await renderFailure("late-run-id");
+    assert.equal(host.querySelector(".trace-entry__disclosure")?.getAttribute("aria-expanded"),"false","a late run ID keeps an explicit fold on a failed row");
+    await renderFailure("different-run-id");
+    assert.equal(host.querySelector(".trace-entry__disclosure")?.getAttribute("aria-expanded"),"true","another run reusing the call ID starts with its own disclosure");
+    await act(async()=>root.render(<TurnActivity key="blank" steps={[{...thought,detail:" "}]} live streamText="" turnStartedAt={Date.now()}/>));
+    assert.equal(host.querySelector(".trace-entry--thought"),null);
+    assert.equal(host.querySelectorAll(".execution-trace__waiting .trace-progress").length,1,"empty summaries leave one honest live status");
     await act(async () => root.render(<><AppearanceBindings/><AppearanceSettings/></>));
     await act(async () => [...host.querySelectorAll('button')].find(button => button.textContent === 'Compact')!.click());
     assert.equal(getAppearance().density, "compact"); assert.equal(document.documentElement.dataset.density, "compact");

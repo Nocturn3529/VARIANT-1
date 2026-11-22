@@ -76,6 +76,7 @@ class KernelCapsuleValue:
     bytes: int
     artifact_ref: str
     requirements: Mapping[str, Any] = field(default_factory=dict)
+    alias_of: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +87,7 @@ class KernelCapsuleValue:
             "bytes": int(self.bytes),
             "artifact_ref": self.artifact_ref,
             "requirements": dict(self.requirements),
+            **({"alias_of": self.alias_of} if self.alias_of else {}),
         }
 
     @classmethod
@@ -98,6 +100,7 @@ class KernelCapsuleValue:
             bytes=int(value.get("bytes") or 0),
             artifact_ref=str(value.get("artifact_ref") or ""),
             requirements=dict(value.get("requirements") or {}),
+            alias_of=str(value.get("alias_of") or ""),
         )
 
 

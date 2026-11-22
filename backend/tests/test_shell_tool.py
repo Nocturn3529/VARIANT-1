@@ -86,6 +86,15 @@ def test_resolve_cwd_strips_redundant_root_folder_name(workspace: Path):
     assert shell_tool.resolve_cwd("out") == os.path.realpath(str(child))
 
 
+def test_resolve_cwd_prefers_existing_literal_relative_path(workspace: Path):
+    nested = workspace / workspace.name
+    (nested / "out").mkdir(parents=True)
+    (workspace / "out").mkdir()
+
+    assert Path(shell_tool.resolve_cwd(workspace.name)) == nested.resolve()
+    assert Path(shell_tool.resolve_cwd(f"{workspace.name}/out")) == (nested / "out").resolve()
+
+
 def test_resolve_cwd_keeps_same_user_full_filesystem_access(workspace: Path):
     outside = workspace.parent / "outside"
     outside.mkdir()
@@ -200,12 +209,18 @@ async def test_timeout_stops_the_owned_process_tree(
         encoding="utf-8",
     )
 
-    with pytest.raises(tools.ToolError, match="timed out"):
+    with pytest.raises(tools.ToolError, match="timed out") as timeout:
         await shell_tool.run_command({
             "argv": [sys.executable, "parent.py"],
             "cwd": str(workspace),
             "timeout": 1,
         })
+    record, = execution_runtime.processes.list()
+    assert record.state == "terminated"
+    assert timeout.value.code == "command_timeout"
+    assert f"process_id: {record.process_id}" in str(timeout.value)
+    assert f"process_state: {record.state}" in str(timeout.value)
+    assert f"exit: {record.exit_code}" in str(timeout.value)
     await asyncio.sleep(3)
     assert not marker.exists()
 
@@ -320,6 +335,29 @@ async def test_process_mode_starts_and_lists_durable_processes(
     )
 
 
+@pytest.mark.asyncio
+async def test_managed_process_preserves_failed_cd_exit_status(workspace: Path, execution_runtime):
+    marker = "producer-ran.txt"
+    if os.name == "nt":
+        cmd = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cmd.exe"
+        argv = [str(cmd), "/d", "/c", f"cd /d missing-fixture-directory && echo ran > {marker}"]
+    else:
+        argv = ["/bin/sh", "-c", f"cd missing-fixture-directory && printf ran > {marker}"]
+    host, broker = _kernel_host(execution_runtime)
+    context = _kernel_context()
+    receipt = await broker.invoke_name(
+        "run_command", {"mode": "process", "argv": argv, "cwd": str(workspace)}, context,
+    )
+    assert receipt.ok, receipt.to_dict()
+    router = host.remote_handle_routers["execution"]
+    finished = await router(context, receipt.result_value["$variant1_handle"], "wait", {"timeout": 10})
+    status = await router(context, finished["$variant1_handle"], "inspect", {})
+
+    assert status["state"] == "exited"
+    assert isinstance(status["exit_code"], int) and status["exit_code"] != 0
+    assert not (workspace / marker).exists()
+
+
 def _kernel_host(runtime):
     registry = tools.ToolRegistry()
     composed = SimpleNamespace(execution=runtime)
@@ -429,6 +467,8 @@ async def test_terminal_mode_returns_one_fluent_ipython_handle(
             "mode": "terminal",
             "argv": [sys.executable, "-u", "-c", source],
             "cwd": str(workspace),
+            "cols": 80,
+            "rows": 24,
             "force_pipe_fallback": True,
         },
         context,
@@ -436,6 +476,14 @@ async def test_terminal_mode_returns_one_fluent_ipython_handle(
     assert receipt.ok, receipt.to_dict()
     handle = receipt.result_value["$variant1_handle"]
     router = host.remote_handle_routers["execution"]
+    assert (handle["metadata"]["cols"], handle["metadata"]["rows"]) == (80, 24)
+    resized = await router(context, handle, "resize", {"cols": 100, "rows": 32})
+    handle = resized["$variant1_handle"]
+    assert (handle["metadata"]["cols"], handle["metadata"]["rows"]) == (80, 24)
+    assert handle["metadata"]["resize_receipt"] == {
+        "terminal_id": handle["id"], "supported": False, "cols": 100, "rows": 32,
+        "previous_cols": 80, "previous_rows": 24, "effective_cols": 80, "effective_rows": 24,
+    }
     written = await router(context, handle, "write", {"data": "hello\n"})
     handle = written["$variant1_handle"]
     deadline = time.monotonic() + 5
@@ -462,14 +510,17 @@ async def test_terminal_mode_returns_one_fluent_ipython_handle(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("outside_project", [False, True])
 async def test_one_shot_kernel_result_carries_reconnectable_process_handle(
-    workspace: Path, execution_runtime,
+    workspace: Path, execution_runtime, outside_project: bool,
 ):
+    cwd = workspace.parent / "outside" if outside_project else workspace
+    cwd.mkdir(exist_ok=True)
     host, broker = _kernel_host(execution_runtime)
     receipt = await broker.invoke_name(
         "run_command",
         {"command": "Write-Output 42" if os.name == "nt" else "printf 42",
-         "cwd": str(workspace)},
+         "cwd": str(cwd)},
         _kernel_context(),
     )
 
@@ -477,6 +528,9 @@ async def test_one_shot_kernel_result_carries_reconnectable_process_handle(
     result = receipt.result_value
     assert result["schema"] == "variant1.command-result.v1"
     assert result["ok"] is True
+    assert Path(result["cwd"]) == cwd.resolve()
+    assert result["cwd_within_project"] is (not outside_project)
+    assert ("cwd_scope: outside active project" in result["text"]) is outside_project
     assert "42" in result["text"]
     assert result["stdout"].strip() == "42"
     assert result["stderr"] == ""
@@ -542,6 +596,26 @@ async def test_stale_process_handle_can_wait_but_cannot_signal(
     replacement = await router(context, stale, 'refresh', {})
     assert replacement['$variant1_handle']['revision'] == finished.revision
     assert stale['revision'] < finished.revision
+
+
+@pytest.mark.asyncio
+async def test_process_stop_receipt_distinguishes_requested_and_prior_exit(workspace, execution_runtime):
+    host, broker = _kernel_host(execution_runtime)
+    context = _kernel_context()
+    opened = await broker.invoke_name("run_command", {
+        "mode": "process", "cwd": str(workspace),
+        "argv": [sys.executable, "-u", "-c", "import time; time.sleep(30)"],
+    }, context)
+    assert opened.ok, opened.to_dict()
+    handle = opened.result_value["$variant1_handle"]
+    router = host.remote_handle_routers["execution"]
+    stopped = (await router(context, handle, "stop", {}))["$variant1_handle"]
+    assert stopped["metadata"]["state"] == "terminated"
+    assert stopped["metadata"]["stop_receipt"] == {"outcome": "exit_after_stop_request"}
+    repeated = (await router(context, handle, "stop", {}))["$variant1_handle"]
+    assert repeated["metadata"]["stop_receipt"] == {"outcome": "already_exited"}
+    inspected = await router(context, repeated, "inspect", {})
+    assert inspected["exit_code"] is not None
 
 
 @pytest.mark.asyncio

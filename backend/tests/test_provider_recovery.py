@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
@@ -39,6 +40,51 @@ def router(tmp_path, monkeypatch, **policy):
 async def consume(router, **kwargs):
     return [part async for part in router.stream([{"role":"user","content":"task"}],
                   sampling={"max_tokens":16}, tools=[IPYTHON_PROVIDER_SPEC], **kwargs)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("auxiliary", [False, True])
+async def test_configured_local_recovery_refuses_different_hardware_weights(tmp_path, monkeypatch, auxiliary):
+    pinned = {"mode": "local", "provider": "local", "model": "original.gguf"}
+    result = router(tmp_path, monkeypatch, fallback_routes=[pinned],
+                    auxiliary_routes={"internal_prose": [pinned]})
+    monkeypatch.setattr(LLMRouter, "model_name", property(lambda self: "new.gguf"))
+    monkeypatch.setattr(LLMRouter, "engine_ready", property(lambda self: True))
+    attempted = []
+    async def selected(messages, **kwargs):
+        attempted.append(result.bound_model_route())
+        if kwargs["route"] == "cloud":
+            raise ProviderRequestError("openai", "unavailable", status_code=503)
+        yield "wrong model"
+    monkeypatch.setattr(result, "_stream_selected", selected)
+    with result.bind_model_route(PRIMARY):
+        with pytest.raises(ValueError, match="original.gguf.*new.gguf"):
+            await consume(result, recovery_profile="internal_prose" if auxiliary else "")
+    assert attempted == ([] if auxiliary else [PRIMARY])
+    with result.bind_model_route(pinned):
+        assert result.bound_model_route()["model"] == "new.gguf"  # Ordinary chats follow Hardware.
+
+
+@pytest.mark.asyncio
+async def test_local_recovery_checks_the_weight_pin_after_acquiring_the_engine_gate(tmp_path, monkeypatch):
+    pinned = {"mode": "local", "provider": "local", "model": "original.gguf"}
+    result = router(tmp_path, monkeypatch, auxiliary_routes={"internal_prose": [pinned]})
+    loaded = "original.gguf"
+    @asynccontextmanager
+    async def gate():
+        nonlocal loaded
+        loaded = "changed-while-waiting.gguf"
+        yield
+    monkeypatch.setattr(LLMRouter, "model_name", property(lambda self: loaded))
+    monkeypatch.setattr(result, "_local_gate", gate, raising=False)
+    async def unexpected(*args, **kwargs):
+        pytest.fail("no inference may run with the wrong weights")
+        yield
+    monkeypatch.setattr(result, "_stream_selected", unexpected)
+    with result.bind_model_route(PRIMARY):
+        with pytest.raises(ValueError, match="original.gguf.*changed-while-waiting.gguf"):
+            await consume(result, recovery_profile="internal_prose")
+    assert loaded == "changed-while-waiting.gguf"
 
 
 def test_configuration_disabled_by_default_and_explicit_bounded_only():

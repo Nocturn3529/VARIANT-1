@@ -135,6 +135,7 @@ def test_migration_preserves_legacy_message_ids_and_delivery_intent(tmp_path):
     row, _ = repo.persist_message({"message_id": "legacy", "sender_peer_id": "grok:old", "target_peer_id": "chat:a",
         "content": "old answer", "in_reply_to": "prior", "request_id": "old-key", "delivery": "follow_up"})
     with repo._connect() as conn:
+        conn.execute("DROP INDEX peer_message_incoming_request")
         conn.execute("ALTER TABLE peer_message DROP COLUMN message_kind")
     restored = PeerRepository(path).get_message("legacy")
     assert restored["message_kind"] == "request"

@@ -1,11 +1,14 @@
+import "@xterm/xterm/css/xterm.css";
+import "../frontend/main-deck/src/styles/index.css";
 import {ingestChatProjects} from "../frontend/main-deck/src/state/chatProjectStore";
+import {checkWorkbench} from "./test-workbench-ownership-checks";
 import {openDirectoryPreview} from "../frontend/main-deck/src/workbench/previewStore";
-import {noteDisplayedSession,ingestSessions} from "../frontend/main-deck/src/state/sessionStore";
+import {getSessionState,noteDisplayedSession,ingestSessions} from "../frontend/main-deck/src/state/sessionStore";
 /** Isolated native diagnostic. Never imported or packaged by the application. */
 import {createRoot} from "react-dom/client";
 import {Workbench} from "../frontend/main-deck/src/workbench/Workbench";
 import {ingestBrowserHost, setBrowserHostConnection, setBrowserHostContext} from "../frontend/main-deck/src/workbench/browserHostBridge";
-import {detachWorkbenchPane, getWorkbenchState, hidePane, moveWorkbenchPane, PANE} from "../frontend/main-deck/src/workbench/workbenchStore";
+import {detachWorkbenchPane, getWorkbenchState, hidePane, moveWorkbenchPane, PANE, toggleRightPanels} from "../frontend/main-deck/src/workbench/workbenchStore";
 import {closeNativeWindow,dockAllNativeWindows,installNativeWindowBridge} from "../frontend/main-deck/src/workbench/nativeWindowStore";
 import {findGroupOfPane} from "../frontend/main-deck/src/workbench/layoutModel";
 import {installBrowserDownloads} from "../frontend/main-deck/src/workbench/browserDownloads";
@@ -29,6 +32,9 @@ window.addEventListener("beforeunload", disposeDownloads, {once:true});
 document.addEventListener("securitypolicyviolation", event => console.error("E01_CSP", event.violatedDirective, event.blockedURI));
 createRoot(document.getElementById("variant1-react-root")!).render(<div className="app-shell chat-shell" style={{display: "block", height: "100vh"}}><Workbench api={window.variant1Deck || null}/></div>);
 Object.assign(window, {e01: {
+  checkWorkbench,
+  displayedChat: () => getSessionState().displayedSessionId,
+  toggleRightPanels,
   command(command: Record<string, unknown>) {
     const id = `native-e01-${++next}`;
     return new Promise(resolve => {

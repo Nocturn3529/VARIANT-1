@@ -32,6 +32,7 @@ def build_proxy_contracts(
     exclude_proxy: str = "",
     current_catalog=None,
     chat_goal_owner: bool = True,
+    active_child: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Build the ordinary Python proxy surface available to mutations.
 
@@ -136,7 +137,9 @@ def build_proxy_contracts(
                 continue
             contract_release = loaded.release_id
             if category_id == "base" and root == "session":
-                api, contract_release = session_infrastructure_contract(loaded, api, current_catalog)
+                api, contract_release = session_infrastructure_contract(
+                    loaded, api, current_catalog, active_child=active_child
+                )
             transport = dict(api.get("transport") or {})
             if str(api.get("tool_name") or transport.get("tool_name") or "") not in enabled:
                 continue

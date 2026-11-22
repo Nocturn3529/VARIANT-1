@@ -9,9 +9,40 @@ import asyncio
 import inspect
 import json
 import os
+import sys
 import tempfile
 from contextlib import asynccontextmanager
 from typing import Any, Awaitable, Callable
+
+import psutil
+
+
+def owns_backend_process(arguments: list[str]) -> bool:
+    """Read-only check for Electron before it uses a PID from a saved handshake."""
+    if len(arguments) != 4:
+        return False
+    pid, started_at, instance_id, port_file = arguments
+    try:
+        process = psutil.Process(int(pid))
+        if (process.pid <= 1 or not instance_id or not os.path.isabs(port_file)
+                or process.create_time() != float(started_at)):
+            return False
+        if not os.path.samefile(process.exe(), psutil.Process().exe()):
+            return False
+        args = process.cmdline()[1:]
+        if not getattr(sys, "frozen", False):
+            server = os.path.join(os.path.dirname(__file__), "server.py")
+            if not args or not os.path.isabs(args[0]) or not os.path.samefile(args[0], server):
+                return False
+            args = args[1:]
+        if len(args) != 2 or args[0] != "--port-file" or not os.path.isabs(args[1]):
+            return False
+        actual_path = os.path.normcase(os.path.realpath(args[1]))
+        return (actual_path == os.path.normcase(os.path.realpath(port_file))
+                and process.environ().get("VARIANT1_BACKEND_INSTANCE_ID") == instance_id
+                and process.is_running())
+    except (psutil.Error, OSError, ValueError, OverflowError):
+        return False
 
 
 def write_port_file(path: str, payload: dict) -> None:
@@ -62,6 +93,10 @@ def make_lifespan(
             }
             if activity_token is not None:
                 payload["activity_token"] = activity_token()
+            try:
+                payload["process_started_at"] = psutil.Process().create_time()
+            except (psutil.Error, OSError):
+                pass  # Without OS birth evidence Electron skips record-only force termination.
             write_port_file(port_file, payload)
             print(
                 f"[variant1-backend] listening on {runtime.get('host')}:{runtime.get('port')}",

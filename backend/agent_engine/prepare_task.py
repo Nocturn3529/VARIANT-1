@@ -519,6 +519,14 @@ def main_prepare_task_node(config: AgentRunConfig, runtime: MainTaskRuntime):
             # A model-step checkpoint can already contain accepted partial
             # output and spent length recoveries, even without pending tools.
             loop.update(copy.deepcopy((resume_state.get("main") or {}).get("loop") or {}))
+            from chat_goals.binding import current_turn_binding
+            goal_binding = current_turn_binding()
+            if goal_binding is not None:
+                goal_binding.restore_observation(
+                    loop.get("goal_observation"),
+                    prior_goal_id=str((resume_state.get("work_scope") or {}).get("goal_id") or ""),
+                    pending_tools=pending_tool_loop is not None,
+                )
         if terminal_commit_only:
             loop["route"] = "finalize"
             loop["actions"] = []

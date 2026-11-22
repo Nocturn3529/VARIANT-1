@@ -1,6 +1,6 @@
 {
   "name": "variant1",
-  "version": "0.1.1-preview.3",
+  "version": "0.1.1-preview.4",
   "description": "VARIANT-1 — a local-first, model-agnostic Adaptive AI Host",
   "main": "main.js",
   "license": "MIT",
@@ -13,7 +13,7 @@
     "setup:backend": "node scripts/setup-backend.js",
     "test:python": "node scripts/test-python.js",
     "test:python:desktop": "node scripts/test-python.js --desktop",
-    "test:deck:e2e": "npm run build:deck && node scripts/test-browser-retained-native.js && node scripts/test-native-popouts-electron.js && node scripts/test-pdf-preview-electron.js && node scripts/test-browser-host-native.js && node scripts/test-terminal-selection-electron.js && node scripts/test-browser-downloads-native.js && node scripts/test-browser-keys-native.js && node scripts/test-browser-wrapped-click-native.js && node scripts/test-browser-element-refs-native.js && node scripts/test-chat-ownership-native.js && node scripts/test-composer-native.js && node scripts/test-chat-windows-native.js",
+    "test:deck:e2e": "npm run build:deck && node scripts/test-browser-retained-native.js && node scripts/test-native-popouts-electron.js && node scripts/test-pdf-preview-electron.js && node scripts/test-browser-host-native.js && node scripts/test-terminal-selection-electron.js && node scripts/test-browser-downloads-native.js && node scripts/test-browser-keys-native.js && node scripts/test-browser-wrapped-click-native.js && node scripts/test-browser-element-refs-native.js && node scripts/test-chat-ownership-native.js && node scripts/test-composer-native.js && node scripts/test-chat-windows-native.js && node scripts/test-editor-close-native.js && node scripts/test-workbench-reading-native.js",
     "test:backend:frozen": "node scripts/test-frozen-backend-smoke.js",
     "test:kernel:frozen": "node scripts/test-frozen-kernel-smoke.js",
     "test:astb:frozen": "node scripts/test-frozen-kernel-smoke.js --astb",

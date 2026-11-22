@@ -70,6 +70,7 @@ class ChildInspection:
                 from .children import reported_child_text
                 report=reported_child_text(row['result_text'] or '')
                 value.update(report=report[:16000],report_truncated=len(report)>16000)
+                value["project_roots"] = json.loads(row["project_roots_json"])
             children.append(value)
         return {'revision':int(revision),'total':totals['total'],'active':int(totals['active'] or 0),
                 'blocked':int(totals['blocked'] or 0),'truncated':not child_id and totals['total']>len(children),'children':children}

@@ -12,7 +12,7 @@ const handlers = new Map();
 const exported = {exports: {}};
 const external = [];
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
-  module: exported, exports: exported.exports, URL,
+  module: exported, exports: exported.exports, URL, process: {platform: 'win32'},
   require: id => id === 'electron' ? {
     ipcMain: {handle: (name, callback) => handlers.set(name, callback)},
     screen: {getDisplayMatching: () => ({workArea: {x: -1920, y: 0, width: 1920, height: 1080}})},
@@ -86,6 +86,18 @@ const control = handlers.get('workbench:window:control');
 assert.equal(control({trusted: false}, 'pane:group-files', 'close').ok, false);
 assert.equal(child.destroyed, false);
 assert.equal(control({trusted: true}, 'pane:group-files', 'pin').pinned, true);
+assert.equal(control({trusted: true}, 'pane:group-files', 'pin').pinned, false);
+child.setAlwaysOnTop = (value, level) => { child.pinned = value && level === 'pop-up-menu'; };
+assert.equal(control({trusted: true}, 'pane:group-files', 'pin').ok, true, 'a refused floating pin can use the next Windows level');
+assert.equal(child.isAlwaysOnTop(), true);
+child.setAlwaysOnTop = () => {};
+const refused = control({trusted: true}, 'pane:group-files', 'pin');
+assert.equal(refused.ok, false, 'a refused unpin must report failure');
+assert.equal(refused.pinned, true, 'the acknowledgement contains the actual native state');
+child.pinned = false;
+const refusedPin = control({trusted: true}, 'pane:group-files', 'pin');
+assert.equal(refusedPin.ok, false);
+assert.equal(refusedPin.pinned, false);
 assert.equal(control({trusted: true}, 'missing', 'focus').ok, false);
 assert.equal(control({trusted: true}, 'pane:group-files', 'arbitrary-method').ok, false);
 assert.equal(control({trusted: false}, 'pane:group-files', 'resize', {width:1312,height:880}).ok, false);

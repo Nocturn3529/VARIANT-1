@@ -2,7 +2,7 @@ import {createModuleStore} from "./state/createModuleStore";
 import {asRecord} from "./state/storePrimitives";
 import {settingsRequests} from "./state/settingsRequests";
 import type {RuntimeContext} from "./types";
-export type RecoveryRoute={mode:"cloud"|"local";provider:string;model:string;reasoning_effort?:string};
+export type RecoveryRoute={mode:"cloud"|"local";provider:string;model:string;reasoning_effort?:string;reasoning_enabled?:boolean};
 export const ROUTING_PROFILES=["internal_json","internal_prose","vision"] as const;
 export type RoutingProfile=typeof ROUTING_PROFILES[number];
 export type RecoveryConfig={enabled:boolean;max_attempts:number;max_wait_seconds:number;fallback_routes:RecoveryRoute[];auxiliary_routes:Partial<Record<RoutingProfile,RecoveryRoute[]>>};
@@ -36,7 +36,18 @@ export function saveProviderRouting(){
 function parseConfig(value:unknown):RecoveryConfig|null{
   const raw=asRecord(value);if(typeof raw.enabled!=="boolean" || typeof raw.max_attempts!=="number" || typeof raw.max_wait_seconds!=="number" || !Array.isArray(raw.fallback_routes))return null;
   const chains=asRecord(raw.auxiliary_routes);
-  function routes(rows:unknown):RecoveryRoute[]|null{if(!Array.isArray(rows) || rows.length>4)return null;const result:RecoveryRoute[]=[];for(const item of rows){const row=asRecord(item);if(!["local","cloud"].includes(String(row.mode)) || typeof row.provider!=="string" || typeof row.model!=="string")return null;result.push({mode:row.mode as RecoveryRoute["mode"],provider:row.provider,model:row.model,...(typeof row.reasoning_effort==="string"?{reasoning_effort:row.reasoning_effort}:{})});}return result;}
+  function routes(rows:unknown):RecoveryRoute[]|null{
+    if(!Array.isArray(rows) || rows.length>4)return null;
+    const result:RecoveryRoute[]=[];
+    for(const item of rows){
+      const row=asRecord(item);
+      if(!["local","cloud"].includes(String(row.mode)) || typeof row.provider!=="string" || typeof row.model!=="string")return null;
+      result.push({mode:row.mode as RecoveryRoute["mode"],provider:row.provider,model:row.model,
+        ...(typeof row.reasoning_effort==="string"?{reasoning_effort:row.reasoning_effort}:{}),
+        ...(typeof row.reasoning_enabled==="boolean"?{reasoning_enabled:row.reasoning_enabled}:{})});
+    }
+    return result;
+  }
   const fallback=routes(raw.fallback_routes);if(!fallback)return null;const auxiliary:RecoveryConfig["auxiliary_routes"]={};
   for(const profile of ROUTING_PROFILES){if(chains[profile]!==undefined){const chain=routes(chains[profile]);if(!chain)return null;auxiliary[profile]=chain;}}
   return {enabled:raw.enabled,max_attempts:raw.max_attempts,max_wait_seconds:raw.max_wait_seconds,fallback_routes:fallback,auxiliary_routes:auxiliary};

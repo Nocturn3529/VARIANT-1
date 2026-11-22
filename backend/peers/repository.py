@@ -172,6 +172,11 @@ class PeerRepository:
                 # Existing messages retain their originally requested wake semantics.
                 conn.execute("ALTER TABLE peer_message ADD COLUMN message_kind TEXT NOT NULL DEFAULT 'request'")
             conn.execute("CREATE INDEX IF NOT EXISTS peer_message_reply ON peer_message(in_reply_to,sequence)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS peer_message_incoming_request "
+                "ON peer_message(target_peer_id,sequence) "
+                "WHERE message_kind='request' AND in_reply_to=''"
+            )
 
     @staticmethod
     def _tick(conn: sqlite3.Connection) -> int:
@@ -593,6 +598,15 @@ class PeerRepository:
                 ),
             ).fetchall()
         return [self._message(row) or {} for row in rows]
+
+    def next_incoming_request(self, peer_id: str, *, excluding: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            return self._message(conn.execute(
+                "SELECT * FROM peer_message WHERE target_peer_id=? AND message_id<>? "
+                "AND message_kind='request' AND in_reply_to='' "
+                "AND state IN ('persisted','queued','transport_written','observed') "
+                "ORDER BY sequence LIMIT 1", (str(peer_id), str(excluding)),
+            ).fetchone())
 
     def update_message(
         self, message_id: str, *, state: str | None = None,

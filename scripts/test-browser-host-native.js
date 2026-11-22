@@ -6,40 +6,55 @@ const path = require('node:path');
 const {spawn} = require('node:child_process');
 const esbuild = require('esbuild');
 const root = path.resolve(__dirname, '..');
+const forcedScale = Number(process.argv.find(value=>/^--capture-scale=[12]$/.test(value))?.split('=')[1]) || 0;
+const workbenchOnly = process.argv.includes('--workbench');
+const controlsOnly = process.argv.includes('--controls');
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'variant1-browser-host-'));
-const out = require('./native-test-artifacts')(root, 'artifacts/frontend-browser-controls-2026-09-06/browser-host', 'browser-host');
+const out = require('./native-test-artifacts')(root, 'artifacts/frontend-browser-controls-2026-09-06/browser-host', forcedScale ? 'browser-host-'+forcedScale+'x' : 'browser-host');
 fs.mkdirSync(out, {recursive: true});
 (async () => {
   const deck = path.join(temp, 'frontend/main-deck'); fs.mkdirSync(deck, {recursive:true});
   await esbuild.build({entryPoints:[path.join(__dirname, 'test-browser-host-native-entry.tsx')], bundle:true,
-    jsx:'automatic', platform:'browser', format:'esm', outfile:path.join(deck,'renderer.js'), logLevel:'silent'});
-  fs.copyFileSync(path.join(root,'frontend/main-deck/dist/platform.css'), path.join(deck,'fixture.css'));
+    jsx:'automatic', platform:'browser', format:'esm', loader:{'.woff2':'file'}, assetNames:'fonts/[name]',
+    publicPath:'/frontend/main-deck/', outfile:path.join(deck,'renderer.js'), logLevel:'silent'});
+  fs.copyFileSync(path.join(deck,'renderer.css'), path.join(deck,'fixture.css'));
   fs.copyFileSync(path.join(root,'frontend/main-deck/popout.html'), path.join(deck,'popout.html'));
   // Popout CSS has the production relative path.
   fs.mkdirSync(path.join(deck, 'dist'), {recursive:true});
   fs.copyFileSync(path.join(deck,'fixture.css'), path.join(deck,'dist/platform.css'));
   fs.writeFileSync(path.join(deck,'index.html'), fs.readFileSync(path.join(root,'frontend/main-deck/index.html'),'utf8').replace('./dist/platform.js','./renderer.js').replace('./dist/platform.css','./fixture.css'));
-  fs.writeFileSync(path.join(temp,'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron'); contextBridge.exposeInMainWorld('variant1Deck', {
+  fs.writeFileSync(path.join(temp,'preload.cjs'), `const {contextBridge,ipcRenderer}=require('electron');
+    const opened=[]; let gate,release,held=false;
+    contextBridge.exposeInMainWorld('browserFixture',{
+      lastExternal:()=>opened.at(-1), hold:()=>{held=false;gate=new Promise(r=>{release=r})},
+      held:()=>held, release:()=>{release();gate=null},
+      snapshot:name=>ipcRenderer.invoke('fixture:snapshot',name),
+    });
+    contextBridge.exposeInMainWorld('variant1Deck', {
     workbenchBrowser:command=>ipcRenderer.invoke('workbench:browser:view',command),
     onWorkbenchBrowserEvent:cb=>{const listener=(_,event)=>cb(event);ipcRenderer.on('workbench:browser:event',listener);return()=>ipcRenderer.removeListener('workbench:browser:event',listener)},
-    supportsNativeWindows:true, captureWorkbenchPreview:id=>ipcRenderer.invoke('workbench:browser:capture',id), controlNativeWindow:(id,action,size)=>ipcRenderer.invoke('workbench:window:control',id,action,size),
+    supportsNativeWindows:true, captureWorkbenchPreview:async id=>{const result=await ipcRenderer.invoke('workbench:browser:capture',id);if(gate){held=true;await gate}return result}, controlNativeWindow:(id,action,size)=>ipcRenderer.invoke('workbench:window:control',id,action,size),
     onNativeWindowClosed:cb=>{const fn=(_,id)=>cb(id);ipcRenderer.on('workbench:window:closed',fn);return()=>ipcRenderer.removeListener('workbench:window:closed',fn)},
-    readWorkbenchDirectory:async root=>({ok:true,entries:[{name:'README.md',path:root+'/README.md',directory:false},{name:'src',path:root+'/src',directory:true}]}),
-    getWorkbenchGitStatus:async()=>({ok:true,files:[]}),
+    readWorkbenchDirectory:async root=>({ok:true,entries:[{name:'README.md',path:root+'/README.md',directory:false},{name:'changed.ts',path:root+'/changed.ts',directory:false},{name:'src',path:root+'/src',directory:true}]}),
+    readWorkbenchFile:async file=>({ok:true,text:'fixture text',editable:true,dataUrl:file.endsWith('.pdf')?'data:application/pdf;base64,JVBERi0xLjQK':''}),
+    getWorkbenchGitStatus:async()=>({ok:true,root:'C:/Example',files:[{path:'README.md',status:' M'},{path:'Variant/changed.ts',status:'A '}]}),
+    openExternal:async url=>{opened.push(url);return {ok:true}},
     getWorkbenchRoot:async()=>({ok:false}),log:message=>console.log(message)
   });`);
   fs.writeFileSync(path.join(temp,'main.cjs'), `
-    const {app,BrowserWindow,protocol,nativeImage,screen}=require('electron');
+    const {app,BrowserWindow,protocol,nativeImage,screen,ipcMain}=require('electron');
     const fs=require('node:fs'), http=require('node:http'), assert=require('node:assert/strict');
     const boot=require(${JSON.stringify(path.join(root,'electron-app-boot.js'))});
     const {createNativePopoutManager}=require(${JSON.stringify(path.join(root,'electron-native-popouts.js'))});
     boot.applyGpuFlags(app); boot.registerVariant1Scheme(protocol);
+    if (${forcedScale}) app.commandLine.appendSwitch('force-device-scale-factor',String(${forcedScale}));
     app.setPath('userData',${JSON.stringify(path.join(temp,'profile'))});
     const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-    const logs=[]; let win, server, cover;
+    const logs=[], previousReceipts=[]; let win, server, cover;
     app.whenReady().then(async()=>{
       boot.registerVariant1Protocol(protocol,${JSON.stringify(temp)});
-      server=http.createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end('<!doctype html><html><head><title>'+req.url+'</title></head><body style="background:#111;color:white;font:24px monospace"><h1>Native browser '+req.url+'</h1><button id="probe">Local button</button><input aria-label="Local input"><div style="position:fixed;left:680px;top:350px;width:40px;height:40px;background:white"> </div></body></html>');});
+      const {controlsPage,checkBrowserControls}=require(${JSON.stringify(path.join(__dirname,'check-browser-controls-native.js'))});
+      server=http.createServer((req,res)=>{res.setHeader('Content-Type','text/html');res.end(req.url.split('?')[0]==='/controls' ? controlsPage : '<!doctype html><html><head><title>'+req.url+'</title></head><body style="background:#111;color:white;font:24px monospace"><h1>Native browser '+req.url+'</h1><button id="probe">Local button</button><input aria-label="Local input"><a href="#linked">Linked section</a><div style="position:fixed;left:680px;top:350px;width:40px;height:40px;background:white"> </div></body></html>');});
       await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
       const base='http://127.0.0.1:'+server.address().port;
       win=new BrowserWindow({show:false,width:1240,height:820,webPreferences:{preload:${JSON.stringify(path.join(temp,'preload.cjs'))},sandbox:true,contextIsolation:true,nodeIntegration:false,webviewTag:true,backgroundThrottling:false}});
@@ -50,6 +65,11 @@ fs.mkdirSync(out, {recursive: true});
       win.webContents.on('console-message',event=>{logs.push(event.message);console.log(event.message)});
       win.webContents.on('render-process-gone',(_,detail)=>console.error('E01_RENDERER_GONE',detail));
       const evaluate=expression=>win.webContents.executeJavaScript(expression,true);
+      ipcMain.handle('fixture:snapshot',async(event,name)=>{
+        assert.equal(event.sender,win.webContents);
+        assert.ok(['layout-quad','history-match','history-older'].includes(name));
+        fs.writeFileSync(${JSON.stringify(out)}+'/'+name+'.png',(await win.webContents.capturePage()).toPNG());
+      });
       const command=value=>{console.log('E01_COMMAND',value.action,value.tab_id);return evaluate('window.e01.command('+JSON.stringify(value)+')')};
       const check=(result,label)=>{assert.equal(result.ok,true,label+': '+JSON.stringify(result));return result};
       let frameNumber=0;
@@ -58,19 +78,36 @@ fs.mkdirSync(out, {recursive: true});
         const png=Buffer.from(result.image,'base64');
         fs.writeFileSync(${JSON.stringify(out)}+'/frame-'+(++frameNumber)+'.png',png);
         assert.equal(png.readUInt32BE(16),result.image_width);assert.equal(png.readUInt32BE(20),result.image_height);
-        const image=nativeImage.createFromBuffer(png).resize({width:result.viewport.width,height:result.viewport.height});
-        const pixels=image.getBitmap();const at=(370*result.viewport.width+700)*4;
+        const scaleX=result.image_width/result.viewport.width,scaleY=result.image_height/result.viewport.height;
+        assert.ok(Math.abs(scaleX-scaleY)<0.01,'raster and CSS viewport preserve aspect ratio');
+        const pixels=nativeImage.createFromBuffer(png).toBitmap();
+        const at=(Math.floor(370*scaleY)*result.image_width+Math.floor(700*scaleX))*4;
+        const beside=(Math.floor(370*scaleY)*result.image_width+Math.floor(670*scaleX))*4;
         assert.ok(pixels[at]>240&&pixels[at+1]>240&&pixels[at+2]>240,'the rendered frame includes page content beyond a narrow dock');
+        assert.ok(pixels[beside]<48&&pixels[beside+1]<48&&pixels[beside+2]<48,'CSS coordinates also map correctly just outside the feature');
       };
       await win.loadURL('variant1://app/frontend/main-deck/index.html');
       win.showInactive(); console.log('E01_LOADED');
       await pause(500);
+      async function workbenchChecks() {
+        const saved=await evaluate('window.e01.checkWorkbench('+JSON.stringify(base)+')');
+        previousReceipts.push(...await evaluate('window.e01.receipts()'));
+        const loaded=new Promise(resolve=>win.webContents.once('did-finish-load',resolve));
+        win.webContents.reload();await loaded;
+        await evaluate('window.e01.selectChat("workbench-A")');
+        const restored=check(await command({action:'read',tab_id:saved.id,owner_chat_id:'workbench-A'}),'reopened retained page');
+        assert.equal(restored.url,saved.url,'reopening the Deck loads the last committed page');
+        console.log('Workbench ownership: keyboard, capture, committed URL, file preview kinds and monorepo badges passed');
+      }
+      if (${workbenchOnly}) {await workbenchChecks();return;}
+      if (${controlsOnly}) {await checkBrowserControls({command,evaluate,base});return;}
       // The agent shows this tab on purpose; later steps handle it as the user would.
       check(await command({action:'new_page',tab_id:'native-a',url:base+'/one',visible:true}),'new page');
       check(await command({action:'read',tab_id:'native-a'}),'read first page');
       check(await command({action:'evaluate',tab_id:'native-a',expression:'window.cloneProbe = 0'}),'initialize clone diagnostic');
       const cloneFailure=await command({action:'evaluate',tab_id:'native-a',expression:'(window.cloneProbe++, () => document.title)'});
       assert.equal(cloneFailure.ok,false,'an uninvoked function cannot cross the Electron result bridge');
+      assert.equal(cloneFailure.code,'EVALUATION_RESULT_UNSERIALIZABLE');
       assert.match(String(cloneFailure.error),/Invoke function expressions/);
       assert.match(String(cloneFailure.error),/effects may already have occurred/);
       const cloneRecovery=check(await command({action:'evaluate',tab_id:'native-a',expression:'(() => ({title:document.title, calls:window.cloneProbe}))()'}),'explicit invocation recovery');
@@ -93,7 +130,14 @@ fs.mkdirSync(out, {recursive: true});
       const sized=check(await command({action:'set_viewport',tab_id:'native-b',width:1024,height:640}),'background viewport');
       assert.deepEqual([sized.viewport.width,sized.viewport.height],[1024,640]);
       const sizedShot=check(await command({action:'screenshot',tab_id:'native-b'}),'background sized capture');
-      assert.deepEqual([sizedShot.image_width,sizedShot.image_height],[1024,640],'a background tab takes a requested size without being shown');
+      assert.deepEqual([sizedShot.viewport.width,sizedShot.viewport.height],[1024,640],'requested viewport dimensions are CSS pixels');
+      readable(sizedShot);
+      if (${forcedScale}) {
+        assert.equal(sizedShot.viewport.device_scale_factor,${forcedScale});
+        assert.deepEqual([sizedShot.image_width,sizedShot.image_height],[1024*${forcedScale},640*${forcedScale}],'PNG retains the native raster at the forced device scale');
+        console.log('Native capture',sizedShot.image_width,sizedShot.image_height,'pixels at scale',sizedShot.viewport.device_scale_factor);
+        return;
+      }
       // Real input reaches the hidden tab while the agent works it.
       const bgButton=check(await command({action:'read',tab_id:'native-b'}),'background read').elements.find(row=>row.name==='Local button').ref;
       check(await command({action:'evaluate',tab_id:'native-b',expression:'(()=>{window.bgClicks=0;document.querySelector("button").addEventListener("click",()=>window.bgClicks++);return true})()'}),'count background clicks');
@@ -181,7 +225,7 @@ fs.mkdirSync(out, {recursive: true});
       const background=check(await command({action:'screenshot',owner_chat_id:'owner-a',tab_id:'owned-a'}),'background owned capture');
       assert.equal(background.diagnostics.end.visibility,'hidden','diagnostics report native hidden presentation');
       const hiddenImage=nativeImage.createFromBuffer(Buffer.from(background.image,'base64')).resize({width:background.viewport.width,height:background.viewport.height});
-      const hiddenPixels=hiddenImage.getBitmap(),hiddenAt=(370*background.viewport.width+700)*4;
+      const hiddenPixels=hiddenImage.toBitmap(),hiddenAt=(370*background.viewport.width+700)*4;
       fs.writeFileSync(${JSON.stringify(path.join(out,'background-capture.png'))},Buffer.from(background.image,'base64'));
       console.log('Background frame pixel',Array.from(hiddenPixels.subarray(hiddenAt,hiddenAt+4)),background.viewport);
       assert.ok(hiddenPixels[hiddenAt+1]>240 && hiddenPixels[hiddenAt]<16 && hiddenPixels[hiddenAt+2]<16,'background capture includes newly changed hidden page pixels');
@@ -201,8 +245,10 @@ fs.mkdirSync(out, {recursive: true});
       console.log('Chat ownership native: two owners, filtered inventory, foreign-target rejection, background read and unchanged foreground passed');
       console.log('E01 native: ready/active/inactive/hidden/detached/docked/navigated/closed guests passed');
       console.log('E09 native: shared tabs, readable page pixels, viewport requests, in-place expansion, and retained detached/docked sizing passed');
+      await workbenchChecks();
+      await checkBrowserControls({command,evaluate,base});
     }).catch(error=>{logs.push(error.stack||String(error));console.error(error);process.exitCode=1;}).finally(async()=>{
-      if(win&&!win.isDestroyed()) {try{fs.writeFileSync(${JSON.stringify(path.join(out,'receipts.json'))},JSON.stringify(await win.webContents.executeJavaScript('window.e01.receipts()'),null,2))}catch{}}
+      if(win&&!win.isDestroyed()) {try{const last=await win.webContents.executeJavaScript('window.e01.receipts()');fs.writeFileSync(${JSON.stringify(path.join(out,'receipts.json'))},JSON.stringify([...previousReceipts,...last],null,2))}catch{}}
       fs.writeFileSync(${JSON.stringify(path.join(out,'native.log'))},logs.join('\\n'));
       if(cover&&!cover.isDestroyed())cover.destroy();
       if(server) server.close(); app.exit(process.exitCode||0);

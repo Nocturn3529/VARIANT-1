@@ -23,7 +23,7 @@ import tools
 from observability import activity as activity_hub
 from observability.activity import args_preview as _args_preview
 from assistant_turn import AssistantTurn, normalized_stop_reason
-from reasoning_summaries import ReasoningBuffer, SUMMARY_STEP_LIMIT, summary_text
+from reasoning_summaries import DISPLAY_THOUGHT_SOURCES, ReasoningBuffer, SUMMARY_STEP_LIMIT, summary_text
 from agent_engine.task_ports import (
     TaskLoopCorePorts,
     TaskSetupPorts,
@@ -292,10 +292,10 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
         turn = session.active
         turn.model_segment = int(getattr(turn, "model_segment", 0) or 0) + 1
         segment = turn.model_segment
-        segment_started_ms = time.time() * 1000
 
         async def _attempt(call_messages, call_images):
             parts: list[str] = []
+            text_started_ms = None
             accum = (
                 tool_calling.ToolCallAccumulator()
                 if use_provider_tools else None
@@ -310,20 +310,25 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
             class SummarySink:
                 async def summary_event(self, event):
                     identity = event["summary_id"]
+                    source = event.get("source", "provider_summary")
+                    if source not in DISPLAY_THOUGHT_SOURCES:
+                        return
                     row = next((item for item in active.provider_summaries if item["id"] == identity), None)
                     if row is not None and event["summary_revision"] <= row.get("summary_revision", 0):
                         return
                     if row is None:
-                        row = {"id": identity, "kind": "thinking", "label": "Reasoning summary",
-                               "source": "provider_summary", "ts": event["ts"]}
+                        row = {"id": identity, "kind": "thinking",
+                               "label": "Thought" if source == "provider_reasoning" else "Reasoning summary",
+                               "source": source, "segment": segment, "ts": event["ts"]}
                         active.provider_summaries.append(row)
                         active.provider_summaries[:] = active.provider_summaries[-SUMMARY_STEP_LIMIT:]
                     row.update(detail=summary_text(event["text"]), status=event["status"],
                                summary_revision=event["summary_revision"])
+                    activity_hub.remember_run_display_step(row, admission_id=routing.get("admission_id", ""))
                     try:
                         await _send_turn_frame(h, websocket, session, {
                             "type": "thinking", "text": row["detail"], "summary_id": identity,
-                            "summary_source": "provider_summary", "status": row["status"],
+                            "summary_source": source, "status": row["status"],
                             "summary_revision": row["summary_revision"], "ts": row["ts"],
                             "segment": segment, **routing,
                         })
@@ -359,6 +364,8 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                             break
                         if not tok:
                             continue
+                        if not parts:
+                            text_started_ms = time.time() * 1000
                         parts.append(tok)
                         # Model tokens remain on the owning chat's transport.
                         await _send_turn_frame(h, websocket, session, {
@@ -382,7 +389,7 @@ def build_task_turn_ports(h, websocket, session) -> TaskTurnPorts:
                     "id": "text_" + uuid.uuid4().hex[:16], "kind": "text",
                     "label": "Narration", "detail": text, "segment": segment,
                     "status": "cancelled" if session.interrupt else "done",
-                    "ts": segment_started_ms,
+                    "ts": text_started_ms,
                 })
                 del active.text_segments[:-SUMMARY_STEP_LIMIT]
                 activity_hub.remember_run_narration(active.text_segments[-1])

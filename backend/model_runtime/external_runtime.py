@@ -11,6 +11,19 @@ from model_runtime.llama_server import LocalEngineError
 from model_runtime.runtime_catalog import RUNTIME_MANIFESTS, runtime_config
 
 
+def advertised_model_ids(body) -> list[str]:
+    rows = body.get("data") if isinstance(body, dict) else None
+    if not isinstance(rows, list):
+        return []
+    names = set()
+    for row in rows:
+        if isinstance(row, str):
+            names.add(row)
+        elif isinstance(row, dict) and row.get("id"):
+            names.add(str(row["id"]))
+    return sorted(names)
+
+
 class ExternalOpenAIRuntime:
     """Engine-compatible facade over a server VARIANT-1 does not own.
 
@@ -78,15 +91,7 @@ class ExternalOpenAIRuntime:
                 response = await client.get(
                     f"{self.base_url}/v1/models", headers=self._headers())
             response.raise_for_status()
-            body = response.json()
-            rows = body.get("data") if isinstance(body, dict) else []
-            models = []
-            for row in rows if isinstance(rows, list) else []:
-                if isinstance(row, str):
-                    models.append(row)
-                elif isinstance(row, dict) and row.get("id"):
-                    models.append(str(row["id"]))
-            self.discovered_models = sorted(set(models))
+            self.discovered_models = advertised_model_ids(response.json())
             if self.model and self.discovered_models and self.model not in self.discovered_models:
                 self.ready = False
                 self.last_error = (

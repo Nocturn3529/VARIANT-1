@@ -133,12 +133,19 @@ _CHAT_INSTRUCTIONS = (
     "environment facts in it to the current work."
 )
 
+_CHAT_PROGRESS = (
+    "For multi-step tool work, give the user a brief progress update in ordinary assistant text "
+    "alongside the first tool call in the same response. When a result changes your plan or "
+    "requires a retry, briefly say what happened and what you will do next alongside that call. "
+    "Routine calls can proceed quietly."
+)
+
 
 def chat_prompt_projection(ctx: PromptContext) -> PromptProjection:
     """Split invariant chat instructions from context that can change each turn."""
 
     return PromptProjection(
-        stable=_CHAT_INSTRUCTIONS,
+        stable=assemble(_CHAT_INSTRUCTIONS, _CHAT_PROGRESS),
         current=assemble(
             _context_section(ctx),
         ),
@@ -160,7 +167,7 @@ def build_chat_current_context(ctx: PromptContext) -> str:
 def build_task_system(ctx: PromptContext) -> str:
     """Worker/automation projection preserving the combined historical contract."""
 
-    return chat_prompt_projection(ctx).combined()
+    return assemble(_CHAT_INSTRUCTIONS, _context_section(ctx))
 
 
 def _subagent_contract(template_dirs: tuple[str, ...]) -> str:

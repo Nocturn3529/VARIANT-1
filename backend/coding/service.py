@@ -158,7 +158,7 @@ class CodingRuntime:
                 except ValueError:
                     continue
                 if relative and relative != ".." and not relative.startswith("../"):
-                    paths.append(relative)
+                    paths.append(f":(literal){relative}")
         before_head = str(token.get("head_oid") or "")
         target = (
             "working_since"

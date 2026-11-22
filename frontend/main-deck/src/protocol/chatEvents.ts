@@ -48,6 +48,7 @@ export type ChatPauseStateMessage = Readonly<{
 export type OrphanedTaskPayload = Readonly<Record<string, unknown>>;
 export type ChatHelloMessage = Readonly<{
   type: "hello";
+  submission_origin?: string;
   orphaned_task?: OrphanedTaskPayload;
 } & StreamRouting>;
 export type ChatOrphanedTaskMessage = Readonly<{
@@ -179,11 +180,16 @@ export type StreamTokenMessage = Readonly<{
   segment?: number;
 } & StreamRouting>;
 
+export type ProviderThoughtSource = "provider_summary" | "provider_reasoning";
+export function isProviderThoughtSource(value: unknown): value is ProviderThoughtSource {
+  return value === "provider_summary" || value === "provider_reasoning";
+}
+
 export type StreamThinkingMessage = Readonly<{
   type: "thinking";
   text: string;
   summary_id?: string;
-  summary_source?: "provider_summary";
+  summary_source?: ProviderThoughtSource;
   summary_revision?: number;
   ts?: number;
   status?: "running" | "done" | "discarded" | "cancelled";
@@ -193,6 +199,8 @@ export type StreamThinkingMessage = Readonly<{
 /** Main-chat STEPS activity for tool traces and task steps. */
 export type StreamActivityMessage = Readonly<{
   peer_message?:PeerActivity;
+  outer_call_id?:string;
+  message_id?:string;
   type: "activity" | "tool:activity";
   event: string;
   tool: string;
@@ -200,6 +208,7 @@ export type StreamActivityMessage = Readonly<{
   status: string;
   text: string;
   args_preview: string;
+  cell_action?: string;
   title: string;
   surface: string;
   ts?: number;
@@ -402,6 +411,7 @@ export function parseChatWsMessage(
     case "hello":
       return {
         type: "hello",
+        submission_origin: optStr(row.submission_origin),
         orphaned_task: row.orphaned_task && typeof row.orphaned_task === "object"
           ? row.orphaned_task as OrphanedTaskPayload
           : undefined,
@@ -526,13 +536,14 @@ export function parseChatWsMessage(
     case "token":
       return {type: "token", token: str(row.token), ...r, ...segmentOf(row)};
     case "thinking": {
-      const publicSummary = row.summary_source === "provider_summary";
+      const source = row.summary_source;
+      if (source !== undefined && !isProviderThoughtSource(source)) return {type: "chat:unknown", originalType: type, ...r};
       const valid = /^summary_[a-f0-9]{32}$/.test(str(row.summary_id))
         && ["running", "done", "discarded", "cancelled"].includes(str(row.status))
         && (row.summary_revision === undefined || (Number.isSafeInteger(row.summary_revision) && Number(row.summary_revision) >= 0));
-      if (publicSummary && !valid) return {type: "chat:unknown", originalType: type, ...r};
+      if (source && !valid) return {type: "chat:unknown", originalType: type, ...r};
       return {type: "thinking", text: str(row.text), ...r, ...segmentOf(row),
-        ...(publicSummary ? {summary_id: str(row.summary_id), summary_source: "provider_summary" as const,
+        ...(source ? {summary_id: str(row.summary_id), summary_source: source,
           summary_revision: row.summary_revision as number | undefined, status: row.status as StreamThinkingMessage["status"],
           ts: typeof row.ts === "number" && Number.isFinite(row.ts) ? row.ts : undefined} : {})};
     }
@@ -542,11 +553,14 @@ export function parseChatWsMessage(
         type,
         event: str(row.event),
         peer_message:parsePeerActivity(row.peer_message),
+        ...(row.event === "peer:wait" ? {outer_call_id: optStr(row.outer_call_id), message_id: optStr(row.message_id)} : {}),
         tool: str(row.tool),
         call_id: optStr(row.call_id),
         status: str(row.status),
         text: str(row.text),
         args_preview: str(row.args_preview),
+        cell_action: row.event === "tool:result" && row.status === "ok" && row.tool === "ipython" && r.run_id && row.call_id && typeof row.cell_action === "string"
+          ? row.cell_action.trim().slice(0, 140) : undefined,
         title: str(row.title),
         surface: str(row.surface),
         ts: row.ts == null ? undefined : Number(row.ts) || undefined,

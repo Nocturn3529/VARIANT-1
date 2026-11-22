@@ -9,11 +9,13 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const crypto = require('crypto');
-const { spawn, execFile, execFileSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const {promisify} = require('node:util');
 const {
   POSIX_ENGINE_NAMES,
   resolvePosixEngineExecutable,
   isOwnedPosixEnginePath,
+  sweepPosixEngines,
 } = require('./electron-backend-posix-engines');
 
 const MAX_BACKEND_RESTARTS = 5;
@@ -130,7 +132,7 @@ function createBackendManager(deps) {
   const expectedVersion = typeof app.getVersion === 'function' ? String(app.getVersion() || '') : '';
   const resourcesPath = deps.resourcesPath || process.resourcesPath;
   const spawnProcess = typeof deps.spawnProcess === 'function' ? deps.spawnProcess : spawn;
-  const runFileSync = typeof deps.execFileSync === 'function' ? deps.execFileSync : execFileSync;
+  const runFile = deps.runFile || promisify(execFile);
   const setTimer = typeof deps.setTimer === 'function' ? deps.setTimer : setTimeout;
   const clearTimer = typeof deps.clearTimer === 'function' ? deps.clearTimer : clearTimeout;
   const now = typeof deps.now === 'function' ? deps.now : Date.now;
@@ -142,6 +144,7 @@ function createBackendManager(deps) {
   const timings = {...DEFAULT_BACKEND_TIMINGS, ...configuredTimings};
 
   let backendProc = null;
+  const exitedChildren = new WeakSet();
   let backendInfo = null;
   let backendRestarts = 0;
   let backendStopping = false;
@@ -152,6 +155,7 @@ function createBackendManager(deps) {
   const backendWorkTails = new Map();
   let backendHealthProbe = null;
   let backendStartPromise = null;
+  let startupController = null;
   let restartTimer = null;
   let restartBudgetTimer = null;
   let restartStabilityTimer = null;
@@ -221,29 +225,34 @@ function createBackendManager(deps) {
     backendLastVerifiedAt = 0;
     backendHealthMissStartedAt = 0;
     setBackendStatus('down');
-    await terminateProcessTree((proc && proc.pid) || cached.pid);
+    await terminateOwnedBackend(proc, cached);
     removePortFileFor(cached);
     scheduleRestart();
     return null;
   }
 
-  function pingHealth(port, timeoutMs, record, failed = () => {}) {
+  function pingHealth(port, timeoutMs, record, failed = () => {}, signal) {
     return new Promise((resolve) => {
       const startedAt = now();
       let settled = false;
+      let deadlineTimer;
       const finish = (ok, reason = '', timing = null) => {
         if (settled) return;
         settled = true;
+        if (deadlineTimer !== undefined) clearTimer(deadlineTimer);
         const elapsed = Math.max(0, now() - startedAt);
         if (!ok || elapsed >= 250) log(`[backend] health probe elapsed_ms=${elapsed} result=${ok ? 'ok' : reason} loop_lag_ms=${Number.isFinite(timing?.last_lag_ms) ? timing.last_lag_ms : 'unknown'}`);
         if (!ok) failed(reason);
         resolve(ok);
       };
-      const req = http.get(
-        {host: '127.0.0.1', port, path: '/health', timeout: timeoutMs},
+      const get = deps.httpGet || http.get;
+      const req = get(
+        {host: '127.0.0.1', port, path: '/health', timeout: timeoutMs, signal},
         (res) => {
           let body = '';
           res.on('data', (c) => (body += c));
+          res.on('error', () => finish(false, 'connection_error'));
+          res.on('aborted', () => finish(false, 'connection_error'));
           res.on('end', () => {
             try {
               const j = JSON.parse(body);
@@ -257,10 +266,13 @@ function createBackendManager(deps) {
         },
       );
       req.on('error', () => {finish(false, 'connection_error');});
-      req.on('timeout', () => {
+      const expire = () => {
+        if (settled) return;
         finish(false, 'timeout');
         req.destroy();
-      });
+      };
+      req.on('timeout', expire);
+      if (!settled) deadlineTimer = setTimer(expire, timeoutMs);
     });
   }
 
@@ -360,6 +372,36 @@ function createBackendManager(deps) {
     return { command: sysPy, args: [serverPy, '--port-file', portFile], label: 'system python' };
   }
 
+  async function terminateOwnedBackend(proc, record) {
+    const signaled = [];
+    if (proc?.pid > 1 && !exitedChildren.has(proc) && proc.exitCode == null && proc.signalCode == null) {
+      await terminateProcessTree(proc.pid);
+      signaled.push(Number(proc.pid));
+    }
+    const pid = Number(record?.pid);
+    if (!Number.isSafeInteger(pid) || pid <= 1 || pid === proc?.pid) return signaled;
+    let owned = false;
+    if (Number.isFinite(record.process_started_at) && record.process_started_at > 0) {
+      try {
+        const {command, args} = resolveBackendCommand();
+        // Keep the interpreter and script (or frozen executable). The checker
+        // exits before backend startup and independently verifies the OS process.
+        await runFile(command, [...args.slice(0, -2), '--check-backend-owner', String(pid),
+          String(record.process_started_at), record.instance_id, portFile], {
+          windowsHide: true, timeout: timings.forceKillTimeoutMs,
+        });
+        owned = true;
+      } catch { /* A missing helper, legacy record or identity mismatch cannot authorize a signal. */ }
+    }
+    if (owned) {
+      await terminateProcessTree(pid);
+      signaled.push(pid);
+    } else {
+      log(`[backend] skipping unverified port-file PID ${pid}`);
+    }
+    return signaled;
+  }
+
   function terminateProcessTree(pid) {
     if (!pid) return Promise.resolve(false);
     if (typeof deps.killProcessTree === 'function') {
@@ -396,9 +438,9 @@ function createBackendManager(deps) {
     }
   }
 
-  function killVariant1EngineProcesses() {
+  async function killVariant1EngineProcesses() {
     if (typeof deps.killVariant1EngineProcesses === 'function') {
-      try { deps.killVariant1EngineProcesses(); } catch (_) {}
+      try { await deps.killVariant1EngineProcesses(); } catch (_) {}
       return;
     }
     const roots = [appRoot];
@@ -421,9 +463,7 @@ function createBackendManager(deps) {
         .join(',');
       const ps = [
         `$roots = @(${psRoots});`,
-        "$names = 'llama-server.exe','whisper-server.exe';",
-        'foreach ($name in $names) {',
-        '  Get-CimInstance Win32_Process -Filter "Name=$name" | ForEach-Object {',
+        `Get-CimInstance Win32_Process -Filter "Name = 'llama-server.exe' OR Name = 'whisper-server.exe'" -ErrorAction Stop | ForEach-Object {`,
         '    $candidate = $_.ExecutablePath;',
         '    $owned = $false;',
         '    if ($candidate) {',
@@ -433,56 +473,34 @@ function createBackendManager(deps) {
         '      }',
         '    }',
         '    if ($owned) {',
-        '      Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue',
+        '      $engine = Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue',
+        '      if ($engine -and $engine.Path -eq $candidate -and $engine.StartTime -and $_.CreationDate -and [Math]::Abs(($engine.StartTime.ToUniversalTime() - $_.CreationDate.ToUniversalTime()).Ticks) -lt 10) {',
+        '        Stop-Process -InputObject $engine -Force -ErrorAction Stop',
+        '      }',
         '    }',
-        '  }',
         '}',
-      ].join(' ');
+      ].join('\n');
       try {
-        runFileSync('powershell.exe', ['-NoProfile', '-Command', ps], {
+        await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], {
           windowsHide: true,
-          stdio: 'ignore',
           timeout: timings.forceKillTimeoutMs,
         });
-      } catch (_) {}
+      } catch (error) {
+        log('[backend] Windows engine cleanup failed: ' + String(error.stderr || error.code || 'lookup error').trim());
+      }
     } else {
       // POSIX orphan sweep for bundled inference engines (PowerShell path is Windows-only).
-      let listing = '';
       try {
-        listing = String(execFileSync('ps', ['-ax', '-o', 'pid=', '-o', 'command='], {
-          encoding: 'utf8',
-          timeout: timings.forceKillTimeoutMs,
-          env: process.env,
-        }));
-      } catch (_) {
-        listing = '';
-      }
-      for (const line of listing.split('\n')) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        const sp = trimmed.search(/\s/);
-        if (sp <= 0) continue;
-        const pid = Number(trimmed.slice(0, sp));
-        const command = trimmed.slice(sp + 1).trim();
-        if (!Number.isFinite(pid) || pid <= 1) continue;
-        // Identity from /proc or macOS lsof text file — never from argv.
-        const exe = resolvePosixEngineExecutable(pid, command);
-        if (!exe) {
-          if (/(?:^|\/)(?:llama-server|whisper-server)(?:\s|$)/.test(command)) {
-            log(`[backend] skip posix engine cleanup pid=${pid}: executable identity unverified`);
-          }
-          continue;
-        }
-        if (!POSIX_ENGINE_NAMES.includes(path.basename(exe))) continue;
-        if (!isOwnedPosixEnginePath(exe, uniqueRoots)) continue;
-        try { process.kill(pid, 'SIGTERM'); } catch (_) {}
+        await sweepPosixEngines(uniqueRoots, {platform: process.platform, runFile, timeout: timings.forceKillTimeoutMs, log});
+      } catch (error) {
+        log('[backend] POSIX engine lookup failed: ' + String(error.code || error.message));
       }
     }
     // Managed SearXNG is a Docker container (not a project .exe). Backend stops
     // it on graceful shutdown; this is a crash / hard-quit safety net. Runs on every
     // platform (previously skipped by a win32-only early return).
     try {
-      runFileSync('docker', ['stop', 'variant1-searxng'], { windowsHide: true, stdio: 'ignore', timeout: 15000 });
+      await runFile('docker', ['stop', 'variant1-searxng'], {windowsHide: true, timeout: 15000});
     } catch (_) {}
   }
 
@@ -495,49 +513,29 @@ function createBackendManager(deps) {
     return null;
   }
 
-  function pollPortFile(timeoutMs, expectedInstanceId = '') {
-    return new Promise((resolve, reject) => {
-      const deadline = now() + timeoutMs;
-      const tick = () => {
-        const data = readPortFile();
-        if (data && (!expectedInstanceId || data.instance_id === expectedInstanceId)) {
-          return resolve(data);
-        }
-        if (now() > deadline) return reject(new Error('port-file timeout'));
-        setTimer(tick, timings.portFilePollMs);
-      };
-      tick();
-    });
+  async function pollPortFile(timeoutMs, expectedInstanceId, signal) {
+    const deadline = now() + timeoutMs;
+    while (!signal.aborted) {
+      const data = readPortFile();
+      if (data?.instance_id === expectedInstanceId) return data;
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      await pause(Math.min(timings.portFilePollMs, remaining), signal);
+    }
+    throw new Error(signal.aborted ? 'startup cancelled' : 'port-file timeout');
   }
 
-  function healthCheck(port, timeoutMs, record) {
-    return new Promise((resolve, reject) => {
-      const deadline = now() + timeoutMs;
-      const attempt = () => {
-        const req = http.get(
-          { host: '127.0.0.1', port, path: '/health', timeout: 1500 },
-          (res) => {
-            let body = '';
-            res.on('data', (c) => (body += c));
-            res.on('end', () => {
-              try {
-                const j = JSON.parse(body);
-                if (res.statusCode === 200
-                    && backendIdentityMatches(record, j, expectedVersion)) return resolve(j);
-              } catch (_) { /* retry */ }
-              retry();
-            });
-          }
-        );
-        req.on('error', retry);
-        req.on('timeout', () => { req.destroy(); retry(); });
-      };
-      const retry = () => {
-        if (now() > deadline) return reject(new Error('health timeout'));
-        setTimer(attempt, timings.healthRetryMs);
-      };
-      attempt();
-    });
+  async function healthCheck(port, timeoutMs, record, signal) {
+    const deadline = now() + timeoutMs;
+    do {
+      const probeTime = Math.min(timings.probeTimeoutMs, Math.max(1, deadline - now()));
+      if (signal.aborted) break;
+      if (await pingHealth(port, probeTime, record, undefined, signal)) return;
+      const remaining = deadline - now();
+      if (remaining <= 0) break;
+      await pause(Math.min(timings.healthRetryMs, remaining), signal);
+    } while (now() < deadline);
+    throw new Error(signal.aborted ? 'startup cancelled' : 'health timeout');
   }
 
   function adoptBackend(data, label) {
@@ -546,6 +544,7 @@ function createBackendManager(deps) {
       token: data.token,
       activity_token: data.activity_token,
       pid: data.pid,
+      process_started_at: data.process_started_at,
       version: data.version,
       instance_id: data.instance_id,
     };
@@ -609,29 +608,34 @@ function createBackendManager(deps) {
   }
 
   async function startBackend() {
-    backendStopping = false;
     if (backendStartPromise) return backendStartPromise;
-    backendStartPromise = startBackendOnce();
+    backendStopping = false;
+    startupController = new AbortController();
+    backendStartPromise = startBackendOnce(startupController);
     try {
       return await backendStartPromise;
     } finally {
+      startupController.abort();
+      startupController = null;
       backendStartPromise = null;
     }
   }
 
-  async function startBackendOnce() {
+  async function startBackendOnce(controller) {
+    const {signal} = controller;
     // Reuse a still-healthy backend instead of kill/respawn (respawn races were
     // leaving the Deck stuck on "Backend offline — reconnecting").
     const existing = readPortFile();
     if (existing) {
       try {
-        await healthCheck(existing.port, Math.min(4000, timings.healthTimeoutMs), existing);
+        await healthCheck(existing.port, Math.min(4000, timings.healthTimeoutMs), existing, signal);
         if (backendStopping) return;
         adoptBackend(existing, 'reusing live backend at');
         // No ChildProcess handle exists for an adopted process. getInfo keeps
         // it health-checked, and stopBackend owns its verified PID on quit.
         return;
       } catch (_) {
+        if (signal.aborted) return;
         if (processIsAlive(existing.pid)) {
           log(
             '[backend] existing backend is alive but still starting/unhealthy; '
@@ -642,6 +646,7 @@ function createBackendManager(deps) {
               existing.port,
               Math.max(1, timings.unhealthyGraceMs),
               existing,
+              signal,
             );
             if (backendStopping) return;
             adoptBackend(existing, 'reusing recovered backend at');
@@ -652,15 +657,18 @@ function createBackendManager(deps) {
         }
         log('[backend] existing port-file backend not healthy; spawning fresh');
         if (backendStopping) return;
-        await terminateProcessTree(existing.pid);
+        await terminateOwnedBackend(null, existing);
         if (backendStopping) return;
+        removePortFileFor(existing);
+        const replacement = readPortFile();
+        if (replacement && !infoMatchesRecord(existing, replacement)) return startBackendOnce(controller);
       }
     }
 
     backendInfo = null;
     backendLastVerifiedAt = 0;
-    killVariant1EngineProcesses();
-    try { if (fs.existsSync(portFile)) fs.unlinkSync(portFile); } catch (_) {}
+    await killVariant1EngineProcesses();
+    if (backendStopping) return;
 
     let launch;
     try { launch = resolveBackendCommand(); }
@@ -711,6 +719,7 @@ function createBackendManager(deps) {
     const reportProcessFailure = (err) => {
       if (processFailureReported) return;
       processFailureReported = true;
+      controller.abort();
       rejectProcessFailure(err);
     };
 
@@ -722,6 +731,7 @@ function createBackendManager(deps) {
     });
 
     child.on('exit', (code, signal) => {
+      exitedChildren.add(child);
       flushLogStreams();
       log(`[backend] exited code=${code} signal=${signal}`);
       const isCurrent = backendProc === child;
@@ -747,8 +757,8 @@ function createBackendManager(deps) {
         // so ChildProcess.pid is not a stable backend identity. The per-attempt
         // instance nonce distinguishes this launch from late/stale writers.
         const data = await pollPortFile(
-          timings.portFileTimeoutMs, launchInstanceId);
-        await healthCheck(data.port, timings.healthTimeoutMs, data);
+          timings.portFileTimeoutMs, launchInstanceId, signal);
+        await healthCheck(data.port, timings.healthTimeoutMs, data, signal);
         return data;
       })();
       const data = await Promise.race([readiness, processFailure]);
@@ -757,8 +767,12 @@ function createBackendManager(deps) {
     } catch (err) {
       log('[backend] failed to become ready: ' + err.message);
       if (backendProc === child) backendProc = null;
-      await terminateProcessTree(child.pid);
-      killVariant1EngineProcesses();
+      if (backendStopping) return;
+      const record = readPortFile();
+      const launched = record?.instance_id === launchInstanceId ? record : null;
+      await terminateOwnedBackend(child, launched);
+      if (launched) removePortFileFor(launched);
+      await killVariant1EngineProcesses();
       backendInfo = null;
       backendLastVerifiedAt = 0;
       // Both readiness failure and process exit converge on this one timer.
@@ -809,8 +823,18 @@ function createBackendManager(deps) {
     }
   }
 
-  function pause(ms) {
-    return new Promise((resolve) => setTimer(resolve, ms));
+  function pause(ms, signal) {
+    if (!signal) return new Promise(resolve => setTimer(resolve, ms));
+    if (signal.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      const finish = () => {
+        clearTimer(timer);
+        signal.removeEventListener('abort', finish);
+        resolve();
+      };
+      const timer = setTimer(finish, ms);
+      signal.addEventListener('abort', finish, {once: true});
+    });
   }
 
   async function waitForBackendExit(proc, info, timeoutMs) {
@@ -882,20 +906,18 @@ function createBackendManager(deps) {
           String(error && error.message || error));
       }
     }
-    const pids = new Set();
+    let pids = new Set();
     if (proc && proc.pid) pids.add(Number(proc.pid));
     if (info && info.pid) pids.add(Number(info.pid));
     if (!stoppedGracefully) {
-      if (pids.size) log('[backend] graceful shutdown unavailable or timed out; forcing process tree');
-      await Promise.all([...pids].map((pid) => terminateProcessTree(pid)));
-      killVariant1EngineProcesses();
+      if (pids.size) log('[backend] graceful shutdown unavailable or timed out; checking process ownership');
+      pids = new Set(await terminateOwnedBackend(proc, info || candidate));
+      await killVariant1EngineProcesses();
     } else {
       log('[backend] graceful shutdown complete');
     }
     if (info) removePortFileFor(info);
-    else {
-      try { if (portFile && fs.existsSync(portFile)) fs.unlinkSync(portFile); } catch (_) {}
-    }
+    else if (candidate) removePortFileFor(candidate);
     lastStopped = {pids: [...pids], info};
   }
 
@@ -920,6 +942,7 @@ function createBackendManager(deps) {
 
   function stopBackend() {
     backendStopping = true;
+    startupController?.abort();
     if (backendStopPromise) return backendStopPromise;
     backendStopPromise = stopBackendOnce().finally(() => {
       backendStopPromise = null;

@@ -23,6 +23,7 @@ from .prompts import (
     CONTINUATION_DISPLAY,
     budget_reached_note,
     continuation_prompt,
+    current_objective_note,
     objective_changed_note,
 )
 from .store import (
@@ -80,7 +81,7 @@ class ChatGoalService:
         self._clock = clock
         self._guard = threading.Lock()
         self._running: dict[str, _GoalTurn] = {}
-        self._notes: dict[tuple[str, str], list[str]] = {}
+        self._notes: dict[tuple[str, str], list[tuple[int, str]]] = {}
         self._streaks: dict[str, _Streaks] = {}
         self._pushes: dict[str, _Push] = {}
         self._chat_locks: dict[str, asyncio.Lock] = {}
@@ -120,7 +121,8 @@ class ChatGoalService:
             self.store.create, chat_id, objective, request_id=request_id, replace=replace,
             expected_goal_id=expected_goal_id)
         if created:
-            self._forget(goal.goal_id, chat_id)
+            if expected_goal_id:
+                self._forget(expected_goal_id, chat_id)
             self.publish(chat_id)
         if created or goal.submission_pending:
             await self.continue_if_idle(chat_id, expected_goal_id=goal.goal_id)
@@ -149,12 +151,14 @@ class ChatGoalService:
             return None
         elif action == "edit":
             updated = self.store.edit(goal.goal_id, objective, expected_version=expected_version)
-            if updated.status == "active":
-                self._add_note(chat_id, goal.goal_id, objective_changed_note(updated))
+            if updated.objective_revision != goal.objective_revision:
+                self._forget(goal.goal_id)
+                if updated.status == "active":
+                    self._add_note(updated, objective_changed_note(updated))
         else:
             raise GoalValidationError("action must be pause, resume, clear or edit")
         self.publish(chat_id)
-        if action == "resume":
+        if action == "resume" and (updated or goal).status == "active":
             await self.continue_if_idle(chat_id, expected_goal_id=goal.goal_id)
         return self.current(chat_id)
 
@@ -212,9 +216,9 @@ class ChatGoalService:
                 _LOG.exception("goal turn could not start")
                 try:
                     self.store.transition(goal.goal_id, "blocked", reason="Goal turn could not start",
-                                          from_statuses={"active"})
+                                          from_statuses={"active"}, expected_objective_revision=goal.objective_revision)
                     self.publish(chat_id)
-                except GoalNotFound:
+                except (GoalNotFound, GoalConflict):
                     pass
                 return False
 
@@ -243,6 +247,7 @@ class ChatGoalService:
                 metadata={"_server_bound_kind": "chat", "chat_id": chat_id,
                           "work_scope": {"chat_id": chat_id, "goal_id": goal.goal_id},
                           "goal_id": goal.goal_id,
+                          "_goal_prompt_objective_revision": goal.objective_revision,
                           "goal_display_text": goal.objective if submission else CONTINUATION_DISPLAY})
             turn = _GoalTurn(goal.goal_id, run, source, admission)
             with self._guard:
@@ -273,11 +278,16 @@ class ChatGoalService:
             turn.goal_id = binding.attributed_id
         try:
             goal = self.store.current(chat_id)
-            if goal is not None and goal.goal_id == turn.goal_id and goal.status == "active":
+            if (goal is not None and goal.goal_id == turn.goal_id and goal.status == "active"
+                    and (binding is None or (binding.goal_id == goal.goal_id
+                                            and binding.objective_revision == goal.objective_revision))):
                 stop = self._automatic_stop(chat_id, turn, task)
                 if stop is not None:
                     status, reason = stop
-                    self.store.transition(goal.goal_id, status, reason=reason, from_statuses={"active"})
+                    self.store.transition(goal.goal_id, status, reason=reason, from_statuses={"active"},
+                                          expected_objective_revision=goal.objective_revision)
+        except (GoalNotFound, GoalConflict):
+            pass  # This turn's objective was retired during settlement.
         except Exception:
             _LOG.exception("goal turn evaluation failed")
         self.publish(chat_id)
@@ -344,8 +354,7 @@ class ChatGoalService:
         with self._guard:
             self._streaks.pop(goal_id, None)
             if chat_id:
-                for key in [key for key in self._notes if key[0] == chat_id]:
-                    del self._notes[key]
+                self._notes.pop((chat_id, goal_id), None)
 
     # ── usage and notes ────────────────────────────────────────────────────
     def admit_chat_turn(self, context, chat_id: str, admission_id: str, source: str, *, task=None) -> bool:
@@ -360,7 +369,13 @@ class ChatGoalService:
             return False
         goal_id = goal.goal_id if goal else ""
         attributed = goal_id if goal and goal.status == "active" else ""
-        context.metadata["_chat_goal_binding"] = GoalBinding(chat_id, admission_id, goal_id, attributed)
+        # The launch prompt can already be older than the goal read at admission.
+        revision = (context.metadata.get("_goal_prompt_objective_revision")
+                    if source in GOAL_SOURCES else None)
+        context.metadata["_chat_goal_binding"] = GoalBinding(
+            chat_id, admission_id, goal_id, attributed,
+            revision if type(revision) is int else (goal.objective_revision if goal else 0),
+            show_objective=bool(source not in GOAL_SOURCES and goal and goal.status in {"active", "budget_limited"}))
         context.work_scope = context.work_scope.with_updates(goal_id=attributed)
         context.metadata["work_scope"] = context.work_scope.to_dict(include_empty=False)
         if source not in GOAL_SOURCES and task is not None:
@@ -386,19 +401,38 @@ class ChatGoalService:
         if updated is None:
             return
         if reached:
-            self._add_note(updated.chat_id, goal_id, budget_reached_note(updated))
+            self._add_note(updated, budget_reached_note(updated))
         self.publish(updated.chat_id, usage_only=not reached)
 
-    def _add_note(self, chat_id: str, goal_id: str, note: str) -> None:
+    def _add_note(self, goal: ChatGoal, text: str) -> None:
         with self._guard:
-            notes = self._notes.setdefault((chat_id, goal_id), [])
-            notes.append(note)
+            notes = self._notes.setdefault((goal.chat_id, goal.goal_id), [])
+            notes.append((goal.objective_revision, text))
             del notes[:-_MAX_NOTES]
 
     def take_notes(self, chat_id: str, goal_id: str) -> list[str]:
         """Notes for the chat's running turn, delivered before its next model call."""
+        from run_context import current_run_context
+        binding = turn_binding(current_run_context(), chat_id)
+        if binding is not None and not goal_id:
+            goal_id = binding.goal_id
+        if binding is not None and binding.goal_id != goal_id:
+            return []
         with self._guard:
-            return self._notes.pop((chat_id, goal_id), [])
+            notes = self._notes.pop((chat_id, goal_id), [])
+        if binding is not None and goal_id:
+            goal = self.store.current(chat_id)
+            if goal is not None and goal.goal_id == goal_id:
+                # A queued note already quotes its objective. Otherwise include
+                # the current one even after Pause or a host restart lost a note.
+                changed = goal.objective_revision != binding.objective_revision
+                last_revision = notes[-1][0] if notes else binding.objective_revision
+                if last_revision != goal.objective_revision or (binding.show_objective and not notes):
+                    text = objective_changed_note(goal) if changed else current_objective_note(goal)
+                    notes.append((goal.objective_revision, text))
+                binding.show_objective = False
+                binding.objective_revision = goal.objective_revision
+        return [text for _, text in notes]
 
     # ── model tools (session.get_goal / create_goal / update_goal) ─────────
     def tool_get(self, chat_id: str) -> dict:
@@ -421,6 +455,7 @@ class ChatGoalService:
                                           expected_goal_id=expected, creator_run_id=run_id)
         if binding is not None:
             binding.goal_id = binding.attributed_id = goal.goal_id
+            binding.objective_revision = goal.objective_revision
         self._forget(goal.goal_id)
         self.publish(chat_id)
         return {"goal": self.current(chat_id)}
@@ -435,8 +470,10 @@ class ChatGoalService:
         if allowed is None:
             raise GoalValidationError("status must be complete, blocked or paused")
         run_id = str(getattr(context, "run_id", "") or "")
+        expected_revision = None
         if context is not None:
             binding = self._invocation_binding(chat_id, context)
+            expected_revision = binding.objective_revision if binding is not None else 1
             expected = (binding.goal_id if binding is not None else
                         getattr(getattr(context, "work_scope", None), "goal_id", ""))
             if expected != goal.goal_id and not (not expected and run_id and goal.first_run_id == run_id):
@@ -444,7 +481,8 @@ class ChatGoalService:
         reason = {"blocked": "Reported blocked by the model",
                   "paused": "Paused at your request"}.get(status, "")
         updated = self.store.transition(goal.goal_id, status, reason=reason,
-                                        from_statuses=allowed, run_id=run_id)
+                                        from_statuses=allowed, run_id=run_id,
+                                        expected_objective_revision=expected_revision)
         if updated is None:
             raise GoalConflict(f"The goal is {goal.status.replace('_', ' ')}; it can't become {status}")
         if status == "complete":

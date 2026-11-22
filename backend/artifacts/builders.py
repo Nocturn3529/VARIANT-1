@@ -20,7 +20,7 @@ from typing import Any, Mapping, Sequence
 
 from core_invariants import canonical_json_bytes, strict_json_value
 
-BUILDER_VERSION = "variant1-artifact-builders.2"
+BUILDER_VERSION = "variant1-artifact-builders.3"
 _LOG = logging.getLogger(__name__)
 _MAX_BLOCKS = 2_000
 _MAX_ROWS = 50_000
@@ -82,7 +82,7 @@ def freeze_spec_resources(spec: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _text(value: Any) -> str:
-    result = str(value or "")
+    result = "" if value is None else str(value)
     if len(result) > _MAX_TEXT:
         raise ValueError("artifact text exceeds bound")
     return result

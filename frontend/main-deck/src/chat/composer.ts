@@ -11,7 +11,9 @@ import {
   getChatState,
   getChatContext,
   getComposerRevision,
+  restoreRejectedText,
   notifyChat,
+  newInitialTicket,
   patchChatState,
   replaceChatState,
   sendChat,
@@ -21,14 +23,14 @@ import {
 } from "./stateCore";
 import {invalidatePendingChatAttachments} from "./attachments";
 import {stopSpeech} from "./speech";
-import {getContextForSession} from "../sessionContextStore";
+import {currentCatalogModel, getContextForSession} from "../sessionContextStore";
 import {queueAdmissionPending} from "./inputQueue";
 import {parseGoalCommand} from "./goalCommand";
 import {submitComposerGoal} from "./goals";
 import {dismissRecoveryNotice} from "./recovery";
 
 function newOptimisticTurnId(): string {
-  return `turn-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  return `turn-${crypto.randomUUID()}`;
 }
 
 function newMutationRequestId(): string {
@@ -115,12 +117,6 @@ function pendingInputIndex(
     : -1;
   // A supplied ticket must match exactly; it cannot acknowledge another input.
   return ticketId ? exact : (pending.length ? 0 : -1);
-}
-
-function restoreRejectedText(current: string, rejected: string): string {
-  if (!current) return rejected;
-  if (!rejected || current === rejected) return current;
-  return `${rejected}\n\n${current}`;
 }
 
 /** Settle the admission receipt without removing the optimistic bubble. */
@@ -222,14 +218,25 @@ export function settleActiveInputTickets(ticketIds: readonly string[]): number {
 }
 
 /** Admission failed before a turn started; restore the initial composer input. */
-export function rejectOptimisticTurn(error: string): boolean {
+function submissionContents(text:string, attachments:ChatAttachment[], references:ChatBrowserReference[]) {
+  return JSON.stringify([text.trim(),attachments.map(item=>item.id),references]);
+}
+
+export function confirmInitialAdmission():void {
+  const state=getChatState(), initial=state.initialSubmission;
+  if(!initial)return;
+  patchChatState({initialSubmission:undefined,messages:state.messages.map(row=>row.optimisticTurnId===initial.id
+    ? {...row,optimisticAttachmentRetry:undefined} : row)});
+}
+
+export function rejectOptimisticTurn(error: string, allowRetry=false): boolean {
   const state = getChatState();
-  const turnId = state.activeTurnId;
+  const turnId = state.initialSubmission?.id || state.activeTurnId;
   if (!turnId) return false;
   const optimistic = state.messages.filter(
     message => message.optimisticTurnId === turnId,
   );
-  const user = optimistic.find(message => message.role === "user");
+  const user = state.initialSubmission?.user || optimistic.find(message => message.role === "user");
   const retryableAttachments = (
     user?.optimisticAttachmentRetry || user?.attachments || []
   ).filter(item => (
@@ -239,17 +246,19 @@ export function rejectOptimisticTurn(error: string): boolean {
     turnId,
     ...state.pendingActiveInputs.map(item => item.optimisticTurnId),
   ]);
+  const held=state.recoveredInput;
+  const rejectedText=[user?.optimisticDraft ?? user?.text ?? "",...state.pendingActiveInputs.map(item=>item.text)].filter(Boolean).join("\n\n");
   replaceChatState({
     ...state,
     messages: state.messages.filter(
       message => !message.optimisticTurnId
         || !rejectedIds.has(message.optimisticTurnId),
     ),
-    draft: restoreRejectedText(state.draft,[user?.optimisticDraft ?? user?.text ?? "",...state.pendingActiveInputs.map(item=>item.text)].filter(Boolean).join("\n\n")),
-    attachments: state.attachments.length
-      ? state.attachments
-      : retryableAttachments,
-    references: state.references.length ? state.references : user?.references || [],
+    recoveredInput: {
+      text: restoreRejectedText(rejectedText,held?.text || ""),
+      attachments: [...(held?.attachments || []), ...retryableAttachments],
+      references: [...(held?.references || []), ...(user?.references || [])],
+    },
     turnActive: false,
     stopPending: false,
     pause: null,
@@ -258,6 +267,10 @@ export function rejectOptimisticTurn(error: string): boolean {
     turnSteps: [],
     queuedFollowUps: 0,
     activeTurnId: null,
+    initialSubmission: undefined,
+    retrySubmission: allowRetry && user ? {
+      id:turnId,contents:submissionContents(user.optimisticDraft ?? user.text,retryableAttachments,user.references || []),
+    } : undefined,
     pendingActiveInputs: [],
     lastError: error,
   });
@@ -300,7 +313,15 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   const value = String(input.text || "").trim();
   // Goal mode (or a literal /goal line) sets the chat goal instead of sending a message.
   const goalObjective=!ownsComposer ? null : state.goal.composing ? value : parseGoalCommand(value)?.objective ?? null;
+  if ((goalObjective !== null || (!state.turnActive && !sharedTurnActive())) && currentCatalogModel(getContextForSession(state.sessionId))?.selectable === false) {
+    notifyChat("Saved model unavailable. Choose a model to send. Your draft is kept.");
+    return false;
+  }
   if(goalObjective!==null)return submitComposerGoal(goalObjective);
+  if (state.initialSubmission) {
+    notifyChat("Waiting for confirmation of your previous message. Your draft is kept.");
+    return false;
+  }
   const pending = input.source === "composer" ? input.attachments : [];
   const references = ownsComposer ? state.references : [];
   if (!value && !pending.length && !references.length) return false;
@@ -352,6 +373,7 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
       ...(turnApi().snapshot().runId ? {run_id:turnApi().snapshot().runId} : {}),
       delivery,
       ticket_id: turnId,
+      request_id: turnId,
     });
     if (!ok) {
       const current = getChatState();
@@ -373,7 +395,6 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   // backend's durable transcript label. Attachment metadata remains a second
   // reconciliation key for older/mixed backend versions.
   const displayText = value || (pending.length ? attachmentOnlyDisplayText(pending) : "");
-  if (ownsComposer) invalidatePendingChatAttachments();
   // Transcript bubbles retain display metadata only. Base64/text/path payloads
   // belong to this single send call and must not sit in renderer state for the
   // whole turn (or indefinitely if an append acknowledgement is lost).
@@ -385,14 +406,18 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     size: a.size,
     previewUrl: a.previewUrl,
   }));
-  const turnId = newOptimisticTurnId();
+  const contents=submissionContents(value,pending,references);
+  const retryId=ownsComposer && state.retrySubmission?.contents===contents ? state.retrySubmission.id : undefined;
+  const turnId=retryId || newInitialTicket();
+  if (!turnId) {notifyChat("Waiting for the chat connection. Your draft is kept.");return false;}
+  const requestId=retryId ? crypto.randomUUID() : turnId;
   const userMsg: ChatMessage = {
     role: "user",
     text: displayText,
     ts: now,
     localId: `u-${now}`,
     optimisticTurnId: turnId,
-    optimisticDraft: value,
+    optimisticDraft: input.text,
     optimisticOwnsComposer: ownsComposer,
     optimisticAttachmentRetry: pending.map(item => ({...item})),
     attachments: bubbleAtts.length ? bubbleAtts : undefined,
@@ -406,6 +431,22 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     ...(a.text != null ? {text: a.text} : {}),
     ...(a.path ? {path: a.path} : {}),
   }));
+  const payload: ChatSendCommand = {
+    type: "chat", text: value, client_id: state.clientId, session_id: state.sessionId,
+    request_id: requestId, ticket_id: turnId,
+  };
+  if (wireAttachments.length) payload.attachments = wireAttachments;
+  if (references.length) payload.references = references.map(item => ({
+    kind: "browser_tab", tab_id: item.tabId, owner_chat_id: state.sessionId!, title: item.title, url: item.url,
+  }));
+  // Uvicorn's WebSocket limit applies to the entire UTF-8 JSON frame.
+  const limit=16 * 1024 * 1024;
+  const imageBytes=wireAttachments.reduce((sum,item)=>sum+(item.data?.length || 0),0);
+  if (imageBytes>limit || new Blob([JSON.stringify(payload)]).size>limit) {
+    notifyChat("This message exceeds the 16 MiB limit. Shorten the text or remove an attachment and send again.");
+    return false;
+  }
+  if (ownsComposer) invalidatePendingChatAttachments();
   replaceChatState({
     ...state,
     messages: [...state.messages, userMsg],
@@ -419,6 +460,8 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
     streamText: "",
     lastError: "",
     activeTurnId: turnId,
+    initialSubmission: {id:turnId,requestId,user:userMsg},
+    retrySubmission: undefined,
     pendingActiveInputs: [],
   });
   setSubtitle("VARIANT-1 is thinking", "working");
@@ -429,17 +472,6 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
   });
   // Fresh STEPS strip for this send.
   patchChatState({turnSteps: []});
-  const afterBegin = getChatState();
-  const payload: ChatSendCommand = {
-    type: "chat",
-    text: value,
-    client_id: afterBegin.clientId,
-    session_id: input.sessionId!,
-  };
-  if (wireAttachments.length) payload.attachments = wireAttachments;
-  if (references.length) payload.references = references.map(item => ({
-    kind: "browser_tab", tab_id: item.tabId, owner_chat_id: input.sessionId!, title: item.title, url: item.url,
-  }));
   const ok = sendChat(payload);
   if (!ok) {
     endSharedTurn("error");
@@ -453,8 +485,10 @@ export function submitUserInput(input: UserInputBundle, delivery: "steer" | "fol
       attachments: ownsComposer && !cur.attachments.length ? pending : cur.attachments,
       references: ownsComposer && !cur.references.length ? references : cur.references,
       messages: cur.messages.filter(m => m.localId !== userMsg.localId),
-      draft: ownsComposer ? restoreRejectedText(cur.draft, value) : cur.draft,
+      draft: ownsComposer ? restoreRejectedText(cur.draft, input.text) : cur.draft,
       activeTurnId: null,
+      initialSubmission: undefined,
+      retrySubmission: state.retrySubmission,
       pendingActiveInputs: [],
     });
     setSubtitle("Backend offline — reconnecting", "offline");

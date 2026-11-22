@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
+import json
 import sys
 from types import SimpleNamespace
 
@@ -232,8 +234,8 @@ async def test_remote_recipe_launch_attaches_after_controller_is_ready(
         def __init__(self):
             self.launched = []
 
-        async def launch(self, node_id, recipe_id):
-            self.launched.append((node_id, recipe_id))
+        async def launch_node(self, node, recipe_id):
+            self.launched.append((node["id"], recipe_id))
 
         def get(self, node_id):
             return {"id": node_id, "base_url": "http://node.test:8000"}
@@ -252,8 +254,10 @@ async def test_remote_recipe_launch_attaches_after_controller_is_ready(
     })
     attached = []
 
-    async def ready(_endpoint, timeout):
+    async def ready(_endpoint, timeout, *, headers, model):
         assert timeout == 180.0
+        assert headers == {}
+        assert model == "org/model"
         return True
 
     async def attach(value):
@@ -279,6 +283,7 @@ async def test_llamacpp_recipe_keeps_discovered_vision_projector(tmp_path):
     class Models:
         async def restart_engine(self, model_path, mmproj_path=""):
             launches.append((model_path, mmproj_path))
+            return "switched"
 
     manager = RuntimeRecipeManager(
         str(tmp_path), SimpleNamespace(data_dir=str(tmp_path)),
@@ -292,6 +297,118 @@ async def test_llamacpp_recipe_keeps_discovered_vision_projector(tmp_path):
     await manager._launch_llamacpp({"model_path": str(model)})
 
     assert launches == [(str(model), str(projector))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["rolled_back", "failed", "superseded"])
+async def test_unconfirmed_gguf_recipe_never_publishes_ready(tmp_path, outcome):
+    old, candidate = tmp_path / "old.gguf", tmp_path / "candidate.gguf"
+    old.touch()
+    candidate.touch()
+    events = []
+    manager = RuntimeRecipeManager(str(tmp_path), SimpleNamespace(), SimpleNamespace(), _broadcast,
+                                   event_sink=lambda *event: events.append(event))
+    first = manager.save({"model_path": str(old), "name": "Original"})
+    target = manager.save({"model_path": str(candidate), "name": "Candidate"})
+    engine = SimpleNamespace(model=str(old), ready=outcome != "failed")
+    async def restart(*_args):
+        return outcome
+    manager.bind_host(SimpleNamespace(
+        router=SimpleNamespace(inference_runtime_id="llamacpp", engine=engine),
+        require_runtime=lambda: SimpleNamespace(models=SimpleNamespace(restart_engine=restart))))
+    manager.active_recipe_id = first["id"]
+    with pytest.raises(RuntimeError, match=outcome):
+        await manager._launch(target)
+    assert not any("Runtime ready: Candidate" in str(event) for event in events)
+    assert manager.active_recipe_id == (first["id"] if engine.ready else "")
+    assert outcome in manager.last_error
+
+
+@pytest.mark.asyncio
+async def test_remote_launch_uses_node_auth_for_readiness_attachment_and_retryable_cleanup(tmp_path, monkeypatch):
+    import httpx
+    from llm_router import LLMRouter
+    nodes = RemoteNodeManager(str(tmp_path))
+    monkeypatch.setenv("VARIANT_TEST_NODE_KEY", "fixture-only-token")
+    node = nodes.save({"base_url": "http://inference.test", "management_url": "http://controller.test",
+                       "api_key_env": "VARIANT_TEST_NODE_KEY"})
+    events = []
+    allow_evict = True
+    def respond(request):
+        events.append((request.method, request.url.host, request.url.path, request.headers.get("authorization")))
+        if request.headers.get("authorization") != "Bearer fixture-only-token":
+            return httpx.Response(401)
+        if request.url.path == "/evict" and not allow_evict:
+            return httpx.Response(503)
+        return httpx.Response(200, json={"data": [{"id": "model-a"}]})
+    client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: client(**kw, transport=httpx.MockTransport(respond)))
+    router = LLMRouter({"mode": "local"}, str(tmp_path), data_dir=str(tmp_path))
+    manager = RuntimeRecipeManager(str(tmp_path), SimpleNamespace(), nodes, _broadcast)
+    manager.bind_host(SimpleNamespace(router=router))
+    recipe = manager.save({"runtime_id": "openai_compatible", "model": "model-a", "name": "Remote",
+                           "remote_recipe_id": "remote-a", "node_id": node["id"]})
+    wait_ready = manager._wait_ready
+    begin_launch = manager._begin_remote_launch
+    async def edit_settings_before_post(snapshot, recipe_id):
+        nodes.save({**node, "management_url": "http://replacement.test", "base_url": "http://new-inference.test"})
+        await begin_launch(snapshot, recipe_id)
+    monkeypatch.setattr(manager, "_begin_remote_launch", edit_settings_before_post)
+    async def short_probe(endpoint, timeout, **kw):
+        return await wait_ready(endpoint, timeout=0.1, **kw)
+    monkeypatch.setattr(manager, "_wait_ready", short_probe)
+    await manager._launch(recipe)
+    assert manager.active_recipe_id == recipe["id"]
+    assert router.engine.api_key_env == "VARIANT_TEST_NODE_KEY" and router.engine.ready
+    assert [(e[1], e[2]) for e in events] == [
+        ("controller.test", "/launch/remote-a"), ("inference.test", "/v1/models"), ("inference.test", "/v1/models")]
+    assert router.engine.request_headers["Authorization"] == "Bearer fixture-only-token"
+    await manager.evict()
+    assert events[-1][1:3] == ("controller.test", "/evict")
+
+    # A confirmed controller launch that never becomes ready still owns cleanup.
+    events.clear()
+    nodes.save(node)
+    monkeypatch.setattr(manager, "_begin_remote_launch", begin_launch)
+    allow_evict = False
+    async def not_ready(*args, **kwargs):
+        return False
+    monkeypatch.setattr(manager, "_wait_ready", not_ready)
+    with pytest.raises(RuntimeError):
+        await manager._launch(recipe)
+    assert [e[2] for e in events] == ["/launch/remote-a", "/evict"]
+    assert not manager.process_status()["ready"]
+    nodes.save({**node, "management_url": "http://other.test"})
+    allow_evict = True
+    await manager.evict()
+    assert events[-1][1:3] == ("controller.test", "/evict")
+    assert "fixture-only-token" not in json.dumps(router.cfg)
+
+
+@pytest.mark.asyncio
+async def test_stopping_an_inflight_remote_launch_reaps_only_an_acknowledged_start(tmp_path):
+    entered, acknowledge = asyncio.Event(), asyncio.Event()
+    evictions = []
+    node = {"id": "remote", "base_url": "http://fixture.test"}
+    class Nodes:
+        def get(self, node_id):
+            return node
+        async def launch_node(self, node, recipe_id):
+            entered.set()
+            await acknowledge.wait()
+        async def evict_node(self, owner):
+            evictions.append(owner)
+    manager = RuntimeRecipeManager(str(tmp_path), SimpleNamespace(), Nodes(), _broadcast)
+    recipe = manager.save({"runtime_id": "openai_compatible", "model": "model-a", "node_id": node["id"]})
+    launch = asyncio.create_task(manager._launch(recipe))
+    await entered.wait()
+    launch.cancel()
+    await asyncio.sleep(0)
+    assert not launch.done() and not evictions
+    acknowledge.set()
+    with pytest.raises(asyncio.CancelledError):
+        await launch
+    assert evictions == [node] and not manager.process_status()["ready"]
 
 
 @pytest.mark.asyncio

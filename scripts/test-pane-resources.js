@@ -45,6 +45,24 @@ class Sender extends EventEmitter { constructor(){super();this.sent=[]} isDestro
   bounded.stop(sender,boundA);bounded.stop(sender,boundB);bounded.stop(other,boundOther);
   const reuse=bounded.start(sender,path.join(target,'other'));bounded.stop(sender,reuse);
   assert.equal(sender.listenerCount('destroyed'),0,'watcher quota returns after release');
+  for (const ended of ['render-process-gone','did-navigate']) {
+    bounded.start(sender, target);
+    const old = native.at(-1);
+    old.callback('change', 'old.txt');
+    sender.emit('did-navigate-in-page');
+    sender.emit('did-frame-navigate');
+    assert.ok(!old.watcher.closed, 'the current top-level document keeps its subscription');
+    sender.emit(ended);
+    assert.equal(old.watcher.closed, true);
+    const count = sender.sent.length;
+    const next = bounded.start(sender, target);
+    old.callback('change', 'late.txt');
+    native.at(-1).callback('change', 'new.txt');
+    await pause(170);
+    assert.deepEqual(sender.sent.slice(count).map(message => message.id), [next]);
+    bounded.stop(sender, next);
+    for (const event of ['destroyed','render-process-gone','did-navigate']) assert.equal(sender.listenerCount(event), 0);
+  }
 
   let calls=0,resolve;
   const cache=createReadCache(async()=>{calls++;return new Promise(yes=>{resolve=yes})});

@@ -30,7 +30,8 @@ const frontendFiles = [
 ].filter(file => !file.includes(`${path.sep}react${path.sep}`));
 
 const outbound = new Set();
-const literalSend = /\b(?:send[A-Z]\w*|send|st|context\.send)\s*\(\s*\{\s*type\s*:\s*["']([^"']+)["']/g;
+// Electron's sendInputEvent uses native mouse/key event types on the guest.
+const literalSend = /\b(?:send(?!InputEvent\b)[A-Z]\w*|send|st|context\.send)\s*\(\s*\{\s*type\s*:\s*["']([^"']+)["']/g;
 for (const file of frontendFiles) {
   const source = fs.readFileSync(file, 'utf8');
   let match;

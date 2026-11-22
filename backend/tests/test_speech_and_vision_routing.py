@@ -55,20 +55,22 @@ async def test_cloud_stt_drops_auto_cloud_language_for_format_safety():
 
 
 @pytest.mark.asyncio
-async def test_local_stt_never_calls_cloud_adapter():
+@pytest.mark.parametrize(("requested", "effective"), [(None, "es"), ("en", "en"), ("auto", None)])
+async def test_local_stt_never_calls_cloud_adapter_and_uses_effective_language(requested, effective):
     cloud = AsyncMock(return_value="cloud transcript")
     local_start = AsyncMock()
     local_transcribe = AsyncMock(return_value="local transcript")
-    with patch.object(server.APP.require_runtime().voice, "config", return_value={"stt_provider": "local"}), \
+    with patch.object(server.APP.require_runtime().voice, "config", return_value={
+                "stt_provider": "local", "stt": {"local": {"language": "es"}}}), \
             patch.object(xai_speech, "transcribe", cloud), \
             patch.object(server.APP.voice, "ensure_started", local_start), \
             patch.object(server.APP.voice, "transcribe", local_transcribe):
         result = await server.APP.require_runtime().voice.transcribe_audio(
-            b"wav", language="en")
+            b"wav", language=requested)
 
     assert result == "local transcript"
     local_start.assert_awaited_once()
-    local_transcribe.assert_awaited_once_with(b"wav", language="en")
+    local_transcribe.assert_awaited_once_with(b"wav", language=effective)
     cloud.assert_not_awaited()
 
 

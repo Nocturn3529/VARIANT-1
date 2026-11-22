@@ -17,13 +17,13 @@ const {randomUUID} = require('crypto');
 const {createHash} = require('crypto');
 
 const root = path.join(__dirname, '..');
-const executable = path.join(
+const executable = path.resolve(process.env.VARIANT1_TEST_BACKEND_EXE || path.join(
   root,
   'backend',
   'dist',
   'Variant1Backend',
   process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend',
-);
+));
 const venvBin = path.join(
   root, 'backend', '.venv', process.platform === 'win32' ? 'Scripts' : 'bin',
 );

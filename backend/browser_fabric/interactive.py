@@ -17,6 +17,15 @@ class BrowserHostUnavailable(RuntimeError):
     """Raised when no live Main Deck browser host is registered."""
 
 
+class BrowserHostCommandError(RuntimeError):
+    """A correlated failure returned by the Deck, with its command metadata."""
+
+    def __init__(self, result: dict) -> None:
+        super().__init__(str(result.get("error") or "visible browser command failed"))
+        self.code = str(result.get("code") or "")
+        self.phase = str(result.get("phase") or "")
+
+
 class BrowserHostBroker:
     def __init__(self) -> None:
         self._host: Any = None
@@ -70,7 +79,7 @@ class BrowserHostBroker:
         if not isinstance(result, dict):
             raise RuntimeError("visible browser returned an invalid result")
         if not result.get("ok", False):
-            raise RuntimeError(str(result.get("error") or "visible browser command failed"))
+            raise BrowserHostCommandError(result)
         return result
 
     def resolve(self, websocket: Any, request_id: str, result: Any) -> bool:
@@ -82,6 +91,7 @@ class BrowserHostBroker:
             return False
         future.set_result(result if isinstance(result, dict) else {
             "ok": False,
+            "code": "INVALID_HOST_RESULT",
             "error": "invalid browser host result",
         })
         return True

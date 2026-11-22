@@ -11,6 +11,7 @@ import {retainTurnSteps, boundedPreview} from "./preview";
 import {parseTurnReceipt} from "./receipt";
 import {parseEvidence} from "./evidence";
 import {parsePeerActivity} from "../protocol/peerActivity";
+import {isProviderThoughtSource} from "../protocol/chatEvents";
 
 function newStepId(): string {
   return `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -118,12 +119,16 @@ export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | und
     }
     // Reloaded steps should never stay "Live".
     if (status === "running" && !live) status = "interrupted";
-    if (kind === "thinking" && (row.source === "provider_summary" || row.summary_source === "provider_summary")) status = "done";
+    const thoughtSource = row.source ?? row.summary_source ?? row.summarySource;
+    const publicThought = kind === "thinking" && isProviderThoughtSource(thoughtSource);
+    const summaryState = publicThought && ["running","done","discarded","cancelled"].includes(String(row.status))
+      ? (row.status === "running" && !live ? "cancelled" : row.status) as ChatTurnStep["summaryState"] : undefined;
+    if (publicThought) status = summaryState === "running" ? "running" : "done";
     out.push({
       id: String(row.id || newStepId()),
       kind,
-      summaryState: kind === "thinking" && ["running","done","discarded","cancelled"].includes(String(row.status)) && (row.source === "provider_summary" || row.summary_source === "provider_summary")
-        ? (row.status === "running" ? "cancelled" : row.status) as ChatTurnStep["summaryState"] : undefined,
+      summaryState,
+      summarySource: publicThought ? thoughtSource : undefined,
       summaryRevision: typeof row.summary_revision === "number" && Number.isSafeInteger(row.summary_revision) ? row.summary_revision : undefined,
       label: label.slice(0, 160),
       detail: row.detail != null ? boundedPreview(String(row.detail), kind === "thinking" || kind === "text" ? 16_000 : 400) : undefined,
@@ -131,11 +136,12 @@ export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | und
       omittedBefore: Math.max(0, Math.min(1_000_000, Number(row.omitted_before) || 0)),
       status,
       tool: row.tool != null ? String(row.tool) : undefined,
-      key: row.key != null ? String(row.key) : undefined,
+      key: publicThought && row.id ? String(row.id) : row.key != null ? String(row.key) : undefined,
       callId: row.call_id != null ? String(row.call_id).slice(0, 128) : undefined,
       rawStatus: row.raw_status != null ? String(row.raw_status).slice(0, 64) : undefined,
       argsPreview: row.args_preview != null ? boundedPreview(String(row.args_preview), 600) : undefined,
       resultPreview: row.result_preview != null ? boundedPreview(String(row.result_preview), 800) : undefined,
+      cellAction: typeof row.cell_action === "string" ? row.cell_action.slice(0, 140) : undefined,
       startedAt: row.started_at != null ? Number(row.started_at) || undefined : undefined,
       completedAt: row.completed_at != null ? Number(row.completed_at) || undefined : undefined,
       durationMs: row.duration_ms != null ? Math.max(0, Number(row.duration_ms) || 0) : undefined,
@@ -152,10 +158,43 @@ function messageEnrichKey(m: ChatMessage): string {
   return `${m.role}:${Number(m.ts) || 0}:${String(m.text || "").slice(0, 120)}`;
 }
 
+/** Enrich the original send in place, or place it beside the cell that sent it. */
+function mergePeerStep(steps: ChatTurnStep[], incoming: ChatTurnStep) {
+  const peer = incoming.peerMessage!;
+  const at = steps.findIndex(step => step.peerMessage?.message_id === peer.message_id);
+  if (at >= 0) {
+    steps[at] = {...steps[at], peerMessage: peer, status: incoming.status};
+    return;
+  }
+  const outer = peer.sender_invocation?.outer_tool_call_id;
+  let after = outer ? steps.findIndex(step => step.callId === outer) : -1;
+  if (after < 0) {steps.push(incoming); return;}
+  while (steps[after + 1]?.peerMessage?.sender_invocation?.outer_tool_call_id === outer) after++;
+  steps.splice(after + 1, 0, incoming);
+}
+
+function isServerDisplayStep(step: ChatTurnStep) {
+  return !!step.peerMessage || step.kind === "text" || (step.kind === "thinking" && !!step.summaryState);
+}
+
 function retainedSteps(remote:ChatTurnStep[]|undefined,local:ChatTurnStep[]|undefined):ChatTurnStep[]|undefined {
-  if(!remote?.length)return local;
-  if(remote.some(step=>!step.peerMessage))return remote;
-  return [...(local || []).filter(step=>!remote.some(row=>row.peerMessage?.message_id===step.peerMessage?.message_id && row.peerMessage)),...remote];
+  if (!remote?.length) return local;
+  if (!local?.length || !remote.every(isServerDisplayStep) || remote.some(step => step.omittedBefore)) return remote;
+  // The first commit can contain server narration and summaries before the
+  // client annotation lands. Keep the observed calls in their original slots.
+  const merged = [...local];
+  const ms = (ts:number) => ts < 1e12 ? ts * 1000 : ts;
+  for (const step of remote) {
+    if (step.peerMessage) {mergePeerStep(merged, step); continue;}
+    const at = merged.findIndex(prior => prior.id === step.id ||
+      (step.kind === "text" && step.segment && prior.kind === "text" && prior.segment === step.segment));
+    if (at >= 0) merged[at] = step;
+    else {
+      const later = merged.findIndex(prior => ms(prior.startedAt || prior.ts) > ms(step.ts));
+      merged.splice(later < 0 ? merged.length : later, 0, step);
+    }
+  }
+  return retainTurnSteps(merged);
 }
 
 /** Overlay client-cached steps onto rehydrated messages in the same session. */
@@ -174,9 +213,9 @@ export function mergeMessageEnrichment(
   return remote.map(m => {
     if (m.role !== "assistant") return m;
     // Prefer durable fields from disk when present.
-    if (m.steps?.some(step=>!step.peerMessage)) return m;
+    if (m.steps?.some(step => !isServerDisplayStep(step))) return m;
     const hit = priorByKey.get(messageEnrichKey(m));
-    if (!hit) return m;
+    if (!hit || (m.runId && hit.runId && m.runId !== hit.runId)) return m;
     return {
       ...m,
       steps: retainedSteps(m.steps,hit.steps),
@@ -193,7 +232,8 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   if (!role) return null;
   const rawOrigin=row.origin && typeof row.origin==="object" ? row.origin as Record<string,unknown> : {};
   const goalOrigin:ChatMessage["goalOrigin"]=role==="user" && rawOrigin.kind==="goal" && (rawOrigin.event==="submission" || rawOrigin.event==="continuation")
-    ? {event:rawOrigin.event,...(typeof rawOrigin.goal_id==="string" && rawOrigin.goal_id ? {goal_id:rawOrigin.goal_id} : {})} : undefined;
+    ? {event:rawOrigin.event,...(typeof rawOrigin.goal_id==="string" && rawOrigin.goal_id ? {goal_id:rawOrigin.goal_id} : {})}
+    : role === "user" && row.display_kind === "goal" ? {event:"continuation"} : undefined;
   const rawGoalEvent=row.goal_event && typeof row.goal_event==="object" ? row.goal_event as Record<string,unknown> : {};
   const goalEvent:ChatMessage["goalEvent"]=role==="assistant" && rawGoalEvent.event==="achieved" && typeof rawGoalEvent.goal_id==="string"
     ? {event:"achieved",goal_id:rawGoalEvent.goal_id,time_used_s:Math.max(0,Number(rawGoalEvent.time_used_s)||0),tokens_used:Math.max(0,Number(rawGoalEvent.tokens_used)||0)} : undefined;
@@ -214,16 +254,24 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   }
   let steps = role === "assistant" ? parseTurnSteps(row.steps) : undefined;
   if(role==="assistant" && Array.isArray(row.peer_sent))for(const value of row.peer_sent){
-    const peer=parsePeerActivity(value);if(!peer || steps?.some(step=>step.peerMessage?.message_id===peer.message_id))continue;
-    steps=[...(steps || []),{id:`peer:${peer.message_id}`,callId:`peer:${peer.message_id}`,kind:"step",label:`Message to ${peer.target_display_name}`,status:peer.state==="failed" ? "error" : "done",peerMessage:peer,ts:Number(row.ts)||0}];
+    const peer=parsePeerActivity(value);if(!peer)continue;
+    const status = peer.state === "failed" ? "error" : "done";
+    mergePeerStep(steps ??= [], {id:`peer:${peer.message_id}`,callId:`peer:${peer.message_id}`,kind:"step",label:`Message to ${peer.target_display_name}`,status,peerMessage:peer,ts:Number(row.ts)||0});
   }
   if(role==="assistant" && row.peer_sent_more===true)steps=[...(steps || []),{id:`peer-more:${String(row.run_id || row.ts || "")}`,kind:"note",label:"Additional peer messages are available in Peers",status:"done",ts:Number(row.ts)||0}];
   const delivery = row.delivery === "steer" || row.delivery === "follow_up"
     ? row.delivery
     : undefined;
+  const total = row.text_total_chars, start = row.text_offset ?? 0;
+  const end = typeof start === "number" && typeof total === "number" ? start + Array.from(text).length : 0;
+  const historyExcerpt = typeof total === "number" && typeof start === "number" && Number.isSafeInteger(total) && Number.isSafeInteger(start)
+    && start >= 0 && end <= total && (start > 0 || end < total) ? {start,end,total} : undefined;
   return {
     role,
     text,
+    ...(typeof row.node_id === "string" && row.node_id ? {nodeId: row.node_id} : {}),
+    ...(historyExcerpt ? {historyExcerpt} : {}),
+    ...(role === "user" && row.display_kind === "peer" ? {historyPeer:true} : {}),
     runId: typeof row.run_id === "string" ? row.run_id : undefined,
     ...(origin ? {origin} : {}),
     ...(peerDisplay ? {peerDisplay} : {}),
@@ -263,7 +311,7 @@ export function chatMessagesMatch(local: ChatMessage, remote: ChatMessage): bool
   if (local.role !== remote.role) return false;
   if(local.origin || remote.origin)return !!local.origin && !!remote.origin && local.origin.peer_id===remote.origin.peer_id && local.origin.message_id===remote.origin.message_id;
   if (local.ticketId || remote.ticketId) {
-    return !!local.ticketId && local.ticketId === remote.ticketId;
+    return !!remote.ticketId && (local.ticketId || local.optimisticTurnId) === remote.ticketId;
   }
   if (String(local.text || "") === String(remote.text || "")) return true;
   // Attachment-only display labels are generated independently in the Deck

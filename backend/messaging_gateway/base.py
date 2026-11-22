@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 import hashlib
+
+
+ChunkConfirmation = Callable[[int, int], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,7 @@ class MessageEnvelope:
     reply_to: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     attachments: tuple[dict[str, Any], ...] = field(default_factory=tuple)
+    admitted_text: str | None = field(default=None, compare=False, repr=False)
 
     @property
     def route_key(self) -> str:

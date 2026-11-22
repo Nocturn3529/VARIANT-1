@@ -97,14 +97,16 @@ function registerBrowserCapture({getDeckWindow, isTrustedIpcSender, isNativeHost
       ]);
       if (changed || guest.isDestroyed() || !sameAttachment()) return {ok:false, error:'browser_document_changed_during_capture'};
       if (image.isEmpty()) return {ok:false, error:'browser_capture_empty'};
+      // Keep the guest's native raster. The viewport and feature coordinates are CSS pixels.
+      const scale = Number.isFinite(capturedViewport.scale) && capturedViewport.scale > 0 ? capturedViewport.scale : 1;
       const png = image.toPNG();
-      const width = png.readUInt32BE(16), height = png.readUInt32BE(20), scale = Number(capturedViewport.scale) || 1;
+      const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
       if (!((width === capturedViewport.width && height === capturedViewport.height)
         || (width === Math.round(capturedViewport.width * scale) && height === Math.round(capturedViewport.height * scale)))) {
         return {ok:false,error:'browser_capture_clipped: move or enlarge the browser panel, or request a smaller viewport'};
       }
       return {ok:true, image:png.toString('base64'), image_width:width, image_height:height,
-        image_css_width:capturedViewport.width, image_css_height:capturedViewport.height};
+        image_css_width:capturedViewport.width, image_css_height:capturedViewport.height, device_scale_factor:scale};
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`[browser-capture] guest=${id} error=${message}`);

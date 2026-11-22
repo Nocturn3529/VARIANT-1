@@ -8,6 +8,7 @@ wire adapters in ``LLMRouter``.
 from __future__ import annotations
 from copy import deepcopy
 
+from model_runtime.nous_catalog import DEFAULT_MODEL as DEFAULT_HERMES_MODEL
 from .base import ProviderProfile
 
 # Model wire endpoints declared by OpenCode, reviewed 2026-10-08:
@@ -25,13 +26,13 @@ _OPENCODE_QWEN_MESSAGES = ("qwen3.8-flash", "qwen3.7-max", "qwen3.7-plus", "qwen
 # Sources: official model pages and native thinking guides (review E66).
 _OPENAI_REASONING_RULES = (
     {"patterns": ("gpt-5.6-luna*",),
-     "efforts": ("none", "low", "medium", "high", "xhigh", "max")},
+     "minimum_efforts": ("none", "low", "medium", "high", "xhigh", "max")},
     {"patterns": ("gpt-5.5", "gpt-5.5-20*", "gpt-5.4", "gpt-5.4-20*", "gpt-5.4-mini*"),
-     "efforts": ("none", "low", "medium", "high", "xhigh")},
+     "minimum_efforts": ("none", "low", "medium", "high", "xhigh")},
     {"patterns": ("gpt-6-astra*", "gpt-5.3-codex-spark*"),
-     "efforts": ("low", "medium", "high", "xhigh")},
+     "minimum_efforts": ("low", "medium", "high", "xhigh")},
     {"patterns": ("o1", "o1-20*", "o3", "o3-20*", "o3-mini*", "o4-mini*"),
-     "efforts": ("low", "medium", "high")},
+     "minimum_efforts": ("low", "medium", "high")},
 )
 _ANTHROPIC_REASONING_RULES = (
     {"patterns": ("claude-mythos*", "claude-fable-5*"),
@@ -185,7 +186,7 @@ def builtin_profiles() -> list[ProviderProfile]:
            )} for rule in _OPENAI_REASONING_RULES) + (
                # Preserve established machinery defaults; newly exposed user
                # effort choices do not implicitly change internal profiles.
-               {"patterns": ("*",), "efforts": ("low", "medium", "high")},
+               {"patterns": ("*",), "minimum_efforts": ("low", "medium", "high")},
            ),
            vision=True,
            signup="https://openrouter.ai/", description="Multi-provider model router.",
@@ -319,9 +320,8 @@ def builtin_profiles() -> list[ProviderProfile]:
            "Hermes-4-405B", aliases=("nous-portal", "nousresearch")),
         _o(
             "hermes", "Hermes Agent (Nous OAuth)", "http://127.0.0.1:8645/v1",
-            (), "meituan/longcat-2.5-preview:free", aliases=("hermes-agent", "hermes-nous"),
+            (), DEFAULT_HERMES_MODEL, aliases=("hermes-agent", "hermes-nous"),
             auth="optional", reasoning=True, vision=True,
-            reasoning_efforts=("minimal", "low", "medium", "high", "xhigh", "max"),
             reasoning_effort_field="reasoning_effort",
             reasoning_model_rules=({"patterns": ("meituan/longcat-2.5-preview:free",),
                 "effort_field": "", "efforts": (),

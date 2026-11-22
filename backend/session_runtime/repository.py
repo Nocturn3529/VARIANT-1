@@ -20,13 +20,14 @@ from .models import (
     ChatRuntimeRecord,
     InputTicket,
     RuntimeIdentity,
+    SubmissionAlreadyRecorded,
     TICKET_STATES,
     TICKET_TERMINAL_STATES,
 )
 from .run_history import RunSettlementHistory, RUN_HISTORY_SQL
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _BUDGET_KEYS = ("provider_calls", "tokens", "cost_usd", "wall_time_s")
 _MUTATION_AUTHORITY_COLUMNS = frozenset({
     "mutation_write_enabled",
@@ -146,6 +147,8 @@ class SessionRuntimeRepository(RunSettlementHistory):
 
                     CREATE TABLE IF NOT EXISTS astb_input_ticket (
                         ticket_id TEXT PRIMARY KEY,
+                        submission_fingerprint TEXT NOT NULL DEFAULT '',
+                        initial_admission_id TEXT NOT NULL DEFAULT '',
                         chat_id TEXT NOT NULL,
                         delivery TEXT NOT NULL,
                         text TEXT NOT NULL,
@@ -170,22 +173,27 @@ class SessionRuntimeRepository(RunSettlementHistory):
                         chat_id TEXT PRIMARY KEY,
                         revision INTEGER NOT NULL DEFAULT 0
                     );
-                    CREATE TRIGGER IF NOT EXISTS input_queue_insert_revision
-                    AFTER INSERT ON astb_input_ticket BEGIN
+                    BEGIN IMMEDIATE;
+                    DROP TRIGGER IF EXISTS input_queue_insert_revision;
+                    DROP TRIGGER IF EXISTS input_queue_update_revision;
+                    DROP TRIGGER IF EXISTS input_queue_delete_revision;
+                    CREATE TRIGGER IF NOT EXISTS input_queue_insert_revision_v6
+                    AFTER INSERT ON astb_input_ticket WHEN NEW.delivery != 'initial' BEGIN
                         INSERT INTO astb_input_queue_revision(chat_id,revision) VALUES(NEW.chat_id,1)
                         ON CONFLICT(chat_id) DO UPDATE SET revision=revision+1;
                     END;
-                    CREATE TRIGGER IF NOT EXISTS input_queue_update_revision
-                    AFTER UPDATE ON astb_input_ticket BEGIN
+                    CREATE TRIGGER IF NOT EXISTS input_queue_update_revision_v6
+                    AFTER UPDATE ON astb_input_ticket WHEN OLD.delivery != 'initial' OR NEW.delivery != 'initial' BEGIN
                         INSERT INTO astb_input_queue_revision(chat_id,revision) VALUES(NEW.chat_id,1)
                         ON CONFLICT(chat_id) DO UPDATE SET revision=revision+1;
                     END;
-                    CREATE TRIGGER IF NOT EXISTS input_queue_delete_revision
-                    AFTER DELETE ON astb_input_ticket BEGIN
+                    CREATE TRIGGER IF NOT EXISTS input_queue_delete_revision_v6
+                    AFTER DELETE ON astb_input_ticket WHEN OLD.delivery != 'initial' BEGIN
                         INSERT INTO astb_input_queue_revision(chat_id,revision) VALUES(OLD.chat_id,1)
                         ON CONFLICT(chat_id) DO UPDATE SET revision=revision+1;
                     END;
 
+                    COMMIT;
                     CREATE TABLE IF NOT EXISTS astb_outer_tool_call (
                         chat_id TEXT NOT NULL,
                         run_id TEXT NOT NULL,
@@ -261,6 +269,10 @@ class SessionRuntimeRepository(RunSettlementHistory):
                     ).fetchall()
                 }
                 conn.executescript(RUN_HISTORY_SQL)
+                ticket_columns = {row[1] for row in conn.execute("PRAGMA table_info(astb_input_ticket)")}
+                for column in ("submission_fingerprint", "initial_admission_id"):
+                    if column not in ticket_columns:
+                        conn.execute(f"ALTER TABLE astb_input_ticket ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
                 missing_authority_columns = (
                     _MUTATION_AUTHORITY_COLUMNS - runtime_columns
                 )
@@ -338,6 +350,8 @@ class SessionRuntimeRepository(RunSettlementHistory):
             return None
         return InputTicket(
             ticket_id=row["ticket_id"],
+            submission_fingerprint=row["submission_fingerprint"],
+            initial_admission_id=row["initial_admission_id"],
             chat_id=row["chat_id"],
             delivery=row["delivery"],
             text=row["text"],
@@ -783,6 +797,32 @@ class SessionRuntimeRepository(RunSettlementHistory):
             ).fetchone()
         return self._runtime_from_row(updated)
 
+    @staticmethod
+    def check_submission(ticket: InputTicket | None, chat_id: str, ticket_id: str, fingerprint: str) -> None:
+        if ticket is not None:
+            raise SubmissionAlreadyRecorded(chat_id, ticket_id, conflict=(
+                ticket.chat_id != chat_id or ticket.submission_fingerprint != fingerprint))
+
+    def admit_initial_ticket(self, chat_id: str, ticket_id: str, fingerprint: str, admission_id: str) -> None:
+        now = time.time()
+        with self._transaction(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM astb_input_ticket WHERE ticket_id=?", (ticket_id,)).fetchone()
+            self.check_submission(self._ticket_from_row(row), chat_id, ticket_id, fingerprint)
+            # The transcript owns the input. This row only needs its fingerprint and exact writer.
+            conn.execute(
+                "INSERT INTO astb_input_ticket(ticket_id,chat_id,delivery,text,state,submission_fingerprint,"
+                "initial_admission_id,created_at,updated_at,selected_at) VALUES(?,?,'initial','','running',?,?,?,?,?)",
+                (ticket_id, chat_id, fingerprint, admission_id, now, now, now))
+
+    def bind_initial_ticket_run(self, chat_id: str, ticket_id: str, admission_id: str, run_id: str) -> None:
+        with self._transaction(immediate=True) as conn:
+            updated = conn.execute(
+                "UPDATE astb_input_ticket SET run_id=?, updated_at=? WHERE chat_id=? AND ticket_id=? "
+                "AND initial_admission_id=? AND delivery='initial' AND state='running' AND run_id IN ('',?)",
+                (run_id, time.time(), chat_id, ticket_id, admission_id, run_id))
+            if updated.rowcount != 1:
+                raise RuntimeError("Initial submission no longer belongs to this admission")
+
     def create_ticket(
         self,
         chat_id: str,
@@ -793,6 +833,7 @@ class SessionRuntimeRepository(RunSettlementHistory):
         source: str = "",
         attachment_id: str = "",
         ticket_id: str = "",
+        submission_fingerprint: str = "",
     ) -> InputTicket:
         if delivery not in {"steer", "follow_up", "clarification"}:
             raise ValueError(f"invalid input delivery: {delivery}")
@@ -811,6 +852,8 @@ class SessionRuntimeRepository(RunSettlementHistory):
                 "SELECT * FROM astb_input_ticket WHERE ticket_id=?", (tid,)
             ).fetchone()
             if existing is not None:
+                if submission_fingerprint:
+                    self.check_submission(self._ticket_from_row(existing), chat_id, tid, submission_fingerprint)
                 same = (
                     existing["chat_id"] == chat_id
                     and existing["delivery"] == delivery
@@ -823,11 +866,11 @@ class SessionRuntimeRepository(RunSettlementHistory):
                 """
                 INSERT INTO astb_input_ticket(
                     ticket_id, chat_id, delivery, text, state, client_id,
-                    source, attachment_id, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)
+                    source, attachment_id, submission_fingerprint, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
                 """,
                 (tid, chat_id, delivery, clean_text, client_id, source,
-                 attachment_id, now, now),
+                 attachment_id, submission_fingerprint, now, now),
             )
             row = conn.execute(
                 "SELECT * FROM astb_input_ticket WHERE ticket_id=?", (tid,)

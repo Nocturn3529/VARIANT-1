@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import deque
+from concurrent.futures import Future
 from contextlib import suppress
 from contextvars import copy_context
 from dataclasses import replace
@@ -36,12 +37,11 @@ from .contracts import (
 )
 from .job_object import KernelJobObject
 from .output import CellOutputCollector
+from .repl_writer import FrameNotSent, FrameWriteUncertain, ReplFrameWriter, check_write
 from .repl_protocol import (
     DEFAULT_MAX_REPL_FRAME_BYTES,
     ReplProtocolError,
-    encode_line,
     read_line,
-    request_frame,
     validate_event,
 )
 
@@ -53,6 +53,8 @@ if TYPE_CHECKING:
 # chatty worker cannot grow the lease's footprint, and a tail rather than a
 # prefix because the cause is printed last.
 _BOOT_OUTPUT_FRAMES = 64
+_BACKGROUND_TAIL_BYTES = 64 * 1024
+_TRANSPORT_PENDING_FRAMES = 8
 
 
 def _drain_boot_output(transport: Any, sink: "deque[str]") -> None:
@@ -87,13 +89,14 @@ def _boot_output_detail(chunks: "deque[str]") -> str:
 
 
 class _ReplTransport:
-    """One threaded pipe reader feeding the owning asyncio lease."""
+    """A generation's pipe reader and ordered writer, off the host event loop."""
 
     def __init__(
         self,
         process: subprocess.Popen,
         *,
         max_frame_bytes: int = DEFAULT_MAX_REPL_FRAME_BYTES,
+        background: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         if process.stdin is None or process.stdout is None:
             raise KernelUnavailable("REPL worker pipes are unavailable")
@@ -102,9 +105,16 @@ class _ReplTransport:
         self.stdout = process.stdout
         self.max_frame_bytes = max(1024, int(max_frame_bytes))
         self.loop = asyncio.get_running_loop()
-        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._write_lock = threading.Lock()
+        self.queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(_TRANSPORT_PENDING_FRAMES)
+        # Own a credit before scheduling on the event loop. Bounding just the
+        # asyncio queue would leave an unlimited backlog of thread callbacks.
+        self._credits = threading.Semaphore(_TRANSPORT_PENDING_FRAMES)
+        self._background = background
+        self._ready = False
+        self._execution_id = ""
+        self._last_terminal_id = ""
         self._closed = False
+        self.writer = ReplFrameWriter(self.stdin, pid=process.pid, max_frame_bytes=self.max_frame_bytes)
         self._reader = threading.Thread(
             target=self._read_loop,
             name=f"variant1-repl-host-reader:{process.pid}",
@@ -113,8 +123,28 @@ class _ReplTransport:
         self._reader.start()
 
     def _deliver(self, event: dict[str, Any]) -> None:
+        if self._closed:
+            return
+        kind = event.get("type")
+        if kind == "ready":
+            self._ready = True
+        if (self._ready and self._background is not None
+                and kind in {"stdout", "stderr", "display", "update_display", "clear_output"}
+                and (not self._execution_id or event.get("id") != self._execution_id)):
+            try:
+                self._background(event)
+            finally:
+                self._credits.release()
+            return
+        if kind == "done" and event.get("id") == self._execution_id:
+            self._last_terminal_id = self._execution_id
+            self._execution_id = ""
+        self.queue.put_nowait(event)
+
+    def _post(self, event: dict[str, Any]) -> None:
+        self._credits.acquire()
         if not self._closed:
-            self.queue.put_nowait(event)
+            self.loop.call_soon_threadsafe(self._deliver, event)
 
     def _read_loop(self) -> None:
         try:
@@ -123,38 +153,30 @@ class _ReplTransport:
                     self.stdout, max_bytes=self.max_frame_bytes
                 )
                 if frame is None:
-                    self.loop.call_soon_threadsafe(
-                        self._deliver,
-                        {"_transport_error": "REPL worker closed its output"},
-                    )
+                    self._post({"_transport_error": "REPL worker closed its output"})
                     return
                 try:
                     event = validate_event(frame)
                 except Exception as exc:
-                    self.loop.call_soon_threadsafe(
-                        self._deliver,
-                        {"_transport_error": str(exc) or type(exc).__name__},
-                    )
+                    self._post({"_transport_error": str(exc) or type(exc).__name__})
                     return
-                self.loop.call_soon_threadsafe(self._deliver, event)
+                self._post(event)
         except BaseException as exc:
             if not self._closed:
                 with suppress(RuntimeError):
-                    self.loop.call_soon_threadsafe(
-                        self._deliver,
-                        {"_transport_error": str(exc) or type(exc).__name__},
-                    )
+                    self._post({"_transport_error": str(exc) or type(exc).__name__})
 
-    def send(self, request_id: str, frame_type: str, **fields: Any) -> None:
+    def send(self, request_id: str, frame_type: str, **fields: Any) -> Future[None]:
         if self._closed:
-            raise KernelUnavailable("REPL transport is closed")
-        raw = encode_line(
-            request_frame(request_id, frame_type, **fields),
-            max_bytes=self.max_frame_bytes,
-        )
-        with self._write_lock:
-            self.stdin.write(raw)
-            self.stdin.flush()
+            raise FrameNotSent("REPL transport is closed")
+        write = self.writer.submit(request_id, frame_type, fields)
+        if frame_type == "execute":
+            self._execution_id = request_id
+            self._last_terminal_id = ""
+        return write
+
+    def terminal_buffered(self, execution_id: str) -> bool:
+        return self._last_terminal_id == execution_id
 
     async def receive(self, *, timeout_s: float | None = None) -> dict[str, Any]:
         if timeout_s is None:
@@ -163,13 +185,20 @@ class _ReplTransport:
             event = await asyncio.wait_for(
                 self.queue.get(), timeout=max(0.001, float(timeout_s))
             )
+        self._credits.release()
         error = str(event.get("_transport_error") or "")
         if error:
             raise ReplProtocolError(error)
         return event
 
-    def close(self) -> None:
+    def retire_writes(self) -> None:
+        self.writer.retire()
+
+    async def close(self) -> None:
         self._closed = True
+        self._credits.release()
+        self.retire_writes()
+        await self.writer.wait_stopped()
         with suppress(Exception):
             self.stdin.close()
         with suppress(Exception):
@@ -315,6 +344,8 @@ class KernelLease:
         self.execution_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self.transport: _ReplTransport | None = None
+        # Includes cells waiting for the ledger, execution lock or settlement.
+        self.admitted_cells = 0
         self.process: subprocess.Popen | None = None
         self.job: KernelJobObject | None = None
         self.bridge: KernelBridgeServer | None = None
@@ -331,7 +362,7 @@ class KernelLease:
         # generation merely because the cell cannot acknowledge quickly.  A
         # terminal Stop may still escalate after its bounded soft attempt.
         self._external_interrupts: dict[str, str] = {}
-        self._namespace_key: tuple[str, int, int, int] | None = None
+        self._namespace_key: tuple[str, int, int, int, bool] | None = None
         self._namespace_sync_count = 0
         self._namespace_sync_skipped = 0
         self._last_namespace_delta: dict[str, Any] = {}
@@ -341,6 +372,8 @@ class KernelLease:
         self.worker_pid: int | None = None
         self._last_output_pressure: dict[str, Any] = {}
         self._background_events: list[dict[str, Any]] = []
+        self._background_bytes = 0
+        self._unreported_background_frames = 0
         self._worker_diagnostics: list[str] = []
         # Display-only view of the cell holding execution_lock.
         self.current_cell: dict[str, Any] | None = None
@@ -365,7 +398,7 @@ class KernelLease:
     @staticmethod
     def _document_key(
         document: dict[str, Any] | None,
-    ) -> tuple[str, int, int, int] | None:
+    ) -> tuple[str, int, int, int, bool] | None:
         if not isinstance(document, dict):
             return None
         if not str(document.get("schema") or "").startswith(
@@ -381,6 +414,7 @@ class KernelLease:
                     "mutation_authority_revision"
                 ) or 0
             ),
+            bool((document.get("session") or {}).get("child_outcome_available")),
         )
 
     async def _invoke_from_kernel(self, request: dict[str, Any]) -> dict[str, Any]:
@@ -573,6 +607,7 @@ class KernelLease:
         await self._capability_gate.acquire(parallel_safe, control=control)
         try:
             receipt = await self.manager.broker.invoke(ref, args, context)
+            admission.activity.observe(admission, nested_id, ref.capability_id, args, receipt)
             refreshed_document = None
             if (
                 receipt.ok
@@ -809,6 +844,8 @@ class KernelLease:
                 context,
                 max_concurrency=effective,
             )
+            for call, receipt in zip(calls, receipts):
+                admission.activity.observe(admission, call.nested_call_id, call.ref.capability_id, call.args, receipt)
             failed = next((receipt for receipt in receipts if not receipt.ok), None)
             if failed is None:
                 return {
@@ -866,16 +903,22 @@ class KernelLease:
                 invoke_handler_limits_concurrency=True,
             )
             host, port = await self.bridge.start()
-            env = {
-                key: value for key, value in os.environ.items()
-                if not any(
-                    marker in key.upper()
+            env = {}
+            for key, value in os.environ.items():
+                name = key.upper()
+                if any(
+                    marker in name
                     for marker in (
                         "KEY", "TOKEN", "SECRET", "PASSWORD", "PASSWD",
                         "CREDENTIAL",
                     )
-                )
-            }
+                ):
+                    continue
+                # The filter removes GIT_CONFIG_KEY_<n>. Drop the rest of the
+                # indexed overrides together so Git sees a complete environment.
+                if name == "GIT_CONFIG_COUNT" or name.startswith("GIT_CONFIG_VALUE_"):
+                    continue
+                env[key] = value
             env.update({
                 "VARIANT1_KERNEL_GATE_FILE": self.gate_file,
                 "VARIANT1_KERNEL_GATE_TOKEN": self._gate_token,
@@ -1010,7 +1053,8 @@ class KernelLease:
                 os.fsync(handle.fileno())
             _restrict_path(self.gate_file)
             self.transport = _ReplTransport(
-                self.process, max_frame_bytes=DEFAULT_MAX_REPL_FRAME_BYTES
+                self.process, max_frame_bytes=DEFAULT_MAX_REPL_FRAME_BYTES,
+                background=self._record_background_event,
             )
             deadline = time.monotonic() + self.manager.limits.boot_timeout_s
             ready: dict[str, Any] | None = None
@@ -1031,13 +1075,13 @@ class KernelLease:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise TimeoutError("VARIANT-1 CPython REPL readiness deadline expired")
-                if self.process.poll() is not None:
-                    raise KernelUnavailable("VARIANT-1 CPython REPL exited before ready")
                 try:
                     event = await self.transport.receive(
                         timeout_s=min(0.25, remaining)
                     )
                 except asyncio.TimeoutError:
+                    if self.process.poll() is not None:
+                        raise KernelUnavailable("VARIANT-1 CPython REPL exited before ready")
                     continue
                 except BaseException:
                     # The worker is gone, but the transport queue can still hold
@@ -1200,15 +1244,21 @@ class KernelLease:
             return ""
 
     def _record_background_event(self, event: dict[str, Any]) -> None:
-        if str(event.get("type") or "") not in {"stdout", "stderr"}:
-            return
+        kind = str(event.get("type") or "")
+        data = event.get("data")
+        body = data.get("text/plain", "") if isinstance(data, dict) else event.get("text", "")
+        raw = body[-4096:].encode("utf-8", errors="replace")[-4096:] if isinstance(body, str) else b""
+        text = raw.decode("utf-8", errors="ignore")
         self._background_events.append({
-            "type": str(event.get("type") or ""),
+            "type": kind,
             "origin_id": str(event.get("id") or "") or None,
-            "text": str(event.get("text") or "")[:4000],
+            "text": text,
             "received_at": time.time(),
         })
-        del self._background_events[:-64]
+        self._background_bytes += len(text.encode("utf-8"))
+        self._unreported_background_frames += 1
+        while len(self._background_events) > 64 or self._background_bytes > _BACKGROUND_TAIL_BYTES:
+            self._background_bytes -= len(self._background_events.pop(0)["text"].encode("utf-8"))
 
     def _record_worker_diagnostic(self, event: dict[str, Any]) -> None:
         if str(event.get("type") or "") != "diagnostic":
@@ -1226,6 +1276,7 @@ class KernelLease:
         document: dict[str, Any] | None = None,
         limit: int | None = None,
         timeout_s: float = 60.0,
+        cancellation: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         transport = self.transport
         if transport is None:
@@ -1239,26 +1290,35 @@ class KernelLease:
         if limit is not None:
             fields["limit"] = int(limit)
         try:
-            transport.send(request_id, operation, **fields)
+            write = transport.send(request_id, operation, **fields)
         except Exception as exc:
             await self.close(reason=f"repl_{operation}_dispatch_failed", hard=True)
             raise KernelUnavailable(
                 f"REPL {operation} request could not be dispatched"
             ) from exc
         deadline = time.monotonic() + max(0.1, float(timeout_s))
+        terminal = None
         while True:
+            if cancellation is not None and cancellation():
+                if write is None or not write.cancel():
+                    await self.close(reason=f"repl_{operation}_cancelled", hard=True)
+                raise FrameNotSent("The cell was stopped during namespace setup, before submission.")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 await self.close(reason=f"repl_{operation}_timeout", hard=True)
                 raise KernelUnavailable(f"REPL {operation} request timed out")
             try:
+                if write is not None and write.done():
+                    check_write(write)
+                    write = None
+                if terminal is not None and write is None:
+                    break
                 event = await transport.receive(timeout_s=min(0.25, remaining))
             except asyncio.TimeoutError:
                 continue
             except asyncio.CancelledError:
-                await self.close(
-                    reason=f"repl_{operation}_cancelled", hard=True
-                )
+                if write is None or not write.cancel():
+                    await self.close(reason=f"repl_{operation}_cancelled", hard=True)
                 raise
             except Exception as exc:
                 await self.close(
@@ -1275,21 +1335,19 @@ class KernelLease:
                 self._record_worker_diagnostic(event)
             elif event_type in {"stdout", "stderr"} and event_id != request_id:
                 self._record_background_event(event)
-            if event_id != request_id:
-                continue
-            if event_type != "done":
-                continue
-            if str(event.get("status") or "") != "ok":
-                error = event.get("error") if isinstance(event.get("error"), dict) else {}
-                raise KernelUnavailable(
-                    str(error.get("message") or f"REPL {operation} failed")
-                )
-            result = event.get("result")
-            return dict(result) if isinstance(result, dict) else {}
+            if event_id == request_id and event_type == "done":
+                terminal = event
+        if str(terminal.get("status") or "") != "ok":
+            error = terminal.get("error") or {}
+            raise KernelUnavailable(str(error.get("message") or f"REPL {operation} failed"))
+        result = terminal.get("result")
+        return dict(result) if isinstance(result, dict) else {}
 
     async def _sync_namespace(
         self,
         document: dict[str, Any] | None,
+        *,
+        cancellation: Callable[[], bool] | None = None,
     ) -> None:
         key = self._document_key(document)
         if key is None:
@@ -1300,6 +1358,7 @@ class KernelLease:
         await self._repl_control(
             "mount",
             document=document,
+            cancellation=cancellation,
             timeout_s=min(15.0, max(2.0, self.manager.limits.boot_timeout_s)),
         )
         self._namespace_key = key
@@ -1384,6 +1443,7 @@ class KernelLease:
         reason: str,
         terminal: dict[str, Any] | None = None,
         intent: str = "stop",
+        submission: Future[None] | None = None,
     ) -> tuple[dict[str, Any] | None, bool]:
         selected_intent = "steer" if str(intent) == "steer" else "stop"
         may_hard_kill = selected_intent == "stop"
@@ -1402,10 +1462,21 @@ class KernelLease:
         cancellation = self._cell_cancellations.get(execution_id)
         if cancellation is not None:
             cancellation.set()
+        if submission is not None and submission.cancel():
+            raise FrameNotSent("The cell was stopped before its frame was written.")
+
+        async def retire(close_reason: str) -> tuple[dict[str, Any] | None, bool]:
+            writing = submission is not None and not submission.done()
+            await self.close(reason=close_reason, hard=True)
+            if terminal is None and submission is not None:
+                check_write(submission)
+                if writing:
+                    raise FrameWriteUncertain("The generation retired during submission without a terminal receipt.")
+            return terminal, True
+
         transport = self.transport
         if transport is None:
-            await self.close(reason=reason, hard=True)
-            return None, True
+            return await retire(reason)
         if may_hard_kill:
             self.state = "stopping"
         grace_s = max(0.1, self.manager.limits.interrupt_grace_s)
@@ -1435,8 +1506,7 @@ class KernelLease:
             )
             if not settled:
                 if may_hard_kill:
-                    await self.close(reason=reason, hard=True)
-                    return None, True
+                    return await retire(reason)
                 emit_safe_boundary_wait()
                 while not settled:
                     if promote_terminal_intent():
@@ -1447,10 +1517,7 @@ class KernelLease:
                             timeout_s=grace_s,
                         )
                         if not settled:
-                            await self.close(
-                                reason="terminal_interrupt", hard=True
-                            )
-                            return None, True
+                            return await retire("terminal_interrupt")
                         break
                     settled = await self.bridge.cancel_execution(
                         execution_id,
@@ -1459,25 +1526,25 @@ class KernelLease:
 
         promote_terminal_intent()
 
-        if terminal is None:
-            interrupt_id = "interrupt-" + uuid.uuid4().hex
+        interrupt_writes: list[Future[None]] = []
+
+        def send_interrupt() -> None:
             with suppress(Exception):
-                transport.send(
-                    interrupt_id, "interrupt", target_id=execution_id
-                )
+                pending = transport.send("interrupt-" + uuid.uuid4().hex, "interrupt", target_id=execution_id)
+                if pending is not None:
+                    interrupt_writes.append(pending)
+
+        if terminal is None:
+            send_interrupt()
 
         deadline = time.monotonic() + grace_s
-        while terminal is None:
+        while (terminal is None or (submission is not None and not submission.done())
+               or any(not pending.done() for pending in interrupt_writes)):
             if promote_terminal_intent():
                 # The prior Steer may have been caught or deferred by a
                 # blocking call.  Give terminal Stop one fresh targeted soft
                 # interrupt and one grace window before replacing the worker.
-                with suppress(Exception):
-                    transport.send(
-                        "interrupt-" + uuid.uuid4().hex,
-                        "interrupt",
-                        target_id=execution_id,
-                    )
+                send_interrupt()
                 deadline = time.monotonic() + grace_s
             if may_hard_kill and time.monotonic() >= deadline:
                 break
@@ -1488,39 +1555,37 @@ class KernelLease:
             ):
                 emit_safe_boundary_wait()
             if self.process is None or self.process.poll() is not None:
-                await self.close(reason="process_died", hard=True)
-                return None, True
+                return await retire("process_died")
             try:
                 event = await transport.receive(timeout_s=0.05)
             except asyncio.TimeoutError:
                 continue
+            except ReplProtocolError:
+                return await retire(reason)
             event_type = str(event.get("type") or "")
             event_id = str(event.get("id") or "")
             if event_type == "resource_snapshot":
                 self._accept_repl_resource(event.get("content"))
             elif event_id == execution_id and event_type == "done":
                 terminal = event
-                break
+                for pending in interrupt_writes:
+                    pending.cancel()  # No further interrupt is needed for a settled cell.
             elif event_id == execution_id:
                 collector.accept_event(event)
             elif event_type in {"stdout", "stderr"}:
                 self._record_background_event(event)
                 collector.stale()
         if terminal is not None:
+            outstanding = [*interrupt_writes] if submission is None else [submission, *interrupt_writes]
+            if any(not frame.done() or (not frame.cancelled() and frame.exception() is not None)
+                   for frame in outstanding):
+                return await retire(reason)
             self.state = "ready"
             return terminal, False
         # Only an explicit terminal intent reaches this escalation.  A Steer
         # remains attached to the active cell until its safe terminal boundary
         # or until the user separately requests Stop.
-        await self.close(
-            reason=(
-                "terminal_interrupt"
-                if terminal_intent_requested()
-                else reason
-            ),
-            hard=True,
-        )
-        return None, True
+        return await retire("terminal_interrupt" if terminal_intent_requested() else reason)
 
     async def execute(
         self,
@@ -1582,10 +1647,18 @@ class KernelLease:
             with bind_run_context(live_context):
                 admission = replace(admission, callback_context=copy_context())
             self._cell_cancellations[admission.execution_id] = cell_cancellation
+            write: Future[None] | None = None
+            submitted = False
             try:
-                await self._sync_namespace(admission.namespace_document)
+                await self._sync_namespace(
+                    admission.namespace_document,
+                    cancellation=lambda: admission.cancelled()
+                    and self._external_interrupts.get(admission.execution_id) != "steer",
+                )
+                if admission.cancelled():
+                    raise FrameNotSent("The cell was stopped before submission.")
                 self._admissions[admission.execution_id] = admission
-                transport.send(
+                write = transport.send(
                     admission.execution_id,
                     "execute",
                     code=str(code),
@@ -1597,6 +1670,7 @@ class KernelLease:
                         "generation": admission.generation,
                     },
                 )
+                submitted = True
                 configured_timeout = (
                     float(self.manager.limits.cell_timeout_s)
                     if timeout_s is None
@@ -1607,14 +1681,29 @@ class KernelLease:
                     if configured_timeout > 0
                     else None
                 )
-                while terminal is None:
+                # Read output and watch Stop while the ordered writer is still
+                # sending. A terminal reply may arrive before flush returns.
+                while terminal is None or write is not None:
+                    if write is not None and write.done() and (
+                        terminal is not None or not transport.terminal_buffered(admission.execution_id)
+                    ):
+                        try:
+                            check_write(write)
+                        except FrameWriteUncertain:
+                            if terminal is None:
+                                raise
+                            await self.close(reason="repl_write_failed_after_done", hard=True)
+                            hard_restarted = True
+                        write = None
+                        if terminal is not None:
+                            break
                     external_intent = self._external_interrupts.get(
                         admission.execution_id
                     )
                     if admission.cancelled() or external_intent:
                         status = "cancelled"
                         error_code = "kernel_cell_cancelled"
-                        error_message = "Cell cancelled by the host."
+                        error_message = "Cell cancelled by the host; partial effects may already exist."
                         terminal, hard_restarted = await self._interrupt_repl_or_kill(
                             execution_id=admission.execution_id,
                             collector=collector,
@@ -1624,6 +1713,8 @@ class KernelLease:
                                 else "cancelled"
                             ),
                             intent=external_intent or "stop",
+                            terminal=terminal,
+                            submission=write,
                         )
                         break
                     if deadline is not None and time.monotonic() >= deadline:
@@ -1634,6 +1725,8 @@ class KernelLease:
                             execution_id=admission.execution_id,
                             collector=collector,
                             reason="timed_out",
+                            terminal=terminal,
+                            submission=write,
                         )
                         break
                     if self.process is None or self.process.poll() is not None:
@@ -1642,6 +1735,8 @@ class KernelLease:
                         error_message = "The VARIANT-1 CPython REPL exited during the cell."
                         await self.close(reason="process_died", hard=True)
                         hard_restarted = True
+                        if write is not None and terminal is None:
+                            check_write(write)
                         break
                     try:
                         event = await transport.receive(timeout_s=0.05)
@@ -1660,7 +1755,9 @@ class KernelLease:
                     elif event_type in {"stdout", "stderr"}:
                         self._record_background_event(event)
                         collector.stale()
-                if terminal is not None and status == "ok" and (
+                # Retiring a failed writer after a witnessed terminal sets
+                # the lease's cancellation events as part of teardown.
+                if terminal is not None and not hard_restarted and status == "ok" and (
                     admission.cancelled()
                     or admission.execution_id in self._external_interrupts
                     or str(terminal.get("status") or "") == "cancelled"
@@ -1730,35 +1827,60 @@ class KernelLease:
                         if item
                     )
             except asyncio.CancelledError as cancellation:
-                cleanup = asyncio.create_task(
-                    self._interrupt_repl_or_kill(
-                        execution_id=admission.execution_id,
-                        collector=collector,
-                        reason="task_cancelled",
-                        intent="stop",
-                    ),
-                    name=(
-                        f"repl-cancel-cleanup:{self.chat_id}:"
-                        f"{admission.execution_id}"
-                    ),
-                )
-                while not cleanup.done():
+                status, error_code = "cancelled", "cancelled"
+                error_message = "Cell cancelled before submission; no cell code ran."
+                if submitted:
+                    error_message = "Cell cancelled; partial effects may already exist."
+                    cleanup = asyncio.create_task(
+                        self._interrupt_repl_or_kill(
+                            execution_id=admission.execution_id, collector=collector,
+                            reason="task_cancelled", terminal=terminal, submission=write,
+                        ),
+                        name=f"repl-cancel-cleanup:{self.chat_id}:{admission.execution_id}",
+                    )
+                    while not cleanup.done():
+                        try:
+                            await asyncio.shield(cleanup)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
                     try:
-                        await asyncio.shield(cleanup)
-                    except asyncio.CancelledError:
-                        continue
-                with suppress(BaseException):
-                    cleanup.result()
+                        terminal, _ = cleanup.result()
+                    except FrameNotSent as exc:
+                        error_code, error_message = "kernel_cell_not_submitted", str(exc)
+                    except Exception as exc:
+                        status, error_code = "unknown_effect", "kernel_submission_unconfirmed"
+                        error_message = f"Cell submission or terminal outcome is unconfirmed: {exc}"
+                if terminal is not None:
+                    execution_count = int(terminal.get("execution_count") or 0)
                 cancellation.kernel_result = KernelExecutionResult(
                     execution_id=admission.execution_id, chat_id=self.chat_id, generation=self.generation,
-                    status='cancelled', output=collector.result, execution_count=execution_count,
-                    error_code='cancelled', error_message='Cell cancelled; partial effects may already exist.',
+                    status=status, output=collector.result, execution_count=execution_count,
+                    reply_status=str((terminal or {}).get("status") or ""),
+                    error_code=error_code, error_message=error_message,
                     duration_ms=(time.monotonic()-started)*1000, hard_restarted=self._closed,
                 )
                 raise cancellation
+            except FrameNotSent as exc:
+                if not self._closed and transport.writer.retired:
+                    await self.close(reason="repl_writer_retired", hard=True)
+                if status == "ok":
+                    status = "cancelled" if admission.cancelled() else "error"
+                error_code, error_message = "kernel_cell_not_submitted", str(exc)
+                hard_restarted = self._closed
+            except FrameWriteUncertain as exc:
+                status, error_code = "unknown_effect", "kernel_submission_unconfirmed"
+                error_message = f"Cell submission is unconfirmed. Inspect existing effects before retrying. {exc}"
+                await self.close(reason=error_code, hard=True)
+                hard_restarted = True
             except BaseException as exc:
-                status = "protocol_error"
-                error_code = "kernel_protocol_error"
+                if not submitted:
+                    status, error_code = "error", "kernel_cell_not_submitted"
+                elif write is not None and terminal is None:
+                    status, error_code = "unknown_effect", "kernel_submission_unconfirmed"
+                else:
+                    status, error_code = "protocol_error", "kernel_protocol_error"
                 worker_detail = self._worker_log_tail()
                 error_message = (str(exc) or type(exc).__name__) + (
                     f"; worker: {worker_detail}" if worker_detail else ""
@@ -1766,6 +1888,8 @@ class KernelLease:
                 await self.close(reason="protocol_error", hard=True)
                 hard_restarted = True
             finally:
+                collector.result.stale_events += self._unreported_background_frames
+                self._unreported_background_frames = 0
                 self.current_cell = None
                 self._admissions.pop(admission.execution_id, None)
                 if self.bridge is not None:
@@ -1790,6 +1914,7 @@ class KernelLease:
                 duration_ms=(time.monotonic() - started) * 1000,
                 hard_restarted=hard_restarted,
                 terminate=bool(collector.result.terminate_requested),
+                cell_action=admission.activity.summary() if status == "ok" else "",
             )
             projection_limit = max(1, int(self.manager.limits.output.max_cell_bytes))
             self._last_namespace_delta = dict(result.output.namespace_delta)
@@ -1842,9 +1967,11 @@ class KernelLease:
         """
 
         transport = self.transport
-        if transport is None or not self._admissions:
+        if transport is None:
             return ""
-        execution_id = next(iter(self._admissions))
+        execution_id = next(iter(self._admissions), "") or str((self.current_cell or {}).get("execution_id") or "")
+        if not execution_id:
+            return ""
         selected_intent = "steer" if str(intent) == "steer" else "stop"
         prior = self._external_interrupts.get(execution_id)
         if prior != "stop":
@@ -1852,7 +1979,7 @@ class KernelLease:
         cancellation = self._cell_cancellations.get(execution_id)
         if cancellation is not None:
             cancellation.set()
-        if send:
+        if send and execution_id in self._admissions:
             transport.send(
                 "interrupt-" + uuid.uuid4().hex,
                 "interrupt",
@@ -1926,6 +2053,8 @@ class KernelLease:
             hard = process.poll() is None
         hard = hard or force_close.is_set()
         failures = []
+        if transport is not None:
+            transport.retire_writes()
         if process is not None and process.poll() is None:
             process_error = None
             try:
@@ -1950,7 +2079,7 @@ class KernelLease:
                 failures.append(exc)
         if transport is not None:
             try:
-                transport.close()
+                await transport.close()
                 self.transport = None
             except Exception as exc:
                 failures.append(exc)

@@ -224,6 +224,8 @@ def empty_session_context(
         "model": str(selected.get("model") or ""),
         "reasoning_effort": str(selected.get("reasoning_effort") or ""),
         "reasoning_efforts": list(selected.get("reasoning_efforts") or ()),
+        **({"reasoning_enabled": selected["reasoning_enabled"]}
+           if isinstance(selected.get("reasoning_enabled"), bool) else {}),
         "measurement": "pending",
         "category_measurement": "estimated",
         "used_tokens": 0,
@@ -270,6 +272,8 @@ def session_context_from_manifest(manifest: dict) -> dict | None:
         "reasoning_efforts": list(
             ((manifest.get("route") or {}).get("reasoning_efforts") or ())
         ),
+        **({"reasoning_enabled": manifest["route"]["reasoning_enabled"]}
+           if isinstance((manifest.get("route") or {}).get("reasoning_enabled"), bool) else {}),
         "measurement": measurement,
         "category_measurement": "estimated",
         "used_tokens": used,
@@ -313,6 +317,8 @@ def estimated_session_context(
         "model": str(selected.get("model") or ""),
         "reasoning_effort": str(selected.get("reasoning_effort") or ""),
         "reasoning_efforts": list(selected.get("reasoning_efforts") or ()),
+        **({"reasoning_enabled": selected["reasoning_enabled"]}
+           if isinstance(selected.get("reasoning_enabled"), bool) else {}),
         "measurement": "estimated_projection",
         "category_measurement": "estimated",
         "used_tokens": used,
@@ -366,6 +372,10 @@ def latest_session_context(
             context["reasoning_efforts"] = list(
                 expected.get("reasoning_efforts") or ()
             )
+            if isinstance(expected.get("reasoning_enabled"), bool):
+                context["reasoning_enabled"] = expected["reasoning_enabled"]
+            elif expected:
+                context.pop("reasoning_enabled", None)
             limit = _uint(context_limit_tokens) or _uint(context.get("context_limit_tokens"))
             if limit:
                 used = _uint(context.get("used_tokens"))

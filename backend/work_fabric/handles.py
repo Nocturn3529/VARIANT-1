@@ -116,7 +116,7 @@ def remote_handle_envelope(
     generation: int,
     revision: int,
     metadata: dict[str, Any],
-    methods: list[dict[str, Any]] | tuple[dict[str, Any], ...] = (),
+    methods: list[dict[str, Any]] | tuple[dict[str, Any], ...] | None = None,
     broker: Any,
     context: InvocationContext,
 ) -> dict[str, Any]:
@@ -133,7 +133,9 @@ def remote_handle_envelope(
             "metadata": handle_metadata,
             "_dispatch": _dispatch_descriptor(broker, context),
     }
-    if methods:
+    # Omitted descriptors are legacy dynamic handles. An empty descriptor is
+    # authoritative for handles such as a trace that has finished recording.
+    if methods is not None:
         payload["methods"] = {
             "schema": REMOTE_HANDLE_METHODS_SCHEMA,
             "items": [dict(item) for item in list(methods)[:64]],

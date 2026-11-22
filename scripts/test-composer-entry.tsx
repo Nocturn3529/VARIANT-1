@@ -5,7 +5,7 @@ import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
 import {__resetChatStoreForTests} from "../frontend/main-deck/src/chatStore";
 import {activateChatState,getCachedChatState,getChatState,initialChatState,retainChatDraft,setChatContext,setChatState} from "../frontend/main-deck/src/chat/stateCore";
 import {addChatFiles,invalidatePendingChatAttachments} from "../frontend/main-deck/src/chat/attachments";
-import {setChatDelivery,setMutationWriteEnabled,submitUserInput} from "../frontend/main-deck/src/chat/composer";
+import {sendUserMessage,setChatDelivery,setMutationWriteEnabled,submitUserInput} from "../frontend/main-deck/src/chat/composer";
 import {__resetSessionStoreForTests, noteDisplayedSession, setSessionConnection, setSessionContext} from "../frontend/main-deck/src/state/sessionStore";
 import {__resetTurnStoreForTests,turnController} from "../frontend/main-deck/src/state/turnStore";
 import {__resetSessionContextStoreForTests,changeSessionSettings,getContextForSession,ingestSessionContext,setSessionContextConnection,setSessionContextContext} from "../frontend/main-deck/src/sessionContextStore";
@@ -32,6 +32,30 @@ export async function run() {
   setSessionContext(context);setChatContext(context);setSessionContextContext(context);setSessionConnection("connected");
   setSessionContextConnection("connected");
   setChatState({...initialChatState(),sessionId:"A",connected:true});noteDisplayedSession("A");
+  const attachments=Array.from({length:3},(_,i)=>({id:String(i),name:i+".jpg",kind:"image" as const,
+    mime:"image/jpeg",size:5*1024*1024,data:"A".repeat(4*Math.ceil(5*1024*1024/3))}));
+  setChatState({...getChatState(),draft:"Pictures",attachments});
+  assert.equal(sendUserMessage("Pictures"),false);
+  assert.equal(commands.some(command=>command.type==="chat"),false);
+  assert.equal(getChatState().attachments,attachments);assert.equal(getChatState().draft,"Pictures");
+  assert.equal(getChatState().turnActive,false);assert.equal(getChatState().connected,true);
+  const image={...attachments[0],data:"test-image"};
+  setChatState({...getChatState(),attachments:[image]});
+  assert.equal(sendUserMessage("Pictures"),true);
+  const original=commands.at(-1)!;
+  setChatState({...getChatState(),draft:"Newer text"});
+  const reject={type:"chat:queue_rejected",session_id:"A",client_id:getChatState().clientId,error:"active_input_attachments_not_supported"};
+  ingestChat(parseChatWsMessage({...reject,request_id:"different-send"}));
+  assert.ok(getChatState().turnActive);
+  applyRuntimeSnapshot("A",{busy:true,active_admission_id:"other-owner",active_run_id:"other-run"});
+  ingestChat(parseChatWsMessage({...reject,request_id:original.request_id}));
+  assert.deepEqual(getChatState().attachments,[image]);assert.equal(getChatState().draft,"Pictures\n\nNewer text");
+  assert.equal(getChatState().turnActive,false);assert.equal(commands.at(-1)?.type,"chat:runtime:get");
+  applyRuntimeSnapshot("A",{busy:true,active_admission_id:"other-owner",active_run_id:"other-run"});
+  assert.equal(turnController.snapshot().admissionId,"other-owner");
+  __resetChatStoreForTests();__resetTurnStoreForTests();setChatContext(context);
+  setChatState({...initialChatState(),sessionId:"A",connected:true});commands.length=0;
+  setChatState({...getChatState(),draft:"",attachments:[]});
   const host=document.createElement("div");host.className="app-shell";document.body.appendChild(host);const root=createRoot(host);
   try {
     await act(async()=>{root.render(<ChatComposer/>);await pause();});
@@ -161,6 +185,52 @@ export async function run() {
     assert.notEqual(settledCheck.request_id,check.request_id);
     await act(async()=>ingestSessionContext({type:"session:settings:snapshot",session_id:"A",request_id:settledCheck.request_id,pending:false,route:{mode:"local",provider:"local",model:"C:/models/B/shared.gguf",reasoning_effort:"high"}}));
     assert.equal(send().disabled,false);assert.equal(getContextForSession("A").reasoningEffort,"high");
+
+    const missing="meituan/longcat-2.5-preview:free", free="qwen/qwen4-max:free", paid="qwen/qwen4-max", binary="tencent/hy4-flash:free";
+    const nousRows=[{id:missing,selectable:false,detail:"Saved model absent from the live catalog."},
+      {id:free,reasoning_efforts:["xhigh","high","low","none"],default_reasoning_effort:"high"},
+      {id:paid,reasoning_efforts:["low"]},{id:binary,reasoning_toggle:true,reasoning_default_enabled:true},
+      {id:"stepfun/step-3.7-flash:free",reasoning_mandatory:true,reasoning_efforts:["high","medium","low"]}];
+    const openNous=async()=>{
+      await act(async()=>host.querySelector<HTMLButtonElement>("#model-button")!.click());
+      const request=commands.filter(item=>item.type==="model:options").at(-1)!;
+      await act(async()=>ingestSessionContext({type:"model:options",session_id:"A",request_id:request.request_id,
+        providers:[{id:"hermes",name:"Nous Portal",mode:"cloud",models:nousRows}]}));
+      const more=document.querySelector<HTMLButtonElement>(".model-picker__more");
+      if(more)await act(async()=>more.click());
+    };
+    const openEfforts=async(id:string)=>act(async()=>document.querySelector<HTMLButtonElement>(`[aria-label="${id} options"]`)!.click());
+    const choices=()=>[...document.querySelectorAll<HTMLButtonElement>(".model-picker__effort-menu button")];
+    const ack=async(command:Record<string,unknown>,route:Record<string,unknown>)=>act(async()=>ingestSessionContext({
+      type:"session:settings:ack",session_id:"A",request_id:command.request_id,operation:command.type,status:"applied",route:{mode:"cloud",provider:"hermes",...route}}));
+    await act(async()=>ingestSessionContext({type:"chat:context",session_id:"A",route:"cloud",provider:"hermes",model:missing,reasoning_effort:"max",status:"ready"}));
+    await openNous();
+    assert.equal(document.querySelector<HTMLButtonElement>(`[data-model-option="${missing}"]`)!.disabled,true);
+    assert.match(host.querySelector("#model-button")!.textContent!,/Unavailable/);
+    assert.equal(send().disabled,true,"a confirmed missing saved model requires a deliberate choice");
+    await openEfforts(free);
+    assert.deepEqual(choices().map(b=>b.textContent),["XHigh","High","Low","None"]);
+    assert.match(document.querySelector(".model-picker__effort-menu")!.textContent!,/Default High/);
+    await act(async()=>choices().find(b=>b.textContent==="None")!.click());
+    const selectFree=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([selectFree.model,selectFree.reasoning_effort,selectFree.reasoning_enabled],[free,"none",undefined]);
+    await ack(selectFree,{model:free,reasoning_effort:"none"});
+    assert.equal(send().disabled,false);assert.match(host.querySelector("#model-button")!.textContent!,/None/);
+    await openNous();await openEfforts(paid);
+    assert.deepEqual(choices().map(b=>b.textContent),["Low"],"the priced variant has its own exact capabilities");
+    await openEfforts(binary);assert.deepEqual(choices().map(b=>b.textContent),["On","Off"]);
+    await act(async()=>choices().find(b=>b.textContent==="Off")!.click());
+    const selectBinary=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([selectBinary.model,selectBinary.reasoning_enabled,selectBinary.reasoning_effort],[binary,false,undefined]);
+    await ack(selectBinary,{model:binary,reasoning_enabled:false});
+    assert.match(host.querySelector("#model-button")!.textContent!,/Reasoning off/);
+    await openNous();await openEfforts("stepfun/step-3.7-flash:free");
+    assert.deepEqual(choices().map(b=>b.textContent),["High","Medium","Low"]);
+    await act(async()=>document.querySelector<HTMLButtonElement>(`[data-model-option="${free}"]`)!.click());
+    const plain=commands.filter(row=>row.type==="mode:set").at(-1)!;
+    assert.deepEqual([plain.model,plain.reasoning_effort,plain.reasoning_enabled],[free,undefined,undefined],"plain selection inherits the new model default");
+    await ack(plain,{model:free,reasoning_effort:"high"});
+    assert.match(host.querySelector("#model-button")!.textContent!,/High/);
 
     await act(async()=>{setChatDelivery("follow_up");activateChatState("B");setChatState({...getChatState(),connected:true});noteDisplayedSession("B");});
     assert.equal(getChatState().deliveryMode,"steer","delivery choice does not leak between chats");

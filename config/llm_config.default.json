@@ -72,7 +72,7 @@
     "xai_model": "grok-4.3",
     "ollama_model": "gemma4:31b-cloud",
     "opencode-zen_model": "x-preview-f-free",
-    "hermes_model": "meituan/longcat-2.5-preview:free",
+    "hermes_model": "meituan/longcat-2.5:free",
     "nvidia_model": "nvidia/nemotron-3-ultra-550b-a55b",
     "gemini_model": "gemini-1.5-pro",
     "keys": {},
@@ -159,6 +159,22 @@
         "adapter": "openai.*",
         "status": "developer",
         "evidence": "Explicit Nous proxy route with Python-tool protocol fixtures; model task benchmark qualification remains pending."
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "hermes",
+        "model": "meituan/longcat-2.5:free",
+        "adapter": "openai.*",
+        "status": "developer",
+        "evidence": "Native VARIANT-1 Python-tool smoke through the signed-in Nous proxy on 2026-11-21."
+      },
+      {
+        "profile": "trusted-local.v1",
+        "provider": "hermes",
+        "model": "qwen/qwen4-max:free",
+        "adapter": "openai.*",
+        "status": "developer",
+        "evidence": "Native VARIANT-1 Python-tool and correlated peer smoke through the signed-in Nous proxy on 2026-11-21."
       }
     ]
   },

@@ -18,7 +18,9 @@ import uuid
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 
+from .interactive import BrowserHostCommandError
 from .models import (
+    BrowserCommandError,
     BrowserStaleReference,
     BrowserUnavailable,
     BrowserUnsupported,
@@ -61,6 +63,7 @@ EMBEDDED_CAPABILITIES = frozenset({
 _MANAGED_ELEMENT_RE = re.compile(r"^mf_[0-9a-f]{12}_\d+$")
 _EMBEDDED_ELEMENT_RE = re.compile(r"^b\d+-\d+$")
 _MAX_DOWNLOAD_BYTES = 256 * 1024 * 1024
+_EMBEDDED_ELEMENT_WAIT_LIMIT_MS = 20_000
 _PAGE_MARKER_PREFIX = "__variant1_fabric_target__:"
 _DOCUMENT_IDENTITY = """(() => {
   const key = Symbol.for('variant1.browser.document');
@@ -88,6 +91,16 @@ def normalize_embedded_target(raw: Any) -> str:
             "target must come from the latest browser observation, for example [b2-4]"
         )
     return value
+
+
+def _element_wait_options(params: Mapping[str, Any]) -> tuple[str, str]:
+    selector = params.get("selector")
+    if selector is not None and (not isinstance(selector, str) or not selector.strip()):
+        raise BrowserValidationError("element wait selector must be a non-empty CSS selector")
+    state = str(params.get("state") or "visible")
+    if state not in {"visible", "hidden", "attached", "detached"}:
+        raise BrowserValidationError("element wait state must be visible, hidden, attached, or detached")
+    return selector.strip() if selector is not None else "", state
 
 
 @dataclass(frozen=True, slots=True)
@@ -886,10 +899,19 @@ class ManagedPlaywrightAdapter(BrowserAdapter):
                 await page.wait_for_url(expected, timeout=timeout_ms)
                 return {"condition": condition, "url": str(getattr(page, "url", ""))}
             if condition == "element":
-                if locator is None:
-                    raise BrowserValidationError("element wait requires an ElementRef")
-                state = str(params.get("state") or "visible")
+                selector, state = _element_wait_options(params)
+                if selector and locator is not None:
+                    raise BrowserValidationError("element wait accepts either selector or backend_ref")
+                if selector:
+                    locator = page.locator(f"css={selector}").first
+                elif locator is None:
+                    raise BrowserValidationError("element wait requires a CSS selector or observed backend_ref")
+                before = await page.evaluate(_DOCUMENT_IDENTITY)
                 await locator.wait_for(state=state, timeout=timeout_ms)
+                after = await page.evaluate(_DOCUMENT_IDENTITY)
+                document_id = before.get("document_id") if isinstance(before, Mapping) else None
+                if not document_id or not isinstance(after, Mapping) or after.get("document_id") != document_id:
+                    raise BrowserStaleReference("page navigated during element wait; observe the new document")
                 return {"condition": condition, "state": state}
             raise BrowserValidationError(f"unknown wait condition {condition!r}")
         if action == "evaluate":
@@ -1082,16 +1104,24 @@ class EmbeddedBrowserAdapter(BrowserAdapter):
             command["run_id"] = run_id
         try:
             result = await self._request(command)
+            if isinstance(result, Mapping) and "ok" in result and not result["ok"]:
+                raise BrowserHostCommandError(dict(result))
         except BrowserUnsupported:
             raise
+        except BrowserHostCommandError as exc:
+            if exc.code == "STALE_ELEMENT_REFERENCE" or (
+                not exc.code and "element reference is stale" in str(exc).casefold()
+            ):
+                raise BrowserStaleReference(str(exc)) from exc
+            if exc.code in {"HOST_DISCONNECTED", "INVALID_HOST_RESULT"}:
+                raise BrowserUnavailable(str(exc)) from exc
+            raise BrowserCommandError(str(exc), code=exc.code, phase=exc.phase) from exc
         except Exception as exc:
             if "element reference is stale" in str(exc).casefold():
                 raise BrowserStaleReference(str(exc)) from exc
             raise BrowserUnavailable(f"embedded browser request failed: {exc}") from exc
         if not isinstance(result, Mapping):
             raise BrowserUnavailable("embedded browser returned a malformed response")
-        if "ok" in result and not result["ok"]:
-            raise BrowserUnavailable(str(result.get("error") or "embedded browser command failed"))
         current = self._state(result)
         target_id = str(
             current.get("tab_id") or params.get("tab_id")
@@ -1238,19 +1268,21 @@ class EmbeddedBrowserAdapter(BrowserAdapter):
             ref = str(raw.get("ref") or "")
             if not _EMBEDDED_ELEMENT_RE.fullmatch(ref):
                 continue
-            editable = str(raw.get("role") or "") in {"textbox", "combobox"}
+            role = str(raw.get("role") or "control")
+            declared = raw.get("actions")
+            if isinstance(declared, list):
+                actions = [action for action in ("click", "fill", "select", "hover", "keys") if action in declared]
+            else:
+                actions = ["click", "fill", "keys"] if role in {"textbox", "combobox"} else ["click", "keys"]
             elements.append({
                 "backend_ref": ref,
-                "role": str(raw.get("role") or "control"),
+                "role": role,
                 "name": str(raw.get("name") or ""),
                 "input_type": str(raw.get("input_type") or ""),
                 "disabled": bool(raw.get("disabled")),
                 "visible": True,
-                "editable": editable,
-                "actions": (
-                    ["click", "fill", "keys"]
-                    if editable else ["click", "keys"]
-                ),
+                "editable": "fill" in actions,
+                "actions": actions,
             })
         state = self._state(result)
         snapshot_url = str(result.get("url") or state.get("url") or "")
@@ -1328,11 +1360,23 @@ class EmbeddedBrowserAdapter(BrowserAdapter):
         before_url = str(cached.get("url") or "")
         if action == "wait":
             condition = str(params.get("condition") or "timeout")
-            if condition != "timeout":
-                raise BrowserUnsupported("wait:" + condition, self.kind, "Electron host exposes timeout waits only")
-            timeout_ms = max(0, min(int(params.get("timeout_ms") or 1000), 30_000))
-            await asyncio.sleep(timeout_ms / 1000.0)
-            result: dict[str, Any] = {"condition": condition, "elapsed_ms": timeout_ms}
+            if condition == "timeout":
+                timeout_ms = max(0, min(int(params.get("timeout_ms") or 1000), 30_000))
+                await asyncio.sleep(timeout_ms / 1000.0)
+                result: dict[str, Any] = {"condition": condition, "elapsed_ms": timeout_ms}
+            elif condition == "element":
+                selector, state = _element_wait_options(params)
+                if not selector or params.get("backend_ref"):
+                    raise BrowserValidationError("embedded element wait requires a CSS selector")
+                settings = getattr(self, "browser_settings", DEFAULTS)
+                configured_ms = settings["command_timeout_s"] * 1000
+                timeout_ms = max(1, min(int(params.get("timeout_ms") or configured_ms), _EMBEDDED_ELEMENT_WAIT_LIMIT_MS))
+                result = await self._call(
+                    "wait", tab_id=backend_target_id, condition=condition, selector=selector,
+                    state=state, timeout_ms=timeout_ms,
+                )
+            else:
+                raise BrowserUnsupported("wait:" + condition, self.kind, "use timeout or an element selector")
         elif action == "screenshot":
             result = await self._call(
                 "screenshot", tab_id=backend_target_id

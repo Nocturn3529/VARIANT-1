@@ -68,6 +68,7 @@ class ChatGoal:
     completed_run_id: str
     first_run_id: str
     version: int
+    objective_revision: int
 
     def time_used(self, now: float | None = None) -> float:
         extra = 0.0
@@ -132,6 +133,7 @@ class ChatGoalStore:
                   submitted_objective TEXT NOT NULL DEFAULT '',
                   first_run_id TEXT NOT NULL DEFAULT '',
                   objective TEXT NOT NULL,
+                  objective_revision INTEGER NOT NULL DEFAULT 1,
                   status TEXT NOT NULL,
                   token_budget INTEGER,
                   tokens_used INTEGER NOT NULL DEFAULT 0,
@@ -162,6 +164,8 @@ class ChatGoalStore:
                 conn.execute("ALTER TABLE chat_goal ADD COLUMN submitted_objective TEXT NOT NULL DEFAULT ''")
             if "first_run_id" not in columns:
                 conn.execute("ALTER TABLE chat_goal ADD COLUMN first_run_id TEXT NOT NULL DEFAULT ''")
+            if "objective_revision" not in columns:
+                conn.execute("ALTER TABLE chat_goal ADD COLUMN objective_revision INTEGER NOT NULL DEFAULT 1")
             # Also backfill if a prior additive upgrade was interrupted.
             conn.execute("UPDATE chat_goal SET submitted_objective=objective WHERE submitted_objective=''")
 
@@ -189,6 +193,7 @@ class ChatGoalStore:
             updated_at=row["updated_at"], completed_at=row["completed_at"],
             completed_run_id=row["completed_run_id"], version=int(row["version"]),
             first_run_id=row["first_run_id"],
+            objective_revision=int(row["objective_revision"]),
         )
 
     def current(self, chat_id: str) -> ChatGoal | None:
@@ -278,26 +283,33 @@ class ChatGoalStore:
 
     def transition(self, goal_id: str, status: str, *, reason: str = "",
                    from_statuses: frozenset[str] | set[str] | None = None,
-                   expected_version: int | None = None, run_id: str = "") -> ChatGoal | None:
+                   expected_version: int | None = None, run_id: str = "",
+                   expected_objective_revision: int | None = None) -> ChatGoal | None:
         """Move a current goal to ``status``. Returns ``None`` when ``from_statuses`` doesn't match."""
         if status not in STATUSES:
             raise GoalValidationError(f"Unknown goal status: {status}")
         now = self._clock()
         with self._write() as conn:
             goal = self._require(conn, goal_id, expected_version)
+            if expected_objective_revision is not None and goal.objective_revision != expected_objective_revision:
+                raise GoalConflict("The goal objective changed since this model request")
             if from_statuses is not None and goal.status not in from_statuses:
                 return None
+            if status == "active" and goal.remaining_tokens() == 0:
+                status, reason = "budget_limited", "Token budget reached"
             if goal.status == status:
                 return goal
-            leaving = _active_seconds(goal, now)
-            conn.execute(
-                "UPDATE chat_goal SET status=?, status_reason=?, time_used_s=time_used_s+?, "
-                "active_since=?, completed_at=?, completed_run_id=?, updated_at=?, "
-                "version=version+1 WHERE goal_id=?",
-                (status, str(reason or "")[:500], leaving, now if status == "active" else None,
-                 now if status == "complete" else None,
-                 str(run_id or "")[:160] if status == "complete" else "", now, goal_id))
+            self._set_status_tx(conn, goal, status, reason, now, run_id)
             return self._row(conn.execute("SELECT * FROM chat_goal WHERE goal_id=?", (goal_id,)).fetchone())
+
+    @staticmethod
+    def _set_status_tx(conn, goal: ChatGoal, status: str, reason: str, now: float, run_id: str = "") -> None:
+        conn.execute(
+            "UPDATE chat_goal SET status=?, status_reason=?, time_used_s=time_used_s+?, "
+            "active_since=?, completed_at=?, completed_run_id=?, updated_at=?, version=version+1 WHERE goal_id=?",
+            (status, str(reason or "")[:500], _active_seconds(goal, now), now if status == "active" else None,
+             now if status == "complete" else None, str(run_id or "")[:160] if status == "complete" else "",
+             now, goal.goal_id))
 
     def edit(self, goal_id: str, objective: str, *, expected_version: int | None = None) -> ChatGoal:
         objective = clean_objective(objective)
@@ -306,8 +318,9 @@ class ChatGoalStore:
             goal = self._require(conn, goal_id, expected_version)
             if goal.status == "complete":
                 raise GoalConflict("A completed goal can't be edited; set a new goal instead")
-            conn.execute("UPDATE chat_goal SET objective=?, updated_at=?, version=version+1 "
-                         "WHERE goal_id=?", (objective, now, goal_id))
+            conn.execute("UPDATE chat_goal SET objective=?, objective_revision=?, updated_at=?, version=version+1 "
+                         "WHERE goal_id=?", (objective, goal.objective_revision + int(objective != goal.objective),
+                                             now, goal_id))
             return self._row(conn.execute("SELECT * FROM chat_goal WHERE goal_id=?", (goal_id,)).fetchone())
 
     def clear(self, goal_id: str, *, expected_version: int | None = None) -> None:
@@ -318,14 +331,21 @@ class ChatGoalStore:
     def admit_turn(self, chat_id: str, goal_id: str, run_id: str, *, submission: bool) -> bool:
         """The ordinary admitted task enters here before any model or tool effects."""
         with self._write() as conn:
+            goal = self._row(conn.execute(
+                "SELECT * FROM chat_goal WHERE goal_id=? AND chat_id=? AND cleared_at IS NULL AND status='active'",
+                (goal_id, chat_id)).fetchone())
+            if goal is None:
+                return False
+            if goal.remaining_tokens() == 0:
+                self._set_status_tx(conn, goal, "budget_limited", "Token budget reached", self._clock())
+                return False
+            if submission != goal.submission_pending:
+                return False
             if submission:
-                return conn.execute(
+                conn.execute(
                     "UPDATE chat_goal SET submission_pending=0,first_run_id=?,version=version+1,updated_at=? "
-                    "WHERE goal_id=? AND chat_id=? AND cleared_at IS NULL AND status='active' AND submission_pending=1",
-                    (run_id, self._clock(), goal_id, chat_id)).rowcount == 1
-            return conn.execute(
-                "SELECT 1 FROM chat_goal WHERE goal_id=? AND chat_id=? AND cleared_at IS NULL "
-                "AND status='active' AND submission_pending=0", (goal_id, chat_id)).fetchone() is not None
+                    "WHERE goal_id=?", (run_id, self._clock(), goal_id))
+            return True
 
     def apply_token_delta(self, goal_id: str, delta: int) -> tuple[ChatGoal | None, bool]:
         """Charge the goal that owned the request, even if it has since stopped."""

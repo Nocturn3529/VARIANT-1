@@ -5,6 +5,7 @@ import {getSessionState} from "../state/sessionStore";
 import {dockAllNativeWindows, nativeWindowPlacements, parseNativePlacements, type NativeWindowPlacement} from "./nativeWindowStore";
 import {createExternalStore} from "../state/createModuleStore";
 import {DECK_BREAKPOINT} from "../layout";
+import {getAppearance} from "../state/appearanceStore";
 import {canClosePreviewTabs,closePreview,closePreviewTabs,getPreviewState,reopenPreview} from "./previewStore";
 import {isSidePane} from "./trackModel";
 import {browserWindowSize, DEFAULT_BROWSER_VIEWPORT} from "./browserViewport";
@@ -61,6 +62,7 @@ export type WorkbenchState = Readonly<{
   editMode: boolean;
   lastClosed: readonly string[];
   compact: boolean;
+  historyDrawer: boolean;
   overlayPaneId: string | null;
 }>;
 
@@ -136,6 +138,12 @@ export function listWorkbenchPresets(): WorkbenchPreset[] {
   ];
 }
 
+export function getWorkbenchPreset(id: string) {
+  const builtIn = builtInPreset(id);
+  if (builtIn) return {layout: builtIn, hidden: undefined, windows: []};
+  return userPresets()[id];
+}
+
 function withLivePanes(layout:LayoutNode,owner:string,focus=false):LayoutNode {
     const previews=getPreviewState().tabs.filter(t=>(t.ownerChatId || "")===owner);
     const destination=findGroupOfPane(layout,focus ? PANE.workspace : chatPaneId(PANE.files,owner)) || findGroupOfPane(layout,PANE.workspace);
@@ -147,8 +155,8 @@ function withLivePanes(layout:LayoutNode,owner:string,focus=false):LayoutNode {
 }
 
 export function applyWorkbenchPreset(id: string): boolean {
-  const saved = userPresets()[id];
-  const base = builtInPreset(id) || saved?.layout;
+  const saved = getWorkbenchPreset(id);
+  const base = saved?.layout;
   const owner=getSessionState().displayedSessionId || "";
   let layout=base ? normalize(mapPresetLayout(base, owner)) : null;
   if(layout)layout=withLivePanes(layout,owner,id==="focus");
@@ -224,6 +232,15 @@ function readClosed(): string[] {
   }
 }
 
+export function workbenchViewport(width: number, density = getAppearance().density) {
+  const compact = width <= DECK_BREAKPOINT.narrow;
+  return {compact, historyDrawer: compact || (density === "comfortable" && width <= DECK_BREAKPOINT.wide)};
+}
+
+export function paneUsesDrawer(id: string, state: Pick<WorkbenchState, "compact" | "historyDrawer">): boolean {
+  return id === PANE.history ? state.historyDrawer : state.compact && isSidePane(id);
+}
+
 const store = createExternalStore<WorkbenchState>({
   floating: {},
   layout: readLayout(),
@@ -232,7 +249,7 @@ const store = createExternalStore<WorkbenchState>({
   hoveredGroupId: "",
   editMode: false,
   lastClosed: readClosed(),
-  compact: window.innerWidth <= DECK_BREAKPOINT.narrow,
+  ...workbenchViewport(window.innerWidth),
   overlayPaneId: null,
 });
 
@@ -354,9 +371,9 @@ export function isWorkbenchPaneVisible(
   // on the first press rather than "hide" it.
   const owner = paneOwner(paneId) || (paneId.startsWith("preview:") ? getPreviewState().tabs.find(tab => `preview:${tab.id}` === paneId)?.ownerChatId || "" : "");
   if (owner && state.hidden[`right:${owner}`]) return false;
-  if (state.compact && isSidePane(paneId)) return state.overlayPaneId === paneId && !state.hidden[paneId];
+  if (paneUsesDrawer(paneId, state)) return state.overlayPaneId === paneId;
   if (!groupValue || state.hidden[paneId] || groupValue.minimized) return false;
-  const visible = groupValue.panes.filter(id => !state.hidden[id] && !(state.compact && isSidePane(id)));
+  const visible = groupValue.panes.filter(id => !state.hidden[id] && !paneUsesDrawer(id, state));
   return (visible.includes(groupValue.active) ? groupValue.active : visible[0]) === paneId;
 }
 
@@ -374,7 +391,7 @@ export function selectPane(groupId: string, paneId: string): void {
     layout: setActivePane(state.layout, groupId, paneId),
     hidden: {...state.hidden, [paneId]: false},
     activeGroupId: groupId,
-    ...(state.compact && isSidePane(paneId) ? {overlayPaneId: paneId} : {}),
+    ...(paneUsesDrawer(paneId, state) ? {overlayPaneId: paneId} : {}),
   });
 }
 
@@ -399,6 +416,10 @@ export function revealPane(
   const state = store.getState();
   let layout = state.layout;
   let target = findGroupOfPane(layout, paneId);
+  if (paneId === PANE.history && state.historyDrawer && !state.compact && target) {
+    store.setState({overlayPaneId: paneId});
+    return;
+  }
   if (!target) {
     const stack = stackWith ? findGroupOfPane(layout, stackWith) : null;
     const anchor = stack
@@ -410,7 +431,7 @@ export function revealPane(
   if (target) layout = setActivePane(layout, target.id, paneId);
   if (target) focusNativeWindow(nativePaneKey(target.id));
   replace({layout, hidden: {...state.hidden, [paneId]: false, [`right:${paneOwner(paneId) || getPreviewState().tabs.find(t=>`preview:${t.id}`===paneId)?.ownerChatId || getSessionState().displayedSessionId || ""}`]:false}, activeGroupId: target?.id || state.activeGroupId,
-    ...(state.compact && isSidePane(paneId) ? {overlayPaneId: paneId} : {})});
+    ...(paneUsesDrawer(paneId, state) ? {overlayPaneId: paneId} : {})});
 }
 
 function previewStackAnchor(tabId: string): string | undefined {
@@ -450,8 +471,9 @@ export function placePreviewPaneInBackground(tabId: string): void {
   replace({layout: inserted && previous ? setActivePane(layout, inserted.id, previous) : layout, hidden: {...state.hidden, [paneId]: true}});
 }
 
-export function setWorkbenchCompact(compact: boolean): void {
-  if (store.getState().compact !== compact) store.setState({compact, overlayPaneId: null});
+export function setWorkbenchCompact(compact: boolean, historyDrawer = compact): void {
+  const state = store.getState();
+  if (state.compact !== compact || state.historyDrawer !== historyDrawer) store.setState({compact, historyDrawer, overlayPaneId: null});
 }
 
 export function closeCompactPane(id?: string): void {
@@ -461,6 +483,7 @@ export function closeCompactPane(id?: string): void {
 export function hidePane(paneId: string): void {
   paneId=chatPaneId(paneId);
   const state = store.getState();
+  if (paneId === PANE.history && state.historyDrawer && !state.compact) { closeCompactPane(paneId); return; }
   if (paneId === PANE.workspace) return;
   replace({hidden: {...state.hidden, [paneId]: true}, overlayPaneId: state.overlayPaneId === paneId ? null : state.overlayPaneId});
 }
@@ -470,7 +493,7 @@ export function togglePane(paneId: string, placement: "left" | "right" | "bottom
   const state = store.getState();
   const nativeGroup = findGroupOfPane(state.layout, paneId);
   if (nativeGroup && hasNativeWindow(nativePaneKey(nativeGroup.id))) { revealPane(paneId, placement); return; }
-  if (state.compact && isSidePane(paneId) && state.overlayPaneId === paneId) {
+  if (paneUsesDrawer(paneId, state) && state.overlayPaneId === paneId) {
     closeCompactPane();
     return;
   }
@@ -724,7 +747,7 @@ export function __resetWorkbenchForTests(pristine = false): void {
     hoveredGroupId: "",
     editMode: false,
     lastClosed: [],
-    compact: window.innerWidth <= DECK_BREAKPOINT.narrow,
+    ...workbenchViewport(window.innerWidth),
     overlayPaneId: null,
   });
 }

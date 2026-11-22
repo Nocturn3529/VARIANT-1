@@ -6,6 +6,7 @@ import os
 import json
 import hashlib
 import builtins
+import stat
 
 import pytest
 
@@ -406,6 +407,133 @@ async def test_grep_skips_ignored_generated_and_binary_files(file_scope):
 
 
 @pytest.mark.asyncio
+async def test_grep_explicit_modes_distinguish_invalid_regex_from_literal_text(file_scope):
+    path = file_scope / "sample.txt"
+    path.write_text("[Unclosed\n[UNCLOSED\nabc.def\nabcXdef\n", encoding="utf-8")
+
+    fallback = await builtin_tools.grep_files({"path": str(path), "pattern": "[unclosed"})
+    assert "2 match(es)" in fallback
+    literal = await builtin_tools.grep_files({
+        "path": str(path), "pattern": "abc.def", "pattern_mode": "literal",
+    })
+    assert "1 match(es)" in literal and "abcXdef" not in literal
+
+    registry = tools.ToolRegistry()
+    builtin_tools.register(registry)
+    broker = CapabilityBroker(
+        registry=registry, runtime_registry=StaticRuntimeRegistry(),
+        enabled_resolver=lambda: {"grep"},
+    )
+    for index, (pattern, mode, expected) in enumerate((
+        ("[Unclosed", "regex", "invalid_regex"),
+        ("missing", "regex", "No content matches"),
+        ("[Unclosed", "literal", "1 match(es)"),
+    )):
+        receipt = await broker.invoke_name(
+            "grep",
+            {"path": str(path), "pattern": pattern, "pattern_mode": mode, "case_sensitive": True},
+            InvocationContext(
+                chat_id="chat-search", run_id="run-search",
+                outer_tool_call_id="outer-search", cell_execution_id="cell-search",
+                nested_call_id=f"search-{index}",
+                catalog_release_id="astb.test.release.v1", surface="ipython",
+            ),
+        )
+        if expected == "invalid_regex":
+            assert not receipt.ok and receipt.error.code == expected
+        else:
+            assert receipt.ok, receipt.to_dict()
+            assert expected in receipt.result_value
+
+
+@pytest.mark.asyncio
+async def test_grep_discloses_size_omissions_on_exact_files_and_mixed_results(file_scope):
+    cap = builtin_tools.MAX_SEARCH_FILE_BYTES
+    marker = b"needle"
+    small = file_scope / "at-limit.txt"
+    large = file_scope / "over-limit.txt"
+    small.write_bytes(b"x" * (cap - len(marker)) + marker)
+    large.write_bytes(b"x" * (cap + 1 - len(marker)) + marker)
+    (file_scope / "large.bin").write_bytes(b"\0" + b"x" * cap)
+
+    async def search(path, pattern="needle"):
+        return await builtin_tools.grep_files({"path": str(path), "pattern": pattern})
+
+    assert "1 match(es)" in await search(small)
+    assert "Search incomplete" not in await search(small)
+    assert "No content matches" in await search(small, "missing")
+    negative = await search(large)
+    assert "No matches in the files searched" in negative and "Search incomplete" in negative
+    assert "over-limit.txt" in negative and "2,000,000-byte limit" in negative
+    mixed = await search(file_scope)
+    assert "1 match(es)" in mixed and "at-limit.txt" in mixed
+    assert "Search incomplete" in mixed and "over-limit.txt" in mixed
+    assert "1 over the" in mixed and "large.bin" not in mixed
+
+
+@pytest.mark.asyncio
+async def test_grep_large_explicit_file_search_honors_selected_byte_limit(file_scope):
+    path = file_scope / "large.txt"
+    contents = b"x" * builtin_tools.MAX_SEARCH_FILE_BYTES + b"\rneedle\r\n"
+    path.write_bytes(contents)
+    args = {"path": str(path), "pattern": "needle"}
+
+    result = await builtin_tools.grep_files({**args, "max_file_bytes": len(contents)})
+    assert ":2: needle" in result and "Search incomplete" not in result
+    skipped = await builtin_tools.grep_files({**args, "max_file_bytes": len(contents) - 1})
+    assert "Search incomplete" in skipped and ":2: needle" not in skipped
+    with pytest.raises(tools.ToolError, match="requires an exact file path"):
+        await builtin_tools.grep_files({**args, "path": str(file_scope), "max_file_bytes": len(contents)})
+    with pytest.raises(tools.ToolError, match="max_file_bytes must be an integer"):
+        await builtin_tools.grep_files({
+            **args, "max_file_bytes": builtin_tools.MAX_EXPLICIT_SEARCH_FILE_BYTES + 1,
+        })
+
+
+@pytest.mark.asyncio
+async def test_grep_stays_bounded_when_a_file_grows_during_search(file_scope, monkeypatch):
+    path = file_scope / "growing.txt"
+    path.write_bytes(b"first\n")
+    original_read = builtin_tools._BoundedSearchReader.readinto
+    appended = False
+
+    def read_after_append(reader, buffer):
+        nonlocal appended
+        if not appended:
+            with path.open("ab") as file:
+                file.write(b"needle\n")
+            appended = True
+        return original_read(reader, buffer)
+
+    monkeypatch.setattr(builtin_tools._BoundedSearchReader, "readinto", read_after_append)
+    result = await builtin_tools.grep_files({
+        "path": str(path), "pattern": "needle", "max_file_bytes": len(b"first\n"),
+    })
+    assert "No matches in the files searched" in result
+    assert "changed during search" in result
+
+
+@pytest.mark.asyncio
+async def test_grep_discloses_read_failure_and_bounds_examples(file_scope, monkeypatch):
+    original_open = open
+    for index in range(6):
+        (file_scope / f"failed-{index}.txt").write_text("needle")
+    (file_scope / "readable.txt").write_text("needle")
+
+    def denied(path, *args, **kwargs):
+        if "failed-" in str(path):
+            raise PermissionError("fixture")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtin_tools, "open", denied, raising=False)
+    direct = await builtin_tools.grep_files({"path": str(file_scope / "failed-0.txt"), "pattern": "needle"})
+    assert "1 unreadable" in direct and "failed-0.txt" in direct
+    mixed = await builtin_tools.grep_files({"path": str(file_scope), "pattern": "needle"})
+    assert "1 match(es)" in mixed and "6 unreadable" in mixed
+    assert "failed-2.txt" in mixed and "failed-3.txt" not in mixed
+
+
+@pytest.mark.asyncio
 async def test_glob_uses_the_same_ignore_rules_as_grep(file_scope):
     (file_scope / "kept.txt").write_text("kept", encoding="utf-8")
     ignored = file_scope / "node_modules"
@@ -464,6 +592,33 @@ async def test_apply_patch_batches_write_replace_and_delete(file_scope):
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_checks_expected_matches_before_writing_batch(file_scope):
+    path = file_scope / "existing.txt"
+    created = file_scope / "created.txt"
+    path.write_text("old\ncontext old", encoding="utf-8")
+    changes = [
+        {"path": str(created), "action": "write", "content": "created"},
+        {"path": str(path), "find": "old", "replace": "new", "count": 1, "expected_matches": 1},
+    ]
+    definition = next(row for row in builtin_tools._defs() if row[0] == "apply_patch")
+    arguments = tools.validate_arguments("apply_patch", {"changes": changes}, definition[3])
+    with pytest.raises(tools.ToolError, match="expected 1 match.*found 2") as failure:
+        await builtin_tools.apply_patch(arguments)
+    assert failure.value.code == "patch_match_count_mismatch"
+    assert not created.exists()
+    assert path.read_text(encoding="utf-8") == "old\ncontext old"
+
+    terms = {"path": str(path), "find": "context old", "replace": "context new", "expected_matches": 1}
+    result = await builtin_tools.apply_patch(tools.validate_arguments("apply_patch", terms, definition[3]))
+    assert "1 replacement(s)" in result
+    assert path.read_text(encoding="utf-8") == "old\ncontext new"
+
+    await builtin_tools.apply_patch({"path": str(path), "content": "old old"})
+    await builtin_tools.apply_patch({"path": str(path), "find": "old", "replace": "new"})
+    assert path.read_text(encoding="utf-8") == "new new"
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_rollback_wal_is_owned_by_the_broker_operation(
     file_scope, monkeypatch,
 ):
@@ -502,7 +657,7 @@ async def test_apply_patch_rollback_wal_is_owned_by_the_broker_operation(
     assert target.read_text(encoding="utf-8") == "owned"
     assert captured
     wal = captured[0]
-    assert wal["schema"] == "variant1.file-patch-rollback-wal.v2"
+    assert wal["schema"] == "variant1.file-patch-rollback-wal.v3"
     assert wal["role"] == "internal_rollback_wal"
     operation = wal["broker_operation"]
     assert operation["outer_tool_call_id"] == "outer-patch"
@@ -584,6 +739,135 @@ async def test_apply_patch_rejects_ambiguous_public_forms(file_scope):
             "path": str(target),
             "content": "two",
         })
+
+
+@pytest.mark.asyncio
+async def test_patch_staging_conflict_keeps_an_external_save(file_scope, monkeypatch):
+    target = file_scope / "staging-conflict.txt"
+    target.write_bytes(b"original")
+    copy_file = builtin_tools._copy_patch_file
+
+    def copy_then_save(source, destination, fd):
+        copy_file(source, destination, fd)
+        if str(destination).endswith(".backup"):
+            target.write_bytes(b"editor save after backup")
+
+    monkeypatch.setattr(builtin_tools, "_copy_patch_file", copy_then_save)
+    with pytest.raises(tools.ToolError, match="changed while apply_patch was staging"):
+        await builtin_tools.apply_patch({"path": str(target), "content": "from patch"})
+    assert target.read_bytes() == b"editor save after backup"
+    assert not list(file_scope.glob(".variant1-patch-*"))
+
+
+@pytest.mark.parametrize("action", ["write", "delete"])
+@pytest.mark.asyncio
+async def test_patch_rollback_keeps_an_edit_made_after_publication(file_scope, monkeypatch, action):
+    first = file_scope / "first.txt"
+    second = file_scope / "second.txt"
+    first.write_bytes(b"first original")
+    second.write_bytes(b"second original")
+    publish = os.replace
+
+    def save_then_fail(source, destination):
+        if str(source).endswith(".candidate") and str(destination) == str(second):
+            first.write_bytes(b"newer editor save")
+            raise OSError("second publication failed")
+        return publish(source, destination)
+
+    monkeypatch.setattr(builtin_tools.os, "replace", save_then_fail)
+    with pytest.raises(OSError, match="second publication failed"):
+        await builtin_tools.apply_patch({"changes": [
+            {"path": str(first), "action": action, "content": "from patch"},
+            {"path": str(second), "content": "second patch"},
+        ]})
+    assert first.read_bytes() == b"newer editor save"
+    assert second.read_bytes() == b"second original"
+    assert not list(file_scope.glob(".variant1-patch-*"))
+
+
+@pytest.mark.parametrize("action", ["write", "delete"])
+def test_patch_recovery_finds_publication_before_progress_was_recorded(file_scope, monkeypatch, action):
+    target = file_scope / "interrupted.txt"
+    target.write_bytes(b"before")
+    prepared = builtin_tools._prepare_patch({
+        "changes": [{"path": str(target), "action": action, "content": "published"}],
+    })
+    publish = os.replace
+
+    def publish_then_interrupt(source, destination):
+        publish(source, destination)
+        if str(source).endswith(".candidate") or str(destination).endswith(".deleted"):
+            raise SystemExit("interrupted before progress update")
+
+    monkeypatch.setattr(builtin_tools.os, "replace", publish_then_interrupt)
+    with pytest.raises(SystemExit, match="interrupted before progress update"):
+        builtin_tools._apply_direct_patch(prepared)
+    assert target.exists() == (action == "write")
+    if target.exists():
+        assert target.read_bytes() == b"published"
+
+    monkeypatch.setattr(builtin_tools.os, "replace", publish)
+    assert builtin_tools._recover_patch_transactions() == 1
+    assert target.read_bytes() == b"before"
+    assert not list(file_scope.glob(".variant1-patch-*"))
+
+
+@pytest.mark.asyncio
+async def test_legacy_interrupted_patch_retains_evidence_and_current_file(file_scope):
+    target = file_scope / "from-old-transaction.txt"
+    target.write_bytes(b"newer file")
+    backup = file_scope / "old.backup"
+    backup.write_bytes(b"old original")
+    root = file_scope / "patch-transactions"
+    journal = root / "legacy.json"
+    document = {
+        "schema": "variant1.file-patch-rollback-wal.v2",
+        "state": "committing",
+        "applied_count": 1,
+        "operations": [{
+            "path": str(target), "backup": str(backup), "original_exists": True,
+            "original_sha256": hashlib.sha256(b"old original").hexdigest(),
+        }],
+    }
+    builtin_tools._write_patch_journal(str(journal), document)
+
+    new_target = file_scope / "new.txt"
+    await builtin_tools.apply_patch({"path": str(new_target), "content": "next transaction"})
+    assert target.read_bytes() == b"newer file"
+    assert backup.read_bytes() == b"old original"
+    assert new_target.read_text(encoding="utf-8") == "next transaction"
+    retained, = list(root.glob("legacy.json.*.needs-review"))
+    assert json.loads(retained.read_text(encoding="utf-8")) == document
+    assert not journal.exists()
+
+
+@pytest.mark.asyncio
+async def test_patch_replaces_text_without_changing_line_endings_or_lossy_decoding(file_scope):
+    target = file_scope / "original.txt"
+    raw = "café\r\nvalue=old\r\nlast\n".encode("utf-8")
+    target.write_bytes(raw)
+    edit = {"path": str(target), "find": "value=old", "replace": "value=new"}
+    await builtin_tools.apply_patch(edit)
+    assert target.read_bytes() == raw.replace(b"value=old", b"value=new")
+
+    legacy = b"caf\xe9\r\nvalue=old\r\n"
+    target.write_bytes(legacy)
+    with pytest.raises(tools.ToolError, match="requires UTF-8 text") as failure:
+        await builtin_tools.apply_patch(edit)
+    assert failure.value.code == "unsupported_file_encoding"
+    assert target.read_bytes() == legacy
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission bits")
+@pytest.mark.parametrize("mode", [0o600, 0o755])
+@pytest.mark.asyncio
+async def test_patch_keeps_original_permissions_when_publishing_replacement(file_scope, mode):
+    target = file_scope / "executable"
+    target.write_bytes(b"old")
+    target.chmod(mode)
+    await builtin_tools.apply_patch({"path": str(target), "find": "old", "replace": "new"})
+    assert target.read_bytes() == b"new"
+    assert stat.S_IMODE(target.stat().st_mode) == mode
 
 
 @pytest.mark.asyncio

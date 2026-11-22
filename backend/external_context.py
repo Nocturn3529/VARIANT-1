@@ -164,8 +164,9 @@ class SessionContextService:
             canonical, cursor = ingestion.canonical(self, conn, owner, head, _text)
             last = self.kernel.cell_ledger.tail(owner, limit=1)
             upper = int(last[-1].sequence) if last else 0
-            cells = ingestion.cells(self, conn, owner, upper)
+            cells, incomplete_cells = ingestion.cells(self, conn, owner, upper)
             watermarks = {'canonical': cursor, 'ledger_through_sequence': upper, 'snapshot_heads': {},
+                          'cell_search_incomplete_count': incomplete_cells,
                           'atomic_across_owners': False, 'source_chat_id': owner,
                           'canonical_available': cursor is not None,
                           'source_gaps': [] if cursor is not None else ['No canonical conversation owner; only retained runtime evidence is available']}
@@ -277,7 +278,7 @@ class SessionContextService:
             after = page['next_cursor']
 
     def search(self, chat_id: str, view_id: str, *, query: str, limit: int = 20, after: int = 0, kind: str = ""):
-        self._view(chat_id, view_id)
+        view = self._view(chat_id, view_id)
         query = str(query).strip()
         if not query or len(query) > 1000:
             raise ToolError("Context search needs a nonempty query of at most 1000 characters; use read for chronology")
@@ -285,11 +286,19 @@ class SessionContextService:
         with self._lock, self._connect() as conn:
             rows = index.rows(conn, view_id, after=max(0, int(after)), limit=cap+1, kind=kind,
                               folded=query.casefold(), indexed=self._search_indexed)
+            gaps = json.loads(view["watermarks_json"]).get("cell_search_incomplete_count")
+            if gaps is None:
+                # Views captured before per-view coverage was persisted.
+                gaps = conn.execute("""
+                    SELECT count(*) FROM context_record r CROSS JOIN context_member m CROSS JOIN context_view_span v
+                    WHERE r.source_chat_id=? AND r.kind='cell' AND json_extract(r.descriptor_json,'$.search_incomplete')=1
+                      AND m.record_id=r.record_id AND v.stream_id=m.stream_id AND v.view_id=? AND m.ordinal<v.count
+                """, (view["source_chat_id"] or chat_id, view_id)).fetchone()[0]
         items = []
         for row in rows[:cap]:
             text = row["search_text"]
             folded_position = text.casefold().find(query.casefold())
-            # Case folding can expand characters (e.g. Ăź -> ss). Map back to
+            # Case folding can expand characters (e.g. German sharp s -> ss). Map back to
             # the original source so offsets agree with expand().
             folded_length, position = 0, 0
             for position, char in enumerate(text):
@@ -304,7 +313,8 @@ class SessionContextService:
         return {"schema": RESULT_SCHEMA, "view_id": view_id, "items": items, "has_more": len(rows) > cap,
                 "next_cursor": int(rows[cap - 1]["ordinal"]) + 1 if len(rows) > cap else None,
                 "coverage": "canonical text and retained cell source/result text; snapshot metadata only, not all modalities",
-                "search_backend": "fts5-trigram+literal-verification" if self._search_indexed and len(query.casefold()) >= 3 and '\0' not in query else "literal-scan"}
+                "cell_search_incomplete_count": gaps,
+                "search_backend": "adaptive-fts5-trigram/ordered-literal-keyset" if self._search_indexed and len(query.casefold()) >= 3 and '\0' not in query else "literal-scan"}
 
     def _descriptor(self, chat_id, view_id, source_id):
         view = self._view(chat_id, view_id)

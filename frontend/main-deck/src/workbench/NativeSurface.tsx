@@ -3,21 +3,34 @@ import {createPortal} from "react-dom";
 import {SurfaceDocumentContext} from "../ui/SurfaceDocument";
 import {ToastHost} from "../ui/ToastHost";
 import {Icon} from "../ui/Icon";
-import {useChatState} from "../chatStore";
+import {navigateTo} from "../state/appStore";
+import {switchSession} from "../state/sessionStore";
+import {usePaneChatOwner} from "./usePaneChatOwner";
+import {notifyToast} from "../state/toastStore";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
 import {closeNativeWindow, registerNativeSurface, updateNativeWindow, useNativeWindows} from "./nativeWindowStore";
 
-function NativeIdentity({title}: {title: string}) {
-  const chat = useChatState();
-  const owner = useSurfaceDocument();
-  const name = chat.title || "New chat";
-  useLayoutEffect(() => { owner.title = `${title} · ${name} — VARIANT-1`; }, [owner, title, name]);
-  return <div className="native-window-identity"><strong>{title}</strong><small title={`Following the selected chat: ${name}`}>{name}</small></div>;
+function NativeIdentity({id, title, chatId}: {id: string; title: string; chatId: string}) {
+  const surface = useSurfaceDocument();
+  const owner = usePaneChatOwner(chatId);
+  useLayoutEffect(() => {
+    const name = owner.label && owner.title !== title ? `${title} · ${owner.label}` : owner.label || title;
+    surface.title = name + " — VARIANT-1";
+    updateNativeWindow(id, {title: name});
+  }, [id, surface, title, owner.label, owner.title]);
+  return <div className="native-window-identity"><strong>{title}</strong>{chatId && <button type="button"
+    aria-label="Go to owning chat" title={`Go to owning chat · ${owner.label}${owner.root ? "\n" + owner.root : ""}`}
+    onClick={() => {
+      navigateTo("chat");
+      switchSession(chatId);
+      void window.variant1Deck?.controlNativeWindow?.("deck", "focus");
+      window.focus();
+    }}>{owner.label}</button>}</div>;
 }
 
 /** One portal container, physically adopted into the child window and back. */
-export function NativeSurface({id, title, children, onClosed,onBeforeClose}: {
-  id: string; title: string; children: ReactNode; onClosed?: (dock: boolean) => void;onBeforeClose?:()=>boolean;
+export function NativeSurface({id, title, ownerChatId = "", children, onClosed,onBeforeClose}: {
+  id: string; title: string; ownerChatId?: string; children: ReactNode; onClosed?: (dock: boolean) => void;onBeforeClose?:()=>boolean;
 }) {
   const records = useNativeWindows();
   const record = records[id];
@@ -54,17 +67,20 @@ export function NativeSurface({id, title, children, onClosed,onBeforeClose}: {
     // Consumers that overlay a terminal surface must remeasure after adoption.
     window.dispatchEvent(new Event("variant1:surface-document"));
   }, [native, targetDocument, mount, id]);
-  useLayoutEffect(() => { if (native) updateNativeWindow(id, {title}); }, [native, id, title]);
   const control = async (action: "minimize" | "maximize" | "pin") => {
     const result = await window.variant1Deck?.controlNativeWindow?.(id, action);
-    if (result?.ok && action === "pin") { setPinned(!!result.pinned); updateNativeWindow(id, {pinned: !!result.pinned}); }
+    if (action === "pin" && typeof result?.pinned === "boolean") {
+      setPinned(result.pinned);
+      updateNativeWindow(id, {pinned: result.pinned});
+      if (!result.ok) notifyToast("The window’s pin setting could not be changed.", id);
+    }
   };
   return <>
     <div ref={dock} className="native-surface-slot"/>
     {createPortal(<SurfaceDocumentContext.Provider value={targetDocument}>
       <div className={`native-surface${native ? " is-native" : ""}`}>
         {native ? <header className="native-window-chrome" onDoubleClick={event => { if (!(event.target as HTMLElement).closest("button")) void control("maximize"); }}>
-          <NativeIdentity title={title}/>
+          <NativeIdentity id={id} title={title} chatId={ownerChatId}/>
           <button type="button" aria-label={`Dock ${title} panel`} title="Return to VARIANT-1" onClick={() => closeNativeWindow(id, true)}>Dock</button>
           <button type="button" aria-label="Keep window on top" aria-pressed={pinned} title="Keep on top" onClick={() => void control("pin")}>Pin</button>
           <button type="button" aria-label="Minimize panel window" onClick={() => void control("minimize")}><Icon name="minimize"/></button>

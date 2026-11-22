@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +76,32 @@ def test_longcat_exact_route_addition_preserves_operator_revocation():
     matrix = SupportMatrix.from_config({"astb": {"support_matrix": [row]}})
     with pytest.raises(UnsupportedModelRoute, match="revoked"):
         matrix.validate(profile=ACTION_SURFACE, provider="hermes", model=row["model"], adapter="openai.chat_completions")
+
+
+@pytest.mark.parametrize("model", ["meituan/longcat-2.5:free", "qwen/qwen4-max:free"])
+def test_live_checked_nous_routes_are_exact_and_preserve_operator_rules(model):
+    config_path = Path(__file__).resolve().parents[2] / "config" / "llm_config.default.json"
+    defaults = json.loads(config_path.read_text(encoding="utf-8"))
+    coordinates = {"profile": ACTION_SURFACE, "provider": "hermes", "model": model,
+                   "adapter": "openai.chat_completions"}
+    assert SupportMatrix.from_config(defaults).validate(**coordinates).status == "developer"
+
+    legacy = {**coordinates, "model": "meituan/longcat-2.5-preview:free", "status": "developer"}
+    upgraded = SupportMatrix.from_config({"action_surface": {"support_matrix": [legacy]}})
+    assert upgraded.validate(**coordinates).status == "developer"
+    with pytest.raises(UnsupportedModelRoute, match="no support-matrix"):
+        upgraded.validate(**{**coordinates, "model": model.removesuffix(":free")})
+
+    revoked = {**coordinates, "status": "revoked"}
+    matrix = SupportMatrix.from_config({"action_surface": {"support_matrix": [legacy, revoked]}})
+    with pytest.raises(UnsupportedModelRoute, match="revoked"):
+        matrix.validate(**coordinates)
+    with pytest.raises(UnsupportedModelRoute, match="no support-matrix"):
+        SupportMatrix.from_config({"action_surface": {}}).validate(**coordinates)
+    revoked_legacy = {**legacy, "status": "revoked"}
+    matrix = SupportMatrix.from_config({"action_surface": {"support_matrix": [legacy, revoked_legacy]}})
+    with pytest.raises(UnsupportedModelRoute, match="no support-matrix"):
+        matrix.validate(**coordinates)
 
 
 def test_support_matrix_keeps_one_profile_but_rejects_unqualified_models():

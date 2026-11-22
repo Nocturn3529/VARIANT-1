@@ -207,8 +207,6 @@ Object.assign(env, {
   // R2.c: isolate Fernet key material inside the runner temp tree.
   VARIANT1_SECRETSTORE_KEY: testSecretstoreKey,
 });
-if (runDesktop) env.VARIANT1_DESKTOP_INTEGRATION = '1';
-
 const protectedBefore = protectedRuntimeInventory();
 
 try {
@@ -217,6 +215,13 @@ try {
     cwd: backend,
     env,
   });
+  if (runDesktop && isWin && !hasOption('--collect-only') && !hasOption('--co')) {
+    execFileSync(python, [path.join(__dirname, 'ci-windows-desktop.py')], {
+      stdio: 'inherit',
+      cwd: root,
+      env,
+    });
+  }
 } catch (error) {
   if (typeof error.status === 'number') {
     process.exitCode = error.status;

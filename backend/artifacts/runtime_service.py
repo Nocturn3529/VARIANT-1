@@ -178,18 +178,18 @@ class ArtifactRuntime:
         if prior is not None:
             if prior.tombstoned_at:
                 raise ArtifactRuntimeValidationError("artifact is tombstoned")
-            latest = self.repository.get_revision(identity)
+            creation = self.repository.get_revision(identity, 1)
             if (
                 idempotency_key
                 and prior.kind == str(kind)
                 and prior.title == str(title).strip()
                 and prior.scope == resolved
-                and (latest.source_ref or latest.content_ref) == source_ref
+                and (creation.source_ref or creation.content_ref) == source_ref
             ):
                 if alias:
                     self._reconcile_create_alias(
                         prior,
-                        revision=latest.revision,
+                        revision=creation.revision,
                         scope=resolved,
                         alias=alias,
                         actor=actor,
@@ -245,10 +245,7 @@ class ArtifactRuntime:
         except ArtifactRuntimeNotFound:
             current = None
         if current is not None:
-            if (
-                current.artifact_id == artifact.artifact_id
-                and current.revision == int(revision)
-            ):
+            if current.artifact_id == artifact.artifact_id:
                 return
             raise ArtifactRuntimeConflict(
                 f"alias version changed ({current.version} != 0)"
@@ -504,6 +501,8 @@ class ArtifactRuntime:
         idempotency_key: str = "",
         priority: int = 0,
     ) -> JobRecord:
+        if require_valid and not validate:
+            raise ArtifactRuntimeValidationError("require_valid needs validate=true")
         artifact = self.repository.require_artifact(artifact_id)
         if artifact.tombstoned_at:
             raise ArtifactRuntimeValidationError("artifact is tombstoned")
@@ -532,12 +531,16 @@ class ArtifactRuntime:
 
     def _publish_job(self, execution: JobExecutionContext) -> JobResult:
         request = dict(execution.job.input_manifest or {})
+        validate = bool(request.get("validate", True))
+        require_valid = bool(request.get("require_valid", True))
+        if require_valid and not validate:
+            raise ArtifactRuntimeValidationError("require_valid needs validate=true")
         artifact_id = str(request.get("artifact_id") or "")
         revision = int(request.get("revision") or 0)
         chosen = _formats(tuple(str(item) for item in request.get("formats") or ()))
         renders: list[dict[str, Any]] = []
         validations: list[dict[str, Any]] = []
-        failed = False
+        valid = True if validate else None
         for index, format_name in enumerate(chosen, 1):
             if execution.cancellation_requested():
                 raise asyncio.CancelledError("artifact publication was cancelled")
@@ -553,15 +556,15 @@ class ArtifactRuntime:
                 idempotency_key=f"{execution.job.job_id}:render:{format_name}",
             )
             renders.append(render.to_dict())
-            if bool(request.get("validate", True)):
+            if validate:
                 validation = self.validate(
                     artifact_id, format_name, revision=revision,
                     actor="agent", correlation_id=execution.job.job_id,
                     idempotency_key=f"{execution.job.job_id}:validate:{format_name}",
                 )
                 validations.append(validation.to_dict())
-                failed = failed or validation.status == "failed"
-        if failed and bool(request.get("require_valid", True)):
+                valid = valid and validation.status in {"passed", "warning"}
+        if require_valid and not valid:
             # The failure manifest is durable evidence, but no public alias may
             # move until the require-valid precondition has succeeded.
             artifact = self.repository.require_artifact(artifact_id)
@@ -586,10 +589,10 @@ class ArtifactRuntime:
             )
         return execution.commit_result(lambda connection: self._commit_publication(
             execution, connection, request=request, artifact_id=artifact_id, revision=revision,
-            chosen=chosen, renders=renders, validations=validations, failed=failed))
+            chosen=chosen, renders=renders, validations=validations, valid=valid))
 
     def _commit_publication(self, execution, connection, *, request, artifact_id, revision,
-                            chosen, renders, validations, failed):
+                            chosen, renders, validations, valid):
         alias_value = str(request.get("alias") or "").strip()
         alias_record = None
         if alias_value:
@@ -628,7 +631,7 @@ class ArtifactRuntime:
             "renders": renders,
             "validations": validations,
             "alias": alias_record.to_dict() if alias_record is not None else None,
-            "valid": not failed,
+            "valid": valid,
         }
         result = self.artifact_store.put_json(
             result_value,
@@ -642,7 +645,7 @@ class ArtifactRuntime:
                 "current": len(chosen),
                 "total": len(chosen),
                 "message": "Artifact publication completed",
-                "valid": not failed,
+                "valid": valid,
             },
         )
 

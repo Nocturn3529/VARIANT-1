@@ -381,7 +381,7 @@ async def test_kernel_seed_returns_fluent_handles_for_absorbed_capabilities(tmp_
     assert clicked["result"]["action"] == "click"
     assert clicked["result"]["screenshot"]["ref"].startswith("artifact://")
     assert stopped["$variant1_handle"]["metadata"]["state"] == "completed"
-    assert "methods" not in stopped["$variant1_handle"]
+    assert stopped["$variant1_handle"]["methods"]["items"] == []
     assert adapters[0].trace_started is False
 
 

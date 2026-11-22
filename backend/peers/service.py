@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 from background_tasks import OwnedTaskSet
@@ -842,50 +843,91 @@ class PeerCommunicationService:
             message_kind=self._message_kind(peer_id, request_id, message_kind, "result"),
         )
 
+    def _wait_display(self, peer_id: str, message: Mapping[str, Any], invocation) -> Callable[[str], None] | None:
+        """Live hint for the waiting cell, independent of the original send or its turn."""
+        from run_context import current_run_context
+        publish = getattr(getattr(self.host, "hub", None), "publish", None)
+        if (not callable(publish) or not requests_work(message) or peer_id != message["sender_peer_id"]
+                or _native_peer_id(invocation.chat_id) != peer_id or invocation.cancelled()):
+            return None
+        fields = {"session_id": invocation.chat_id, "run_id": invocation.run_id,
+                  "outer_call_id": invocation.outer_tool_call_id, "call_id": invocation.nested_call_id,
+                  "message_id": message["message_id"]}
+        if not all(fields.values()) or not invocation.cell_execution_id:
+            return None
+        run = current_run_context()
+        if (run is None or run.run_id != invocation.run_id
+                or (run.work_scope.chat_id and run.work_scope.chat_id != invocation.chat_id)):
+            return None
+        attempt = run.metadata.get("admission_id")
+        if attempt:
+            if (self.session_runtimes.active_admission(invocation.chat_id) != attempt
+                    or run.metadata.get("admission_run_id", run.run_id) != invocation.run_id):
+                return None
+        elif not any(row["chat_id"] == invocation.chat_id and row["run_id"] == invocation.run_id
+                     for row in self.session_runtimes.active_runs()):
+            return None
+
+        def update(status):
+            try:
+                # Socket order is preserved without awaiting a slow renderer.
+                # This transient annotation never enters tool or transcript accounting.
+                publish({"type": "activity", "event": "peer:wait", "status": status,
+                         "ts": round(time.time(), 3), **fields})
+            except Exception:
+                _LOG.warning("peer wait display unavailable", exc_info=True)
+
+        return update
+
     async def wait_message(
-        self, peer_id: str, message_id: str, timeout_s: float = 30.0,
+        self, peer_id: str, message_id: str, timeout_s: float = 30.0, *, _invocation=None,
     ) -> dict[str, Any]:
         message = self._message_for_peer(peer_id, message_id)
         deadline = asyncio.get_running_loop().time() + max(
             0.0, min(float(timeout_s), 30.0)
         )
-        while True:
-            event = self._change_event
-            reply = self.repository.find_reply(message_id)
-            if reply is not None:
-                return {
-                    "status": "replied",
-                    "message": self._message_for_peer(peer_id, message_id),
-                    "reply": reply,
-                }
-            completion = self.native_completion(peer_id, message_id)
-            if completion is not None:
-                return {'status':'settled', 'message':self._message_for_peer(peer_id,message_id),
-                        'completion':completion}
-            # Any still-unanswered inbound request is attention, including a
-            # mutual request that committed just before this wait began. This
-            # is the deadlock escape for two chats that both ask then wait.
-            attention = [
-                self._sync_native_state(row)
-                for row in self.repository.list_messages(
-                    peer_id, after=0, limit=50, direction="incoming",
-                    states=("persisted", "queued", "transport_written", "observed"),
-                )
-                if str(row.get("message_id") or "") != str(message_id) and requests_work(row)
-                and not str(row.get("in_reply_to") or "")
-            ][:1]
-            if attention:
-                return {
-                    "status": "attention", "message": message,
-                    "incoming": attention[0],
-                }
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
-            try:
-                await asyncio.wait_for(event.wait(), timeout=remaining)
-            except TimeoutError:
-                return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
+        display = None
+        try:
+            while True:
+                event = self._change_event
+                reply = self.repository.find_reply(message_id)
+                if reply is not None:
+                    return {
+                        "status": "replied",
+                        "message": self._message_for_peer(peer_id, message_id),
+                        "reply": reply,
+                    }
+                completion = self.native_completion(peer_id, message_id)
+                if completion is not None:
+                    return {'status':'settled', 'message':self._message_for_peer(peer_id,message_id),
+                            'completion':completion}
+                # Any still-unanswered inbound request is attention, including a
+                # mutual request that committed just before this wait began. This
+                # is the deadlock escape for two chats that both ask then wait.
+                attention = self.repository.next_incoming_request(peer_id, excluding=message_id)
+                if attention is not None:
+                    return {
+                        "status": "attention", "message": message,
+                        "incoming": self._sync_native_state(attention),
+                    }
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
+                if _invocation is not None and not event.is_set():
+                    try:
+                        display = self._wait_display(peer_id, message, _invocation)
+                    except Exception:
+                        _LOG.warning("peer wait display setup unavailable", exc_info=True)
+                    _invocation = None
+                    if display is not None:
+                        display("running")
+                try:
+                    await asyncio.wait_for(event.wait(), timeout=remaining)
+                except TimeoutError:
+                    return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
+        finally:
+            if display is not None:
+                display("done")
 
     def register_external(
         self,

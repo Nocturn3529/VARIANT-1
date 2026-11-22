@@ -55,35 +55,37 @@ def launch_reserved_chat_turn(
     session.active.runtime_chat_id = chat_id
     session.active.turn_ticket_id = str(ticket_id or "")
     if ticket_id:
+        from chat_stream import infer_turn_source
         session.active.turn_client_id = str(client_id or "")
-        session.active.turn_source = str(source or "queue_continue")
-    try:
-        task = background_tasks.spawn(
-            run_task(
-                transport,
-                text,
-                session,
-                resume=resume,
-                turn_seq=turn_seq,
-                client_id=client_id,
-                source=source,
-                images=images,
-                attachment_text=attachment_text,
-                runtime_admission_id=runtime_admission_id,
-                ticket_id=str(ticket_id or ""),
-            ),
-            name=task_name,
+        session.active.turn_source = infer_turn_source(client_id, source)
+
+    def settle_unstarted_ticket(reason: str) -> None:
+        if not ticket_id or registry.active_admission(chat_id) != runtime_admission_id:
+            return
+        if not registry.reject_unstarted_submission(runtime_admission_id, reason):
+            registry.repository.transition_ticket(str(ticket_id), "parked",
+                                                  expected=("selected", "preparing"), error=reason)
+
+    started = False
+    async def run_owned():
+        nonlocal started
+        started = True
+        return await run_task(
+            transport, text, session, resume=resume, turn_seq=turn_seq, client_id=client_id,
+            source=source, images=images, attachment_text=attachment_text,
+            runtime_admission_id=runtime_admission_id, ticket_id=str(ticket_id or ""),
         )
+    pending = run_owned()
+    try:
+        task = background_tasks.spawn(pending, name=task_name)
     except Exception:
-        if ticket_id:
-            registry.repository.transition_ticket(
-                str(ticket_id), "parked",
-                expected=("selected", "preparing"),
-                error="queue_launch_failed",
-            )
-        registry.finish_run(runtime_admission_id, status="admission_failed")
-        session.busy = False
-        session.clear_active_turn()
+        pending.close()
+        try:
+            settle_unstarted_ticket("launch_failed")
+        finally:
+            session.busy = False
+            session.clear_active_turn()
+            registry.finish_run(runtime_admission_id, status="admission_failed")
         raise
     session.active.turn_task = task
     registry.bind_admission_task(runtime_admission_id, task)
@@ -91,7 +93,18 @@ def launch_reserved_chat_turn(
     def clear(done: asyncio.Task) -> None:
         if session.active.turn_task is done:
             session.active.turn_task = None
-        if not done.cancelled():
+        if done.cancelled() and not started:
+            try:
+                settle_unstarted_ticket("cancelled_before_start")
+            finally:
+                # Composer Stop/disconnect own a terminal writer fence. Inventory
+                # Stop has no such finalizer if the coroutine never entered.
+                if registry.active_admission(chat_id) == runtime_admission_id and registry.accepts_inputs(chat_id):
+                    if session.active.runtime_admission_id == runtime_admission_id and turn_seq == session.latest_turn_seq:
+                        session.busy = False
+                        session.clear_active_turn()
+                    registry.finish_run(runtime_admission_id, status="cancelled_before_start")
+        elif not done.cancelled():
             registry.finish_run(runtime_admission_id, status="terminal")
 
     task.add_done_callback(clear)

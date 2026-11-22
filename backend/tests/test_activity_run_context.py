@@ -89,6 +89,32 @@ async def test_emit_activity_retains_latest_display_step_per_session(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["ok", "error"])
+async def test_live_snapshot_keeps_terminal_cell_after_late_start(monkeypatch, status):
+    from observability import activity
+
+    monkeypatch.setattr(activity, "_LIVE_RUNS", activity.OrderedDict())
+    ctx = Variant1RunContext.create(source="chat", run_id="run", session_id="chat")
+    with bind_run_context(ctx):
+        cell = {"tool": "ipython", "call_id": "first-cell"}
+        await emit_activity("tool:start", status="running", **cell)
+        await emit_activity("tool:result", status=status, **cell)
+        settled = activity.run_snapshot("chat", "run")
+        assert settled["steps"][0]["status"] == status
+        assert settled["steps"][0]["completed_at"] > 0
+
+        await emit_activity("tool:start", status="running", **cell)
+        assert activity.run_snapshot("chat", "run") == settled
+
+        await emit_activity("tool:start", tool="ipython", call_id="second-cell",
+                            status="running")
+        steps = activity.run_snapshot("chat", "run")["steps"]
+        assert [(step["call_id"], step["status"]) for step in steps] == [
+            ("first-cell", status), ("second-cell", "running"),
+        ]
+
+
+@pytest.mark.asyncio
 async def test_emit_activity_without_context_has_no_run_id_fallback():
     """No process-global _CURRENT_RUN — untagged emit lacks run_id."""
     seen = []

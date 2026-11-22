@@ -116,6 +116,9 @@ async def run_child_worker(
         context_parts.append("OVERALL GOAL (from the main agent): " + str(parent_goal))
     if instructions:
         context_parts.append("BACKGROUND / CONTEXT:\n" + instructions)
+    project_directory = (ctx.metadata or {}).get("working_directory")
+    if project_directory:
+        context_parts.append(f"The project directory for this run is {project_directory!r}.")
     runtime_prompt = str((ctx.metadata or {}).get("runtime_prompt") or "")
     if runtime_prompt:
         context_parts.append(runtime_prompt)

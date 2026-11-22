@@ -34,6 +34,35 @@ _INCLUDE_SCREENSHOT = {
     "required": False,
     "default": False,
 }
+
+
+def _wait_method(adapter_kind: str) -> dict[str, Any]:
+    params = [
+        {"name": "condition", "type": "str", "required": False, "default": "timeout"},
+        {"name": "selector", "type": "str", "required": False, "default": None},
+        {"name": "state", "type": "str", "required": False, "default": None},
+        {"name": "timeout_ms", "type": "int", "required": False, "default": None},
+        _INCLUDE_SCREENSHOT,
+    ]
+    description = (
+        "Wait for condition='timeout' or condition='element'. For an element, pass a CSS selector "
+        "and state='visible' (default), 'hidden', 'attached', or 'detached'. Observe fresh handles "
+        "after the wait."
+    )
+    if adapter_kind == "embedded":
+        description += " Embedded element waits are capped at 20000 milliseconds."
+    elif adapter_kind == "managed":
+        description += (
+            " Managed pages also accept an observed backend_ref instead of a selector, "
+            "condition='load_state' with state, or condition='url' with url."
+        )
+        params.extend([
+            {"name": "backend_ref", "type": "str", "required": False, "default": None},
+            {"name": "url", "type": "str", "required": False, "default": None},
+        ])
+    return _method("wait", description, params, variadic_kwargs=True)
+
+
 _SESSION_METHODS = [
     _method(
         "pages",
@@ -48,7 +77,7 @@ _SESSION_METHODS = [
         {"name": "limit", "type": "int", "required": False, "default": 100},
         {"name": "operation_id", "type": "str", "required": False, "default": ""},
     ]),
-    _method("start_trace", "Start a browser trace.", [
+    _method("start_trace", "Start a browser trace. After stopping, save the ZIP with completed_trace.artifact.save(path).", [
         {"name": "name", "type": "str", "required": False, "default": "Browser trace"},
         {"name": "options", "type": "dict", "required": False, "default": None},
     ]),
@@ -74,9 +103,7 @@ _PAGE_METHODS = [
     _method("keys", "Send keys to this page. " + BROWSER_KEYS_GUIDANCE, [{
         "name": "keys", "type": "str", "required": True,
     }, _INCLUDE_SCREENSHOT], variadic_kwargs=True),
-    _method("wait", "Wait for a page condition.", [
-        _INCLUDE_SCREENSHOT,
-    ], variadic_kwargs=True),
+    _wait_method(""),
     _method("evaluate", "Evaluate JavaScript in this page. For portable expressions, invoke functions, e.g. (() => document.title)(); return JSON data, not functions or DOM nodes. The action result exposes value, page, operation_id and download state.", [
         {"name": "expression", "type": "str", "required": True},
         {"name": "arg", "type": "any", "required": False, "default": None},
@@ -106,7 +133,7 @@ _ELEMENT_METHODS = [
     }, _INCLUDE_SCREENSHOT], variadic_kwargs=True),
 ]
 _TRACE_METHODS = [
-    _method("stop", "Stop this trace and retain its artifact."),
+    _method("stop", "Stop this trace. The returned completed trace exposes a ZIP at .artifact. Use .artifact.save(path) or .artifact.read_bytes()."),
 ]
 
 
@@ -131,7 +158,7 @@ def _session_methods(
     return _method_subset(_SESSION_METHODS, names)
 
 
-def _page_methods(capabilities: Iterable[str]) -> list[dict[str, Any]]:
+def _page_methods(capabilities: Iterable[str], *, adapter_kind: str) -> list[dict[str, Any]]:
     supported = {str(item) for item in capabilities}
     names: set[str] = set()
     if supported.intersection({"navigate", "back", "forward", "reload", "tabs"}):
@@ -144,7 +171,12 @@ def _page_methods(capabilities: Iterable[str]) -> list[dict[str, Any]]:
     )
     if "tabs" in supported:
         names.add("close")
-    return _method_subset(_PAGE_METHODS, names)
+        if adapter_kind == "embedded":
+            names.update(("mark", "show"))
+    return [
+        _wait_method(adapter_kind) if method["name"] == "wait" else method
+        for method in _method_subset(_PAGE_METHODS, names)
+    ]
 
 
 def _element_methods(
@@ -183,6 +215,7 @@ def page_handle_envelope(
     *,
     target: TargetRecord,
     capabilities: Iterable[str] | None = None,
+    adapter_kind: str = "",
     broker: Any,
     context: Any,
 ) -> dict[str, Any]:
@@ -201,7 +234,7 @@ def page_handle_envelope(
             "viewport": dict(getattr(target, 'viewport', {}) or {}),
         },
         methods=(
-            _page_methods(capabilities)
+            _page_methods(capabilities, adapter_kind=adapter_kind)
             if capabilities is not None
             else _PAGE_METHODS
         ),

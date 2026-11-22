@@ -524,8 +524,8 @@ def test_namespace_key_fences_mutation_authority_revisions():
     first = KernelLease._document_key(document)
     document["session"]["mutation_authority_revision"] = 2
     second = KernelLease._document_key(document)
-    assert first == ("catalog-a", 3, 7, 1)
-    assert second == ("catalog-a", 3, 7, 2)
+    assert first == ("catalog-a", 3, 7, 1, False)
+    assert second == ("catalog-a", 3, 7, 2, False)
     assert first != second
 
 
@@ -573,7 +573,7 @@ async def test_bridge_origin_is_immutable_for_tasks_and_unbound_threads_reject()
     assert from_thread == [("", "")]
 
 
-def test_typed_output_event_count_is_bounded_before_projection():
+def test_typed_output_event_count_keeps_opening_and_latest_event():
     collector = CellOutputCollector(
         limits=OutputLimits(
             max_message_bytes=128,
@@ -593,7 +593,10 @@ def test_typed_output_event_count_is_bounded_before_projection():
     assert [event["sequence"] for event in evidence["events"]] == [1, 2]
     assert evidence["bounds"]["admitted_events"] == 2
     assert evidence["bounds"]["dropped_events"] == 1
-    assert "event-2" not in collector.result.text()
+    assert evidence["bounds"]["dropped_bytes"] == len("event-1\n")
+    assert [event["body"]["data"] for event in evidence["events"]] == ["event-0\n", "event-2\n"]
+    assert "event-1" not in collector.result.text()
+    assert collector.result.text().endswith("event-2")
 
 
 def test_pinned_data_runtime_profile_has_one_exact_dependency_digest():
@@ -805,6 +808,48 @@ async def test_read_file_complete_value_survives_bounded_display_and_compiles(ke
         )
         assert window.ok, window.to_dict()
         assert "Variant1FileReadResult 2 3 False 4" in window.output.text()
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_mounted_file_tools_accept_explicit_search_and_unique_edits(
+    kernel_stack, tmp_path, monkeypatch,
+):
+    manager, runtimes, _ = kernel_stack
+    registry = manager.broker.registry
+    registry.remove("read_file")
+    monkeypatch.setenv("VARIANT1_PATCH_JOURNAL_DIR", str(tmp_path / "patch-journal"))
+    builtin_tools.register(registry)
+    manager.catalog_service.reconcile_registry()
+    path = tmp_path / "target.txt"
+    path.write_text("old\ncontext old", encoding="utf-8")
+
+    chat_id = "chat-file-contracts"
+    runtimes.ensure_runtime(chat_id, is_new=True)
+    manager.catalog_service.select(chat_id, "build")
+    try:
+        result = await manager.execute(
+            chat_id=chat_id,
+            code=(
+                f"p = {str(path)!r}\n"
+                "hits = tools.grep(path=p, pattern='old', pattern_mode='literal', "
+                "case_sensitive=True, max_file_bytes=100)\n"
+                "assert '2 match(es)' in hits\n"
+                "try:\n"
+                "    tools.apply_patch(path=p, find='old', replace='new', expected_matches=1)\n"
+                "except Exception as exc:\n"
+                "    assert exc.code == 'patch_match_count_mismatch'\n"
+                "else:\n"
+                "    raise AssertionError('ambiguous edit was accepted')\n"
+                "tools.apply_patch(path=p, find='context old', replace='context new', "
+                "expected_matches=1)"
+            ),
+            run_id="file-contracts",
+            outer_tool_call_id="file-contracts-cell",
+        )
+        assert result.ok, result.to_dict()
+        assert path.read_text(encoding="utf-8") == "old\ncontext new"
     finally:
         await manager.shutdown()
 
@@ -1477,6 +1522,36 @@ async def test_kernel_launcher_is_owned_before_interpreter_starts(kernel_stack, 
         )
         assert result.ok, result.to_dict()
         assert early_children == []
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_kernel_filters_indexed_git_config_as_a_group(kernel_stack, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "user.name")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "Kernel Test")
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    monkeypatch.setenv("VARIANT1_TEST_API_KEY", "test-only-value")
+
+    manager, runtimes, _ = kernel_stack
+    chat_id = "chat-git-env"
+    runtimes.ensure_runtime(chat_id, is_new=True)
+    try:
+        result = await manager.execute(
+            chat_id=chat_id,
+            code=(
+                "import os\n"
+                "assert 'GIT_CONFIG_COUNT' not in os.environ\n"
+                "assert 'GIT_CONFIG_KEY_0' not in os.environ\n"
+                "assert 'GIT_CONFIG_VALUE_0' not in os.environ\n"
+                "assert 'VARIANT1_TEST_API_KEY' not in os.environ\n"
+                "assert os.environ['GIT_TERMINAL_PROMPT'] == '0'"
+            ),
+            run_id="git-env-run",
+            outer_tool_call_id="git-env-cell",
+        )
+        assert result.ok, result.to_dict()
     finally:
         await manager.shutdown()
 
@@ -2638,6 +2713,66 @@ async def test_uncaught_nested_capability_error_has_compact_model_projection(
         assert "Traceback" not in result.model_observation()
     finally:
         await manager.close_chat("chat-capability-error")
+
+
+@pytest.mark.asyncio
+async def test_cell_action_reaches_live_result_snapshot_and_durable_replay(kernel_stack, monkeypatch):
+    from observability import activity
+    from tool_runner import ToolRunnerPorts, execute_tool_batch
+
+    manager, runtimes, _artifacts = kernel_stack
+    chat_id, run_id = "chat-cell-label", "run-cell-label"
+    runtimes.ensure_runtime(chat_id, is_new=True)
+    broker = manager.broker
+    broker.outer_call_repository = runtimes.repository
+    runtime = SimpleNamespace(session_runtimes=runtimes, catalog=manager.catalog_service, kernel=manager)
+    register_ipython_tool(broker.registry, lambda: runtime)
+    tool = broker.registry.get("ipython")
+    frames = []
+
+    async def emit(event, **fields):
+        frames.append((event, fields))
+        await activity.emit_activity(event, **fields)
+
+    async def start(name, args, call_id):
+        await activity.emit_activity("tool:start", tool=name, call_id=call_id, args_preview=str(args))
+
+    ports = ToolRunnerPorts(emit, start, lambda text, limit: str(text)[:limit], 4096)
+    monkeypatch.setattr(activity, "_LIVE_RUNS", activity.OrderedDict())
+    ctx = Variant1RunContext.create(source="chat", session_id=chat_id, run_id=run_id, metadata={"chat_id": chat_id})
+    call = {"tool": "ipython", "id": "outer-read", "args": {
+        "category": "build", "code": "path = 'log.txt'\nprint(tools.read_file(path=path))",
+    }}
+    try:
+        with bind_run_context(ctx):
+            for _ in range(2):
+                result = await execute_tool_batch([{"a": call, "tool": tool, "status": "ok"}],
+                                                  ports=ports, broker=broker, should_stop=None)
+                assert result.outcomes[0]["status"] == "ok", result.outcomes
+                assert "log.txt" in result.outcomes[0]["model_result"]
+                assert "cell_action" not in result.outcomes[0]["model_result"]
+        outputs = [frame for event, frame in frames if event == "tool:result"]
+        assert [f.get("durable_replay", False) for f in outputs] == [False, True]
+        assert [f.get("cell_action") for f in outputs] == ["Read file", "Read file"]
+        assert len({f["receipt_id"] for f in outputs}) == 1
+        steps = activity.run_snapshot(chat_id, run_id)["steps"]
+        assert [(s["call_id"], s.get("cell_action")) for s in steps] == [("outer-read", "Read file")]
+        with bind_run_context(ctx):
+            await activity.emit_activity("tool:result", **{**outputs[-1], "run_id": "previous-run"})
+            await activity.emit_activity("tool:result", **{**outputs[-1], "call_id": "another-cell"})
+            assert activity.run_snapshot(chat_id, run_id)["steps"] == steps
+            select = {**call, "id": "outer-select", "args": {"category": "build"}}
+            await execute_tool_batch([{"a": select, "tool": tool, "status": "ok"}],
+                                     ports=ports, broker=broker, should_stop=None)
+            assert frames[-1][1].get("cell_action") == "Checked tool category"
+            batch = await tool.run({"code": (
+                "reader = tools.read_file\n"
+                "print(reader._bridge.invoke_many([(reader._descriptor, {'path': p}) for p in ('a', 'b')]))"
+            )})
+            assert batch.receipt_metadata["cell_action"] == "Read file"
+            assert "['a', 'b']" in str(batch)
+    finally:
+        await manager.shutdown()
 
 
 @pytest.mark.asyncio
@@ -4429,6 +4564,16 @@ async def test_cell_ledger_namespace_notebook_and_restart_controls(kernel_stack)
         assert follow.ok
         assert follow.generation > result.generation
         assert len(manager.execution_history("chat-ledger", limit=10)["items"]) == 2
+        def cell_ids(**options):
+            export = manager.export_notebook("chat-ledger", **options)
+            notebook = json.loads(artifacts.read_bytes_scoped(export["artifact_ref"], "chat-ledger"))
+            assert (notebook["nbformat"], notebook["nbformat_minor"]) == (4, 5)
+            return [cell["id"] for cell in notebook["cells"]]
+
+        first, second = cell_ids()
+        assert all(re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value) for value in (first, second))
+        assert first != second
+        assert cell_ids(after_sequence=result.ledger_sequence) == [second]
     finally:
         await manager.shutdown()
 
@@ -4687,7 +4832,10 @@ async def test_worker_bounds_stream_frames_and_oversized_rich_bundle(kernel_stac
     result = await manager.execute(
         chat_id="chat-worker-output-bounds",
         code=(
+            "import sys\n"
+            "print('Start café')\n"
             "print('S' * 200)\n"
+            "print('5 failed ☃', file=sys.stderr)\n"
             "display({'text/plain': 'T' * 200, "
             "'application/json': {'payload': 'J' * 200}}, raw=True)\n"
             "'E' * 200\n"
@@ -4706,7 +4854,7 @@ async def test_worker_bounds_stream_frames_and_oversized_rich_bundle(kernel_stac
             event for event in evidence["events"] if event["type"] == "stream"
         ]
         assert len(stream_events) > 1
-        assert all(event["body"]["bytes"] <= 32 for event in stream_events[:-1])
+        assert all(event["body"]["bytes"] <= 32 for event in stream_events)
         stream_parts = []
         for event in stream_events:
             body = event["body"]
@@ -4719,12 +4867,20 @@ async def test_worker_bounds_stream_frames_and_oversized_rich_bundle(kernel_stac
             else:
                 stream_parts.append(str(body.get("data") or ""))
         stream_text = "".join(stream_parts)
-        assert "worker stream output capped before REPL transport" in stream_text
+        original = "Start café\n" + "S" * 200 + "\n5 failed ☃\n"
+        worker_omission = len(original.encode()) - len(stream_text.encode())
+        assert worker_omission > 0
+        assert evidence["bounds"]["worker_dropped_bytes"] == worker_omission
+        assert f"{worker_omission} bytes omitted" in result.model_observation()
+        assert stream_text.startswith("Start café\n")
+        assert stream_text.endswith("5 failed ☃\n")
+        assert "�" not in stream_text
         assert "S" * 150 not in stream_text
 
         display_event = next(
             event for event in evidence["events"] if event["type"] == "display_data"
         )
+        assert stream_events[-1]["sequence"] < display_event["sequence"]
         assert set(display_event["data"]) == {"text/plain"}
         marker = display_event["data"]["text/plain"]["data"]
         assert "rich output omitted before REPL transport" in marker
@@ -4737,6 +4893,57 @@ async def test_worker_bounds_stream_frames_and_oversized_rich_bundle(kernel_stac
         assert "rich output omitted before REPL transport" in (
             execute_event["data"]["text/plain"]["data"]
         )
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_noisy_cell_keeps_verdict_through_model_result_projection(kernel_stack):
+    from tool_runner import ToolRunnerPorts, execute_tool_batch
+    from tools import MAX_RESULT_CHARS
+
+    manager, runtimes, _ = kernel_stack
+    manager.limits = replace(
+        manager.limits,
+        worker_stream_cell_bytes=32_768,
+        output=replace(manager.limits.output, max_cell_bytes=24_576, max_message_bytes=16_384),
+    )
+    chat_id = "chat-output-verdict"
+    runtimes.ensure_runtime(chat_id, is_new=True)
+    broker = manager.broker
+    broker.outer_call_repository = runtimes.repository
+    runtime = SimpleNamespace(session_runtimes=runtimes, catalog=manager.catalog_service, kernel=manager)
+    register_ipython_tool(broker.registry, lambda: runtime)
+    tool = broker.registry.get("ipython")
+
+    async def ignore(*args, **kwargs):
+        pass
+
+    ports = ToolRunnerPorts(ignore, ignore, lambda text, limit: str(text)[:limit], MAX_RESULT_CHARS)
+    run_id = "run-output-verdict"
+    ctx = Variant1RunContext.create(source="chat", session_id=chat_id, run_id=run_id, metadata={"chat_id": chat_id})
+    code = (
+        "import sys\n"
+        "print('Starting café ☃')\n"
+        "print('noisy € output ' * 3000)\n"
+        "print('5 failed ☃', file=sys.stderr)\n"
+    )
+    try:
+        with bind_run_context(ctx):
+            for index, error in enumerate(("", "raise ValueError('synthetic failure')\n")):
+                call = {"tool": "ipython", "id": f"outer-{index}", "args": {"category": "build", "code": code + error}}
+                batch = await execute_tool_batch([{"a": call, "tool": tool, "status": "ok"}],
+                                                 ports=ports, broker=broker, should_stop=None)
+                outcome = batch.outcomes[0]
+                text = outcome["model_result"]
+                assert outcome["ok"] is (not error), outcome
+                assert "Starting café ☃" in text and "5 failed ☃" in text
+                assert "omitted" in text and "�" not in text
+                assert len(text) <= MAX_RESULT_CHARS
+                if error:
+                    assert "ValueError: synthetic failure" in text
+                else:
+                    assert outcome["truncated"] and outcome["source_chars"] > MAX_RESULT_CHARS
     finally:
         await manager.shutdown()
 
@@ -5048,7 +5255,10 @@ async def test_cancelled_kernel_close_finishes_teardown_before_propagating(tmp_p
                 "status": "ok",
             }
 
-        def close(self):
+        def retire_writes(self):
+            pass
+
+        async def close(self):
             self.closed = True
 
     class FakeJob:
@@ -5711,7 +5921,10 @@ async def test_kernel_close_survives_cancellation_at_reply_and_bridge_cleanup(tm
             await process_killed.wait()
             raise EOFError("worker exited")
 
-        def close(self):
+        def retire_writes(self):
+            pass
+
+        async def close(self):
             self.closed = True
 
     class Bridge:

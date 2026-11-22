@@ -3,8 +3,8 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),{spawn}=require('node:child_process');
 const {buildSync}=require('esbuild');
 const root=path.resolve(__dirname,'..'),temp=fs.mkdtempSync(path.join(os.tmpdir(),'variant-context-settings-'));
-const out=path.join(root,'artifacts/context-routing-settings-native');fs.mkdirSync(out,{recursive:true});
-const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {SettingsOverlay} from './frontend/main-deck/src/SettingsOverlay';import {useAppState,selectSettingsCategory} from './frontend/main-deck/src/state/appStore';import * as ctx from './frontend/main-deck/src/externalContextSettingsStore';import * as routing from './frontend/main-deck/src/providerRoutingStore';import {setSessionContext,setSessionConnection,ingestSessions} from './frontend/main-deck/src/state/sessionStore';import {ingest as ingestPlatform} from './frontend/main-deck/src/store';ingestPlatform({type:'config',providers:[{name:'openrouter',display_name:'OpenRouter',configured:true,model:'stealth/space-bunny-alpha',reasoning_efforts:['minimal','low','medium','high','xhigh','max']}]});const runtime={send:command=>{window.fixtureTransport.send(command);return true},isOpen:()=>true,notify:()=>{}};ctx.setExternalContextSettingsContext(runtime);routing.setProviderRoutingContext(runtime);setSessionContext(runtime);window.fixtureTransport.onResult(message=>{ctx.ingestExternalContextSettings(message);routing.ingestProviderRouting(message);});ctx.setExternalContextSettingsConnection('connected');routing.setProviderRoutingConnection('connected');setSessionConnection('connected');ingestSessions({type:'chat:sessions',active_id:'fixture-chat',items:[{id:'fixture-chat',title:'Retained analysis session'}]});ctx.chooseContextChat('fixture-chat');selectSettingsCategory('session-context');window.fixturePage=selectSettingsCategory;window.fixtureRoutingDraft=routing.editProviderRouting;function App(){const state=useAppState();return <SettingsOverlay category={state.settingsCategory} onClose={()=>{}}/>}createRoot(document.getElementById('root')).render(<App/>);`;
+const out=require('./native-test-artifacts')(root,'artifacts/context-routing-settings-native','context-settings');
+const entry=`import React from 'react';import {createRoot} from 'react-dom/client';import {SettingsOverlay} from './frontend/main-deck/src/SettingsOverlay';import {useAppState,selectSettingsCategory} from './frontend/main-deck/src/state/appStore';import * as ctx from './frontend/main-deck/src/externalContextSettingsStore';import * as routing from './frontend/main-deck/src/providerRoutingStore';import {setSessionContext,setSessionConnection,ingestSessions,noteDisplayedSession} from './frontend/main-deck/src/state/sessionStore';import {ingest as ingestPlatform} from './frontend/main-deck/src/store';ingestPlatform({type:'config',providers:[{name:'openrouter',display_name:'OpenRouter',configured:true,model:'stealth/space-bunny-alpha',reasoning_efforts:['minimal','low','medium','high','xhigh','max']}]});const runtime={send:command=>{window.fixtureTransport.send(command);return true},isOpen:()=>true,notify:()=>{}};ctx.setExternalContextSettingsContext(runtime);routing.setProviderRoutingContext(runtime);setSessionContext(runtime);window.fixtureTransport.onResult(message=>{ctx.ingestExternalContextSettings(message);routing.ingestProviderRouting(message);});ctx.setExternalContextSettingsConnection('connected');routing.setProviderRoutingConnection('connected');setSessionConnection('connected');ingestSessions({type:'chat:sessions',active_id:'fixture-chat',items:[{id:'fixture-chat',title:'Retained analysis session'}]});noteDisplayedSession('fixture-chat');selectSettingsCategory('session-context');window.fixturePage=selectSettingsCategory;window.fixtureRoutingDraft=routing.editProviderRouting;function App(){const state=useAppState();return <SettingsOverlay category={state.settingsCategory} onClose={()=>{}}/>}createRoot(document.getElementById('root')).render(<App/>);`;
 buildSync({stdin:{contents:entry,resolveDir:root,loader:'tsx'},bundle:true,format:'iife',outfile:path.join(temp,'renderer.js'),jsx:'automatic'});
 const css=['design-system','shell','settings','workbench','workspace-overlays','refinement'].map(name=>fs.readFileSync(path.join(root,`frontend/main-deck/src/styles/${name}.css`),'utf8')).join('\n');
 fs.writeFileSync(path.join(temp,'index.html'),`<!doctype html><html><head><meta charset="utf-8"><style>${css}\nhtml,body,#root{margin:0;width:100%;height:100%;background:#0b0b0b;}</style></head><body class="app-shell"><div id="root"></div><script src="renderer.js"></script></body></html>`);
@@ -26,23 +26,31 @@ app.whenReady().then(async()=>{
    if(message.type!=='external-context:request')return;
    const operation=message.operation;let result;
    if(operation==='children')result={items:[{child_id:'fixture-child',name:'Goal analysis worker',status:'completed'}],truncated:false};
-   else if(operation==='views')result={items:[{view_id:'frozen-view',created_at:1791028800}],has_more:false,next_cursor:null};
+   else if(operation==='views')result={items:[{view_id:'other-view',created_at:1791028800},{view_id:'frozen-view',created_at:1791028800}],has_more:false,next_cursor:null};
    else if(operation==='status')result=status;
    else if(operation==='read' || operation==='search')result={view_id:'frozen-view',items:[{source_id:'source-message',kind:'message',role:'user',ordinal:0,preview:'Compare the measurements and preserve the result.'},{source_id:'source-cell',kind:'cell',ordinal:1,preview:'summary = {"mean": 17.2}'}],has_more:false,next_cursor:null,coverage:'Message and cell text; snapshots have metadata-only search.'};
    else if(operation==='expand')result={view_id:'frozen-view',source:{source_id:message.source_id,kind:'cell',sequence:7},text:message.part==='result'?'{"mean": 17.2}':'summary = {"mean": 17.2}',offset:0,total_chars:25,has_more:false,next_offset:null};
    else if(operation==='capture' || operation==='refresh')result={view_id:'frozen-view',status};
-   else if(operation==='export'){fs.writeFileSync(message.path,'{"type":"fixture-source","text":"Retained evidence"}\\n');result={view_id:'frozen-view',path:message.path,bytes:fs.statSync(message.path).size,source_count:2,omission_count:0,omissions:[]};}
+   else if(operation==='export'){
+     assert.equal(message.chat_id,'fixture-chat');assert.equal(message.view_id,'frozen-view');assert.equal(message.format,'jsonl');
+     fs.writeFileSync(message.path,JSON.stringify({view_id:message.view_id,text:'Retained evidence'})+'\\n');
+     result={view_id:message.view_id,path:message.path,bytes:fs.statSync(message.path).size,source_count:2,omission_count:0,omissions:[]};
+   }
    event.sender.send('fixture:response',{type:'external-context:result',request_id:message.request_id,operation,chat_id:message.chat_id,ok:true,result});
  });
  await win.loadFile(${JSON.stringify(path.join(temp,'index.html'))});
  await wait('[...document.querySelectorAll("select")].find(el=>el.getAttribute("aria-label")==="Saved context view")?.querySelector("option[value=frozen-view]")');
+ assert.equal(await run('[...document.querySelectorAll("select")].find(s=>s.getAttribute("aria-label")==="Context session").selectedOptions[0].textContent'),'Current chat · Retained analysis session');
+ assert.equal(await run('[...document.querySelectorAll("button")].find(x=>x.textContent==="Export view").disabled'),true);
+ assert.match(await run('[...document.querySelectorAll("option")].find(o=>o.value==="frozen-view").textContent'),/frozen-view/);
  await run('(()=>{const select=[...document.querySelectorAll("select")].find(el=>el.getAttribute("aria-label")==="Saved context view");select.value="frozen-view";select.dispatchEvent(new Event("change",{bubbles:true}));})()');
  await wait('document.querySelectorAll(".context-sources > button").length===2');
  await run('document.querySelectorAll(".context-sources > button")[1].click()');
  await wait('document.querySelector(".context-detail pre")?.textContent.includes("summary")');await pause(80);await capture('context-browser.png');
  await run('document.querySelector(".context-browser").scrollIntoView({block:"center"})');await capture('context-browser-detail.png');
  await run('[...document.querySelectorAll("button")].find(x=>x.textContent==="Export view").click()');
- await wait('document.body.textContent.includes("Context export saved.")');assert.ok(fs.existsSync(${JSON.stringify(path.join(temp,'context.jsonl'))}));
+ await wait('document.body.textContent.includes("Context export saved.")');
+ assert.equal(JSON.parse(fs.readFileSync(${JSON.stringify(path.join(temp,'context.jsonl'))},'utf8')).view_id,'frozen-view');
  await run('window.fixturePage("provider-routing")');await wait('!!document.querySelector(".provider-routing-settings [role=switch]")');
  assert.equal(await run('document.querySelector(".provider-routing-settings [role=switch]").getAttribute("aria-checked")'),"false");
  await run('document.querySelector(".provider-routing-settings [role=switch]").click()');

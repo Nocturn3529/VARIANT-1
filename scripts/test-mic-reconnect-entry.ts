@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {setMicContext,setMicConnection,toggleMic,ingestMic,disposeMic,getMicState} from "../frontend/main-deck/src/state/micStore";
 import {setChatState,initialChatState} from "../frontend/main-deck/src/chat/stateCore";
 import {OFFLINE_HOLD_MS} from "../frontend/main-deck/src/connectionUi";
+import {MicController} from "../frontend/main-deck/src/runtime/MicController";
 
 export async function run() {
   const pause=(ms=0)=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -25,6 +26,23 @@ export async function run() {
   Object.assign(window,{AudioContext:AudioContextFixture});
   Object.assign(globalThis,{AudioWorkletNode:WorkletFixture});
   const frame=()=>worklet.port.onmessage?.({data:{type:"frame",samples:new Float32Array([.2,-.2,.2]),rms:.2,frames:3}} as MessageEvent);
+  let resolveFirst!:()=>void;
+  const delayed=new Promise<void>(resolve=>{resolveFirst=resolve;});
+  let loads=0;
+  const stopped:number[]=[],timers=new Map<number,()=>void>(),clips:unknown[]=[];
+  const mic=new MicController({
+    isOpen:()=>true,send:clip=>{clips.push(clip);return true;},notify(){},onPhase(){},
+    getUserMedia:async()=>{const n=loads;return {getTracks:()=>[{stop:()=>stopped.push(n)}]} as unknown as MediaStream;},
+    createAudioContext:()=>new AudioContextFixture(),createWorkletNode:()=>new WorkletFixture(),
+    loadWorklet:async()=>{if(!loads++)await delayed;},encodeAudio:()=>"encoded",
+    setTimer:cb=>{timers.set(1,cb);return 1 as unknown as ReturnType<typeof setTimeout>;},
+    clearTimer:id=>{timers.delete(Number(id));},
+  });
+  const first=mic.start();await pause();mic.stop(false);
+  await mic.start();resolveFirst();await first;
+  assert.deepEqual(stopped,[0]);assert.equal(mic.getPhase(),"recording");
+  frame();timers.get(1)!();assert.deepEqual(stopped,[0,1]);
+  assert.equal(mic.getPhase(),"transcribing");assert.equal(clips.length,1);mic.dispose();
   setChatState({...initialChatState(),sessionId:"mic-owner",connected:true});
   setMicContext({isOpen:()=>open,send:command=>{if(!open)return false;accepted.push(command);return true;},notify(){}});
   try {

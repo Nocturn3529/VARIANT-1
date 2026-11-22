@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from contextlib import contextmanager
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 import threading
 import time
 import uuid
+import re
 from typing import Any, Awaitable, Callable, Iterable
 
 from .models import (
@@ -39,6 +41,7 @@ class _RunAdmission:
     chat_id: str
     attachment_id: str
     reserved_at: float
+    initial_ticket_id: str = ""
     task: asyncio.Task | None = None
     run_id: str = ""
     thread_id: str = ""
@@ -82,6 +85,8 @@ class SessionRuntimeRegistry:
         self._guard = threading.RLock()
         self._live: dict[str, _LiveRuntime] = {}
         self._attachments: dict[str, _Attachment] = {}
+        self._open_submission_origins: set[str] = set()
+        self._drained_submission_origins: deque[str] = deque(maxlen=256)
         self._reservations: dict[str, _RunAdmission] = {}
         self._chat_cleanup: list[Callable[[str], Any]] = []
         self._chat_tombstone_cleanup: list[Callable[[str], Any]] = []
@@ -532,6 +537,10 @@ class SessionRuntimeRegistry:
                 ),
             )
             for ticket in tickets:
+                if ticket.delivery == "initial":
+                    # The owning run's exact settlement can still arrive. A root
+                    # submission is never an undelivered steer to replay on Resume.
+                    continue
                 has_proof = False
                 checker = getattr(sessions, "has_message_ticket", None)
                 if callable(checker):
@@ -748,6 +757,8 @@ class SessionRuntimeRegistry:
         attachment_id: str = "",
         background: bool = False,
         require_empty_queue: bool = False,
+        initial_ticket_id: str = "",
+        submission_fingerprint: str = "",
     ) -> str | None:
         clean = self._chat_id(chat_id)
         record = self.ensure_runtime(clean)
@@ -773,6 +784,7 @@ class SessionRuntimeRegistry:
                 return None
             admission = _RunAdmission(
                 admission_id="admit_" + uuid.uuid4().hex,
+                initial_ticket_id=initial_ticket_id,
                 chat_id=clean,
                 attachment_id=str(attachment_id or ""),
                 reserved_at=time.time(),
@@ -792,6 +804,9 @@ class SessionRuntimeRegistry:
                     else None
                 ),
             )
+            if initial_ticket_id:
+                self.repository.admit_initial_ticket(clean, initial_ticket_id, submission_fingerprint,
+                                                     admission.admission_id)
             live.admission = admission
             self._reservations[admission.admission_id] = admission
         self._emit(
@@ -846,6 +861,9 @@ class SessionRuntimeRegistry:
             admission = self._reservations.get(str(admission_id or ""))
             if admission is None:
                 raise LookupError(f"unknown run admission: {admission_id}")
+            if admission.initial_ticket_id:
+                self.repository.bind_initial_ticket_run(admission.chat_id, admission.initial_ticket_id,
+                                                        admission_id, run_id)
             admission.run_id = str(run_id or "")
             admission.thread_id = str(thread_id or run_id or "")
             chat_id = admission.chat_id
@@ -877,6 +895,72 @@ class SessionRuntimeRegistry:
             admission_id=admission.admission_id,
         )
         self._notify_idle(admission.chat_id)
+
+    def reject_unstarted_submission(self, admission_id: str, reason: str) -> bool:
+        with self._guard:
+            admission = self._reservations.get(admission_id)
+            if not admission or not admission.initial_ticket_id or admission.run_id:
+                return False
+            self.repository.transition_ticket(admission.initial_ticket_id, "rejected",
+                                              expected=("running",), error=reason)
+            return True
+
+    def open_submission_origin(self, origin: str) -> None:
+        with self._guard:
+            self._open_submission_origins.add(origin)
+
+    def retire_submission_origin(self, origin: str) -> None:
+        # Called after the socket's FIFO dispatcher has stopped and its queued
+        # envelopes have been dropped. An unknown or aged-out origin proves nothing.
+        with self._guard:
+            self._open_submission_origins.discard(origin)
+            self._drained_submission_origins.append(origin)
+
+    def submission_observation(self, chat_id: str, ticket_id: str, *, connection_id: str) -> dict:
+        result = {"ticket_id": ticket_id, "status": "unknown"}
+        with self._guard:
+            ticket = self.repository.get_ticket(ticket_id)
+            if ticket is None:
+                match = re.fullmatch(r"(attach_[0-9a-f]{32})\.[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", ticket_id)
+                # A retry carrying this same ticket may itself be waiting in a
+                # different socket's ingress. Only this FIFO has passed the read.
+                if (match and self._open_submission_origins == {connection_id}
+                        and (match[1] == connection_id or match[1] in self._drained_submission_origins)):
+                    result["status"] = "absent"
+                return result
+            if ticket.chat_id != chat_id:
+                return result
+            admission_id = ticket.initial_admission_id or str(ticket.proof.get("admission_id") or "")
+            run_id = ticket.run_id if ticket.delivery == "initial" else str(ticket.proof.get("run_id") or "")
+            # A selected queued input can become the root of a new turn. Its
+            # stored selection run may still be a placeholder until commit.
+            live = self._live.get(chat_id)
+            owner = live.admission if live else None
+            active_turn = getattr(getattr(owner, "owner_session", None), "active", None)
+            if (not admission_id and owner and active_turn
+                    and active_turn.runtime_admission_id == owner.admission_id
+                    and active_turn.turn_ticket_id == ticket_id):
+                admission_id, run_id = owner.admission_id, owner.run_id
+            result.update(delivery=ticket.delivery, ticket_state=ticket.state)
+            if run_id:
+                result["run_id"] = run_id
+            if admission_id:
+                result["admission_id"] = admission_id
+            if admission_id and run_id:
+                settled = self.repository.get_run_settlement(chat_id, run_id=run_id, admission_id=admission_id)
+                if settled:
+                    return {**result, "status": "settled", "settlement": settled}
+            active = self._reservations.get(admission_id)
+            if ticket.state in {"rejected", "cancelled"}:
+                result["status"] = "rejected"
+                if ticket.error in {"cancelled_before_start", "launch_failed", "removed_by_user"}:
+                    result["reason"] = ticket.error
+            elif (active is not None and active.chat_id == chat_id
+                  and (active.initial_ticket_id == ticket_id or (run_id and active.run_id == run_id))):
+                result["status"] = "admitted"
+            elif ticket.delivery != "initial" and ticket.state in {"queued", "parked", "resume_queued", "selected", "preparing"}:
+                result["status"] = "queued"
+        return result
 
     @staticmethod
     def _pause_state(admission: _RunAdmission | None) -> str:
@@ -1141,6 +1225,7 @@ class SessionRuntimeRegistry:
         source: str = "",
         attachment_id: str = "",
         ticket_id: str = "",
+        submission_fingerprint: str = "",
         expected_admission_id: str = "",
         expected_run_id: str = "",
     ) -> InputTicket:
@@ -1164,6 +1249,7 @@ class SessionRuntimeRegistry:
                 source=source,
                 attachment_id=attachment_id,
                 ticket_id=ticket_id,
+                submission_fingerprint=submission_fingerprint,
             )
         self._emit(
             "runtime:input_ticket",

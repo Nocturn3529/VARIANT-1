@@ -1,4 +1,5 @@
 import {detachedChatId} from "../runtime/viewIdentity";
+import {useSyncExternalStore} from "react";
 import {releaseDeletedChat} from "./deletedChatCleanup";
 import {canClosePreviewTabs,getPreviewState} from "../workbench/previewStore";
 import type {WsCommand} from "../protocol";
@@ -7,6 +8,8 @@ import {createModuleStore} from "./createModuleStore";
 import {activeTurnSessionIds, subscribeTurn} from "./turnStore";
 import {stopSpeech} from "../chat/speech";
 import {parseChatProject,type ChatProject} from "./chatProjectStore";
+import {parseMessage} from "../chat/messages";
+import type {ChatMessage} from "../chat/types";
 import type {ChatNavigationOutcome} from "../protocol/chatEvents";
 
 export type SessionSummary = {
@@ -20,9 +23,16 @@ export type SessionSummary = {
 };
 
 export type SessionSearchHit = SessionSummary & {
+  nodeId?: string;
+  branchId?: string;
+  kind: "message" | "title";
   role: string;
   snippet: string;
   ts: number | string | null;
+};
+export type HistoryMatch = {
+  hit: SessionSearchHit; query: string; index: number; count: number;
+  requestId?: string; error?: string; window?: {messages: ChatMessage[]; hasBefore: boolean; hasAfter: boolean};
 };
 
 type PendingSessionAction =
@@ -45,6 +55,7 @@ export type SessionState = Readonly<{
   workingSessionIds: string[];
   searchQuery: string;
   searchResults: SessionSearchHit[] | null;
+  historyMatch: HistoryMatch | null;
   openMenuId: string | null;
   error: string;
   pendingAction: PendingSessionAction;
@@ -52,6 +63,7 @@ export type SessionState = Readonly<{
 }>;
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let historyTimer: ReturnType<typeof setTimeout> | undefined;
 let navigationTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingDispatch: "queued" | "sent" | null = null;
 let pendingNeedsRecovery = false;
@@ -66,6 +78,7 @@ const initialState = (): SessionState => ({
   workingSessionIds: [],
   searchQuery: "",
   searchResults: null,
+  historyMatch: null,
   openMenuId: null,
   error: "",
   pendingAction: null,
@@ -103,6 +116,9 @@ function parseSearchHit(value: unknown): SessionSearchHit | null {
   const row = value as Record<string, unknown>;
   return {
     ...session,
+    nodeId: typeof row.node_id === "string" ? row.node_id : undefined,
+    branchId: typeof row.branch_id === "string" ? row.branch_id : undefined,
+    kind: row.kind === "title" ? "title" : "message",
     role: String(row.role || ""),
     snippet: String(row.snippet || ""),
     ts: row.ts as number | string | null ?? null,
@@ -144,6 +160,7 @@ export function setSessionContext(next: RuntimeContext): void {
 export function setSessionConnection(status: string): void {
   const connected = status === "connected";
   const state = store.getState();
+  if (!connected && state.historyMatch?.requestId) finishHistoryWindow(state.historyMatch.requestId,{error:"Connect to load this earlier message"});
   if (!connected && state.pendingAction && pendingDispatch === "sent") {
     // A successful socket write can still lose its acknowledgement. Keep the
     // intent until reconnect hydration proves which session the backend bound.
@@ -190,6 +207,7 @@ export function switchSession(id: string): boolean {
   const action = {type: "switch" as const, id: nextId, requestId: `switch-${globalThis.crypto.randomUUID()}`};
   store.setState({
     pendingAction: action,
+    historyMatch: null,
     navigationError: "",
     openMenuId: null,
   });
@@ -202,7 +220,7 @@ export function switchSession(id: string): boolean {
 export function requestNewSession(): boolean {
   if(detachedChatId())return false;
   const action = {type:"new" as const, requestId:`new-${globalThis.crypto.randomUUID()}`};
-  store.setState({pendingAction: action, openMenuId: null, navigationError: ""});
+  store.setState({pendingAction: action, openMenuId: null, navigationError: "", historyMatch:null});
   pendingDispatch = "queued";
   pendingNeedsRecovery = false;
   expectedSessionChange = action;
@@ -272,8 +290,10 @@ export function noteDisplayedSession(id: string | null): void {
 
 export function setSessionSearchQuery(query: string): void {
   const value = String(query || "");
+  clearTimeout(historyTimer);
   store.setState({
     searchQuery: value,
+    historyMatch: null,
     // `null` is the pending state. Never render hits from the previous query
     // while the debounce or backend response for this query is outstanding.
     searchResults: null,
@@ -283,6 +303,37 @@ export function setSessionSearchQuery(query: string): void {
   searchTimer = setTimeout(() => {
     send({type: "chat:search", query: value.trim(), limit: 20});
   }, 220);
+}
+
+export function openHistoryMatch(index: number): void {
+  const state = store.getState(), results = state.searchResults;
+  const hit = results?.[index];
+  if (!results || !hit) return;
+  clearTimeout(historyTimer);
+  if (hit.id !== state.displayedSessionId || state.pendingAction) switchSession(hit.id);
+  store.setState({historyMatch:{hit, query:state.searchQuery.trim(), index, count:results.length}});
+}
+export function closeHistoryMatch(): void { clearTimeout(historyTimer); store.setState({historyMatch:null}); }
+const historyMatch = () => store.getState().historyMatch;
+export function useHistoryMatch() { return useSyncExternalStore(store.subscribe, historyMatch, historyMatch); }
+
+function finishHistoryWindow(requestId: string, result: Pick<HistoryMatch,"window"|"error">) {
+  const match = historyMatch();
+  if (match?.requestId !== requestId) return;
+  clearTimeout(historyTimer);
+  store.setState({historyMatch:{...match,...result,requestId:undefined}});
+}
+
+export function loadHistoryWindow(): void {
+  const state = store.getState(), match = state.historyMatch;
+  if (!match?.hit.nodeId || match.hit.kind !== "message" || match.hit.id !== state.displayedSessionId || match.requestId || match.window) return;
+  const requestId = crypto.randomUUID();
+  store.setState({historyMatch:{...match,requestId,error:undefined}});
+  if (!send({type:"chat:history:around",session_id:match.hit.id,node_id:match.hit.nodeId,request_id:requestId,query:match.query})) {
+    finishHistoryWindow(requestId,{error:"Connect to load this earlier message"});
+  } else if (historyMatch()?.requestId === requestId) {
+    historyTimer = setTimeout(()=>finishHistoryWindow(requestId,{error:"The earlier message could not be loaded in time"}),10000);
+  }
 }
 
 export function setOpenSessionMenu(id: string | null): void {
@@ -324,6 +375,24 @@ export function deleteSession(id: string): boolean {
 export function ingestSessions(message: Record<string, unknown>): void {
   const type = String(message.type || "");
   const state = store.getState();
+  if (type === "chat:history:window") {
+    const match = state.historyMatch;
+    if (!match?.requestId || match.requestId !== message.request_id || match.hit.id !== message.session_id ||
+      match.hit.id !== state.displayedSessionId || match.hit.nodeId !== message.node_id) return;
+    if (message.error || (match.hit.branchId && match.hit.branchId !== message.branch_id)) {
+      finishHistoryWindow(match.requestId,{error:"This message is unavailable in the selected conversation branch"});
+      return;
+    }
+    const rows = Array.isArray(message.messages) ? message.messages.map(parseMessage) : [];
+    const messages = rows.filter((row): row is ChatMessage => !!row?.nodeId);
+    const anchors = messages.filter(row=>row.nodeId === match.hit.nodeId);
+    if (messages.length !== rows.length || anchors.length !== 1 || anchors[0].role !== match.hit.role) {
+      finishHistoryWindow(match.requestId,{error:"The conversation response did not contain the selected message"});
+      return;
+    }
+    finishHistoryWindow(match.requestId,{window:{messages,hasBefore:message.has_before===true,hasAfter:message.has_after===true}});
+    return;
+  }
   if (type === "error" && state.pendingAction && message.request_id === state.pendingAction.requestId) {
     // A dispatcher error can follow binding but precede snapshot publication.
     store.setState({navigationError: "Could not confirm the conversation. Retry opening it or choose another conversation."});
@@ -413,6 +482,7 @@ export function useSessionState(): SessionState {
 }
 
 export function __resetSessionStoreForTests(): void {
+  clearTimeout(historyTimer);
   if (navigationTimer) clearTimeout(navigationTimer);
   navigationTimer = null;
   if (searchTimer) clearTimeout(searchTimer);

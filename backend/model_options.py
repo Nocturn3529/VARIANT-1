@@ -13,7 +13,7 @@ import os
 import time
 from typing import Any
 
-from model_runtime.context import session_model_route
+from model_runtime.context import reasoning_options, session_model_route
 
 
 _CACHE_TTL_SECONDS = 300.0
@@ -32,14 +32,14 @@ def _portable_path_key(path: str) -> str:
     return os.path.normcase(os.path.normpath(str(path).replace("\\", "/")))
 
 
-def _unique_models(values: Any) -> list[str]:
+def _unique_models(values: Any, *, exact: bool = False) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     for value in values if isinstance(values, (list, tuple, set)) else ():
         if isinstance(value, dict):
             value = value.get("id") or value.get("name")
         model = _text(value, 300)
-        key = model.casefold()
+        key = model if exact else model.casefold()
         if not model or key in seen:
             continue
         seen.add(key)
@@ -49,12 +49,12 @@ def _unique_models(values: Any) -> list[str]:
     return out
 
 
-def _merge_models(*groups: Any) -> list[str]:
+def _merge_models(*groups: Any, exact: bool = False) -> list[str]:
     return _unique_models([
         item
         for group in groups
         for item in (group if isinstance(group, (list, tuple, set)) else ())
-    ])
+    ], exact=exact)
 
 
 def _format_bytes(value: Any) -> str:
@@ -126,25 +126,7 @@ def _seed_models(host: Any, info: dict, current: dict) -> list[str]:
                 seeds.extend(endpoint.get("models") or ())
         except Exception:
             pass
-    return _unique_models(seeds)
-
-
-def _reasoning_efforts(host: Any, provider: str, model: str) -> list[str]:
-    """Project optional provider reasoning choices without requiring one router API."""
-    resolver = getattr(host.router, "reasoning_efforts", None)
-    if callable(resolver):
-        try:
-            return _unique_models(resolver(provider, model))
-        except Exception:
-            return []
-    profile_getter = getattr(host.router, "provider_profile", None)
-    if callable(profile_getter):
-        try:
-            profile = profile_getter(provider)
-            return _unique_models(getattr(profile, "reasoning_efforts", ()))
-        except Exception:
-            return []
-    return []
+    return _unique_models(seeds, exact=name == "hermes")
 
 
 async def _provider_row(
@@ -170,7 +152,7 @@ async def _provider_row(
     warning = ""
 
     if cached_fresh and not refresh:
-        discovered = _unique_models(cached.get("models") or ())
+        discovered = _unique_models(cached.get("models") or (), exact=name == "hermes")
         discovery = "cache"
     else:
         try:
@@ -182,7 +164,7 @@ async def _provider_row(
                     ),
                     timeout=_DISCOVERY_TIMEOUT_SECONDS,
                 )
-            discovered = _unique_models(values)
+            discovered = _unique_models(values, exact=name == "hermes")
             if discovered:
                 cache[name] = {
                     "captured_at": now,
@@ -191,13 +173,13 @@ async def _provider_row(
                 discovery = "live"
         except Exception:
             if cached:
-                discovered = _unique_models(cached.get("models") or ())
+                discovered = _unique_models(cached.get("models") or (), exact=name == "hermes")
                 discovery = "stale_cache"
                 warning = "Live model refresh was unavailable; showing the last catalog."
             else:
                 warning = "Live model discovery is unavailable."
 
-    models = _merge_models(seeds, discovered)
+    models = _merge_models(seeds, discovered, exact=name == "hermes")
     is_current = (
         _text(current.get("mode"), 20) == "cloud"
         and name == _text(current.get("provider"), 80)
@@ -221,20 +203,23 @@ async def _provider_row(
     if not models or (not explicit and not discovered):
         return None
 
+    model_rows = []
+    for model in models:
+        available = getattr(host.router, "nous_model_available", None)
+        if name == "hermes" and callable(available) and available(model) is False:
+            if (is_current and model == current.get("model")) or model == info.get("model"):
+                model_rows.append({"id": model, "label": model, "selectable": False, "reasoning_efforts": [],
+                                   "detail": "Unavailable in the signed-in Nous catalog. Choose another model."})
+            continue
+        options = reasoning_options(host.router, name, model)
+        model_rows.append({"id": model, "label": model, "selectable": True, **options})
+
     return {
         "id": name,
         "name": display,
         "mode": "cloud",
         "description": _text(info.get("description"), 300),
-        "models": [
-            {
-                "id": model,
-                "label": model,
-                "selectable": True,
-                "reasoning_efforts": _reasoning_efforts(host, name, model),
-            }
-            for model in models
-        ],
+        "models": model_rows,
         "supports_reasoning": bool(info.get("supports_reasoning")),
         "supports_vision": bool(info.get("supports_vision")),
         "discovery": discovery,
@@ -355,7 +340,7 @@ async def model_options(
         "schema": "variant1.model-options.v1",
         "request_id": _text(request_id, 160),
         "session_id": sid,
-        "current": current,
+        "current": session_model_route(sessions, sid, host.router),
         "providers": providers,
         "refreshed": bool(refresh),
     }

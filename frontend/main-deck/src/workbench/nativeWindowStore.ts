@@ -22,6 +22,11 @@ export const nativePaneKey = (groupId: string) => `pane:${groupId}`;
 export const nativeUtilityKey = (kind: string) => `utility:${kind}`;
 export const useNativeWindows = store.useStore;
 export function hasNativeWindow(id: string): boolean { return !!store.getState()[id]; }
+/** A requested popout has no target document while its new window is opening. */
+export function nativeSurfaceDocument(id: string): Document | null {
+  const record = store.getState()[id];
+  return record ? record.document : document;
+}
 export function updateNativeWindow(id: string, value: {title?: string; pinned?: boolean}): void {
   const record = store.getState()[id];
   if (!record || Object.entries(value).every(([key, next]) => record[key as keyof NativeWindowRecord] === next)) return;

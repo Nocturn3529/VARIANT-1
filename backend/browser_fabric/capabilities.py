@@ -22,6 +22,7 @@ from .models import (
     PageRef,
     SessionRecord,
     TargetRecord,
+    TraceRecord,
 )
 from .settings import browser_surface
 
@@ -159,7 +160,7 @@ def _page_handle(
 ) -> dict[str, Any]:
     envelope = page_handle_envelope(
         _page_ref(session, target), target=target,
-        capabilities=session.capabilities,
+        capabilities=session.capabilities, adapter_kind=session.kind,
         broker=host.require_runtime().broker, context=context,
     )
     envelope["$variant1_handle"]["metadata"].update(_surface(session))
@@ -189,6 +190,20 @@ def _download_result(host: Any, context: InvocationContext, value: Mapping[str, 
     if row.get("artifact_ref"):
         row["artifact"] = _bound_blob(host, context, row)
     return row
+
+
+def _trace_handle(
+    host: Any, context: InvocationContext, session: SessionRecord, trace: TraceRecord,
+) -> dict[str, Any]:
+    envelope = trace_handle_envelope(
+        trace, session_generation=session.generation,
+        broker=host.require_runtime().broker, context=context,
+    )
+    if trace.state == "completed" and trace.artifact_ref:
+        envelope["$variant1_handle"]["metadata"]["artifact"] = _bound_blob(
+            host, context, {"ref": trace.artifact_ref},
+        )
+    return envelope
 
 
 def _deliver_image_artifact(
@@ -453,12 +468,7 @@ async def _handle_router(
                 )]
             if history_kind == "traces":
                 return [
-                    trace_handle_envelope(
-                        item,
-                        session_generation=session.generation,
-                        broker=host.require_runtime().broker,
-                        context=context,
-                    )
+                    _trace_handle(host, context, session, item)
                     for item in runtime.traces(session.session_id, limit=limit)
                 ]
             raise ToolError(
@@ -472,10 +482,7 @@ async def _handle_router(
                          if isinstance(arguments.get("options"), Mapping) else None),
                 scope=_scope(context),
             )
-            return trace_handle_envelope(
-                trace, session_generation=session.generation,
-                broker=host.require_runtime().broker, context=context,
-            )
+            return _trace_handle(host, context, session, trace)
         if method == "close":
             if runtime.shared_embedded_session(session):
                 try:
@@ -639,10 +646,7 @@ async def _handle_router(
         _require_current_handle(identity, session, trace.revision)
         if method == "stop":
             trace = await runtime.stop_trace(trace.trace_id, scope=_scope(context))
-            return trace_handle_envelope(
-                trace, session_generation=session.generation,
-                broker=host.require_runtime().broker, context=context,
-            )
+            return _trace_handle(host, context, session, trace)
         raise ToolError(f"unsupported browser.trace method: {method}")
 
     raise ToolError("browser handle kind is unsupported")

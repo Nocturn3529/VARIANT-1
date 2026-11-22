@@ -16,6 +16,32 @@ def utf8_prefix(raw: bytes, max_bytes: int) -> bytes:
     return candidate
 
 
+def utf8_suffix(raw: bytes, max_bytes: int) -> bytes:
+    """Keep complete UTF-8 points at the end of already encoded text."""
+
+    start = max(0, len(raw) - max(0, int(max_bytes)))
+    while start < len(raw) and raw[start] & 0xC0 == 0x80:
+        start += 1
+    return raw[start:]
+
+
+def head_tail_text(text: str, max_chars: int) -> str:
+    """Fit an opening, omission notice, and ending within a character cap."""
+
+    if len(text) <= max_chars:
+        return text
+    marker = "\n[… {} characters omitted …]\n"
+    room = max_chars - len(marker.format(len(text)))
+    if room < 2:
+        marker = "…"
+        room = max_chars - len(marker)
+    if room <= 0:
+        return marker[:max(0, max_chars)]
+    marker = marker.format(len(text) - room)
+    tail = max(1, room // 4)
+    return text[:room - tail] + marker + text[-tail:]
+
+
 def truncated_text(text: str, max_bytes: int, *, marker: str = "\n[Result truncated]") -> tuple[str, int]:
     """A byte-bounded marked preview and the number of original bytes retained."""
 

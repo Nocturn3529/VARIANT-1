@@ -10,6 +10,11 @@ backend packages; this module retains only composition and live boundary calls.
 # construct, inherit, or import VARIANT-1's trusted service graph.
 import sys
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--check-backend-owner"]:
+    from lifecycle import owns_backend_process
+
+    raise SystemExit(0 if owns_backend_process(sys.argv[2:]) else 1)
+
 if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] == "--peer-bridge":
     from peers.bridge_worker import main as _peer_bridge_main
 
@@ -39,7 +44,7 @@ from observability.activity import (
 
 from paths import APP_ROOT  # frozen-aware app root (PyInstaller-safe)
 
-VERSION = "0.1.1-preview.3"
+VERSION = "0.1.1-preview.4"
 START_TIME = time.time()
 
 # Writable base for user data (config, memory, downloaded models). Defaults to

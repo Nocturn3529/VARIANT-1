@@ -79,9 +79,10 @@ contextBridge.exposeInMainWorld('variant1Deck', {
   getWorkbenchRoot: () => ipcRenderer.invoke('workbench:root'),
   readWorkbenchDirectory: (localPath) => ipcRenderer.invoke('workbench:fs:readDir', localPath),
   readWorkbenchFile: (localPath) => ipcRenderer.invoke('workbench:fs:readFile', localPath),
-  writeWorkbenchFile: (localPath, text, expectedMtimeMs) => (
-    ipcRenderer.invoke('workbench:fs:writeFile', localPath, text, expectedMtimeMs)
+  writeWorkbenchFile: (localPath, text, expectedMtimeMs, revision) => (
+    ipcRenderer.invoke('workbench:fs:writeFile', localPath, text, expectedMtimeMs, revision)
   ),
+  confirmFileDiscard: message => ipcRenderer.sendSync('workbench:fs:confirmDiscard', message),
   renameWorkbenchPath: (localPath, name) => ipcRenderer.invoke('workbench:fs:rename', localPath, name),
   trashWorkbenchPath: (localPath) => ipcRenderer.invoke('workbench:fs:trash', localPath),
   revealWorkbenchPath: (localPath) => ipcRenderer.invoke('workbench:fs:reveal', localPath),

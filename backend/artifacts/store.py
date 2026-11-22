@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import errno
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 import json
 import os
 import re
@@ -77,10 +77,15 @@ class ContentAddressedArtifactStore:
         self._grant_path = os.path.join(self.root, "artifact-grants.sqlite3")
         self._initialize_grants()
 
+    @contextmanager
+    def _grant_connection(self) -> Iterator[sqlite3.Connection]:
+        with closing(sqlite3.connect(self._grant_path, timeout=10.0)) as conn, conn:
+            yield conn
+
     def _initialize_grants(self) -> None:
         with self._lock:
             os.makedirs(self.root, exist_ok=True)
-            with sqlite3.connect(self._grant_path, timeout=10.0) as conn:
+            with self._grant_connection() as conn:
                 conn.execute("PRAGMA journal_mode=WAL")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute(
@@ -162,7 +167,7 @@ class ContentAddressedArtifactStore:
                 )
 
     def _record_grant(self, ref: ArtifactRef) -> None:
-        with sqlite3.connect(self._grant_path, timeout=10.0) as conn:
+        with self._grant_connection() as conn:
             conn.execute("PRAGMA busy_timeout=10000")
             conn.execute(
                 """
@@ -399,7 +404,7 @@ class ContentAddressedArtifactStore:
         hint_media = ref.media_type if isinstance(ref, ArtifactRef) else ""
         hint_kind = ref.kind if isinstance(ref, ArtifactRef) else ""
         with self._lock:
-            with sqlite3.connect(self._grant_path, timeout=10.0) as conn:
+            with self._grant_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 if clean_scope:
                     row = conn.execute(
@@ -534,7 +539,7 @@ class ContentAddressedArtifactStore:
         if cursor:
             self._ref_parts(cursor)
         with self._lock:
-            with sqlite3.connect(self._grant_path, timeout=10.0) as conn:
+            with self._grant_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 rows = conn.execute(
                     """
@@ -742,7 +747,7 @@ class ContentAddressedArtifactStore:
         cap = max(1, min(int(limit), 200))
         clean_kind = str(kind or "").strip()
         with self._lock:
-            with sqlite3.connect(self._grant_path, timeout=10.0) as conn:
+            with self._grant_connection() as conn:
                 conn.row_factory = sqlite3.Row
                 if clean_kind:
                     rows = conn.execute(

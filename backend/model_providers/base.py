@@ -38,7 +38,8 @@ class ProviderProfile:
     reasoning_effort_field: str = ""
     # Ordered, first-match model capabilities for per-call minimum reasoning.
     # Each rule declares patterns, optional supported efforts, and optional
-    # minimum_fields (dotted native payload paths). None removes a conflicting
+    # minimum_efforts (an internal call's floor without changing the picker),
+    # and minimum_fields (dotted native payload paths). None removes a conflicting
     # native field. Unknown models retain the profile's declared effort floor.
     reasoning_model_rules: tuple[Mapping[str, Any], ...] = ()
     signup_url: str = ""

@@ -1,20 +1,14 @@
 import {useEffect, useMemo, useState, type RefObject} from "react";
-import {requestModelOptions, useSessionContextState, type ComposerModelOption, type ComposerModelProvider} from "../sessionContextStore";
+import {currentCatalogModel, requestModelOptions, useSessionContextState, type ComposerModelOption, type ComposerModelProvider} from "../sessionContextStore";
 import {AnchoredPopover} from "../ui/AnchoredPopover";
 import {Icon} from "../ui/Icon";
 import {shortModelName} from "./receipt";
 import {openLocalEngine, useLocalEngine} from "../localEngine";
 
-const EFFORT_LABELS: Readonly<Record<string,string>> = {minimal:"Minimal",low:"Low",medium:"Medium",high:"High",xhigh:"XHigh",max:"Max",ultra:"Ultra"};
+const EFFORT_LABELS: Readonly<Record<string,string>> = {none:"None",minimal:"Minimal",low:"Low",medium:"Medium",high:"High",xhigh:"XHigh",max:"Max",ultra:"Ultra"};
 const DEFAULT_VISIBLE_MODELS = 3;
-export type ComposerModelSelection = Readonly<{mode:"local"|"cloud";provider:string;model:string;label:string;reasoningEffort?:string}>;
+export type ComposerModelSelection = Readonly<{mode:"local"|"cloud";provider:string;model:string;label:string;reasoningEffort?:string;reasoningEnabled?:boolean}>;
 export function reasoningEffortLabel(value:string):string {return EFFORT_LABELS[value] || value;}
-
-function isCurrentModel(context:ReturnType<typeof useSessionContextState>,provider:ComposerModelProvider,model:ComposerModelOption):boolean {
-  const normalize=(value:string)=>value.trim().replace(/\\/g,"/").toLowerCase();
-  return context.route===provider.mode && context.provider===(provider.mode==="local" ? "local" : provider.id)
-    && (provider.mode==="local" ? normalize(context.model)===normalize(model.id) : context.model===model.id);
-}
 
 export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonRef,onToggle,onClose,onChoose,onChooseReasoning}: {
   sessionId:string|null;
@@ -34,8 +28,13 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
   const [options,setOptions]=useState("");
   const engine=useLocalEngine();
   const ownsContext=context.sessionId===sessionId;
+  const selected = ownsContext ? currentCatalogModel(context) : undefined;
   const model=ownsContext ? shortModelName(context.model) || (context.route==="cloud" ? "Cloud" : "Local") : "Model";
-  const effort=ownsContext ? reasoningEffortLabel(context.reasoningEffort) : "";
+  const selectedEffort = selected ? (selected.reasoningEfforts.includes(context.reasoningEffort) ? context.reasoningEffort : selected.defaultReasoningEffort) : context.reasoningEffort;
+  const effectiveToggle = context.reasoningEnabled ?? selected?.reasoningDefaultEnabled;
+  const effort = !ownsContext ? "" : selected?.selectable === false ? "Unavailable"
+    : selected?.reasoningToggle && effectiveToggle !== undefined ? (effectiveToggle ? "Reasoning on" : "Reasoning off")
+    : reasoningEffortLabel(selectedEffort || "");
   const label=pendingLabel || (effort ? `${model} · ${effort}` : model);
   const groups=useMemo(()=>{
     const search=query.trim().toLowerCase();
@@ -52,9 +51,9 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
   },[open,sessionId]);
 
   const close=()=>{onClose();buttonRef.current?.focus();};
-  const choose=(provider:ComposerModelProvider,model:ComposerModelOption,reasoningEffort?:string)=>{
+  const choose=(provider:ComposerModelProvider,model:ComposerModelOption,settings:Pick<ComposerModelSelection,"reasoningEffort"|"reasoningEnabled">={})=>{
     if(disabled || !ownsContext || !model.selectable) return;
-    onChoose({mode:provider.mode,provider:provider.id,model:model.id,label:model.label,...(reasoningEffort ? {reasoningEffort} : {})});close();
+    onChoose({mode:provider.mode,provider:provider.id,model:model.id,label:model.label,...settings});close();
   };
   const toggleProvider=(key:string)=>setExpanded(current=>{const next=new Set(current);if(next.has(key))next.delete(key);else next.add(key);return next;});
 
@@ -88,7 +87,7 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
         {groups.map(provider=>{
           const groupKey=`${provider.mode}:${provider.id}`,isExpanded=expanded.has(groupKey)||!!query.trim();
           const isCollapsed=collapsed.has(groupKey);
-          const currentIndex=provider.models.findIndex(model=>isCurrentModel(context,provider,model));
+          const currentIndex=selected ? provider.models.indexOf(selected) : -1;
           const visible=isExpanded ? provider.models : provider.models.filter((_,index)=>index<DEFAULT_VISIBLE_MODELS||index===currentIndex);
           return <section className="model-picker__group" key={groupKey}>
             <button type="button" className="model-picker__provider" aria-expanded={!isCollapsed} title={provider.warning||provider.description} onClick={()=>setCollapsed(current=>{const next=new Set(current);if(next.has(groupKey))next.delete(groupKey);else next.add(groupKey);return next;})}>
@@ -98,21 +97,29 @@ export function ModelPickerControl({sessionId,open,disabled,pendingLabel,buttonR
               {engine.installing!==null ? `Installing the local engine… ${engine.installing}%` : "Install the local engine to run these models"}
             </button> : null}
             {!isCollapsed&&visible.map(model=>{
-              const current=isCurrentModel(context,provider,model),key=`${groupKey}:${model.id}`;
+              const current=selected===model,key=`${groupKey}:${model.id}`;
               return <div className="model-picker__row-wrap" key={key}>
                 <div className="model-picker__row">
-                  <button type="button" className={`model-picker__model${current ? " active" : ""}`} data-model-option="" aria-pressed={current}
+                  <button type="button" className={`model-picker__model${current ? " active" : ""}`} data-model-option={model.id} aria-pressed={current}
                     disabled={disabled||!model.selectable} title={model.detail||model.id} onClick={()=>choose(provider,model)}>
                     <span><strong>{model.label}</strong>{model.detail||model.label!==model.id ? <small>{model.detail||model.id}</small> : null}</span>
-                    {current&&context.reasoningEffort ? <em>{reasoningEffortLabel(context.reasoningEffort)}</em> : null}
+                    {current && effort ? <em>{effort}</em> : model.reasoningMandatory && !model.reasoningEfforts.length ? <em>Reasoning required</em> : null}
                     <b aria-label={current ? "Current model" : undefined}>{current ? "✓" : ""}</b>
                   </button>
-                  {model.reasoningEfforts.length ? <button type="button" className="model-picker__options-trigger" aria-expanded={options===key} aria-label={`${model.label} options`} disabled={disabled||!model.selectable}
+                  {model.reasoningEfforts.length > 0 || model.reasoningToggle ? <button type="button" className="model-picker__options-trigger" aria-expanded={options===key} aria-label={`${model.label} options`} disabled={disabled || !model.selectable}
                     onClick={()=>setOptions(value=>value===key ? "" : key)}><Icon name={options===key ? "up" : "down"}/></button> : null}
                 </div>
-                {options===key ? <div className="model-picker__effort-menu" role="group" aria-label={`${model.label} reasoning effort`}>
-                  <span>Reasoning effort</span><div>{model.reasoningEfforts.map(effort=><button type="button" key={effort} aria-pressed={current&&context.reasoningEffort===effort} disabled={disabled||!model.selectable}
-                    onClick={()=>{if(current){onChooseReasoning(effort);close();}else choose(provider,model,effort);}}>{reasoningEffortLabel(effort)}</button>)}</div>
+                {options===key && model.selectable ? <div className="model-picker__effort-menu" role="group" aria-label={`${model.label} ${model.reasoningToggle ? "reasoning" : "reasoning effort"}`}>
+                  <span>{model.reasoningToggle ? "Reasoning" : "Reasoning effort"}
+                    {model.defaultReasoningEffort ? " · Default "+reasoningEffortLabel(model.defaultReasoningEffort)
+                      : model.reasoningToggle && model.reasoningDefaultEnabled !== undefined ? " · Default "+(model.reasoningDefaultEnabled ? "on" : "off") : ""}</span><div>
+                    {model.reasoningToggle ? [true,false].map(enabled=><button type="button" key={String(enabled)} disabled={disabled}
+                      aria-pressed={current && effectiveToggle===enabled} title={model.reasoningDefaultEnabled===enabled ? "Provider default" : undefined}
+                      onClick={()=>choose(provider,model,{reasoningEnabled:enabled})}>{enabled ? "On" : "Off"}</button>) :
+                      model.reasoningEfforts.map(effort=><button type="button" key={effort} aria-pressed={current && selectedEffort===effort} disabled={disabled}
+                        title={effort===model.defaultReasoningEffort ? "Provider default" : undefined}
+                        onClick={()=>{if(current){onChooseReasoning(effort);close();}else choose(provider,model,{reasoningEffort:effort});}}>{reasoningEffortLabel(effort)}</button>)}
+                  </div>
                 </div> : null}
               </div>;
             })}

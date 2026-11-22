@@ -105,7 +105,7 @@
   --deck-radius-md: 4px;
   --deck-radius-lg: 6px;
   --deck-control-height: 32px;
-  --deck-chat-text: 14px;
+  --deck-chat-text: 15px;
   --deck-code-text: 13px;
   --deck-label-text: 12px;
   --deck-motion-fast: 110ms;
@@ -142,6 +142,11 @@
   --deck-surface-raised: var(--deck-void-raised);
   --deck-surface-strong: var(--deck-void-strong);
   background: var(--deck-surface-void);
+}
+
+:root[data-density="comfortable"] {
+  --deck-text-muted: #a6a6a6;
+  --deck-text-faint: #949494;
 }
 
 :root[data-density="compact"] {

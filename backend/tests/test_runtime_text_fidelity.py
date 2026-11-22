@@ -45,7 +45,23 @@ def test_long_exception_keeps_labels_heading_and_omission():
     text = result.render()
     assert len(text) <= MAX_MODEL_ERROR_CHARS
     assert text.startswith("ERROR python_exception: RuntimeError")
-    assert all(label in text for label in ("[diagnostic truncated]", "Output tail:", "Traceback tail:"))
+    assert all(label in text for label in ("[diagnostic truncated]", "Output:", "Traceback tail:"))
+
+
+def test_deferred_stream_tail_does_not_revive_cleared_output():
+    collector = CellOutputCollector(limits=OutputLimits(max_cell_bytes=128, max_events=3))
+    frames = [
+        {"type": "stdout", "text": "old header\n", "output_position": 1},
+        {"type": "clear_output", "wait": True, "output_position": 3},
+        {"type": "stderr", "text": "latest verdict\n", "output_position": 4},
+        {"type": "stdout", "text": "old tail\n", "output_position": 2, "deferred": True},
+    ]
+    for frame in frames:
+        collector.accept_event(frame)
+    assert [row["type"] for row in collector.result.evidence()["events"]] == ["stream", "clear_output", "stream"]
+    assert "latest verdict" in collector.result.text()
+    assert "old header" not in collector.result.text()
+    assert "old tail" not in collector.result.text()
 
 
 def test_stream_chunking_keeps_unicode_and_request_ownership():

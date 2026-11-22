@@ -141,6 +141,7 @@ class SearchHit:
     preview: str = ""
     score: float = 0.0
     created_at: float = 0.0
+    session_id: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {

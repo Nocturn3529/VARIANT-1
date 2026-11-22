@@ -21,6 +21,7 @@ import {
   patchChatState,
   replaceChatState,
   setSubtitle,
+  setSubmissionOrigin,
   sharedTurnActive,
   turnApi,
 } from "./stateCore";
@@ -39,9 +40,10 @@ import {ingestAgentTeam,ingestAgentWorkEvent,ingestAgentChanged} from "./agentTe
 import {noteChildActivity} from "./childActivity";
 import {requestSessionContext} from "../sessionContextStore";
 import {applyRuntimeSnapshot, applySession} from "./session";
-import {ingestExecutionState,settleMissedTurn} from "./executionRecovery";
+import {ingestExecutionState,reconcileInitialSubmission,settleMissedTurn} from "./executionRecovery";
 import {
   acknowledgeActiveInput,
+  confirmInitialAdmission,
   markActiveInputDelivered,
   rejectActiveInput,
   rejectOptimisticTurn,
@@ -79,6 +81,12 @@ function isTurnScopedError(message: StreamErrorMessage): boolean {
 
 function isConfigSurfaceError(err: string): boolean {
   return /credential_|fallbacks_|provider_options|handler_failed:|unknown_type:/i.test(err);
+}
+
+function ownsInitialReply(message:{request_id?:string;ticket_id?:string;id?:string}):boolean {
+  const initial=getChatState().initialSubmission;
+  if(!initial || (message.ticket_id && message.ticket_id!==initial.id))return false;
+  return message.request_id ? message.request_id===initial.requestId : (message.ticket_id || message.id)===initial.id;
 }
 
 /**
@@ -130,6 +138,8 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
     }
     if(isSettledTurnEvent(original))return;
+    if(state.initialSubmission && type!=="start" && (state.initialSubmission.uncertain
+      || (original.ticket_id && original.ticket_id!==state.initialSubmission.id)))return;
     if(type!=="start" && type!=="error" && !turn.isActive())return;
     const queueStart=type==="start" && isQueueContinueStart(original);
     if(queueStart && !turn.isActive() && !canAdoptQueueStart(original)){refreshInputQueue();if(state.sessionId)sendChat({type:"chat:runtime:get",id:state.sessionId});return;}
@@ -161,6 +171,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
       ingestPauseState(message);
       return;
     case "hello":
+      setSubmissionOrigin(message.submission_origin);
       patchChatState({
         connected: true,
       });
@@ -233,6 +244,11 @@ function ingestOwnedChat(message: ChatWsMessage) {
     }
 
     case "chat:queued": {
+      if (ownsInitialReply(message)) {
+        if (message.queue) applyInputQueue(message.queue);
+        reconcileInitialSubmission("queued","","");
+        return;
+      }
       if(message.queue){applyInputQueue(message.queue);return;}
       refreshInputQueue();
       if(getChatState().inputQueue.snapshot)return;
@@ -249,7 +265,20 @@ function ingestOwnedChat(message: ChatWsMessage) {
 
     case "chat:queue_rejected": {
       refreshInputQueue();
-      const rejected = rejectActiveInput(message.id);
+      const id=message.ticket_id || message.id || message.request_id;
+      if (ownsInitialReply(message)) {
+        endSharedTurn("rejected");
+        const detail=state.goal.composing ? "The message was rejected. Its draft will return when you leave Goal mode." :
+          message.error==="active_input_attachments_not_supported" || message.error==="active_input_empty"
+          ? "This chat already has an active turn. Your message and attachments are back in the composer."
+          : "The message was rejected. Your draft is back in the composer.";
+        rejectOptimisticTurn(detail);
+        setSubtitle("Connected locally","ready");
+        notifyChat(detail);
+        if (state.sessionId) sendChat({type:"chat:runtime:get",id:state.sessionId});
+        return;
+      }
+      const rejected = rejectActiveInput(id);
       if (!rejected) return;
       const label = rejected?.delivery === "steer" ? "steering instruction" : "follow-up";
       notifyChat(`Could not queue the ${label}: ${message.error || "rejected"}`);
@@ -279,6 +308,11 @@ function ingestOwnedChat(message: ChatWsMessage) {
     }
 
     case "chat:rejected": {
+      const continuation=!!message.request_id && message.request_id===state.inputQueue.continuation?.requestId;
+      if (!continuation && (((message.request_id || message.ticket_id) && !ownsInitialReply(message))
+        || (message.client_id && message.client_id!==state.clientId)
+        || (state.initialSubmission?.uncertain && !message.request_id && !message.ticket_id)
+        || (!state.initialSubmission && turn.snapshot().active && !!turn.snapshot().admissionId))) return;
       finishQueueContinuation(message);
       const err = message.text || message.error || "Could not start this turn";
       endSharedTurn("error");
@@ -350,6 +384,12 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "start": {
+      if (state.initialSubmission) {
+        const matches=message.ticket_id ? message.ticket_id===state.initialSubmission.id
+          : message.request_id ? message.request_id===state.initialSubmission.requestId : !state.initialSubmission.uncertain;
+        if (!matches) return;
+        confirmInitialAdmission();
+      }
       const followed=turn.snapshot();
       if (isGoalTurnSource(message.source) && message.session_id === state.sessionId && message.admission_id && message.run_id) {
         // The preceding turn's durable append can arrive after this goal starts.
@@ -385,6 +425,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
         lastError: "",
         turnSteps: [],
         pendingTurnCommit: undefined,
+        peerWaits: undefined,
         runtime:getChatState().runtime ? {...getChatState().runtime!,busy:true,activeAdmissionId:message.admission_id || "",activeRunId:message.run_id || ""} : null,
       });
       beginTurnReceipt();
@@ -413,12 +454,14 @@ function ingestOwnedChat(message: ChatWsMessage) {
 
     case "thinking": {
       const text = message.text;
-      const snapshot = message.summary_source === "provider_summary" && !!message.summary_id;
+      const snapshot = !!message.summary_source && !!message.summary_id;
       if (snapshot && !text && !getChatState().turnSteps.some(step => step.id === message.summary_id)) return;
       if (text || snapshot) {
         const startedAt = message.ts ? (message.ts < 1e12 ? message.ts * 1000 : message.ts) : Date.now();
         pushTurnStep({
           id: snapshot ? message.summary_id : undefined,
+          summarySource: message.summary_source,
+          segment: message.segment,
           summaryState: snapshot ? message.status : undefined,
           summaryRevision: snapshot ? message.summary_revision : undefined,
           kind: "thinking",
@@ -442,6 +485,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "done":
+      if(state.initialSubmission)confirmInitialAdmission();
       finishStream(message);
       finishQueueContinuation(message);
       return;
@@ -509,6 +553,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
         turnSteps: failedSteps,
         queuedFollowUps: 0,
         activeTurnId: null,
+        initialSubmission: undefined,
         pendingActiveInputs: [],
       });
       notifyChat(err);

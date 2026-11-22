@@ -18,7 +18,8 @@ Task shape:
                {"type": "weekly", "day": "mon", "time": "09:00"}
                {"type": "webhook", "token": "<random>"}   # fired by POST /hook/<token>
     "durable_checkpoints": true,                           # default; set false for ephemeral
-    "last_run": 0.0
+    "last_run": 0.0,
+    "schedule_started_at": 1700000000.0
   }
 
 is_due() is a pure function so it's easy to unit-test.
@@ -26,6 +27,7 @@ is_due() is a pure function so it's easy to unit-test.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -63,6 +65,10 @@ def cancellation_epoch(task: dict | None) -> int:
 
 
 class AutomationPersistenceError(RuntimeError):
+    pass
+
+
+class AutomationCreateConflict(ValueError):
     pass
 
 
@@ -163,7 +169,7 @@ def is_due(task: dict, now_ts: float) -> bool:
         return False
     tr = task.get("trigger", {}) or {}
     ttype = tr.get("type")
-    last = float(task.get("last_run") or 0)
+    last = max(float(task.get("last_run") or 0), float(task.get("schedule_started_at") or 0))
 
     if ttype == "interval":
         sec = max(60, int(tr.get("seconds", 3600)))
@@ -299,6 +305,7 @@ class AutomationStore:
             error = schedule_error(trigger)
             out.append({
                 "id": t.get("id"),
+                **({"create_request_id": t["create_request_id"]} if t.get("create_request_id") else {}),
                 "name": t.get("name", "(unnamed)"),
                 "enabled": bool(t.get("enabled")),
                 "prompt": t.get("prompt", ""),
@@ -335,18 +342,45 @@ class AutomationStore:
         return None
 
     def add(self, name: str, prompt: str, trigger: dict, enabled: bool = True, *,
-            misfire_policy: str = "latest", model_route: dict | None = None) -> dict:
+            misfire_policy: str = "latest", model_route: dict | None = None,
+            create_request_id: str = "") -> dict:
         trigger = dict(trigger or {})
-        if trigger.get("type") == "webhook" and not trigger.get("token"):
-            trigger["token"] = secrets.token_hex(8)
-        task = {"id": secrets.token_hex(6), "name": name or "(unnamed)",
-                "enabled": bool(enabled), "prompt": prompt or "",
-                "trigger": trigger, "durable_checkpoints": True,
-                "misfire_policy": (misfire_policy if misfire_policy in MISFIRE_POLICIES
-                                   else "latest"),
-                "last_run": 0, "model_route": copy.deepcopy(model_route or {}),
-                "cancellation_epoch": 0}
+        definition = {
+            "name": name or "(unnamed)", "enabled": bool(enabled), "prompt": prompt or "",
+            "trigger": trigger,
+            "misfire_policy": misfire_policy if misfire_policy in MISFIRE_POLICIES else "latest",
+        }
         with self._lock:
+            if self._load_failure is not None:
+                raise AutomationPersistenceError(
+                    "Reload the automation document successfully before saving"
+                ) from self._load_failure
+            receipt = {}
+            if create_request_id:
+                # The initial chat supplies the default route. A reconnect can
+                # change that default while replaying the same form submission.
+                fingerprint = hashlib.sha256(json.dumps(
+                    definition, sort_keys=True, separators=(",", ":"),
+                ).encode()).hexdigest()
+                previous = next((
+                    task for task in self.tasks
+                    if task.get("create_request_id") == create_request_id
+                ), None)
+                if previous is not None:
+                    if previous.get("create_fingerprint") != fingerprint:
+                        raise AutomationCreateConflict("Create request already saved with another definition")
+                    return copy.deepcopy(previous)
+                receipt = {"create_request_id": create_request_id, "create_fingerprint": fingerprint}
+
+            if trigger.get("type") == "webhook" and not trigger.get("token"):
+                trigger["token"] = secrets.token_hex(8)
+            task = {
+                **definition, **receipt,
+                "id": secrets.token_hex(6), "durable_checkpoints": True,
+                "last_run": 0, "model_route": copy.deepcopy(model_route or {}),
+                "schedule_started_at": time.time(),
+                "cancellation_epoch": 0,
+            }
             next_tasks = copy.deepcopy(self.tasks)
             next_tasks.append(task)
             self._replace_tasks(next_tasks)
@@ -372,6 +406,8 @@ class AutomationStore:
                         value = str(fields[k] or "").strip().lower()
                         t[k] = value if value in MISFIRE_POLICIES else "latest"
                     else:
+                        if k == "trigger" and fields[k] != t.get(k):
+                            t["schedule_started_at"] = time.time()
                         t[k] = fields[k]
             if not t.get("enabled"):
                 _discard_pending_claims(t, status="cancelled_disabled")

@@ -79,7 +79,7 @@ export function SessionsRailCap() {
     const attach = () => {
       observer?.disconnect();
       observer = null;
-      const panel = workbench.compact ? null : document.querySelector<HTMLElement>(".workbench .workbench-group:not(.is-floating) .history-panel");
+      const panel = workbench.historyDrawer ? null : document.querySelector<HTMLElement>(".workbench .workbench-group:not(.is-floating) .history-panel");
       const workspace = document.querySelector<HTMLElement>(".app-shell > .workspace");
       if (!panel || !workspace) { setDocked(false); return; }
       const measure = () => {
@@ -100,6 +100,6 @@ export function SessionsRailCap() {
     // panel is not in the document yet, so attach again once a surface lands.
     window.addEventListener("variant1:surface-document", attach);
     return () => { window.removeEventListener("variant1:surface-document", attach); observer?.disconnect(); };
-  }, [workbench.layout, workbench.hidden, workbench.compact, workbench.floating, workbench.editMode]);
+  }, [workbench.layout, workbench.hidden, workbench.historyDrawer, workbench.floating, workbench.editMode]);
   return <div ref={cap} className="titlebar__rail" hidden={!docked}><strong>Agent sessions</strong></div>;
 }

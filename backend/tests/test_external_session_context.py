@@ -92,6 +92,50 @@ def test_cell_source_is_plain_text_and_result_is_scoped_json(tmp_path):
         service.expand(chat, view, source_id=hit["source_id"], part="source")
 
 
+def test_refresh_retries_only_missing_cell_parts_and_freezes_search_coverage(tmp_path, monkeypatch):
+    service, sessions, chat, artifacts, cells, _ = fixture(tmp_path)
+    source = artifacts.put_text("first searchable source", kind="kernel_cell_source", scope=chat)
+    result = artifacts.put_json({"text": "recovered distinctive output"}, kind="kernel_cell_result", scope=chat)
+    cells.append({"sequence": 1, "execution_id": "one", "source_ref": source.ref, "result_ref": result.ref})
+    missing = {result.ref}
+    reads = []
+    original = service._artifact_text
+
+    def read(ref, owner, digest=""):
+        reads.append(ref)
+        if ref in missing:
+            raise FileNotFoundError(ref)
+        return original(ref, owner, digest)
+
+    monkeypatch.setattr(service, "_artifact_text", read)
+    old = service.capture(chat)
+    first = service.search(chat, old, query="distinctive")
+    assert first["items"] == [] and first["cell_search_incomplete_count"] == 1
+    assert service.search(chat, old, query="searchable")["items"][0]["missing_search_parts"] == ["result"]
+    reads.clear()
+    service.capture(chat)
+    assert reads == [result.ref]
+    missing = {source.ref}
+    reads.clear()
+    new = service.capture(chat)
+    assert reads == [result.ref]
+    assert service.search(chat, new, query="searchable")["items"]
+    recovered = service.search(chat, new, query="distinctive")
+    assert recovered["cell_search_incomplete_count"] == 0 and len(recovered["items"]) == 1
+    assert recovered["items"][0]["source_id"] == "cell:one"
+    assert service.read(chat, new, kind="cell")["items"][0]["ordinal"] == service.read(chat, old, kind="cell")["items"][0]["ordinal"]
+    assert service.search(chat, old, query="distinctive")["items"] == []
+    assert service.search(chat, old, query="missing")["cell_search_incomplete_count"] == 1
+    reads.clear()
+    service.capture(chat)
+    assert reads == []
+    with pytest.raises(ToolError, match="outside"):
+        service.search(sessions.create_session(), new, query="distinctive")
+    with service._connect() as conn:
+        conn.execute("UPDATE context_view SET watermarks_json=json_remove(watermarks_json,'$.cell_search_incomplete_count') WHERE view_id=?", (old,))
+    assert service.search(chat, old, query="missing")["cell_search_incomplete_count"] == 1
+
+
 def test_native_snapshot_projection_does_not_expose_opaque_reasoning(tmp_path):
     from external_context import _text
     assert _text({"type": "thinking", "thinking": "private", "signature": "opaque"}) == ""

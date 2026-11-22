@@ -1085,6 +1085,7 @@ class KernelContinuityCoordinator:
                 sha256=sha256,
                 bytes=value_bytes,
                 artifact_ref=artifact_ref,
+                alias_of=str(raw_item.get("alias_of") or ""),
                 requirements=(
                     dict(raw_item.get("requirements"))
                     if isinstance(raw_item.get("requirements"), dict)
@@ -1762,6 +1763,7 @@ class KernelContinuityCoordinator:
                 "bytes": int(item.bytes),
                 "requirements": dict(item.requirements),
                 "data_b64": base64.b64encode(payload).decode("ascii"),
+                **({"alias_of": item.alias_of} if item.alias_of in selected_names else {}),
             })
         worker_payload = {
             "schema": WORKER_CAPSULE_SCHEMA,
@@ -2094,6 +2096,10 @@ class KernelContinuityCoordinator:
         hard: bool = False,
     ) -> dict[str, Any]:
         checkpoint = await self._checkpoint_lease(lease, reason=reason)
+        if (reason in {"operator_restart", "operator_release"}
+                and (checkpoint.get("status") == "failed" or checkpoint.get("reason") == "kernel_not_idle")
+                and not lease._closed and lease.process is not None and lease.process.poll() is None):
+            return checkpoint
         await lease.close(reason=reason, hard=hard)
         return checkpoint
 

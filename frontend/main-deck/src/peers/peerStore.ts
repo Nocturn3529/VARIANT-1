@@ -24,15 +24,16 @@ export type PeerRequestState = Readonly<{
   requestId:string;chatId:string;operation:PeerRequest["operation"];
   request:Readonly<PeerRequest>;attempt:number;
   listGeneration?:string;
+  inspectionRevision?:number;
   profileId?:string;
   phase:"pending"|"unconfirmed"|"accepted"|"rejected";
   submittedText?:string;
   result?:Record<string,unknown>;
   error?:{code:string;message:string;commitState?:"not_committed"|"unknown"};
 }>;
-type PeerScope={peerId:string;peerIds:string[];messageIds:string[];cursor:number;hasMore:boolean;revision:number;changed:number;changedIds:string[];grokChanged:number;grokVersions:Record<string,number>};
+type PeerScope={peerId:string;peerIds:string[];messageIds:string[];cursor:number;hasMore:boolean;revision:number;changed:number;invalidations:Record<string,number>;grokChanged:number;grokVersions:Record<string,number>};
 type Draft={text:string;revision:number;messageKind?:PeerMessageKind};
-const emptyScope=():PeerScope=>({peerId:"",peerIds:[],messageIds:[],cursor:0,hasMore:false,revision:0,changed:0,changedIds:[],grokChanged:0,grokVersions:{}});
+const emptyScope=():PeerScope=>({peerId:"",peerIds:[],messageIds:[],cursor:0,hasMore:false,revision:0,changed:0,invalidations:{},grokChanged:0,grokVersions:{}});
 const initialState=()=>({connected:false,requests:{} as Record<string,PeerRequestState>,peers:{} as Record<string,PeerEndpoint>,messages:{} as Record<string,PeerMessage>,scopes:{} as Record<string,PeerScope>,drafts:{} as Record<string,Draft>,
   grokSessions:{} as Record<string,{items:GrokSavedSession[];cursor:string|null}>,grokLaunchDrafts:{} as Record<string,{sessionId:string;cwd:string}>});
 const store=createModuleStore({initialState:initialState()});
@@ -88,6 +89,7 @@ export function requestPeer(chatId:string,request:PeerRequest):string|null {
     ...(request.operation==="grok:setup" ? {profileId:typeof store.getState().requests[peerRequestKey(chatId,{operation:"grok:status"})]?.result?.profile_id==="string" ? String(store.getState().requests[peerRequestKey(chatId,{operation:"grok:status"})]?.result?.profile_id) : undefined} : {}),
     ...(request.operation==="grok:sessions" ? {listGeneration:request.cursor ? store.getState().requests[peerRequestKey(chatId,{operation:"grok:sessions"})]?.requestId : requestId} : {}),
     ...(request.operation==="grok:status" && prior?.result ? {result:prior.result} : {}),
+    ...(request.operation==="inspect" && request.message_id ? {inspectionRevision:store.getState().scopes[chatId]?.invalidations[request.message_id]} : {}),
     ...("text" in request ? {submittedText:request.text} : {})};
   return dispatchPeer(key,entry) ? requestId : null;
 }
@@ -115,6 +117,17 @@ export function inspectPeerRequest(chatId:string,requestId:string):string|null {
   return original ? requestPeer(chatId,{operation:"inspect",lookup_request_id:original.requestId}) : null;
 }
 
+/** A change during an inspection waits for that read and keeps its own revision. */
+export function refreshInvalidatedReceipts(chatId:string,retry=false):void {
+  const state=store.getState();
+  for(const [id,revision] of Object.entries(state.scopes[chatId]?.invalidations || {})) {
+    const request={operation:"inspect" as const,message_id:id};
+    const prior=state.requests[peerRequestKey(chatId,request)];
+    if(prior?.phase==="pending" || (!retry && (prior?.inspectionRevision ?? -1)>=revision))continue;
+    requestPeer(chatId,request);
+  }
+}
+
 /** Explicit user retry only; transport identity and submitted content cannot change. */
 export function retryPeerRequest(chatId:string,requestId:string):boolean {
   if(!store.getState().connected)return false;
@@ -134,10 +147,11 @@ export function ingestPeers(message:Record<string,unknown>):void {
   if(message.type==="peer:changed") {
     if(typeof message.chat_id!=="string" || !message.chat_id.trim() || typeof message.revision!=="number" || !Number.isSafeInteger(message.revision) || message.revision<0)return;
     const state=store.getState(),scope=state.scopes[message.chat_id] || emptyScope();
-    if(message.revision<=scope.changed)return;
     const id=typeof message.message_id==="string" ? message.message_id : "";
-    const changedIds=id ? [...scope.changedIds.filter(item=>item!==id),id].slice(-100) : scope.changedIds;
-    store.setState({scopes:{...state.scopes,[message.chat_id]:{...scope,changed:message.revision,changedIds}}});return;
+    const seen=scope.messageIds.includes(id) ? state.messages[id]?.revision ?? -1 : -1;
+    if(id ? message.revision<=Math.max(scope.invalidations[id] ?? -1,seen) : message.revision<=scope.changed)return;
+    const invalidations=id ? {...scope.invalidations,[id]:message.revision} : scope.invalidations;
+    store.setState({scopes:{...state.scopes,[message.chat_id]:{...scope,changed:Math.max(scope.changed,message.revision),invalidations}}});return;
   }
   if(message.type!=="peers:result")return;
   const match=Object.entries(store.getState().requests).find(([,entry])=>entry.requestId===message.request_id);
@@ -156,6 +170,9 @@ export function ingestPeers(message:Record<string,unknown>):void {
     if(!row || !matchesOriginal(entry,row)) {
       uncertain(key,"invalid_receipt","The returned message did not match this send. Check the saved message before sending again.");return;
     }
+  }
+  if(message.ok && entry.request.operation==="inspect" && entry.request.message_id && result?.message_id!==entry.request.message_id) {
+    uncertain(key,"invalid_receipt","The returned receipt belongs to another message. Refresh to try again.");return;
   }
   if(message.ok && (entry.operation==="grok:launch" || entry.operation==="grok:connect")
     && (result?.viewer_chat_id!==entry.chatId || typeof result.binding_id!=="string" || !result.binding_id)) {
@@ -218,7 +235,7 @@ function applyResult(entry:PeerRequestState,result:Record<string,unknown>) {
   if(entry.operation==="grok:delivery") {
     const statusKey=peerRequestKey(entry.chatId,{operation:"grok:status"}),status=store.getState().requests[statusKey];
     if(Array.isArray(status?.result?.items))update(statusKey,{result:{...status.result,items:status.result.items.map(value=>{
-      const row=record(value);return row.viewer_chat_id===entry.chatId && row.peer_id===result.peer_id ? {...row,delivery_mode:result.delivery_mode,preferred_delivery_mode:result.preferred_delivery_mode,automatic_wake_available:result.automatic_wake_available,native_agent_origin:result.native_agent_origin,...(result.capabilities ? {capabilities:result.capabilities} : {})} : value;
+      const row=record(value);return row.viewer_chat_id===entry.chatId && row.peer_id===result.peer_id ? {...row,delivery_mode:result.delivery_mode,preferred_delivery_mode:result.preferred_delivery_mode,automatic_wake_available:result.automatic_wake_available,native_agent_origin:result.native_agent_origin,...(typeof result.live_ingress==="boolean" ? {live_ingress:result.live_ingress} : {}),...(result.capabilities ? {capabilities:result.capabilities} : {})} : value;
     })}});
   }
   if(entry.request.operation==="grok:sessions") {
@@ -247,6 +264,11 @@ function applyResult(entry:PeerRequestState,result:Record<string,unknown>) {
   for(const row of received) {
     if(!messages[row.message_id] || row.revision>messages[row.message_id].revision)messages[row.message_id]=row;
     if(!scope.messageIds.includes(row.message_id))scope.messageIds=[...scope.messageIds,row.message_id];
+    const invalidated=scope.invalidations[row.message_id];
+    if(invalidated!==undefined && row.revision>=invalidated) {
+      const {[row.message_id]:consumed,...remaining}=scope.invalidations;
+      scope.invalidations=remaining;
+    }
   }
   store.setState({peers,messages,scopes:{...state.scopes,[entry.chatId]:scope}});
   for(const row of received)for(const [key,original] of Object.entries(store.getState().requests)) {

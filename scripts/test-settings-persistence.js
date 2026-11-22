@@ -28,9 +28,10 @@ try {
   assert.equal(fs.readFileSync(configPath, 'utf8'), original, 'failed replacement keeps the original complete document');
   assert.deepEqual(fs.readdirSync(directory), ['settings.json'], 'failed writes clean their temporary file');
   const handlers = new Map();
-  let openAtLogin = false; let failOs = false;
-  const app = {getLoginItemSettings: () => ({openAtLogin}), setLoginItemSettings: value => {
-    if (failOs) throw new Error('OS preference rejected'); openAtLogin = value.openAtLogin;
+  let registeredArgs = null; let failOs = false;
+  const app = {getLoginItemSettings: ({args = []} = {}) => ({openAtLogin: args.join(' ') === registeredArgs}), setLoginItemSettings: value => {
+    if (failOs) throw new Error('OS preference rejected');
+    registeredArgs = value.openAtLogin ? value.args.join(' ') : null;
   }};
   load('electron-deck-ipc.js', {electron: {ipcMain: {handle: (name, handler) => handlers.set(name, handler), on() {}}}})
     .registerDeckIpc({app, appRoot: root, getDeckWindow: () => ({}), getMonitorWindow: () => null,
@@ -38,7 +39,7 @@ try {
   for (const name of ['settings:setStartHidden', 'settings:setLaunchAtLogin']) {
     const result = handlers.get(name)({}, true);
     assert.equal(result.ok, false); assert.match(result.reason, /ENOSPC/);
-    assert.equal(openAtLogin, false, 'disk failure rolls the OS preference back');
+    assert.equal(registeredArgs, null, 'disk failure rolls the OS preference back');
     assert.equal(fs.readFileSync(configPath, 'utf8'), original);
   }
   failDisk = false; failOs = true;
@@ -49,6 +50,19 @@ try {
   assert.equal(settings.readSettings().general.autoStart, true);
   assert.equal(handlers.get('settings:setStartHidden')({}, true).ok, true);
   assert.equal(settings.readSettings().general.startHidden, true);
+  function checkLogin(autoStart, startHidden) {
+    assert.equal(handlers.get('settings:getLaunchAtLogin')({}), autoStart, 'reopening reads the registered arguments');
+    assert.equal(settings.readSettings().general.startHidden, startHidden);
+    assert.equal(registeredArgs, autoStart ? (startHidden ? '--hidden' : '') : null);
+  }
+  checkLogin(true, true);
+  const change = (key, value) => assert.equal(handlers.get(key)({}, value).ok, true);
+  change('settings:setLaunchAtLogin', false); checkLogin(false, true);
+  change('settings:setStartHidden', false); checkLogin(false, false);
+  change('settings:setStartHidden', true); checkLogin(false, true);
+  change('settings:setLaunchAtLogin', true); checkLogin(true, true);
+  change('settings:setStartHidden', false); checkLogin(true, false);
+  change('settings:setLaunchAtLogin', false); checkLogin(false, false);
   console.log('M07: atomic replacement, truthful IPC failures, OS rollback, and successful persistence passed');
 } finally {
   const resolved = path.resolve(directory);

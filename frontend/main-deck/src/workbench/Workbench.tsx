@@ -3,7 +3,7 @@ import {useChatViews,chatViewId} from "./chatViewStore";
 import {getSessionState,useSessionState} from "../state/sessionStore";
 import {chooseChatProject,useChatProjects} from "../state/chatProjectStore";
 import {chatPaneId,paneOwner} from "./workbenchStore";
-import {openDirectoryPreview} from "./previewStore";
+import {openDirectoryPreview, previewPaneTitle} from "./previewStore";
 import {workbenchBrowserTargets} from "./browserBridge";
 import {addBrowserReference} from "../chat/composer";
 import {getChatState} from "../chat/stateCore";
@@ -34,10 +34,9 @@ import {PopupMenu} from "../ui/PopupMenu";
 import {SurfaceDocumentContext, useSurfaceDocument} from "../ui/SurfaceDocument";
 import {NativeSurface} from "./NativeSurface";
 import {closeNativeWindow, hasNativeWindow, nativePaneKey, useNativeWindows} from "./nativeWindowStore";
-import {DECK_BREAKPOINT} from "../layout";
+import {useAppearance} from "../state/appearanceStore";
 import {allocateTracks, childTracks, isSidePane, paneSide, trackFor, type TrackContext} from "./trackModel";
 import type {RuntimeApi} from "../types";
-import {PreviewPane, previewPaneTitle} from "./PreviewPane";
 import {
   closeOtherPreviews,
   closePreview,
@@ -52,13 +51,14 @@ import {
 } from "./previewStore";
 import {
   activateFocusedSlot,
-  applyWorkbenchPreset,
   closeCompactPane,
   detachWorkbenchPane,
   dockWorkbenchGroup,
   canCloseWorkbenchGroup,closeWorkbenchGroup,flushWorkbenchLayout,
   positionFloatingGroup,
   setWorkbenchCompact,
+  workbenchViewport,
+  paneUsesDrawer,
   closeFocusedPane,
   closePane,
   cycleFocusedGroup,
@@ -71,16 +71,12 @@ import {
   noteActiveGroup,
   noteHoveredGroup,
   PANE,
-  listWorkbenchPresets,
   reopenLastClosed,
   reorderWorkbenchPane,
-  resetWorkbenchLayout,
   revealPane,
   revealPreviewPane,
   placePreviewPaneInBackground,
   selectPane,
-  saveWorkbenchPreset,
-  deleteWorkbenchPreset,
   setWorkbenchEditMode,
   setWorkbenchSplitWeights,
   setWorkbenchTabStrip,
@@ -92,7 +88,9 @@ import {
 import {allPaneIds,findGroupOfPane, type DropPosition, type GroupNode, type LayoutNode, type SplitNode} from "./layoutModel";
 
 // The Review pane is off the startup path; it loads on first open.
-const ReviewPanel = lazy(() => import("../context/ReviewPanel").then(module => ({default: module.ReviewPanel})));
+const ReviewPanel = lazy(() => import("../deferred/destinations").then(module => ({default: module.ReviewPanel})));
+const PreviewPane = lazy(() => import("../deferred/destinations").then(module => ({default: module.PreviewPane})));
+const LayoutPresetEditor = lazy(() => import("../deferred/destinations").then(module => ({default: module.LayoutPresetEditor})));
 
 type PaneDescriptor = {
   id: string;
@@ -239,7 +237,7 @@ function SplitView({node, renderNode, context}: {
 function GroupView({
   node,
   descriptors,
-  hidden,
+  visible, active,
   dragging,
   setDragging,
   openMenu,
@@ -250,7 +248,8 @@ function GroupView({
 }: {
   node: GroupNode;
   descriptors: ReadonlyMap<string, PaneDescriptor>;
-  hidden: Readonly<Record<string, boolean>>;
+  visible: string[];
+  active: string;
   dragging: string;
   setDragging: (id: string) => void;
   openMenu: (event: ReactMouseEvent, groupId: string, paneId: string) => void;
@@ -263,9 +262,7 @@ function GroupView({
   const surface = useRef<HTMLElement>(null);
   const wasFloating = useRef(false);
   const dragStart = useRef<{x: number; y: number; left: number; top: number} | null>(null);
-  const visible = node.panes.filter(id => descriptors.has(id) && !hidden[id]);
-  const background=!visible.length && node.panes.some(id=>descriptors.get(id)?.browser);
-  const active = visible.includes(node.active) ? node.active : visible[0] || (background ? node.panes.find(id=>descriptors.get(id)?.browser) : undefined);
+  const background = !visible.length && !!active;
   const descriptor = active ? descriptors.get(active) : null;
   const [dropPosition, setDropPosition] = useState<DropPosition | "">("");
   const isFloating = !!floating && !compact && !native;
@@ -444,7 +441,7 @@ function PaneMenu({menu, close}: {menu: Exclude<MenuState, null>; close: () => v
       onClick={() => action(() => native ? dockWorkbenchGroup(menu.groupId) : detachWorkbenchPane(menu.paneId))}>{native ? "Dock panel" : "Detach panel"}</button> : null}
     {selected?.target.kind === "url" ? <>
       <button role="menuitem" onClick={() => action(() => openBrowser("about:blank", {newTab: true,ownerChatId:selected?.ownerChatId}))}>New browser tab</button>
-      <button role="menuitem" disabled={!selected.target.url || selected.target.url === "about:blank"} onClick={() => action(() => window.variant1Deck?.openExternal?.(selected.target.url))}>Open external</button>
+      <button role="menuitem" disabled={!selected.committedUrl || selected.committedUrl === "about:blank"} onClick={() => action(() => selected.committedUrl && window.variant1Deck?.openExternal?.(selected.committedUrl))}>Open external</button>
       <button role="menuitem" disabled={(selected.ownerChatId || "") !== (getChatState().sessionId || "")} onClick={() => action(() => mentionInChat(selected.id))}>Mention in chat</button>
       {selected.origin === "agent" ? <button role="menuitem" title="The tab stays open after the agent's task ends" onClick={() => action(() => keepBrowserTab(selected.id))}>Keep tab</button> : null}
       <hr/>
@@ -468,6 +465,7 @@ function PaneMenu({menu, close}: {menu: Exclude<MenuState, null>; close: () => v
 }
 
 export function Workbench({api}: {api: RuntimeApi | null}) {
+  const {density} = useAppearance();
   const nativeWindows = useNativeWindows();
   const sessions=useSessionState();
   const chatViews=useChatViews();
@@ -492,10 +490,6 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
   const [dragging, setDragging] = useState("");
   const [menu, setMenu] = useState<MenuState>(null);
   const [presetId, setPresetId] = useState("default");
-  const [presetRevision, setPresetRevision] = useState(0);
-  const [presetName, setPresetName] = useState<string | null>(null);
-  const [savingPreset, setSavingPreset] = useState(false);
-  const [presetError, setPresetError] = useState("");
 
   useEffect(() => {
     const current = new Set(preview.tabs.map(tab => previewPaneId(tab.id)));
@@ -528,7 +522,10 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
       if (!command) return;
       const groupId = ownerDocument !== document ? ownerDocument.querySelector<HTMLElement>(".workbench-group")?.dataset.groupId : undefined;
       const nativePane=ownerDocument !== document ? ownerDocument.querySelector<HTMLElement>("[data-pane-id]")?.dataset.paneId || "" : "";
-      const actionChat=paneOwner(nativePane) || preview.tabs.find(t=>previewPaneId(t.id)===nativePane)?.ownerChatId || chatId;
+      const actionChat = ownerDocument === document ? getSessionState().displayedSessionId || ""
+        : nativePane.startsWith("chatview:") ? nativePane.slice("chatview:".length)
+        : paneOwner(nativePane) || getPreviewState().tabs.find(t=>previewPaneId(t.id)===nativePane)?.ownerChatId;
+      if (actionChat === undefined) return;
       if (groupId) { noteHoveredGroup(""); noteActiveGroup(groupId); }
       if (command && event.key.toLowerCase() === "j") {
         event.preventDefault(); togglePane(chatPaneId(PANE.files,actionChat), "right");
@@ -595,7 +592,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
         label: previewPaneTitle(tab),
         icon: tab.target.kind === "url" ? "browser" : tab.target.kind === "directory" ? "folder" : tab.target.kind === "file" ? "file" : "image",
         close: "close",
-        render: () => <PreviewPane tabId={tab.id} api={api}/>,
+        render: () => <LazySurface label="Preview"><PreviewPane tabId={tab.id} api={api}/></LazySurface>,
         newTab: tab.target.kind === "url" ? () => openBrowser("about:blank", {newTab: true,ownerChatId:tab.ownerChatId}) : undefined,
         dirty: !!tab.dirty,
         keepAlive: true,
@@ -617,6 +614,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
   // The right-hand region was therefore unreachable, not merely collapsed --
   // Files, Review, the browser view, and the terminal could never be opened.
   const hidden: Record<string, boolean> = {...state.hidden, [PANE.workspace]: false};
+  if (state.historyDrawer && state.overlayPaneId === PANE.history) hidden[PANE.history] = false;
   for(const id of descriptors.keys()) {
     const owner=paneOwner(id) || (id.startsWith("preview:") ? preview.tabs.find(t=>previewPaneId(t.id)===id)?.ownerChatId : "");
     const group=findGroupOfPane(state.layout,id);
@@ -625,21 +623,29 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
   }
 
   const nativeGroups = new Set(Object.keys(nativeWindows).filter(id => id.startsWith("pane:")).map(id => id.slice(5)));
-  const context: TrackContext = {hidden, known: new Set(descriptors.keys()), compact: state.compact, height: window.innerHeight, floatingGroups: new Set(Object.keys(state.floating)), nativeGroups};
   const gridHidden = {...hidden};
-  if (state.compact) for (const id of descriptors.keys()) if (isSidePane(id)) gridHidden[id] = true;
+  if (state.compact) {
+    for (const id of descriptors.keys()) if (isSidePane(id)) gridHidden[id] = true;
+  } else if (state.historyDrawer) gridHidden[PANE.history] = true;
+  const context: TrackContext = {hidden: gridHidden, known: new Set(descriptors.keys()), compact: state.compact, height: window.innerHeight, floatingGroups: new Set(Object.keys(state.floating)), nativeGroups};
 
-  const groupView = (node: GroupNode, parentAxis: "row" | "column", groupHidden = gridHidden) => <NativeSurface id={nativePaneKey(node.id)} title={`${descriptors.get(node.active)?.label || "Panel"} · ${sessions.items.find(s=>s.id === (paneOwner(node.active) || preview.tabs.find(t=>previewPaneId(t.id)===node.active)?.ownerChatId))?.title || "VARIANT-1"}`}
-    onBeforeClose={()=>canCloseWorkbenchGroup(node.id)} onClosed={dock => { if(!dock)closeWorkbenchGroup(node.id,true);else if(state.compact && isSidePane(node.active))revealPane(node.active); }}><GroupView
-    node={node} descriptors={descriptors} hidden={nativeGroups.has(node.id) ? hidden : groupHidden} parentAxis={parentAxis}
-    native={nativeGroups.has(node.id)}
-    floating={state.floating[node.id]} compact={state.compact}
-    dragging={dragging} setDragging={setDragging}
-    openMenu={(event, groupId, paneId) => {
-      event.preventDefault(); event.stopPropagation();
-      setMenu({x: event.clientX, y: event.clientY, groupId, paneId, ownerDocument: event.currentTarget.ownerDocument});
-    }}
-  /></NativeSurface>;
+  const groupView = (node: GroupNode, parentAxis: "row" | "column", groupHidden = gridHidden) => {
+    const visibility = nativeGroups.has(node.id) ? hidden : groupHidden;
+    const visible = node.panes.filter(id => descriptors.has(id) && !visibility[id]);
+    const active = visible.includes(node.active) ? node.active : visible[0] || node.panes.find(id => descriptors.get(id)?.browser) || "";
+    const owner = active.startsWith("chatview:") ? active.slice("chatview:".length) :
+      paneOwner(active) || preview.tabs.find(tab => previewPaneId(tab.id) === active)?.ownerChatId;
+    return <NativeSurface id={nativePaneKey(node.id)} title={descriptors.get(active)?.label || "Panel"} ownerChatId={owner}
+      onBeforeClose={()=>canCloseWorkbenchGroup(node.id)} onClosed={dock => { if(!dock)closeWorkbenchGroup(node.id,true);else if(state.compact && isSidePane(node.active))revealPane(node.active); }}>
+      <GroupView node={node} descriptors={descriptors} visible={visible} active={active} parentAxis={parentAxis}
+        native={nativeGroups.has(node.id)} floating={state.floating[node.id]} compact={state.compact}
+        dragging={dragging} setDragging={setDragging}
+        openMenu={(event, groupId, paneId) => {
+          event.preventDefault(); event.stopPropagation();
+          setMenu({x:event.clientX, y:event.clientY, groupId, paneId, ownerDocument:event.currentTarget.ownerDocument});
+        }}/>
+    </NativeSurface>;
+  };
   const renderNode = (node: LayoutNode, parentAxis: "row" | "column" = "row"): ReactNode => {
     if (!trackFor(node, parentAxis, context)) return null;
     if (node.type === "group") return groupView(node, parentAxis);
@@ -648,16 +654,19 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
     // effective collapse axis passes through a single-child split.
     return <SplitView node={node} context={context} renderNode={child => renderNode(child, visible.length === 1 ? parentAxis : node.orientation)}/>;
   };
-  const overlayId = state.compact ? state.overlayPaneId : null;
+  const overlayId = state.overlayPaneId;
   const overlayGroup = overlayId ? findGroupOfPane(state.layout, overlayId) : null;
   const overlayTitle = overlayId ? descriptors.get(overlayId)?.label : "";
   const overlayRef = useRef<HTMLElement>(null);
   useEffect(() => {
-    const update = () => setWorkbenchCompact(window.innerWidth <= DECK_BREAKPOINT.narrow);
+    const update = () => {
+      const {compact, historyDrawer} = workbenchViewport(window.innerWidth, density);
+      setWorkbenchCompact(compact, historyDrawer);
+    };
     update();
     window.addEventListener("resize", update);
     return () => window.removeEventListener("resize", update);
-  }, []);
+  }, [density]);
   useEffect(() => {
     if (!overlayId) return;
     const previous = document.activeElement as HTMLElement | null;
@@ -679,41 +688,11 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
       <button className="workbench-overlay-dismiss" tabIndex={-1} aria-label="Dismiss side panel" onClick={() => closeCompactPane()}/>
       <section ref={overlayRef} className={`workbench-side-overlay workbench-side-overlay--${paneSide(state.layout, overlayId)}`} aria-label={`${overlayTitle} panel`}>
         <header className="workbench-overlay-heading"><strong>{overlayTitle}</strong><button aria-label={`Close ${overlayTitle} panel`} onClick={() => closeCompactPane()}><Icon name="close"/></button></header>
-        {groupView({...overlayGroup, panes: overlayGroup.panes.filter(id => isSidePane(id) && !hidden[id]), active: overlayId, minimized: false, tabStrip: "always"}, "column", hidden)}
+        {groupView({...overlayGroup, panes: overlayGroup.panes.filter(id => paneUsesDrawer(id, state) && !hidden[id]), active: overlayId, minimized: false, tabStrip: "always"}, "column", hidden)}
       </section>
     </> : null}
     <PersistentChatViews views={chatViews.filter(view=>allPaneIds(state.layout).includes(chatViewId(view.id)))} dragging={!!dragging}/>
-    {state.editMode ? <div className="workbench-editbar">
-      <strong>Layout editing</strong>
-      <select aria-label="Layout preset" value={presetId} onChange={event => {
-        const id = event.target.value;
-        setPresetId(id);
-        applyWorkbenchPreset(id);
-      }}>
-        {listWorkbenchPresets().map(preset => <option value={preset.id} key={`${preset.id}:${presetRevision}`}>{preset.name}</option>)}
-      </select>
-      <button onClick={resetWorkbenchLayout}>Reset</button>
-      {presetName === null ? <button onClick={() => { setPresetName(""); setPresetError(""); }}>Save as</button> : <form className="workbench-preset-form" onSubmit={async event => {
-        event.preventDefault();
-        if (!presetName.trim() || savingPreset) return;
-        setSavingPreset(true);
-        const id = await saveWorkbenchPreset(presetName);
-        setSavingPreset(false);
-        if (id) { setPresetId(id); setPresetRevision(value => value + 1); setPresetName(null); }
-        else setPresetError("Could not save this layout. Try again.");
-      }}>
-        <input autoFocus aria-label="Layout name" disabled={savingPreset} value={presetName} maxLength={80} onChange={event => setPresetName(event.target.value)}
-          onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPresetName(null); } }}/>
-        <button type="submit" disabled={!presetName.trim() || savingPreset}>{savingPreset ? "Saving…" : "Save"}</button><button type="button" disabled={savingPreset} onClick={() => setPresetName(null)}>Cancel</button>
-        {presetError ? <span role="alert">{presetError}</span> : null}
-      </form>}
-      {listWorkbenchPresets().find(preset => preset.id === presetId)?.user ? <button onClick={() => {
-        deleteWorkbenchPreset(presetId);
-        setPresetId("default");
-        setPresetRevision(value => value + 1);
-      }}>Delete</button> : null}
-      <button onClick={() => setWorkbenchEditMode(false)}>Done</button>
-    </div> : null}
+    {state.editMode ? <LazySurface label="Layout editor"><LayoutPresetEditor presetId={presetId} setPresetId={setPresetId}/></LazySurface> : null}
     {menu ? <PaneMenu menu={menu} close={() => setMenu(null)}/> : null}
   </div>;
 }

@@ -93,7 +93,7 @@ def effective_reasoning_budget(
 _EFFORT_ORDER = ("off", "none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 
-def _reasoning_rule(profile: Any, model: str) -> Mapping[str, Any]:
+def matching_reasoning_rule(profile: Any, model: str) -> Mapping[str, Any]:
     for rule in getattr(profile, "reasoning_model_rules", ()) or ():
         if not isinstance(rule, Mapping):
             continue
@@ -103,6 +103,15 @@ def _reasoning_rule(profile: Any, model: str) -> Mapping[str, Any]:
         if _matches(model, patterns):
             return rule
     return {}
+
+
+def effective_reasoning_rule(router: Any, profile: Any, model: str) -> Mapping[str, Any]:
+    resolve = getattr(router, "model_reasoning_rule", None)
+    if callable(resolve):
+        rule = resolve(profile, model)
+        if isinstance(rule, Mapping):
+            return rule
+    return matching_reasoning_rule(profile, model)
 
 
 def _set_payload_field(payload: dict, path: str, value: Any) -> None:
@@ -142,13 +151,13 @@ def project_reasoning_policy(
     A missing/nonzero override preserves the established chat effort policy.
     """
     minimum = reasoning_budget == 0
-    rule = _reasoning_rule(profile, model)
+    rule = effective_reasoning_rule(router, profile, model)
     field = (effort_field if effort_field is not None else
              str(getattr(profile, "reasoning_effort_field", "") or ""))
     if "effort_field" in rule:
         field = str(rule["effort_field"] or "")
     if minimum:
-        efforts = tuple(rule.get("efforts", getattr(profile, "reasoning_efforts", ())) or ())
+        efforts = rule.get("minimum_efforts", rule.get("efforts", getattr(profile, "reasoning_efforts", ()))) or ()
         effort = next((level for level in _EFFORT_ORDER if level in efforts), "")
         # A plugin may declare an ordered provider vocabulary of its own.
         if not effort and efforts:
@@ -159,7 +168,20 @@ def project_reasoning_policy(
         except Exception:
             effort = default_effort
     if field and effort:
-        _set_payload_field(payload, field, effort)
+        enabled_field = rule.get("enabled_field")
+        if enabled_field:
+            enabled = effort not in {"none", "off"}
+            _set_payload_field(payload, enabled_field, enabled)
+            _set_payload_field(payload, field, effort if enabled else None)
+        else:
+            _set_payload_field(payload, field, effort)
+    if not minimum and rule.get("toggle"):
+        bound_route = getattr(router, "bound_model_route", None)
+        route = bound_route() if callable(bound_route) else None
+        if (isinstance(route, Mapping) and route.get("model") == model
+                and route.get("provider") == getattr(profile, "name", "")
+                and isinstance(route.get("reasoning_enabled"), bool)):
+            _set_payload_field(payload, "reasoning.enabled", route["reasoning_enabled"])
     if minimum:
         for path, value in (rule.get("minimum_fields") or {}).items():
             _set_payload_field(payload, str(path), value)

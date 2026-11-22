@@ -689,6 +689,8 @@ def _generation(payload: dict, transport: str, rendered_tool_count: int) -> dict
     template = payload.get("chat_template_kwargs")
     thinking_enabled = template.get("enable_thinking") \
         if isinstance(template, dict) and "enable_thinking" in template else None
+    if isinstance(reasoning, dict) and isinstance(reasoning.get("enabled"), bool):
+        thinking_enabled = reasoning["enabled"]
     if not isinstance(thinking_enabled, bool):
         thinking_enabled = None
     tool_choice = payload.get("tool_choice")

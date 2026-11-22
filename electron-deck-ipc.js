@@ -11,7 +11,7 @@ const { execFile } = require('child_process');
 const { BrowserWindow, ipcMain, dialog, shell, clipboard } = require('electron');
 const { isAllowedExternalUrl } = require('./electron-security');
 const {createWorkbenchWatchers, createReadCache, limitReadConcurrency, sharePendingRead} = require('./electron-workbench-watchers');
-const { isEditableText } = require('./electron-workbench-files');
+const { isEditableText, readFileSnapshot, createEditorWriter } = require('./electron-workbench-files');
 const {projectGitDiff, COMMAND_BYTES} = require('./electron-workbench-diff');
 const {createGitReviewReader} = require('./electron-workbench-review');
 
@@ -107,7 +107,7 @@ async function gitRoot(startPath) {
 
 async function workbenchGitStatus(startPath) {
   const root = await gitRoot(startPath);
-  const branchResult = await readGit(['status', '--porcelain=v1', '--untracked-files=all', '-z', '-b'], { cwd: root });
+  const branchResult = await readGit(['status', '--porcelain=v1', '--untracked-files=all', '--renames', '-z', '-b'], { cwd: root });
   const records = branchResult.stdout.split('\0');
   const header = records.shift() || '';
   const branchMatch = /^##\s+([^\.\s]+)(?:\.\.\.([^\s]+))?(?:\s+\[ahead\s+(\d+)(?:,\s+behind\s+(\d+))?\])?/.exec(header);
@@ -200,9 +200,11 @@ function registerDeckIpc(deps) {
     openMonitorWindow();
     return { ok: true };
   });
+  const loginItemOptions = startHidden => ({args: startHidden ? ['--hidden'] : []});
+  const readLaunchAtLogin = startHidden => !!app.getLoginItemSettings(loginItemOptions(startHidden)).openAtLogin;
   const applyLaunchAtLogin = (openAtLogin, startHidden) => app.setLoginItemSettings({
     openAtLogin: !!openAtLogin,
-    args: openAtLogin && startHidden ? ['--hidden'] : [],
+    ...loginItemOptions(startHidden),
   });
   const reviewReader = createGitReviewReader({readGit,gitRoot,repositoryFile,workbenchGitStatus,projectGitDiff});
   const gitStatus = createReadCache(target => workbenchGitStatus(target).catch(error => ({ok:false,files:[],error:String(error?.stderr || error?.message || error)})));
@@ -250,7 +252,7 @@ function registerDeckIpc(deps) {
 
   ipcMain.handle('settings:getLaunchAtLogin', (event) => {
     if (!isTrustedIpcSender(event, deckWin())) return false;
-    try { return app.getLoginItemSettings().openAtLogin; } catch (_) { return false; }
+    try { return readLaunchAtLogin(readSettings().general?.startHidden); } catch (_) { return false; }
   });
 
   function setStartupPreference(event, key, on) {
@@ -259,11 +261,11 @@ function registerDeckIpc(deps) {
     try {
       const settings = readSettings();
       const general = settings.general || {};
-      previous = {openAtLogin: !!app.getLoginItemSettings().openAtLogin, startHidden: !!general.startHidden};
+      previous = {openAtLogin: readLaunchAtLogin(general.startHidden), startHidden: !!general.startHidden};
       const requested = !!on;
       const next = {...previous, [key === 'autoStart' ? 'openAtLogin' : 'startHidden']: requested};
       applyLaunchAtLogin(next.openAtLogin, next.startHidden);
-      if (!!app.getLoginItemSettings().openAtLogin !== next.openAtLogin) throw new Error('login_item_not_applied');
+      if (readLaunchAtLogin(next.startHidden) !== next.openAtLogin) throw new Error('login_item_not_applied');
       settings.general = {...general, [key]: requested};
       writeSettings(settings); // Atomic storage throws; success means both operations completed.
       return { ok: true, value: requested };
@@ -276,7 +278,7 @@ function registerDeckIpc(deps) {
       log('setStartupPreference failed: ' + reason);
       let actual = previous?.startHidden || false;
       if (key === 'autoStart') {
-        try { actual = !!app.getLoginItemSettings().openAtLogin; } catch (_) { actual = previous?.openAtLogin || false; }
+        try { actual = readLaunchAtLogin(previous?.startHidden); } catch (_) { actual = previous?.openAtLogin || false; }
       }
       return { ok: false, value: actual, reason };
     }
@@ -395,18 +397,22 @@ function registerDeckIpc(deps) {
     }
   });
 
+  const writeEditorFile = createEditorWriter(fs.promises);
+  // beforeunload requires a synchronous decision. A native dialog also works during reload.
+  ipcMain.on('workbench:fs:confirmDiscard', (event, message) => {
+    const owner = deckWin();
+    event.returnValue = Boolean(owner && isTrustedIpcSender(event, owner) && typeof message === 'string'
+      && dialog.showMessageBoxSync(owner, {type: 'warning', message: message.slice(0, 1500),
+        title: 'Unsaved files', buttons: ['Keep editing', 'Discard changes'], defaultId: 0, cancelId: 0}) === 1);
+  });
   ipcMain.handle('workbench:fs:readFile', async (event, rawPath) => {
     if (!isTrustedIpcSender(event, deckWin())) return { ok: false, error: 'untrusted_sender' };
     const target = normalizeAbsoluteLocalPath(rawPath);
     if (!target) return { ok: false, error: 'invalid_path' };
     try {
-      const stat = await fs.promises.stat(target);
-      if (!stat.isFile()) return { ok: false, error: 'not_a_file' };
-      const maxBytes = 16 * 1024 * 1024;
-      if (stat.size > maxBytes) {
-        return { ok: false, error: 'file_too_large', path: target, size: stat.size, mtimeMs: stat.mtimeMs, truncated: true };
-      }
-      const bytes = await fs.promises.readFile(target);
+      const snapshot = await readFileSnapshot(target, fs.promises);
+      if (!snapshot.ok) return {...snapshot, path: target};
+      const {stat, bytes, revision} = snapshot;
       const mediaType = mediaTypeFor(target);
       const visual = mediaType.startsWith('image/') || mediaType === 'application/pdf' || mediaType === 'text/html';
       const editable = isEditableText(bytes);
@@ -416,6 +422,7 @@ function registerDeckIpc(deps) {
         path: target,
         size: stat.size,
         mtimeMs: stat.mtimeMs,
+        revision,
         mediaType,
         binary,
         editable,
@@ -427,28 +434,13 @@ function registerDeckIpc(deps) {
     }
   });
 
-  ipcMain.handle('workbench:fs:writeFile', async (event, rawPath, content, expectedMtimeMs) => {
+  ipcMain.handle('workbench:fs:writeFile', async (event, rawPath, content, expectedMtimeMs, revision) => {
     if (!isTrustedIpcSender(event, deckWin())) return { ok: false, error: 'untrusted_sender' };
     const target = normalizeAbsoluteLocalPath(rawPath);
     if (!target) return { ok: false, error: 'invalid_path' };
     const text = String(content == null ? '' : content);
-    if (Buffer.byteLength(text, 'utf8') > 16 * 1024 * 1024) return { ok: false, error: 'content_too_large' };
     try {
-      const before = await fs.promises.stat(target);
-      if (!before.isFile()) return { ok: false, error: 'not_a_file' };
-      if (before.size > 16 * 1024 * 1024) return { ok: false, error: 'file_too_large' };
-      // Recheck on write: the file may have changed since it was previewed,
-      // and even a forced conflict overwrite must never erase binary bytes.
-      if (!isEditableText(await fs.promises.readFile(target))) {
-        return { ok: false, error: 'binary_file_not_editable' };
-      }
-      if (Number.isFinite(Number(expectedMtimeMs)) && Number(expectedMtimeMs) > 0
-          && Math.abs(before.mtimeMs - Number(expectedMtimeMs)) > 1) {
-        return { ok: false, conflict: true, mtimeMs: before.mtimeMs };
-      }
-      await fs.promises.writeFile(target, text, 'utf8');
-      const after = await fs.promises.stat(target);
-      return { ok: true, mtimeMs: after.mtimeMs };
+      return await writeEditorFile(target, text, expectedMtimeMs, revision);
     } catch (error) {
       return { ok: false, error: String(error && error.message || error) };
     }
@@ -539,14 +531,23 @@ function registerDeckIpc(deps) {
       let executable = 'git';
       let args = [];
       if (action === 'stage') args = ['add', '--', ...(selected ? [selected] : ['.'])];
-      else if (action === 'unstage') args = ['restore', '--staged', '--', ...(selected ? [selected] : ['.'])];
+      else if (action === 'unstage') {
+        const paths = selected ? [selected] : ['.'];
+        if (selected) {
+          const status = await workbenchGitStatus(root);
+          const rename = status.files.find(row => row.status[0] === 'R' && (row.path === selected || row.originalPath === selected));
+          if (rename) paths.push(repositoryFile(root, rename.path === selected ? rename.originalPath : rename.path).relative);
+        }
+        // The path form only resets index entries, including on an unborn branch.
+        args = ['reset', '--quiet', '--', ...paths];
+      }
       else if (action === 'revert') {
         if (!selected) throw new Error('revert requires a file');
         const absolute = file.absolute;
-        if (!fs.existsSync(absolute)) return { ok: true, root };
         const status = await workbenchGitStatus(root);
-        const row = (status.files || []).find(item => item.path === selected);
-        if (row && row.status === '??') {
+        const row = status.files.find(item => item.path === selected && item.status[1] !== ' ');
+        if (!row) return { ok: true, root };
+        if (row.status === '??') {
           // A repository-relative item must not traverse a junction/symlink parent.
           const realRoot = await fs.promises.realpath(root);
           const realParent = await fs.promises.realpath(path.dirname(absolute));

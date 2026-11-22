@@ -92,7 +92,7 @@ export async function installUpdate() {
   if (interrupted && !window.confirm(`Restart VARIANT-1 to install the update? ${interrupted[0].toUpperCase()}${interrupted.slice(1)}.`)) return;
   const result = await store.getContext()?.api?.installUpdate?.();
   // A failed install keeps the downloaded update; the card shows why.
-  if (result && !result.ok) notifyAbout(result.error || "The update is not ready to install");
+  if (result && !result.ok && result.reason !== "cancelled") notifyAbout(result.error || "The update is not ready to install");
 }
 
 export function setAboutConnection(status: string) {

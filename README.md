@@ -107,11 +107,17 @@ npm run setup:backend
 npm start
 ```
 
+Backend setup installs the pinned cua-driver for computer use. After updating
+an existing checkout, run `node scripts/install-cua-driver.js` to refresh its
+local copy.
+
 After launch, configure a supported provider or local runtime in the app.
 Provider Settings distinguishes saved accounts from recently checked connections.
 Use **Check** to refresh a service's status; model listing access does not certify
-every model's inference availability. Nous Portal can be reconnected in Settings
-through the installed Hermes account. Its sign-out control also signs Hermes out.
+every model's inference availability. Reconnect Nous Portal in Settings through
+the installed Hermes account. The model picker shows the exact catalog IDs and
+each model's advertised reasoning controls. Signing out in Provider Settings
+also signs Hermes out.
 Mutation authoring is under the composer's Session tools.
 Start with sample files or recoverable copies while learning how a workflow behaves.
 

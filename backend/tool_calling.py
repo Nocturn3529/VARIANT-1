@@ -576,12 +576,22 @@ def format_tool_result_messages(
         tid = str(actions[i].get("id") or f"call_{i}")
         outcome = aligned[i]
         is_error = bool(outcome.get("is_error")) or outcome.get("ok") is False
-        messages.append({
+        message = {
             "role": "tool",
             "tool_call_id": tid,
             "content": content,
             **({"is_error": True} if is_error else {}),
-        })
+        }
+        if (
+            actions[i].get("tool") == outcome.get("tool") == "ipython"
+            and outcome.get("call_id") == tid
+            and outcome.get("error_class") == "truncated_tool_call"
+            and outcome.get("executed") is False
+            and outcome.get("ok") is False
+        ):
+            # Only the host's call-bound rejection attests that no cell ran.
+            message["_variant1_truncated_before_execution"] = True
+        messages.append(message)
     return messages
 
 

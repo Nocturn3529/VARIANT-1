@@ -9,6 +9,7 @@ import {
   patchChatState,
   replaceChatState,
   setSubtitle,
+  disconnectSubmissionOrigin,
   sendChat,
   turnApi,
   withCachedChatState,
@@ -26,7 +27,7 @@ const refreshPauseOnReconnect=createReconnectRefresh(()=>{
     withCachedChatState(chat.sessionId,refreshInputQueue);
     withCachedChatState(chat.sessionId,refreshComposerGoal);
     withCachedChatState(chat.sessionId,refreshAgentTeam);
-    if(chat.turnActive)sendChat({type:"chat:runtime:get",id:chat.sessionId});
+    if(chat.turnActive && !chat.initialSubmission)sendChat({type:"chat:runtime:get",id:chat.sessionId});
     else if(chat.inputQueue.continuation && chat.sessionId===getChatState().sessionId)sendChat({type:"chat:session:get",id:chat.sessionId});
   }
 });
@@ -41,9 +42,14 @@ export function setChatConnection(status: string) {
   // Authority cannot use the cosmetic offline delay: even a short disconnect
   // makes an in-flight control request uncertain until runtime reattachment.
   if(status!=="connected") {
+    disconnectSubmissionOrigin();
     invalidateRecoveryNotices();
     const chats=new Map([getChatState(),...cachedChatStates()].map(chat=>[chat.sessionId,chat]));
     for(const chat of chats.values()) if(chat.sessionId) {
+      if(chat.initialSubmission) withCachedChatState(chat.sessionId,()=>patchChatState({
+        initialSubmission:{...chat.initialSubmission!,uncertain:true,checkFailed:false,readId:undefined,readAt:undefined},
+      }));
+      if (chat.peerWaits?.length) withCachedChatState(chat.sessionId, () => patchChatState({peerWaits: undefined}));
       withCachedChatState(chat.sessionId,()=>{const team=getChatState().agentTeam;patchChatState({agentTeam:{...team,synced:false,readId:undefined,detailReadId:undefined,detailDirty:!!team.selectedId}});});
       withCachedChatState(chat.sessionId,disconnectComposerGoal);
     }

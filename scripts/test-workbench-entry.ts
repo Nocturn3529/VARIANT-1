@@ -18,6 +18,44 @@ import {closeOtherPreviews, closePreview, getPreviewState, openFilePreview, reop
 import {noteDisplayedSession,ingestSessions,setSessionContext,deleteSession} from "../frontend/main-deck/src/state/sessionStore";
 import {openChatView,getChatViews} from "../frontend/main-deck/src/workbench/chatViewStore";
 import {getTerminalSnapshot,ingestTerminal,disposeTerminalRuntime,setTerminalContext,setTerminalConnection} from "../frontend/main-deck/src/context/terminalStore";
+import {revealPaneForStep} from "../frontend/main-deck/src/workbench/activityRouting";
+import {ingestChatProjects} from "../frontend/main-deck/src/state/chatProjectStore";
+import {getChatState, initialChatState, setChatState} from "../frontend/main-deck/src/chat/stateCore";
+import {ingestActivityMessage} from "../frontend/main-deck/src/chat/turn";
+import {parseTurnSteps} from "../frontend/main-deck/src/chat/messages";
+import {getToastState} from "../frontend/main-deck/src/state/toastStore";
+
+async function testEvidenceOrigin() {
+  const chatId = "origin-A";
+  const before = getChatState();
+  setChatState({...initialChatState(), sessionId:chatId, turnActive:true});
+  ingestChatProjects({type:"chat:session",session:{id:chatId,project:{root:"C:\\Original",name:"Original"}}});
+  noteDisplayedSession("other-B");
+  ingestActivityMessage({type:"tool:activity",session_id:chatId,event:"tool:start",tool:"apply_patch",call_id:"origin-call",
+    status:"running",text:"*** Update File: src/nested/report.ts",args_preview:"",title:"",surface:"main"});
+  const step = parseTurnSteps(getChatState().turnSteps)![0];
+  ingestChatProjects({type:"chat:session",session:{id:chatId,project:{root:"C:\\Different",name:"Different"}}});
+  await revealPaneForStep(step,chatId);
+  const preview = getPreviewState().tabs.at(-1)!;
+  assert.equal(preview.target.path,"C:\\Original\\src\\nested\\report.ts","including after project reassignment and transcript rehydration");
+  assert.equal(preview.ownerChatId,chatId);
+  closePreview(preview.id);
+
+  const legacy = {...step,evidence:[{id:"readme",kind:"file" as const,label:"README.md",value:"README.md"}]};
+  const api = window.variant1Deck;
+  window.variant1Deck = {...api,pickFolder:async() => null};
+  const count = getPreviewState().tabs.length;
+  await revealPaneForStep(legacy,chatId);
+  assert.equal(getPreviewState().tabs.length,count,"cancelling an unbound relative path opens no file");
+  assert.match(getToastState().message,/project folder/);
+  window.variant1Deck = {...api,pickFolder:async()=>"/original/project"};
+  await revealPaneForStep(legacy,chatId);
+  assert.equal(getPreviewState().tabs.at(-1)?.target.path,"/original/project/README.md");
+  closePreview(getPreviewState().tabs.at(-1)!.id);
+  window.variant1Deck = api;
+  noteDisplayedSession(null);
+  setChatState(before);
+}
 
 function testSizingAndCompactNavigation() {
   __resetWorkbenchForTests(true);
@@ -160,6 +198,7 @@ async function testReadRaces() {
 }
 
 export async function run() {
+  await testEvidenceOrigin();
   testSizingAndCompactNavigation();
   await testDraftLifetimeAndWrites();
   await testReadRaces();

@@ -135,6 +135,19 @@ export async function run() {
     await click(document.querySelector('input[value="agent_context_prompt"]')!);
     assert.equal(last("peers:grok:delivery").expected_delivery_mode,"inbox");assert.equal(last("peers:grok:delivery").delivery_mode,"agent_context_prompt");
     assert.match(document.body.textContent!,/user-input notification/);
+    for(const live of [true,false]) {
+      const chatId="effective-mode-"+live;
+      const label=live ? "Automatic inbox wake" : "Automatic wake unavailable";
+      const peer={peer_id:"grok:effective",kind:"external_harness",display_name:"Grok",delivery_mode:"agent_context_prompt",
+        metadata:{delivery_mode:"inbox"},automatic_wake_available:true,live_ingress:live,capabilities:{live_ingress:!live}};
+      await act(async()=>root.render(<PeerControl chatId={chatId}/>));
+      await click(document.querySelector('[aria-label="Peers"]')!);await act(wait);
+      await ack("peers:list",{items:[peer]});await ack("peers:inbox",{peer_id:"chat:"+chatId,messages:[],revision:0,cursor:0});
+      assert.ok(document.querySelector(".peer-directory")?.textContent?.includes(label));
+      await act(async()=>root.render(<GrokControl chatId={chatId}/>));await click(button("Grok"));await act(wait);
+      await ack("peers:grok:status",{adapter:"grok-peer-bridge",available:true,installed:true,items:[{...peer,binding_id:"binding",viewer_chat_id:chatId,session_id:"grok"}]});
+      assert.equal(document.querySelector(".grok-delivery-mode strong")?.textContent,label);
+    }
     console.log("Peer UI: chat ownership, explicit send/reply, receipt semantics, closed-view silence, canonical Grok bindings and explicit permission passed");
   } finally {await act(async()=>{root.unmount();disposePeers();disposeTerminalRuntime();});host.remove();}
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import __future__
 import ast
 import asyncio
 import base64
@@ -17,8 +18,14 @@ import sys
 import threading
 import time
 import traceback
+import types
+import weakref
+from collections import deque
 from contextlib import suppress
+from itertools import count
 from typing import Any, Mapping
+
+from text_limits import utf8_prefix, utf8_suffix
 
 from .repl_protocol import (
     DEFAULT_MAX_REPL_FRAME_BYTES,
@@ -34,6 +41,10 @@ from .worker_context import WorkerContext
 
 _ADMISSION_SCHEMA = "variant1.kernel-execution-admission.v1"
 _EOF = object()
+_FUTURE_FLAGS = sum(getattr(__future__, name).compiler_flag for name in __future__.all_feature_names)
+_ORDERED_OUTPUT = {
+    "stdout", "stderr", "result", "display", "update_display", "clear_output", "error",
+}
 
 
 def _positive_env_int(name: str, default: int) -> int:
@@ -51,10 +62,13 @@ class _ProtocolEmitter:
         self.writer = JsonLineWriter(
             stream, max_bytes=self.max_frame_bytes
         )
+        self.output_positions = count(1)
 
     def emit(
         self, frame_type: str, request_id: str | None = None, **fields: Any
     ) -> None:
+        if frame_type in _ORDERED_OUTPUT and "output_position" not in fields:
+            fields["output_position"] = next(self.output_positions)
         self.writer.write(event_frame(request_id, frame_type, **fields))
 
 
@@ -181,15 +195,21 @@ class _EventTextStream(io.TextIOBase):
             return 0
         raw = text.encode("utf-8", errors="replace")
         request_id = self.context.current_request_id()
-        raw = self.budget.admit(request_id, raw)
-        with self._lock:
-            if self._pending and request_id != self._pending_id:
-                self._flush_pending(force=True)
-            if request_id != self._pending_id:
-                self._pending_id = request_id
-                self._emitted_for_id = False
-            self._pending += raw
-            self._flush_pending()
+        with self.budget.write_lock:
+            self.budget.switch_to(self)
+            head, tail = self.budget.split(request_id, raw)
+            with self._lock:
+                if self._pending and request_id != self._pending_id:
+                    self._flush_pending(force=True)
+                if request_id != self._pending_id:
+                    self._pending_id = request_id
+                    self._emitted_for_id = False
+                self._pending += head
+                self._flush_pending(
+                    force=bool(tail) or b"\n" in head and self.budget.background(request_id)
+                )
+            if tail:
+                self.budget.retain_tail(self, tail)
         return len(text)
 
 
@@ -210,29 +230,101 @@ class _EventBinaryStream(io.RawIOBase):
 
 
 class _CellStreamBudget:
-    def __init__(self, max_bytes: int) -> None:
+    def __init__(self, max_bytes: int, *, background=lambda _request: False) -> None:
         self.max_bytes = max(1, int(max_bytes))
+        self.tail_cap = self.max_bytes // 4
         self.request_id: str | None = None
-        self.remaining = self.max_bytes
-        self.marker_emitted = False
-        self._lock = threading.Lock()
+        self.head_room = self.max_bytes - self.tail_cap
+        self.tail_seen = 0
+        self.tail_size = 0
+        self.tail = deque()
+        self.background_id: str | None = None
+        self.background_room = self.max_bytes
+        self.write_lock = threading.RLock()
+        self.background = background
+        self.current_stream: _EventTextStream | None = None
 
-    def admit(self, request_id: str | None, raw: bytes) -> bytes:
+    def switch_to(self, stream: _EventTextStream) -> None:
+        if self.current_stream is not stream:
+            self.flush()
+            self.current_stream = stream
+
+    def flush(self) -> None:
+        with self.write_lock:
+            if self.current_stream is not None:
+                self.current_stream.flush()
+
+    def split(self, request_id: str | None, raw: bytes) -> tuple[bytes, bytes]:
         if request_id is None:
-            return raw
-        with self._lock:
-            if request_id != self.request_id:
-                self.request_id = request_id
-                self.remaining = self.max_bytes
-                self.marker_emitted = False
-            admitted = raw[: self.remaining]
-            self.remaining -= len(admitted)
-            if len(admitted) < len(raw) and not self.marker_emitted:
-                admitted += (
-                    b"\n[worker stream output capped before REPL transport]\n"
-                )
-                self.marker_emitted = True
-            return admitted
+            return raw, b""
+        if self.background(request_id):
+            if request_id != self.background_id:
+                self.background_id = request_id
+                self.background_room = self.max_bytes
+            head = utf8_prefix(raw, self.background_room)
+            self.background_room -= len(head)
+            return head, b""
+        if request_id != self.request_id:
+            self.finish(self.request_id)
+            self.request_id = request_id
+        head = utf8_prefix(raw, self.head_room)
+        self.head_room = self.head_room - len(head) if len(head) == len(raw) else 0
+        return head, raw[len(head):]
+
+    def retain_tail(self, stream: _EventTextStream, raw: bytes) -> None:
+        self.tail_seen += len(raw)
+        raw = utf8_suffix(raw, self.tail_cap)
+        if not raw:
+            return
+        position = next(stream.emitter.output_positions)
+        if self.tail:
+            last_stream, last_position, last_raw = self.tail[-1]
+            if last_stream is stream and position == last_position + 1 and len(last_raw) + len(raw) <= stream.chunk_bytes:
+                self.tail.pop()
+                self.tail_size -= len(last_raw)
+                raw = last_raw + raw
+        self.tail.append((stream, position, raw))
+        self.tail_size += len(raw)
+        # A run of tiny writes alternating stdout and stderr also stays bounded.
+        while self.tail_size > self.tail_cap or len(self.tail) > 256:
+            first_stream, first_position, first_raw = self.tail.popleft()
+            self.tail_size -= len(first_raw)
+            if len(self.tail) < 256:
+                retained = utf8_suffix(first_raw, self.tail_cap - self.tail_size)
+                if retained:
+                    self.tail.appendleft((first_stream, first_position, retained))
+                    self.tail_size += len(retained)
+
+    def finish(self, request_id: str | None) -> None:
+        with self.write_lock:
+            self.flush()
+            if not request_id or request_id != self.request_id:
+                return
+            omitted = self.tail_seen - self.tail_size
+            # Samples are sent on settlement, with their original positions
+            # relative to display and clear-output frames sent live.
+            pending = self.tail
+            if omitted and not pending and self.current_stream is not None:
+                stream = self.current_stream
+                pending.append((stream, next(stream.emitter.output_positions), b""))
+            while pending:
+                stream, position, raw = pending.popleft()
+                offset = 0
+                while offset == 0 or offset < len(raw):
+                    size = stream._utf8_prefix_size(
+                        raw[offset:offset + stream.chunk_bytes + 4], stream.chunk_bytes,
+                    )
+                    stream.emitter.emit(
+                        stream.kind, request_id,
+                        text=raw[offset:offset + size].decode("utf-8"),
+                        output_position=position, deferred=True,
+                        worker_dropped_bytes=omitted,
+                    )
+                    offset += size
+                    omitted = 0
+            self.request_id = None
+            self.head_room = self.max_bytes - self.tail_cap
+            self.tail_seen = self.tail_size = 0
 
 
 def _drain_raw_fd(
@@ -433,8 +525,9 @@ def _clean_traceback(exc: BaseException, filename: str) -> list[str]:
     return [str(line).rstrip("\n") for line in lines[-24:]]
 
 
-def _compile_cell(source: str, filename: str) -> tuple[Any, bool]:
-    tree = ast.parse(source, filename=filename, mode="exec")
+def _compile_cell(source: str, filename: str, future_flags: int = 0) -> tuple[Any, bool]:
+    flags = ast.PyCF_ALLOW_TOP_LEVEL_AWAIT | future_flags
+    tree = compile(source, filename, "exec", flags=flags | ast.PyCF_ONLY_AST, dont_inherit=True)
     has_result = bool(tree.body and isinstance(tree.body[-1], ast.Expr))
     if has_result:
         expression = tree.body[-1]
@@ -449,10 +542,30 @@ def _compile_cell(source: str, filename: str) -> tuple[Any, bool]:
         tree,
         filename,
         "exec",
-        flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT,
+        flags=flags,
         dont_inherit=True,
     )
     return compiled, has_result
+
+
+def _retain_cell_source(code: types.CodeType, source: str) -> None:
+    """Keep one source entry as long as any compiled frame or nested function uses it."""
+    filename = code.co_filename
+    linecache.cache[filename] = (len(source), None, source.splitlines(keepends=True), filename)
+    remaining = 0
+
+    def released():
+        nonlocal remaining
+        remaining -= 1
+        if remaining == 0:
+            linecache.cache.pop(filename, None)
+
+    pending = [code]
+    while pending:
+        current = pending.pop()
+        remaining += 1
+        weakref.finalize(current, released)
+        pending.extend(item for item in current.co_consts if isinstance(item, types.CodeType))
 
 
 class _DisplayHandle:
@@ -517,6 +630,7 @@ class ReplWorker:
         self._signal_target = ""
         self._active_phase = "idle"
         self.execution_count = 0
+        self.future_flags = 0
         self.stopping = False
         self.diagnostics = str(
             os.environ.get("VARIANT1_REPL_DIAGNOSTICS") or ""
@@ -739,7 +853,9 @@ class ReplWorker:
         from .worker_bridge import install_worker_namespace
 
         install_worker_namespace(self.context)
-        stream_budget = _CellStreamBudget(self.stream_cell_bytes)
+        stream_budget = self.stream_budget = _CellStreamBudget(
+            self.stream_cell_bytes, background=lambda request: not request or request != self.active_id
+        )
         stdout = _EventTextStream(
             self.context,
             self.emitter,
@@ -779,6 +895,7 @@ class ReplWorker:
                 )
                 if metadata:
                     clean_metadata.update(_strict_copy(dict(metadata)))
+            stream_budget.flush()
             self.emitter.emit(
                 "update_display" if update else "display",
                 self.context.current_request_id(),
@@ -791,6 +908,7 @@ class ReplWorker:
             return None
 
         def clear_output(*, wait: bool = False) -> None:
+            stream_budget.flush()
             self.emitter.emit(
                 "clear_output",
                 self.context.current_request_id(),
@@ -854,19 +972,15 @@ class ReplWorker:
             f"<variant1-cell:{self.generation}:{self.execution_count}:"
             f"{request_id}>"
         )
-        linecache.cache[filename] = (
-            len(source),
-            None,
-            source.splitlines(keepends=True),
-            filename,
-        )
         admission_token = self.context.bind_admission(admission)
         self.context.bridge.bind_execution_origin()
         self.context.capture_namespace_before()
         status = "ok"
         error: dict[str, Any] | None = None
         try:
-            compiled, has_result = _compile_cell(source, filename)
+            compiled, has_result = _compile_cell(source, filename, self.future_flags)
+            self.future_flags |= compiled.co_flags & _FUTURE_FLAGS
+            _retain_cell_source(compiled, source)
             outcome = eval(compiled, self.context.namespace, self.context.namespace)
             if inspect.isawaitable(outcome):
                 self.control_read_allowed.set()
@@ -877,6 +991,7 @@ class ReplWorker:
                 bundle, metadata = _mime_bundle(
                     value, max_bytes=self.rich_message_bytes
                 )
+                self.stream_budget.flush()
                 self.emitter.emit(
                     "result",
                     request_id,
@@ -896,6 +1011,7 @@ class ReplWorker:
             name = type(exc).__name__
             value = _safe_exception_text(exc)
             trace = _clean_traceback(exc, filename)
+            self.stream_budget.flush()
             self.emitter.emit(
                 "error",
                 request_id,
@@ -916,6 +1032,7 @@ class ReplWorker:
             if self.active_id == request_id:
                 self._active_phase = "finishing"
             self._diagnostic("post:flush:start")
+            self.stream_budget.finish(request_id)
             with suppress(Exception):
                 sys.stdout.flush()
             with suppress(Exception):

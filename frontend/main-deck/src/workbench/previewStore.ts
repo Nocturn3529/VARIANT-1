@@ -26,6 +26,8 @@ export type PreviewTab = Readonly<{
   target: PreviewTarget;
   dirty?: boolean;
   navigation?: {revision: number; url: string};
+  /** Last top-level navigation the guest committed, including history navigation. */
+  committedUrl?: string;
   viewport?: ViewportSize;
   /** Opened by the agent: temporary unless marked; the user's tabs never auto-close. */
   origin?: "agent";
@@ -62,6 +64,8 @@ function persistedTabs(): PreviewTab[] {
       if (!target) return [];
       const kind = target?.kind;
       if ((kind !== "url" && kind !== "file" && kind !== "directory") || typeof tab.id !== "string") return [];
+      const committedUrl = kind === "url" ? safePageUrl(tab.committedUrl) : "";
+      const restoredUrl = kind === "url" ? committedUrl || safePageUrl(target.url) || "about:blank" : undefined;
       let viewport: ViewportSize | undefined;
       try { if (kind === "url" && tab.viewport) viewport = parseBrowserViewport(tab.viewport as Record<string, unknown>) || undefined; } catch { /* Reset malformed saved sizes. */ }
       const mark = tab.agentMark as Record<string, unknown> | undefined;
@@ -69,14 +73,15 @@ function persistedTabs(): PreviewTab[] {
       return [{
         id: tab.id,
         ownerChatId: String(tab.ownerChatId || ""),
+        ...(committedUrl ? {committedUrl} : {}),
         viewport,
         ...(agent ? {origin: "agent" as const, agentRunId: tab.agentRunId as string,
           ...((mark?.kind === "deliverable" || mark?.kind === "handoff") && typeof mark.runId === "string"
             ? {agentMark: {kind: mark.kind, runId: mark.runId}} : {})} : {}),
         target: {
           kind,
-          source: String(target.source || target.url || ""),
-          url: String(target.url || ""),
+          source: restoredUrl ?? String(target.source || target.url || ""),
+          url: restoredUrl ?? String(target.url || ""),
           label: String(target.label || (kind === "url" ? "Browser" : "Preview")),
           path: typeof target.path === "string" ? target.path : undefined,
           mediaType: typeof target.mediaType === "string" ? target.mediaType : undefined,
@@ -101,7 +106,7 @@ function persist(tabs: readonly PreviewTab[]): void {
   try {
     window.localStorage?.setItem(STORAGE_KEY, JSON.stringify(
       tabs.filter(tab => tab.target.kind === "url" || tab.target.kind === "file" || tab.target.kind === "directory")
-        .map(tab => ({...tab, dirty: false, target: {...tab.target, content: undefined}})),
+        .map(tab => ({...tab, navigation: undefined, dirty: false, target: {...tab.target, content: undefined}})),
     ));
   } catch {
     // Persistence is optional.
@@ -164,6 +169,15 @@ export function openPreview(target: PreviewTarget, options: {newBrowser?: boolea
   return id;
 }
 
+function safePageUrl(value: unknown): string {
+  if (value === "about:blank") return value;
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password ? url.href : "";
+  } catch { return ""; }
+}
+
 export function allowedBrowserUrl(value: unknown): string {
   const raw = String(value || "").trim();
   if (!raw || raw.toLowerCase() === "about:blank") return "about:blank";
@@ -171,16 +185,7 @@ export function allowedBrowserUrl(value: unknown): string {
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw)
     ? raw
     : (raw.includes(".") && !raw.includes(" ") ? `https://${raw}` : "");
-  if (withScheme) {
-    try {
-      const parsed = new URL(withScheme);
-      if ((parsed.protocol === "http:" || parsed.protocol === "https:")
-        && !parsed.username && !parsed.password) {
-        return parsed.toString();
-      }
-    } catch { /* fall through to search */ }
-    return "about:blank";
-  }
+  if (withScheme) return safePageUrl(withScheme) || "about:blank";
   return `https://www.google.com/search?q=${encodeURIComponent(raw)}`;
 }
 
@@ -276,8 +281,8 @@ export function openFilePreview(path: string, label?: string, ownerChatId?:strin
   },{ownerChatId});
 }
 
-export function openOutputPreview(target: Omit<PreviewTarget, "kind">): string {
-  return openPreview({...target, kind: "output"});
+export function openOutputPreview(target: Omit<PreviewTarget, "kind">, ownerChatId?: string): string {
+  return openPreview({...target, kind: "output"}, {ownerChatId});
 }
 
 export function selectPreview(id: string): void {
@@ -286,16 +291,35 @@ export function selectPreview(id: string): void {
 
 const closedTabs: PreviewTab[] = [];
 
-export function canClosePreviewTabs(ids:readonly string[]):boolean {
+export function previewPaneTitle(tab: PreviewTab): string {
+  if (tab.target.kind === "url") {
+    const page = getPreviewState().pages[tab.id];
+    if (page?.title && page.title !== page.url) return page.title;
+    try { return new URL(page?.url || tab.target.url).hostname.replace(/^www\./, "") || "Browser"; }
+    catch { return "Browser"; }
+  }
+  return tab.target.label || tab.target.path?.split(/[\\/]/).pop() || "Preview";
+}
+
+export function canClosePreviewTabs(ids?: readonly string[], confirmDiscard: (message: string) => boolean = message => window.confirm(message)):boolean {
   const state = store.getState();
-  const closing = state.tabs.filter(tab => ids.includes(tab.id));
+  const closing = ids ? state.tabs.filter(tab => ids.includes(tab.id)) : state.tabs;
   if (closing.some(tab => getFileDocument(tab.id)?.saving)) {
     notifyToast("Wait for the file to finish saving");
     return false;
   }
   const dirty = closing.filter(tab => getFileDocument(tab.id) ? isFileDocumentDirty(tab.id) : tab.dirty);
-  if (dirty.length && !window.confirm(`Discard unsaved changes in ${dirty.map(tab => tab.target.label).join(", ")}?`)) return false;
+  if (dirty.length && !confirmDiscard(`Discard unsaved changes in ${dirty.map(tab => tab.target.label).join(", ")}?`)) return false;
   return true;
+}
+
+export function guardEditorUnload(view: Window, confirmDiscard?: (message: string) => boolean) {
+  view.addEventListener("beforeunload", event => {
+    if (!canClosePreviewTabs(undefined, confirmDiscard)) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
 }
 function closeTabs(ids: readonly string[],confirmed=false): boolean {
   if(!confirmed && !canClosePreviewTabs(ids))return false;
@@ -357,11 +381,15 @@ export function setPreviewDirty(id: string, dirty: boolean): void {
   patch({tabs: state.tabs.map(tab => tab.id === id ? {...tab, dirty} : tab)});
 }
 
-export function noteBrowserPage(id: string, page: BrowserPageState): void {
+export function noteBrowserPage(id: string, page: BrowserPageState, committed = false): void {
   const state = store.getState();
+  const url = committed ? safePageUrl(page.url) : "";
+  const changed = !!url && state.tabs.some(tab => tab.id === id && tab.target.kind === "url" && tab.committedUrl !== url);
   const previous=state.pages[id];
-  if(previous && previous.url===page.url && previous.title===page.title && previous.loading===page.loading && previous.canGoBack===page.canGoBack && previous.canGoForward===page.canGoForward)return;
-  patch({pages: {...state.pages, [id]: page}});
+  if(!changed && previous && previous.url===page.url && previous.title===page.title && previous.loading===page.loading && previous.canGoBack===page.canGoBack && previous.canGoForward===page.canGoForward)return;
+  patch({pages: {...state.pages, [id]: page},
+    ...(changed ? {tabs: state.tabs.map(tab => tab.id === id ? {...tab, committedUrl: url} : tab)} : {}),
+  });
 }
 
 export function openDirectoryPreview(path: string, ownerChatId = getSessionState().displayedSessionId || ""): string {

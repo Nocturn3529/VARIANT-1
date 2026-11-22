@@ -214,17 +214,22 @@ function defaultEncode(
   return audioBufferToBase64(encodeWav(chunks, inputRate, outputRate));
 }
 
+type Capture = {
+  stream?: MediaStream;
+  context?: AudioContextLike;
+  source?: SourceNode;
+  worklet?: CaptureNode;
+  gain?: GainNodeLike;
+  timer?: ReturnType<typeof setTimeout>;
+  tracks: Array<{track: MediaStreamTrack; listener: () => void}>;
+};
+
 export class MicController {
   private readonly options: Required<
     Pick<MicControllerOptions, "isOpen" | "send" | "notify" | "onPhase">
   > & MicControllerOptions;
   private phase: MicPhase = "idle";
-  private operation = 0;
-  private stream: MediaStream | null = null;
-  private audioContext: AudioContextLike | null = null;
-  private source: SourceNode | null = null;
-  private worklet: CaptureNode | null = null;
-  private gain: GainNodeLike | null = null;
+  private capture: Capture | null = null;
   private chunks: Float32Array[] = [];
   private sampleRate = 48_000;
   private silenceMs = 0;
@@ -234,12 +239,6 @@ export class MicController {
   private pendingRequestId = "";
   private pendingSessionId = "";
   private captureSessionId = "";
-  private maxTimer: ReturnType<typeof setTimeout> | null = null;
-  private trackEndListeners: Array<{
-    track: MediaStreamTrack;
-    listener: () => void;
-  }> = [];
-  private deviceChangeListener: (() => void) | null = null;
 
   constructor(options: MicControllerOptions) {
     this.options = options;
@@ -274,7 +273,8 @@ export class MicController {
       return;
     }
     this.options.stopSpeech?.();
-    const operation = ++this.operation;
+    const capture: Capture = {tracks: []};
+    this.capture = capture;
     this.setPhase("requesting");
 
     try {
@@ -288,36 +288,31 @@ export class MicController {
           },
         }))
       )();
-      if (operation !== this.operation) {
+      if (capture !== this.capture) {
         stream.getTracks().forEach(track => track.stop());
         return;
       }
-      this.stream = stream;
-      this.watchCaptureLiveness(stream);
+      capture.stream = stream;
+      this.watchCaptureLiveness(capture, stream);
       const context = (
         this.options.createAudioContext ?? defaultAudioContext
       )();
-      this.audioContext = context;
+      capture.context = context;
       if (context.state === "suspended") await context.resume();
-      if (operation !== this.operation) {
-        this.cleanupGraph();
-        return;
-      }
+      if (capture !== this.capture) return;
       this.sampleRate = context.sampleRate;
-      this.source = context.createMediaStreamSource(stream);
+      capture.source = context.createMediaStreamSource(stream);
       this.chunks = [];
       this.silenceMs = 0;
       this.spoke = false;
       this.startedAt = (this.options.now ?? (() => performance.now()))();
       await (this.options.loadWorklet ?? loadMicWorklet)(context);
-      if (operation !== this.operation) {
-        this.cleanupGraph();
-        return;
-      }
-      this.worklet = (
+      if (capture !== this.capture) return;
+      capture.worklet = (
         this.options.createWorkletNode ?? defaultWorkletNode
       )(context);
-      this.worklet.port.onmessage = event => {
+      capture.worklet.port.onmessage = event => {
+        if (capture !== this.capture) return;
         const data = event.data as {
           type?: string;
           samples?: Float32Array;
@@ -331,17 +326,17 @@ export class MicController {
           Number(data.frames) || data.samples?.length || 0,
         );
       };
-      this.gain = context.createGain();
-      this.gain.gain.value = 0;
-      this.source.connect(this.worklet);
-      this.worklet.connect(this.gain);
-      this.gain.connect(context.destination);
-      this.setPhase("recording");
-      this.maxTimer = (this.options.setTimer ?? setTimeout)(() => {
-        if (this.phase === "recording") this.stop(true);
+      capture.gain = context.createGain();
+      capture.gain.gain.value = 0;
+      capture.source.connect(capture.worklet);
+      capture.worklet.connect(capture.gain);
+      capture.gain.connect(context.destination);
+      capture.timer = (this.options.setTimer ?? setTimeout)(() => {
+        if (capture === this.capture && this.phase === "recording") this.stop(true);
       }, MIC_MAX_MS);
+      this.setPhase("recording");
     } catch (error) {
-      if (operation !== this.operation) return;
+      if (capture !== this.capture) return;
       this.cleanupGraph();
       const message = error instanceof DOMException && error.name === "NotAllowedError"
         ? "Couldn't access the microphone"
@@ -357,13 +352,11 @@ export class MicController {
       return;
     }
     if (this.phase === "requesting") {
-      this.operation += 1;
       this.cleanupGraph();
       this.setPhase("idle");
       return;
     }
     if (this.phase !== "recording") return;
-    this.operation += 1;
     const rate = this.sampleRate;
     const captured = this.chunks;
     const hasSpeech = this.spoke;
@@ -413,7 +406,6 @@ export class MicController {
   }
 
   dispose(): void {
-    this.operation += 1;
     this.captureSessionId = "";
     this.pendingRequestId = "";
     this.pendingSessionId = "";
@@ -446,39 +438,25 @@ export class MicController {
   }
 
   private cleanupGraph(): void {
-    if (this.maxTimer !== null) {
-      (this.options.clearTimer ?? clearTimeout)(this.maxTimer);
-      this.maxTimer = null;
-    }
-    for (const {track, listener} of this.trackEndListeners) {
+    const capture = this.capture;
+    this.capture = null;
+    if (!capture) return;
+    if (capture.timer !== undefined) (this.options.clearTimer ?? clearTimeout)(capture.timer);
+    for (const {track, listener} of capture.tracks) {
       try { track.removeEventListener?.("ended", listener); } catch {}
     }
-    this.trackEndListeners = [];
-    if (this.deviceChangeListener) {
-      try {
-        navigator.mediaDevices?.removeEventListener?.(
-          "devicechange", this.deviceChangeListener,
-        );
-      } catch {}
-      this.deviceChangeListener = null;
-    }
     try {
-      if (this.worklet) this.worklet.port.onmessage = null;
+      if (capture.worklet) capture.worklet.port.onmessage = null;
     } catch {}
-    try { this.worklet?.disconnect(); } catch {}
-    try { this.gain?.disconnect(); } catch {}
-    try { this.source?.disconnect(); } catch {}
+    try { capture.worklet?.disconnect(); } catch {}
+    try { capture.gain?.disconnect(); } catch {}
+    try { capture.source?.disconnect(); } catch {}
     try {
-      this.stream?.getTracks().forEach(track => track.stop());
+      capture.stream?.getTracks().forEach(track => track.stop());
     } catch {}
     try {
-      void this.audioContext?.close();
+      void capture.context?.close().catch(() => {});
     } catch {}
-    this.worklet = null;
-    this.gain = null;
-    this.source = null;
-    this.stream = null;
-    this.audioContext = null;
   }
 
   private cancelTranscription(): void {
@@ -496,10 +474,9 @@ export class MicController {
     });
   }
 
-  private watchCaptureLiveness(stream: MediaStream): void {
+  private watchCaptureLiveness(capture: Capture, stream: MediaStream): void {
     const lost = () => {
-      if (this.phase !== "requesting" && this.phase !== "recording") return;
-      this.operation += 1;
+      if (capture !== this.capture) return;
       this.chunks = [];
       this.cleanupGraph();
       const message = "Microphone device became unavailable";
@@ -510,7 +487,7 @@ export class MicController {
       if (typeof track.addEventListener !== "function") continue;
       const listener = () => lost();
       track.addEventListener("ended", listener, {once: true});
-      this.trackEndListeners.push({track, listener});
+      capture.tracks.push({track, listener});
     }
     /* Track `ended` already covers the capture device disappearing.
        `devicechange` also fires for headphones/Bluetooth and must not abort

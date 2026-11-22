@@ -66,7 +66,8 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
       publish(row, 'did-start-navigation', {url,isInPlace,isMainFrame});
     });
     wc.on('dom-ready', () => { row.ready = true; publish(row, 'dom-ready'); });
-    for (const name of ['did-start-loading','did-stop-loading','did-navigate','did-navigate-in-page','page-title-updated','devtools-opened','devtools-closed']) {
+    wc.on('did-navigate-in-page', (_event, url, isMainFrame) => publish(row, 'did-navigate-in-page', {url, isMainFrame}));
+    for (const name of ['did-start-loading','did-stop-loading','did-navigate','page-title-updated','devtools-opened','devtools-closed']) {
       wc.on(name, () => publish(row, name));
     }
     wc.on('did-fail-load', (_event,errorCode,errorDescription,validatedURL,isMainFrame) => publish(row,'did-fail-load',{errorCode,errorDescription,validatedURL,isMainFrame}));
@@ -175,10 +176,11 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
     return value;
   }
   async function command(event, input) {
+    let row;
     try {
       if (!isTrustedIpcSender(event,getDeckWindow()) || typeof input?.tabId !== 'string' || !input.tabId || input.tabId.length > 512) throw new Error('untrusted_browser_request');
       const owner = event.sender;
-      let row = tabs.get(key(owner,input.tabId));
+      row = tabs.get(key(owner,input.tabId));
       if (input.action === 'attach') {
         if (typeof input.attachmentId !== 'string' || !input.attachmentId || input.attachmentId.length > 256) throw new Error('invalid_browser_attachment');
         const host = input.windowId ? getNativeWindow(input.windowId,owner) : BrowserWindow.fromWebContents(owner);
@@ -193,7 +195,7 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
         if (created) void row.view.webContents.loadURL(input.url).catch(error=>log('[browser-view] initial navigation: '+error.message));
         return {ok:true,created,state:state(row)};
       }
-      if (!row || !alive(row.view.webContents)) throw new Error('browser_tab_not_found');
+      if (!row || !alive(row.view.webContents)) return {ok:false,code:'GUEST_REPLACED',error:'browser_tab_not_found'};
       if (input.action === 'layout' || input.action === 'detach') {
         if (input.attachmentId !== row.attachmentId) return {ok:false,error:'stale_browser_attachment'};
         if (input.action === 'detach') { park(row); row.attachmentId = ''; }
@@ -211,7 +213,12 @@ function createBrowserViewManager({getDeckWindow, getNativeWindow, isTrustedIpcS
         return {ok:true,value:value === undefined ? null : value,state:alive(row.view.webContents) ? state(row) : null};
       }
       throw new Error('unknown_browser_action');
-    } catch (error) { return {ok:false,error:String(error.message || error)}; }
+    } catch (error) {
+      if (row && (!alive(row.view.webContents) || row.view.webContents.isCrashed?.())) {
+        return {ok:false,code:'GUEST_STOPPED',error:'Browser renderer stopped'};
+      }
+      return {ok:false,error:String(error.message || error)};
+    }
   }
   ipcMain.handle('workbench:browser:view',command);
   return {command, lendCaptureSurface, getGuest(id) {

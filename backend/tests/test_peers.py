@@ -335,9 +335,14 @@ async def test_wait_returns_for_inbound_attention_instead_of_deadlocking(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_mutual_requests_committed_before_wait_are_attention(tmp_path):
+@pytest.mark.parametrize("older_notices", [0, 50])
+async def test_mutual_requests_committed_before_wait_are_attention(tmp_path, older_notices):
     service, runtimes, _sessions, _chat, first, second = _stack(tmp_path)
     try:
+        for index in range(older_notices):
+            for origin, target in ((first, second), (second, first)):
+                await service.send(f"chat:{origin}", f"chat:{target}", "Older notice",
+                                   message_kind="notice", request_id=f"notice-{index}")
         first_request = await service.send(
             f"chat:{first}", f"chat:{second}", "Need B", request_id="mutual-a",
         )
