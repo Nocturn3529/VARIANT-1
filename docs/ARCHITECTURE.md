@@ -21,6 +21,18 @@ backend service responsible for a resource remains its authoritative owner.
 New integrations should extend this path rather than introduce competing tool
 loops or state controllers.
 
+The in-process file tools use the same mounted proxy path. `grep` supports
+explicit literal and regex modes, including a distinct error for invalid regex.
+The default search limit is 2,000,000 bytes per file. An exact file search can
+request a higher limit up to 64 MiB. Search results identify incomplete coverage.
+An `apply_patch` replacement can require an expected match count before the
+ordered batch changes any files.
+Replacements preserve the file's existing UTF-8 bytes outside the edit and
+retain POSIX mode bits. The rollback journal identifies the actual publication
+for each path. Recovery reverts a replacement only while its identity and bytes
+match the recorded publication. It retains older interrupted journals without
+publication evidence for review.
+
 The desktop frontend is in `frontend/main-deck/src`. Electron lifecycle, IPC,
 and native-window modules live at the repository root. Backend domain packages
 include `kernel_runtime`, `session_catalog`, `session_runtime`, `browser_fabric`,
@@ -34,6 +46,15 @@ crash without replaying input whose effect is unknown. Each run drives its own
 driver session, ended with the run so later input for it is refused. The driver
 receives an allowlisted environment without provider keys, and its upstream
 telemetry is off unless `VARIANT1_CUA_TELEMETRY=1`.
+
+Desktop Fabric requests structured accessibility rows and a screenshot from
+one driver snapshot, so control tokens refer to the view the model sees.
+Static labels remain readable for verification. Only controls with driver
+tokens can receive element-targeted input. The control page reports whether
+the driver returned the full accessibility tree and its static labels.
+Action receipts record the selected delivery. Background and semantic actions
+use fresh evidence from the target window. Physical input also checks current
+foreground ownership before recording a verified effect.
 
 On macOS the driver ships as trycua's signed `CuaDriver.app`, because macOS gives
 Accessibility and Screen Recording to the responsible app and VARIANT-1 has no
@@ -60,6 +81,11 @@ outgoing request use the same effective reasoning rule, with explicit profile
 rules taking precedence. Saved models that leave the catalog appear unavailable.
 The pinned action surface still requires a support-matrix rule that matches
 the route.
+
+On the Nous LongCat 2.5 Free Chat Completions routes, an oversized Python
+call that the runtime rejects before execution has a compact representation
+in later model requests. The saved run keeps the original arguments and
+correlated error. Provider replay that requires exact call arguments keeps them.
 
 `session_catalog.service` publishes categories, mounts, and disclosure; its
 mutation manager delegates disposable execution to the mutation worker client.
@@ -295,6 +321,8 @@ Native child results carry execution status, terminal reason and error separatel
 from their text and self-reported objective outcome. Output-limit failures retain
 partial reports and the native run identity; inspection and the Agent team detail
 show those diagnostics. A restart clears the prior generation's terminal reason.
+Only a running child sees `session.report_outcome` in its prompt, tool search and
+Python namespace. The child service verifies the native run on each report.
 
 Agent command/process modes use noninteractive editor, pager, Git prompt, and
 color defaults; explicit environment settings override them. Interactive
@@ -302,11 +330,22 @@ terminal profiles keep their existing behavior. Windows PowerShell and
 taskkill helpers resolve from absolute system paths, avoiding project-directory
 lookup. This adds no dirty-worktree guard or destructive Git command policy.
 
+Managed process readiness refers to a running attempt. Health observations are
+applied only to the attempt that was checked. Scheduled automations start their
+first eligible window at creation or when the trigger changes. An already
+accepted occurrence retains its original settings.
+
 Stream framing uses consumed/search cursors and amortized buffer compaction.
 Valid UTF-8 is clipped at complete characters with byte accounting. Bounded
 diagnostics and degraded broker results expose omissions. MCP inventories have
 page, item, and elapsed limits; a failed refresh preserves the last good catalog
-rather than publishing a partial replacement.
+rather than publishing a partial replacement. A refresh commits only while its
+original connection still owns the catalog.
+
+Messaging recovery checks the stored incoming envelope against the current
+allowlist and prefix, then routes the normalized prompt saved at admission.
+Telegram and Discord checkpoint each confirmed reply chunk so a retry resumes
+after the durable delivery cursor.
 
 Compaction labels matched tool outcomes with names and failure state. Its
 file-state section has a character budget, retains modified paths before reads,
@@ -556,6 +595,12 @@ start a new generation after cancellation.
 The runtime operates with the current user's permissions; it is not a security
 sandbox. ASTB controls capability discovery, not ordinary Python's underlying
 authority. A selected project directory is not a filesystem security boundary.
+One-shot command results report the launch directory and its relation to the
+active project when known. An existing literal relative `cwd` takes precedence
+over the project-name shorthand. Timeout errors identify the durable process
+and its observed state. Printed process listings include the handle's stable ID.
+Terminal resize receipts carry the previous, requested,
+and effective sizes. The resize event records both the old and new geometry.
 
 Stop, Steer, active cells, background Python work, and durably admitted jobs have
 distinct lifecycles. Cancellation may require terminating a blocked worker and

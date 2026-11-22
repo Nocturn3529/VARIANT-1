@@ -1,6 +1,10 @@
 import asyncio
+from contextlib import closing
+import json
+import sqlite3
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from tests.support.conversation_sessions import open_sessions
@@ -8,6 +12,7 @@ from messaging_gateway import GatewayAdapter, MessageEnvelope, MessagingGateway
 from messaging_gateway import MessagingIngressOutcomeUnknown
 import host_gateway
 from messaging_gateway.media import stage_attachment
+import ws_surface
 
 
 class FakeAdapter(GatewayAdapter):
@@ -58,6 +63,83 @@ async def test_gateway_is_deny_by_default_and_deduplicates(tmp_path):
     assert calls == ["hello"]
     assert adapter.sent == [("9", "reply:hello")]
     assert gateway.public_state()["stats"]["duplicates"] == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current_prefix", ["!m", "!changed"])
+async def test_recovery_authorizes_original_prefix_and_routes_admitted_text_once(tmp_path, current_prefix):
+    path = str(tmp_path / "messaging.json")
+    first = MessagingGateway(path)
+    first.update(enabled=True)
+    first.update(adapter="fake", values={"enabled": True, "allowed_users": ["7"], "prefix": "!m"})
+    envelope = _envelope(text="  !m recover this")
+    assert first.authorized(envelope)[0]
+    first.ingress.admit(envelope, first.clean_text(envelope))
+
+    reopened = MessagingGateway(path)
+    reopened.register(FakeAdapter(reopened))
+    reopened.update(adapter="fake", values={"prefix": current_prefix})
+    calls = []
+
+    async def route(original, prompt):
+        calls.append((original.text, prompt))
+        return "reply"
+
+    reopened.set_router(route)
+    recovered, = reopened.ingress.recoverable_ingress()
+    assert recovered.text == envelope.text
+    assert await reopened.receive(recovered) is True
+    if current_prefix == "!m":
+        assert await reopened.receive(envelope) is True
+        assert calls == [(envelope.text, "recover this")]
+    else:
+        assert calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("adapter", "width", "field"), [
+    ("telegram", 4000, "text"), ("discord", 1900, "content"),
+])
+async def test_outbox_retries_only_unconfirmed_chunks_after_restart(tmp_path, adapter, width, field):
+    path = str(tmp_path / "messaging.json")
+    prompt = MessageEnvelope(adapter, "one", "room", "allowed", "prepare a long reply")
+    chunks = ["A" * width, "B" * width, "C"]
+    reply = "".join(chunks)
+    issued, accepted, routed = [], [], []
+
+    def deliver(request):
+        if request.url.path.endswith("sendChatAction") or request.url.path.endswith("/typing"):
+            return httpx.Response(200)
+        chunk = json.loads(request.content)[field]
+        issued.append(chunk)
+        if chunk == chunks[1] and issued.count(chunk) == 1:
+            return httpx.Response(429)
+        accepted.append(chunk)
+        return httpx.Response(200)
+
+    async def route(_envelope, text):
+        routed.append(text)
+        return reply
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(deliver)) as client:
+        first = MessagingGateway(path, token_getter=lambda _name: "fixture-token")
+        first.update(enabled=True)
+        first.update(adapter=adapter, values={"enabled": True, "allowed_users": ["allowed"]})
+        first.adapters[adapter].client = client
+        first.set_router(route)
+        assert await first.receive(prompt) is True
+        assert first.ingress.outbound_delivery(prompt) == (reply, width)
+        first.ingress.complete_routed(prompt, reply="late changed reply")
+
+        reopened = MessagingGateway(path, token_getter=lambda _name: "fixture-token")
+        reopened.adapters[adapter].client = client
+        assert reopened.ingress.outbound_delivery(prompt) == (reply, width)
+        assert await reopened._deliver_outbound(prompt) is True
+        assert reopened.ingress.outbound_pending(prompt) == ""
+
+    assert routed == [prompt.text]
+    assert accepted == chunks
+    assert issued == [chunks[0], chunks[1], chunks[1], chunks[2]]
 
 
 @pytest.mark.asyncio
@@ -504,6 +586,156 @@ def test_catalog_fields_normalize_into_live_gateway_configuration(tmp_path):
     )
     assert public["values"]["DISCORD_ALLOWED_USERS"] == "7, 8, 9"
     assert public["values"]["DISCORD_MENTION_ONLY"] is True
+
+
+@pytest.mark.asyncio
+async def test_telegram_outbox_records_http_status_without_the_token(tmp_path, capsys):
+    token = "123456:fixture-only-bot-token"
+    gateway = MessagingGateway(str(tmp_path / "messaging.json"), token_getter=lambda _name: token)
+    telegram = gateway.adapters["telegram"]
+    gateway.update(enabled=True)
+    gateway.update(adapter="telegram", values={"enabled": True, "allowed_users": ["7"]})
+
+    async def route(_envelope, _text):
+        return "durable reply"
+
+    def transport(request):
+        if request.url.path.endswith("/sendMessage"):
+            return httpx.Response(429)
+        return httpx.Response(200)
+
+    gateway.set_router(route)
+    envelope = MessageEnvelope(
+        adapter="telegram", message_id="4", conversation_id="9", user_id="7", text="hello",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(transport)) as client:
+        telegram.client = client
+        assert await gateway.receive(envelope) is True
+
+    expected = "Telegram reply delivery failed (HTTP 429)"
+    with closing(sqlite3.connect(gateway.ingress.path)) as db:
+        assert db.execute("SELECT last_error FROM messaging_outbox").fetchone() == (expected,)
+    state = repr(gateway.public_state())
+    logs = capsys.readouterr().out
+    assert expected in state and expected in logs
+    assert token not in state and token not in logs
+
+
+@pytest.mark.asyncio
+async def test_telegram_poll_failure_reports_status_without_the_token(tmp_path, monkeypatch):
+    token = "123456:fixture-only-bot-token"
+    gateway = MessagingGateway(str(tmp_path / "messaging.json"), token_getter=lambda _name: token)
+    telegram = gateway.adapters["telegram"]
+    attempted = asyncio.Event()
+
+    def transport(_request):
+        attempted.set()
+        return httpx.Response(401)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: client)
+    try:
+        await telegram.start()
+        await asyncio.wait_for(attempted.wait(), timeout=3)
+        assert telegram.last_error == "Telegram polling failed (HTTP 401)"
+        assert token not in repr(gateway.public_state())
+    finally:
+        await telegram.stop()
+
+
+@pytest.mark.asyncio
+async def test_messaging_settings_write_acknowledges_only_persisted_config(tmp_path, monkeypatch):
+    handlers = {}
+    ws_surface.register(lambda name: lambda function: handlers.__setitem__(name, function))
+    gateway = MessagingGateway(str(tmp_path / "messaging.json"))
+    original_save = gateway.save
+    direct, broadcasts = [], []
+
+    async def send(payload):
+        direct.append(payload)
+
+    async def broadcast(payload):
+        broadcasts.append(payload)
+
+    async def refresh():
+        return None
+
+    def fail_save(_config):
+        raise OSError("fixture disk failure")
+
+    monkeypatch.setattr(gateway, "reconcile", refresh)
+    monkeypatch.setattr(gateway, "save", fail_save)
+    srv = SimpleNamespace(gateway=gateway, hub=SimpleNamespace(broadcast=broadcast))
+    socket = SimpleNamespace(send_json=send)
+    handler = handlers["messaging:set"]
+    await handler(srv, socket, None, {"request_id": "bad-save", "enabled": True})
+    assert direct[0] == {
+        "type": "messaging:write_result", "request_id": "bad-save",
+        "operation": "messaging:set", "adapter": "", "field": "",
+        "accepted": False, "error": "Could not save the messaging settings.",
+    }
+    assert gateway.config["enabled"] is False
+    assert broadcasts == []
+
+    monkeypatch.setattr(gateway, "save", original_save)
+    await handler(srv, socket, None, {"request_id": "good-save", "enabled": True})
+    assert direct[-1]["request_id"] == "good-save" and direct[-1]["accepted"] is True
+    assert gateway.config["enabled"] is True
+    assert len(broadcasts) == 1
+
+
+@pytest.mark.asyncio
+async def test_messaging_credentials_reply_correlates_each_field_and_sanitizes_errors(tmp_path, monkeypatch):
+    handlers = {}
+    ws_surface.register(lambda name: lambda function: handlers.__setitem__(name, function))
+    gateway = MessagingGateway(str(tmp_path / "messaging.json"))
+    direct, broadcasts, written = [], [], {}
+    token = "fixture-only-secret"
+
+    def save(adapter, field, value):
+        if field == "rejected":
+            raise ValueError(f"credential store fixture: {value}")
+        written[adapter, field] = value
+
+    def clear(adapter, field):
+        written.pop((adapter, field))
+
+    async def restart():
+        raise RuntimeError(f"adapter restart fixture: {token}")
+
+    async def send(payload):
+        direct.append(payload)
+
+    async def broadcast(payload):
+        broadcasts.append(payload)
+
+    monkeypatch.setattr(gateway, "restart", restart)
+    srv = SimpleNamespace(
+        gateway=gateway, hub=SimpleNamespace(broadcast=broadcast),
+        messaging_credentials=SimpleNamespace(set=save, clear=clear),
+    )
+    socket = SimpleNamespace(send_json=send)
+    set_handler = handlers["messaging:credential:set"]
+    clear_handler = handlers["messaging:credential:clear"]
+    await set_handler(srv, socket, None, {
+        "request_id": "ok", "adapter": "telegram", "field": "token", "value": token,
+    })
+    await set_handler(srv, socket, None, {
+        "request_id": "failed", "adapter": "telegram", "field": "rejected", "value": token,
+    })
+    assert written == {("telegram", "token"): token}
+    await clear_handler(srv, socket, None, {
+        "request_id": "clear", "adapter": "telegram", "field": "token",
+    })
+
+    results = {row["request_id"]: row for row in direct if row.get("type") == "messaging:write_result"}
+    assert results["ok"]["accepted"] is True
+    assert results["ok"]["field"] == "token" and results["ok"]["error"]
+    assert results["failed"]["accepted"] is False and results["failed"]["field"] == "rejected"
+    assert results["clear"]["accepted"] is True and results["clear"]["operation"] == "messaging:credential:clear"
+    assert written == {}
+    assert len(broadcasts) == 2
+    assert token not in repr((direct, broadcasts))
 
 
 @pytest.mark.asyncio

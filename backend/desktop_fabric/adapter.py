@@ -20,6 +20,8 @@ class AdapterObservation:
     uia_generation: int = 0
     completeness: str = "uia-only"
     metadata: dict[str, Any] = field(default_factory=dict)
+    image: AdapterCapture | None = None
+    image_error: str = ""
 
 
 @dataclass(frozen=True, slots=True)

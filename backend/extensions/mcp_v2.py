@@ -486,7 +486,7 @@ class McpV2Service:
                 if isinstance(opened, tuple): server.session, server.stack = opened
                 else: server.session = opened
                 server.status = "connected"
-                await self._refresh_server(server)
+                self._commit_catalog(server, await self._read_catalog(server))
                 await self._restore_subscriptions(server)
             except BaseException as exc:
                 try:
@@ -614,7 +614,7 @@ class McpV2Service:
             seen.add(cursor)
         raise McpV2Error("MCP catalog listing exceeded 100 pages")
 
-    async def _refresh_server(self, server: _Server) -> None:
+    async def _read_catalog(self, server: _Server) -> dict[tuple[str, str], dict[str, Any]]:
         catalog: dict[tuple[str, str], dict[str, Any]] = {}
         operations = (("tool", "list_tools", "tools"), ("resource", "list_resources", "resources"),
                       ("resource_template", "list_resource_templates", "resourceTemplates"),
@@ -643,14 +643,22 @@ class McpV2Service:
                 schema = item.get("inputSchema") or item.get("arguments") or item
                 digest = hashlib.sha256(_stable(schema).encode()).hexdigest()
                 catalog[(kind, name)] = {"kind": kind, "name": name, "descriptor": item, "schema_digest": digest}
+        return catalog
+
+    def _commit_catalog(self, server: _Server, catalog: dict[tuple[str, str], dict[str, Any]]) -> None:
         if catalog != server.catalog: server.revision += 1
         server.catalog = catalog
         self._persist_server(server)
     
     async def refresh(self, server_id: str) -> list[dict[str, Any]]:
         server = self._require(server_id)
-        await self._refresh_server(server)
-        return self.catalog(server_id)
+        catalog = await self._read_catalog(server)
+        lock = self._server_locks.setdefault(server.id, asyncio.Lock())
+        async with lock:
+            if self._require(server_id) is not server:
+                raise StaleMcpLease("MCP server changed during its catalog refresh")
+            self._commit_catalog(server, catalog)
+            return self.catalog(server_id)
 
     async def capabilities_changed(self, server_id: str) -> dict[str, Any]:
         await self.refresh(server_id)

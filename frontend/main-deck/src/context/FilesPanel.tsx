@@ -7,7 +7,7 @@ import {useEffect, useMemo, useRef, useState, type KeyboardEvent} from "react";
 import {PopupMenu} from "../ui/PopupMenu";
 import ignore, {type Ignore} from "ignore";
 import {addChatPathAttachment} from "../chatStore";
-import type {WorkbenchGitFile} from "../types";
+import type {WorkbenchGitStatus} from "../types";
 import {openFilePreview} from "../workbench/previewStore";
 
 type FileEntry = {
@@ -32,10 +32,11 @@ function withTrailingSep(root: string): string {
 }
 
 function relativePath(root: string, fullPath: string): string {
-  const prefix = withTrailingSep(root);
-  return fullPath.toLowerCase().startsWith(prefix.toLowerCase())
-    ? fullPath.slice(prefix.length).replace(/\\/g, "/")
-    : fullPath.replace(/\\/g, "/");
+  const prefix = withTrailingSep(root).replace(/\\/g, "/");
+  const path = fullPath.replace(/\\/g, "/");
+  const windows = /^[a-z]:\//i.test(prefix) || prefix.startsWith("//");
+  const matches = windows ? path.toLowerCase().startsWith(prefix.toLowerCase()) : path.startsWith(prefix);
+  return matches ? path.slice(prefix.length) : path;
 }
 
 function statusLabel(value: string): string {
@@ -60,7 +61,8 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
   const [menu, setMenu] = useState<MenuState>(null);
   const [renaming, setRenaming] = useState("");
   const [renameValue, setRenameValue] = useState("");
-  const [gitFiles, setGitFiles] = useState<WorkbenchGitFile[]>([]);
+  const [gitStatus, setGitStatus] = useState<WorkbenchGitStatus>();
+  const gitRequest = useRef(0);
   const generation = useRef<Record<string, number>>({});
   const ignoreRules = useRef<Map<string, Ignore>>(new Map());
   const treeRef = useRef<HTMLDivElement>(null);
@@ -116,10 +118,10 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
     if (target && rowRefs.current.has(target)) focusRow(target);
   }
 
-  const gitByPath = useMemo(() => new Map(gitFiles.flatMap(file => [
+  const gitByPath = useMemo(() => new Map((gitStatus?.files || []).flatMap(file => [
     [file.path.replace(/\\/g, "/"), file],
     ...(file.originalPath ? [[file.originalPath.replace(/\\/g, "/"), file] as const] : []),
-  ])), [gitFiles]);
+  ])), [gitStatus]);
 
   async function loadDirectory(path: string, replace = false): Promise<void> {
     const token = (generation.current[path] || 0) + 1;
@@ -166,8 +168,9 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
 
   async function refreshGit(path = root): Promise<void> {
     if (!path) return;
+    const request = ++gitRequest.current;
     const status = await api?.getWorkbenchGitStatus?.(path);
-    setGitFiles(status?.ok && Array.isArray(status.files) ? status.files : []);
+    if (request === gitRequest.current) setGitStatus(status?.ok && Array.isArray(status.files) ? status : undefined);
   }
 
   async function refreshAll(): Promise<void> {
@@ -178,9 +181,10 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
   }
 
   useEffect(() => {
-    setRoot(directory); setChildren({}); setExpanded(new Set(directory ? [directory] : []));
+    setRoot(directory); setChildren({}); setExpanded(new Set(directory ? [directory] : [])); setGitStatus(undefined);
     setSelected(""); setError(""); generation.current = {}; ignoreRules.current.clear();
     if(directory) { void loadDirectory(directory, true); void refreshGit(directory); }
+    return () => { gitRequest.current++; };
   }, [directory, api]);
 
   const refreshCurrent = useRef(refreshAll); refreshCurrent.current = refreshAll;
@@ -247,8 +251,7 @@ export function FilesPanel({directory = "",chatId = "",onChooseProject}: {direct
   function rows(path: string, depth: number): React.ReactNode {
     return (children[path] || []).map(entry => {
       const open = expanded.has(entry.path);
-      const relative = relativePath(root, entry.path);
-      const git = gitByPath.get(relative);
+      const git = gitStatus?.root ? gitByPath.get(relativePath(gitStatus.root, entry.path)) : undefined;
       return <div className="workbench-files__branch" key={entry.path}>
         <div
           className={`workbench-file-row${selected === entry.path ? " is-selected" : ""}`}

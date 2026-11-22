@@ -4,10 +4,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+from pathlib import Path
 import shutil
 from typing import Mapping, Sequence
 
 from .models import ExecutionValidationError
+
+
+def _git_bash_executable() -> str | None:
+    roots = [
+        Path(directory) / "Git"
+        for key in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)")
+        if (directory := os.environ.get(key))
+    ]
+    if local := os.environ.get("LOCALAPPDATA"):
+        roots.append(Path(local) / "Programs" / "Git")
+    if git := shutil.which("git.exe"):
+        git_directory = Path(os.path.realpath(git)).parent
+        root = git_directory.parent
+        roots.append(root.parent if root.name.casefold() in {"mingw32", "mingw64", "usr"} else root)
+    for root in roots:
+        for bin_directory in (root / "bin", root / "usr" / "bin"):
+            candidate = bin_directory / "bash.exe"
+            if candidate.is_file():
+                return str(candidate)
+
+    if bash := shutil.which("bash.exe"):
+        candidate = Path(os.path.realpath(bash))
+        if candidate.parent.name.casefold() == "bin":
+            root = candidate.parent.parent
+            if root.name.casefold() == "usr":
+                root = root.parent
+            if (root / "cmd" / "git.exe").is_file():
+                return str(candidate)
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +71,8 @@ class ExecutionProfileRegistry:
         argv: Sequence[str] | None = None,
         environment: Mapping[str, str] | None = None,
     ) -> ResolvedProfile:
-        name = str(profile or "").strip().lower()
+        requested = str(profile or "").strip()
+        name = requested.lower()
         if argv is not None:
             command = tuple(str(item) for item in argv)
             if not command or any(not item or "\x00" in item for item in command):
@@ -85,12 +116,7 @@ class ExecutionProfileRegistry:
             command = (executable,)
             host_kind = "local"
         elif name == "git-bash":
-            candidates = [
-                shutil.which("bash.exe"),
-                os.path.join(os.environ.get("ProgramFiles", ""), "Git", "bin", "bash.exe"),
-                os.path.join(os.environ.get("ProgramFiles", ""), "Git", "usr", "bin", "bash.exe"),
-            ]
-            executable = next((item for item in candidates if item and os.path.isfile(item)), None)
+            executable = _git_bash_executable()
             if not executable:
                 raise ExecutionValidationError("Git Bash is not installed")
             command = (executable, "--login", "-i")
@@ -99,17 +125,19 @@ class ExecutionProfileRegistry:
             executable = shutil.which("wsl.exe")
             if not executable:
                 raise ExecutionValidationError("WSL is unavailable")
-            distribution = name.partition(":")[2].strip()
+            distribution = requested.partition(":")[2].strip()
             command = (executable, "-d", distribution) if distribution else (executable,)
+            name = f"wsl:{distribution}" if distribution else "wsl"
             host_kind = "wsl"
         elif name.startswith("ssh:"):
             executable = shutil.which("ssh.exe") or shutil.which("ssh")
-            target = name.partition(":")[2].strip()
+            target = requested.partition(":")[2].strip()
             if not executable:
                 raise ExecutionValidationError("SSH client is unavailable")
             if not target or target.startswith("-") or "\x00" in target:
                 raise ExecutionValidationError("SSH profile needs a valid host target")
             command = (executable, target)
+            name = f"ssh:{target}"
             host_kind = "ssh"
         elif name in {"sh", "bash"}:
             executable = shutil.which(name)

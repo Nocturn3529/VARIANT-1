@@ -37,8 +37,10 @@ import ws_goals
 import ws_children
 import ws_extensions_v2
 import ws_desktop
-from ws_protocol import session_chat_id
+from ws_protocol import input_reply_fields as _input_reply_fields, session_chat_id
 from ws_transport import transport_disconnected
+from core_invariants import canonical_digest
+from session_runtime.models import SubmissionAlreadyRecorded
 
 HANDLERS: Dict[str, Callable[..., Awaitable[None]]] = {}
 
@@ -150,12 +152,6 @@ def _session_runtime_registry(srv):
         return None
 
 
-def _input_reply_fields(msg, session_id=""):
-    return {"session_id": str(session_id or msg.get("session_id") or ""),
-            "client_id": str(msg.get("client_id") or ""),
-            **({"request_id": str(msg["request_id"])} if msg.get("request_id") else {})}
-
-
 async def _validated_active_input(websocket, msg) -> tuple[str, str] | None:
     """Validate a chat payload before converting it to active-turn input."""
     text = str(msg.get("text") or "")
@@ -185,9 +181,8 @@ async def _check_run_fence(websocket, registry, chat_id, msg, *, cancelling=Fals
             or (msg.get("admission_id") and str(msg["admission_id"]) != str(snapshot.get("active_admission_id") or ""))):
         await websocket.send_json({
             "type": "cancelling" if cancelling else "chat:queue_rejected",
-            "accepted": False, "error": "stale_run", "session_id": chat_id,
-            "client_id": str(msg.get("client_id") or ""),
-            **({"request_id": str(msg["request_id"])} if msg.get("request_id") else {}),
+            "accepted": False, "error": "stale_run",
+            **_input_reply_fields(msg, chat_id),
         })
         return False
     return True
@@ -195,6 +190,21 @@ async def _check_run_fence(websocket, registry, chat_id, msg, *, cancelling=Fals
 
 @on("chat")
 async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
+    try:
+        return await _admit_chat(srv, websocket, session, msg, queued_ticket=queued_ticket)
+    except SubmissionAlreadyRecorded as prior:
+        if prior.conflict:
+            await websocket.send_json({"type": "chat:rejected", "error": "submission_ticket_conflict",
+                                       **_input_reply_fields(msg, prior.chat_id)})
+        else:
+            registry = _session_runtime_registry(srv)
+            submission = registry.submission_observation(prior.chat_id, prior.ticket_id,
+                                                        connection_id=session.attachment_id)
+            await websocket.send_json({"type": "chat:execution", **_input_reply_fields(msg, prior.chat_id),
+                                       "submission": submission})
+
+
+async def _admit_chat(srv, websocket, session, msg, *, queued_ticket=None):
     from chat_turn_plan import resolve_session_id
 
     connection_session = session
@@ -205,11 +215,22 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
     requested_sid = msg.get("session_id")
     if requested_sid is not None and (not isinstance(requested_sid, str) or not requested_sid or not sessions.has_session(requested_sid)):
         await websocket.send_json({"type": "chat:rejected", "error": "unknown_session",
-                                   "session_id": requested_sid if isinstance(requested_sid, str) else "",
-                                   "client_id": str(msg.get("client_id") or "")})
+                                   **_input_reply_fields({**msg, "session_id": requested_sid if isinstance(requested_sid, str) else ""})})
         return
     viewed_sid = requested_sid or resolve_session_id(sessions, getattr(session, "viewed_session_id", None))
     msg = {**msg, "session_id": viewed_sid}
+    ticket_id = msg.get("ticket_id", "") if queued_ticket is None else ""
+    if not isinstance(ticket_id, str) or len(ticket_id) > 96:
+        await websocket.send_json({"type": "chat:rejected", "error": "invalid_ticket_id",
+                                   **_input_reply_fields(msg, viewed_sid)})
+        return
+    fingerprint = ""
+    if ticket_id:
+        fingerprint = canonical_digest({k: msg[k] for k in (
+            "text", "attachments", "references", "image", "resume", "delivery", "source",
+        ) if k in msg})
+        repository = runtime_registry.repository
+        repository.check_submission(repository.get_ticket(ticket_id), viewed_sid, ticket_id, fingerprint)
     if not await _check_run_fence(websocket, runtime_registry, viewed_sid, msg):
         return
     if (str(getattr(session, "viewed_session_id", "") or "") != viewed_sid
@@ -264,6 +285,8 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
         bound_sid = viewed_sid
         runtime_busy = bool(runtime_registry.is_busy(bound_sid))
     if session.busy or runtime_busy:
+        if ticket_id:
+            repository.check_submission(repository.get_ticket(ticket_id), bound_sid, ticket_id, fingerprint)
         if runtime_busy and not runtime_registry.accepts_inputs(bound_sid):
             await websocket.send_json({
                 "type": "chat:queue_rejected",
@@ -290,6 +313,7 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
                 source=str(msg.get("source") or ""),
                 attachment_id=getattr(session, "attachment_id", ""),
                 ticket_id=str(msg.get("ticket_id") or ""),
+                submission_fingerprint=fingerprint,
                 expected_admission_id=str(msg.get("admission_id") or ""),
                 expected_run_id=str(msg.get("run_id") or ""),
             )
@@ -396,6 +420,7 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
         runtime_admission_id = await runtime_registry.reserve_run(
             bound_sid,
             attachment_id=getattr(session, "attachment_id", ""),
+            **({"initial_ticket_id": ticket_id, "submission_fingerprint": fingerprint} if ticket_id else {}),
         ) or ""
     except Exception as exc:
         from session_runtime import BudgetExhausted
@@ -412,6 +437,8 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
     if not runtime_admission_id:
         if queued_ticket is not None:
             raise RuntimeError("chat_busy")
+        if ticket_id:
+            repository.check_submission(repository.get_ticket(ticket_id), bound_sid, ticket_id, fingerprint)
         if runtime_registry.configuration_pending(bound_sid):
             await websocket.send_json({"type":"chat:rejected", "error":"session_configuration_pending",
                                        **_input_reply_fields(msg, bound_sid)})
@@ -433,6 +460,7 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
                 source=str(msg.get("source") or ""),
                 attachment_id=getattr(session, "attachment_id", ""),
                 ticket_id=str(msg.get("ticket_id") or ""),
+                submission_fingerprint=fingerprint,
                 expected_admission_id=str(msg.get("admission_id") or ""),
                 expected_run_id=str(msg.get("run_id") or ""),
             )
@@ -465,7 +493,7 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
             **queue_meta,
         })
         return
-    initial_ticket_id = ""
+    initial_ticket_id = ticket_id
     if queued_ticket is not None:
         try:
             claimed = runtime_registry.continue_parked_input(
@@ -483,7 +511,7 @@ async def _chat(srv, websocket, session, msg, *, queued_ticket=None):
             runtime_admission_id=runtime_admission_id,
             resume=bool(msg.get("resume")),
             client_id=str(msg.get("client_id") or ""),
-            source=("queue_continue" if initial_ticket_id else str(msg.get("source") or "")),
+            source=("queue_continue" if queued_ticket is not None else str(msg.get("source") or "")),
             images=images, attachment_text=attachment_text,
             ticket_id=initial_ticket_id,
         )

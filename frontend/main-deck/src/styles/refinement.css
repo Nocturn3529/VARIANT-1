@@ -90,6 +90,13 @@ code.trace-entry__headline { font-family: var(--font-chat-code); font-size: var(
 .trace-progress i:nth-child(2) { animation-delay: 120ms; }
 .trace-progress i:nth-child(3) { animation-delay: 240ms; }
 .trace-progress--mutation { color: var(--deck-mutation); }
+.trace-disclosure:has(.trace-progress) :is(.trace-entry__name,.execution-trace__counts),
+.runtime-clarification__question { color: var(--deck-text-primary); font-size: var(--deck-text-md); font-weight: 550; }
+.message-results { margin-top: 8px; color: var(--deck-text-secondary); }
+.message-results[open] .trace-caret { transform: rotate(90deg); }
+.message-results ol { margin: 4px 0 10px; padding-inline-start: 22px; font-size: var(--deck-label-text); }
+.message-results li { margin-block: 5px; }
+.message-results pre { max-height: 12em; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: var(--deck-code-text)/1.5 var(--font-chat-code); }
 .execution-trace__waiting { display: flex; align-items: center; min-height: 28px; gap: 6px; color: var(--deck-text-secondary); font: var(--deck-label-text)/1.55 var(--font-ui); }
 @keyframes trace-working { 0%, 100% { transform: scaleY(.65); opacity: .55; } 50% { transform: scaleY(1.65); opacity: 1; } }
 :root[data-motion="reduced"] .trace-progress i { animation: none; }
@@ -116,9 +123,9 @@ code.trace-entry__headline { font-family: var(--font-chat-code); font-size: var(
 .titlebar-workbench-tools button { position: relative; }
 /* Detached windows: one slim row — title and followed chat inline. */
 .native-window-chrome { flex-basis: 34px; }
-.native-window-identity { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 8px; padding: 0 8px 0 0; }
-.native-window-identity strong { flex: none; }
-.native-window-identity small { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--deck-text-faint); }
+.native-window-identity { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; padding-right: 6px; overflow: hidden; }
+.native-window-identity strong { flex: none; max-width: 100%; line-height: 1.2; }
+.native-window-chrome .native-window-identity button { display: block; align-self: flex-start; min-width: 0; max-width: 100%; padding: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font: var(--deck-label-text)/1.2 var(--font-ui); color: var(--deck-text-muted); text-align: left; }
 .native-window-chrome button { display: inline-flex; align-items: center; justify-content: center; }
 .native-window-chrome button .deck-icon { width: 13px; height: 13px; }
 

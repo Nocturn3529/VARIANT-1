@@ -5,7 +5,7 @@ import {findStartedDownload, isDownloadCommand} from "./browserDownloads";
 import {BrowserCommandError, browserDeadline, checkBrowserRequest} from "./browserLifecycle";
 import {adoptBrowserTab, closeAgentRunTabs, closePreview, getPreviewState, markAgentTab, noteAgentRun, openBrowser, reconcileAgentTabs, selectPreview} from "./previewStore";
 import {navigateTo} from "../state/appStore";
-import {revealPreviewPane,rightPanelsHidden} from "./workbenchStore";
+import {isWorkbenchPaneVisible,revealPreviewPane,rightPanelsHidden} from "./workbenchStore";
 import {browserKeyInput} from "./browserKeyboard";
 
 let context: RuntimeContext | null = null;
@@ -32,10 +32,11 @@ const agentTabs = new Map<string, string>();
  * Put a tab in front of the user, only when the agent explicitly asks to show
  * it. It never focuses the window or switches away from another chat.
  */
-function showSurface(tabId: string): void {
+function showSurface(tabId: string): boolean {
   const tab=getPreviewState().tabs.find(t=>t.id===tabId);
-  if((tab?.ownerChatId || "") !== (getSessionState().displayedSessionId || "") || rightPanelsHidden(tab?.ownerChatId || ""))return;
+  if(!tab || (tab.ownerChatId || "") !== (getSessionState().displayedSessionId || "") || rightPanelsHidden(tab.ownerChatId || ""))return false;
   navigateTo("chat"); selectPreview(tabId); revealPreviewPane(tabId);
+  return isWorkbenchPaneVisible(`preview:${tabId}`);
 }
 
 /**
@@ -140,10 +141,11 @@ export function ingestBrowserHost(message: Record<string, unknown>) {
       if (!getPreviewState().tabs.some(tab => tab.id === tabId && tab.target.kind === "url")) throw new BrowserCommandError("TAB_NOT_FOUND", "Browser tab is not open");
       // Activating picks the agent's working tab; only visible:true shows it.
       agentTabs.set(ownerChatId, tabId);
-      if (command.visible === true) showSurface(tabId);
+      const shown = command.visible === true && showSurface(tabId);
       await readySurface(tabId, signal, false);
       diagnostics = browserCommandDiagnostics(command);
-      return {ok: true, target: targets().find(tab => tab.id === tabId), tabs: targets()};
+      return {ok: true, shown: shown && ownerChatId === (getSessionState().displayedSessionId || "") && isWorkbenchPaneVisible(`preview:${tabId}`),
+        target: targets().find(tab => tab.id === tabId), tabs: targets()};
     }
     if (action === "tabs") return {ok: true, tabs: targets()};
     command.tab_id = await ensureCommandSurface(command, signal);

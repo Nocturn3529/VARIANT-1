@@ -25,6 +25,9 @@ class ProjectionError(ValueError):
     """A privacy-safe structural error raised before provider I/O."""
 
 
+_REJECTED_IPYTHON_REPLAY_BYTES = 4096
+
+
 _DATA_URL_RE = re.compile(
     r"^data:(?P<mime>[a-zA-Z0-9.+-]+/[a-zA-Z0-9.+-]+);base64,(?P<data>.*)$",
     re.DOTALL,
@@ -184,6 +187,7 @@ class ToolResultPart:
     name: str
     output: str
     is_error: bool = False
+    truncated_before_execution: bool = False
 
 
 ModelPart = TextPart | ImagePart | ToolCallPart | ToolResultPart
@@ -230,6 +234,19 @@ class MessageGraph:
 
     def call_by_ref(self) -> dict[str, ToolCallPart]:
         return {call.ref: call for call in self.calls}
+
+    def compactable_rejection_refs(self) -> set[str]:
+        refs = {
+            result.call_ref for result in self.results
+            if result.name == "ipython" and result.truncated_before_execution
+        }
+        if refs:
+            # A signature on the first call can cover an entire parallel batch.
+            for message in self.messages:
+                calls = [part for part in message.parts if isinstance(part, ToolCallPart)]
+                if any(call.provider_replay for call in calls):
+                    refs.difference_update(call.ref for call in calls)
+        return refs
 
 
 def _json_object(value: Any, *, node: int, tool: str) -> dict[str, Any]:
@@ -366,6 +383,10 @@ def build_message_graph(
                     name=call.name,
                     output=output,
                     is_error=bool(raw_message.get("is_error")),
+                    truncated_before_execution=(
+                        bool(source_id) and raw_message.get("is_error") is True
+                        and raw_message.get("_variant1_truncated_before_execution") is True
+                    ),
                 ),),
                 source_index=source_index,
             ))
@@ -532,9 +553,18 @@ def _openai_content(parts: tuple[ModelPart, ...], *, role: str) -> Any:
     return blocks
 
 
-def render_openai_chat(graph: MessageGraph) -> list[dict]:
-    """Render Chat Completions / llama.cpp messages without added prose."""
+def _chat_call_arguments(call: ToolCallPart, *, compact_rejection: bool) -> str:
+    arguments = json.dumps(call.arguments, ensure_ascii=False, separators=(",", ":"))
+    if compact_rejection:
+        if len(arguments.encode("utf-8", errors="surrogatepass")) > _REJECTED_IPYTHON_REPLAY_BYTES:
+            return '{"code":"# Incomplete Python source omitted from replay. This call did not run."}'
+    return arguments
+
+
+def render_openai_chat(graph: MessageGraph, *, compact_rejected_ipython: bool = False) -> list[dict]:
+    """Render Chat Completions messages. Keep exact call arguments by default."""
     call_ids = _wire_call_ids(graph, "openai")
+    rejected_refs = graph.compactable_rejection_refs() if compact_rejected_ipython else set()
     out: list[dict] = []
     for node in graph.messages:
         calls = [p for p in node.parts if isinstance(p, ToolCallPart)]
@@ -566,8 +596,8 @@ def render_openai_chat(graph: MessageGraph) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": call.name,
-                    "arguments": json.dumps(
-                        call.arguments, ensure_ascii=False, separators=(",", ":")),
+                    "arguments": _chat_call_arguments(
+                        call, compact_rejection=call.ref in rejected_refs),
                 },
             } for call in calls]
         out.append(message)

@@ -1,4 +1,3 @@
-import {focusMainComposer} from "../ui/SurfaceDocument";
 import {Icon} from "../ui/Icon";
 import {useEffect, useRef, useState} from "react";
 import {createPortal} from "react-dom";
@@ -14,7 +13,7 @@ import {
   useTerminalState,
 } from "../context/terminalStore";
 import {useTerminalSlot} from "./terminalSlot";
-import {retainChatDraft} from "../chat/stateCore";
+import {notifyToast} from "../state/toastStore";
 
 function terminalTheme() {
   return {
@@ -45,7 +44,12 @@ function terminalTheme() {
 type TerminalSnapshot={text:string;end:number;cols:number;rows:number};
 const snapshots=new Map<string,TerminalSnapshot>();
 
-function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{chatId:string;id:string;active:boolean;live:boolean;output:string;outputStart:number;cols:number;rows:number}) {
+export type TerminalSelection = {id: string; chatId: string; read: () => string};
+type TransferProps = {onSelection: (selection: TerminalSelection | null) => void; onTransfer: (text: string) => void};
+
+function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId,onSelection,onTransfer}:TransferProps & {chatId:string;id:string;active:boolean;live:boolean;output:string;outputStart:number;cols:number;rows:number}) {
+  const transfer = useRef(onTransfer);
+  transfer.current = onTransfer;
   const hostRef = useRef<HTMLDivElement | null>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -64,6 +68,13 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
     if(snapshotTimer.current)clearTimeout(snapshotTimer.current);
     snapshotTimer.current=setTimeout(()=>{snapshotTimer.current=null;saveSnapshot();},1500);
   };
+
+  async function paste(terminal: Terminal, clipboard: Clipboard) {
+    try {
+      const text = await clipboard.readText();
+      if (terminalRef.current === terminal && !terminal.options.disableStdin) terminal.paste(text);
+    } catch { notifyToast("Could not read the clipboard"); }
+  }
 
   useEffect(() => {
     const host = hostRef.current;
@@ -111,6 +122,8 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
       writeTerminalInputFor(id, data,chatId);
     });
     const clipboard = (host.ownerDocument.defaultView || window).navigator.clipboard;
+    const selected = {id, chatId, read: () => terminal.getSelection()};
+    const selectionListener = terminal.onSelectionChange(() => onSelection(terminal.hasSelection() ? selected : null));
     terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== "keydown") return true;
       const key = event.key.toLowerCase();
@@ -119,7 +132,8 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
         return false;
       }
       if ((event.ctrlKey || event.metaKey) && event.shiftKey && key === "v") {
-        void clipboard.readText().then(value => writeTerminalInputFor(id, value,chatId));
+        event.preventDefault();
+        void paste(terminal, clipboard);
         return false;
       }
       if (event.ctrlKey && !event.shiftKey && key === "c" && terminal.hasSelection()) {
@@ -127,8 +141,8 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
         return false;
       }
       if ((event.ctrlKey || event.metaKey) && key === "l" && terminal.hasSelection()) {
-        retainChatDraft(chatId,terminal.getSelection().slice(-12_000));
-        focusMainComposer();
+        event.preventDefault();
+        transfer.current(terminal.getSelection());
         return false;
       }
       return true;
@@ -141,13 +155,15 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
     return () => {
       window.removeEventListener("variant1:terminal-clear-scrollback",clearScrollback);
       if(snapshotTimer.current)clearTimeout(snapshotTimer.current);snapshotTimer.current=null;
+      selectionListener.dispose();
+      onSelection(null);
       saveSnapshot();input.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
       serializeRef.current = null;
     };
-  }, [id]);
+  }, [id, chatId, onSelection]);
 
   useEffect(() => {
     if (terminalRef.current) {
@@ -202,12 +218,12 @@ function TerminalInstance({id,active,live,output,outputStart,cols,rows,chatId}:{
       if (!terminal) return;
       const clipboard = (event.currentTarget.ownerDocument.defaultView || window).navigator.clipboard;
       if (terminal.hasSelection()) void clipboard.writeText(terminal.getSelection());
-      else void clipboard.readText().then(value => writeTerminalInputFor(id, value,chatId));
+      else void paste(terminal, clipboard);
     }}
   />;
 }
 
-export function PersistentTerminalSurface({chatId = ""}: {chatId?:string}) {
+export function PersistentTerminalSurface({chatId = "", onSelection, onTransfer}: TransferProps & {chatId?:string}) {
   const slot = useTerminalSlot(chatId);
   const ownerDocument = slot?.ownerDocument || document;
   const ownerWindow = ownerDocument.defaultView || window;
@@ -253,7 +269,7 @@ export function PersistentTerminalSurface({chatId = ""}: {chatId?:string}) {
     style={rect ? {left: rect.left, top: rect.top, width: rect.width, height: rect.height} : undefined}
   >
     {selected ? <TerminalInstance
-      chatId={chatId} id={selected.id} active={!!rect} live={selected.state === "running" || selected.state === "starting"}
+      chatId={chatId} id={selected.id} onSelection={onSelection} onTransfer={onTransfer} active={!!rect} live={selected.state === "running" || selected.state === "starting"}
       output={state.output} outputStart={state.outputStart} cols={selected.cols} rows={selected.rows} key={selected.id}
     /> : <div className="workbench-terminal-empty">
       <button type="button" disabled={!state.connected || state.opening} onClick={() => void openNewTerminal(undefined,chatId)}><Icon name="terminal"/>{state.opening ? "Opening terminal…" : "Open terminal"}</button>

@@ -45,13 +45,9 @@ export function AnchoredPopover({anchor, children, className, id, label, onClose
     return () => {observer.disconnect();view.cancelAnimationFrame(frame);view.removeEventListener("resize",schedule);document.removeEventListener("scroll",schedule,true);};
   },[anchor,document,width]);
 
-  useEffect(() => {
-    const view=document.defaultView;
-    const frame=view?.requestAnimationFrame(() => {
-      const target=focusSelector ? panel.current?.querySelector<HTMLElement>(focusSelector) : panel.current;
-      target?.focus({preventScroll:true});
-    });
-    return () => {if(frame) view?.cancelAnimationFrame(frame);};
+  useLayoutEffect(() => {
+    const target=focusSelector ? panel.current?.querySelector<HTMLElement>(focusSelector) : panel.current;
+    target?.focus({preventScroll:true});
   },[document,focusSelector]);
 
   useEffect(() => {

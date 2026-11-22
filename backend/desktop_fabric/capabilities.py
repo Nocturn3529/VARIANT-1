@@ -235,6 +235,10 @@ def _view_result(
             "has_more": len(selected) < len(observation.elements),
         },
     }
+    adapter = (observation.capture or {}).get("adapter")
+    source_complete = adapter.get("elements_complete") if isinstance(adapter, Mapping) else None
+    if include_text and isinstance(source_complete, bool):
+        result["control_page"]["source_complete"] = source_complete
     if action:
         result["action"] = dict(action)
         result["action_status"] = action.get("status")

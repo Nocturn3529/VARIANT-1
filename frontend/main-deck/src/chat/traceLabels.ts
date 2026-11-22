@@ -18,6 +18,10 @@ const actions: Array<[RegExp, Action]> = [
 function actionFor(step: ChatTurnStep, presentation: ReturnType<typeof activityPresentation>) {
   let name = step.tool || "";
   if (presentation.python) {
+    if (step.cellAction && (step.status === "ok" || step.status === "done")) {
+      // A cell can read several paths or run several commands. Only its host summary is established.
+      return step.cellAction === python.past ? python : {...python, past: step.cellAction, plural: `${step.cellAction} (# cells)`};
+    }
     // Only a call at the start of a statement (optionally assigned), not keywords in strings/comments.
     name = presentation.input?.match(/^\s*(?:[A-Za-z_]\w*\s*=\s*)?(?:await\s+)?([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*\(/)?.[1] || "";
   }

@@ -103,6 +103,20 @@ def test_browser_page_display_uses_its_readable_title_metadata_key():
         _ = handle.name
 
 
+def test_printed_process_roster_exposes_handle_ids_without_dispatch():
+    bridge = RecordingBridge()
+    ids = ("proc_first", "proc_second")
+    processes = _decode_host_result([
+        _envelope(service="execution", kind="process", id=process_id, metadata={"state": "running"})
+        for process_id in ids
+    ], bridge)
+
+    roster = repr(processes)
+    assert all(f"id={process_id!r}" in roster for process_id in ids)
+    assert [process.id for process in processes] == list(ids)
+    assert bridge.calls == []
+
+
 def test_remote_handles_encode_back_to_strict_json_identity_recursively():
     bridge = RecordingBridge()
     handle = _decode_host_result(_envelope(), bridge)
@@ -540,6 +554,36 @@ def test_method_calls_use_the_embedded_versioned_dispatch_descriptor():
     }
     assert "secret" not in repr(handle)
     assert "secret" not in {item.name for item in fields(handle)}
+
+
+def test_finished_handle_declares_zero_methods_and_rejects_calls_before_dispatch():
+    from capability_broker import CapabilityRef, InvocationContext
+    from work_fabric.handles import remote_handle_envelope
+
+    ref = CapabilityRef("remote_handle_dispatch", "schema", "handler", "catalog")
+    args = dict(
+        service="browser", kind="trace", handle_id="trace-1", generation=1, revision=2,
+        metadata={"state": "completed", "artifact_ref": "saved-ref"},
+        broker=SimpleNamespace(ref_for_name=lambda *a, **kw: ref),
+        context=InvocationContext("chat", "run", "outer", "cell", "nested", "catalog"),
+    )
+    bridge = RecordingBridge()
+    closed = remote_handle_envelope(**args, methods=())
+    assert closed["$variant1_handle"]["methods"]["items"] == []
+    handle = _decode_host_result(closed, bridge)
+    assert handle.state == "completed" and handle.get("artifact_ref") == "saved-ref"
+    assert handle.methods() == [] and handle.describe()["method_signatures"] == {}
+    assert not hasattr(handle, "keys") and not hasattr(handle, "stop")
+    assert "keys" not in dir(handle)
+    for call in (handle.call, handle.call_async, handle.describe):
+        with pytest.raises(AttributeError, match="no method 'keys'"):
+            call("keys")
+    assert bridge.calls == []
+
+    legacy = remote_handle_envelope(**args)
+    assert "methods" not in legacy["$variant1_handle"]
+    assert _decode_host_result(legacy, bridge).custom_action() == {"ok": True}
+    assert [call[1]["method"] for call in bridge.calls] == ["custom_action"]
 
 
 @pytest.mark.asyncio

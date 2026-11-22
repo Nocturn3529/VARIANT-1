@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from artifacts import ContentAddressedArtifactStore
+from artifacts import ArtifactBlobService, ContentAddressedArtifactStore
 from browser_fabric import (
     AdapterDownload,
     AdapterObservation,
@@ -34,6 +34,8 @@ from browser_fabric import (
 from work_fabric.scope import WorkScope
 from capability_broker import InvocationContext, _CURRENT_INVOCATION
 from core_invariants import InjectedFault, inject_faults, request_fingerprint
+from browser_fabric.interactive import BrowserHostBroker
+from browser_fabric.models import BrowserCommandError
 from tools import BROWSER_OBJECT_METHODS, ToolError, ToolRegistry
 import browser_fabric.capabilities as browser_capabilities
 from browser_fabric.adapters import normalize_embedded_target
@@ -69,6 +71,21 @@ def test_embedded_handles_advertise_only_executable_methods():
     )["$variant1_handle"]
     page_methods = {item["name"] for item in page_payload["methods"]["items"]}
     assert page_methods == {"observe", "navigate", "keys", "wait"}
+
+    for adapter_kind in ("embedded", "managed"):
+        payload = page_handle_envelope(
+            page, target=target, capabilities=capabilities | {"tabs"},
+            adapter_kind=adapter_kind, broker=broker, context=context,
+        )["$variant1_handle"]
+        methods = {item["name"]: item for item in payload["methods"]["items"]}
+        wait_params = {param["name"] for param in methods["wait"]["params"]}
+        assert {"condition", "selector", "state", "timeout_ms"} <= wait_params
+        if adapter_kind == "embedded":
+            assert {"mark", "show"} <= methods.keys()
+            assert "backend_ref" not in wait_params
+        else:
+            assert methods.keys().isdisjoint({"mark", "show"})
+            assert {"backend_ref", "url"} <= wait_params
 
     element = ElementRef(
         session_id="browser-1", target_id="page-1", generation=1,
@@ -791,6 +808,27 @@ async def test_tab_lifecycle_uses_durable_page_handles(browser_runtime):
 
 
 @pytest.mark.asyncio
+async def test_keyed_new_tab_is_replayed_after_the_last_tab_closed(browser_runtime):
+    fabric, adapters = browser_runtime
+    scope = WorkScope(chat_id="chat-empty-tabs")
+    session = await fabric.open_session(scope=scope)
+    await fabric.close_page(fabric.page_ref(session.session_id), scope=scope)
+    assert fabric.targets(session.session_id) == ()
+
+    first, repeated = await asyncio.gather(*(
+        fabric.new_page(session.session_id, url="https://one.test", idempotency_key="after-last", scope=scope)
+        for _ in range(2)
+    ))
+    assert repeated == first
+    assert list(adapters[0].pages) == [first.target_id]
+    opened = [item for item in fabric.operations(session.session_id) if item.kind == "new_page"]
+    assert len(opened) == 1 and opened[0].state == "committed"
+    assert opened[0].target_id == first.target_id
+    with pytest.raises(BrowserConflict, match="idempotency key"):
+        await fabric.new_page(session.session_id, url="https://two.test", idempotency_key="after-last", scope=scope)
+
+
+@pytest.mark.asyncio
 async def test_tabs_take_marks_and_show_only_where_the_deck_supports_it(browser_runtime):
     fabric, adapters = browser_runtime
     scope = WorkScope(chat_id="chat-marks")
@@ -806,16 +844,19 @@ async def test_tabs_take_marks_and_show_only_where_the_deck_supports_it(browser_
 
     async def mark_page(target, mark):
         calls.append(("mark", target, mark))
+        return {"marked": mark == "handoff"}
 
     async def show_page(target):
         calls.append(("show", target))
+        return {"shown": False}
 
     adapters[0].mark_page = mark_page
     adapters[0].show_page = show_page
     target = fabric.targets(session.session_id)[0]
     assert (await fabric.mark_page(page, " Handoff ", scope=scope))["applied"] is True
-    assert (await fabric.show_page(page, scope=scope))["shown"] is True
+    assert (await fabric.show_page(page, scope=scope))["shown"] is False
     assert calls == [("mark", target.backend_target_id, "handoff"), ("show", target.backend_target_id)]
+    assert (await fabric.mark_page(page, "deliverable", scope=scope))["applied"] is False
     with pytest.raises(BrowserScopeMismatch):
         await fabric.show_page(page, scope=WorkScope(chat_id="chat-other"))
 
@@ -836,6 +877,42 @@ async def test_download_and_trace_payloads_are_cas_artifacts(browser_runtime):
     assert fabric.downloads(session.session_id)[0].suggested_filename == "report.bin"
     assert trace.state == "completed"
     assert trace.artifact_ref.startswith("artifact://sha256/")
+
+
+@pytest.mark.asyncio
+async def test_completed_trace_exposes_same_owner_blob_from_stop_and_history(browser_runtime, tmp_path):
+    fabric, _ = browser_runtime
+    scope = WorkScope(chat_id="chat-trace-export")
+    context = capability_context(scope)
+    blobs = ArtifactBlobService(fabric.artifact_store)
+    composed = SimpleNamespace(browser=fabric, broker=FakeCapabilityBroker(),
+                               artifacts=SimpleNamespace(blobs=blobs))
+    host = SimpleNamespace(require_runtime=lambda: composed)
+    session = await fabric.open_session(kind="managed", scope=scope)
+    identity = session_handle_envelope(session, broker=composed.broker, context=context)["$variant1_handle"]
+
+    try:
+        started = await browser_capabilities._handle_router(host, context, identity, "start_trace", {})
+        trace_identity = started["$variant1_handle"]
+        assert "artifact" not in trace_identity["metadata"]
+        stopped = await browser_capabilities._handle_router(host, context, trace_identity, "stop", {})
+        history = await browser_capabilities._handle_router(host, context, identity, "history", {"kind": "traces"})
+
+        for row in (stopped, history[0]):
+            trace = row["$variant1_handle"]
+            blob = trace["metadata"]["artifact"]["$variant1_handle"]
+            assert blob["id"] == trace["metadata"]["artifact_ref"]
+            assert {method["name"] for method in blob["methods"]["items"]} == {"read_bytes", "save"}
+            assert blobs.read_bytes(blob["id"], scope=scope) == b"playwright-trace"
+        ref = stopped["$variant1_handle"]["metadata"]["artifact_ref"]
+        destination = tmp_path / "trace.zip"
+        blobs.save(ref, str(destination), scope=scope)
+        assert destination.read_bytes() == b"playwright-trace"
+        other = capability_context(WorkScope(chat_id="another-chat"))
+        with pytest.raises(ToolError, match="outside the owning WorkScope"):
+            await browser_capabilities._handle_router(host, other, identity, "history", {"kind": "traces"})
+    finally:
+        await fabric.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1213,6 +1290,38 @@ async def test_managed_action_reports_a_missing_stable_element_as_stale(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("document_changed", [False, True])
+async def test_managed_element_wait_uses_selector_for_a_new_control(tmp_path, document_changed):
+    events = []
+    document_ids = iter(["before", "after" if document_changed else "before"])
+
+    class Locator:
+        @property
+        def first(self):
+            return self
+
+        async def wait_for(self, *, state, timeout):
+            events.append(("wait", state, timeout))
+
+    class Page:
+        def locator(self, selector):
+            events.append(("selector", selector))
+            return Locator()
+
+        async def evaluate(self, _expression):
+            return {"document_id": next(document_ids)}
+
+    adapter = ManagedPlaywrightAdapter(str(tmp_path / "test-profile"))
+    params = {"condition": "element", "selector": "#later", "state": "visible", "timeout_ms": 2500}
+    if document_changed:
+        with pytest.raises(BrowserStaleReference, match="navigated during element wait"):
+            await adapter._perform_core(Page(), "wait", params)
+    else:
+        assert await adapter._perform_core(Page(), "wait", params) == {"condition": "element", "state": "visible"}
+    assert events == [("selector", "css=#later"), ("wait", "visible", 2500)]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["embedded", "managed"])
 async def test_common_browser_keys_reach_both_adapters_and_share_replay_identity(
     browser_runtime, kind,
@@ -1315,6 +1424,93 @@ async def test_embedded_stale_guest_error_is_a_retryable_stale_reference():
         await adapter.perform(
             "electron_visible", "click", {"backend_ref": "b2-4"}
         )
+
+
+@pytest.mark.asyncio
+async def test_embedded_element_wait_uses_one_native_command_and_keeps_typed_errors():
+    calls = []
+
+    async def request(command):
+        if command["action"] == "wait":
+            calls.append(command)
+            if command["selector"] == "#missing":
+                return {"ok": False, "code": "WAIT_TIMEOUT", "phase": "wait", "error": "element wait timed out"}
+            return {"ok": True, "value": {"condition": "element", "state": command["state"]}}
+        return {"ok": True, "downloads": []}
+
+    adapter = EmbeddedBrowserAdapter(request=request)
+    adapter._target_ids.add("electron_visible")
+    result = await adapter.perform("electron_visible", "wait", {
+        "condition": "element", "selector": "#later", "state": "attached", "timeout_ms": 30000,
+    })
+    assert result.value == {"condition": "element", "state": "attached"}
+    assert calls == [{
+        "action": "wait", "tab_id": "electron_visible", "owner_chat_id": "",
+        "condition": "element", "selector": "#later", "state": "attached", "timeout_ms": 20000,
+    }]
+    with pytest.raises(BrowserCommandError, match="element wait timed out") as error:
+        await adapter.perform("electron_visible", "wait", {
+            "condition": "element", "selector": "#missing", "timeout_ms": 50,
+        })
+    assert error.value.code == "WAIT_TIMEOUT"
+    assert error.value.phase == "wait"
+    with pytest.raises(BrowserValidationError, match="requires a CSS selector"):
+        await adapter.perform("electron_visible", "wait", {"condition": "element"})
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_embedded_bad_evaluation_does_not_report_connection_failure(tmp_path, monkeypatch):
+    broker = BrowserHostBroker()
+    evaluate_requests = []
+
+    class DeckSocket:
+        async def send_json(self, payload):
+            command = payload["command"]
+            result = {"ok": True, "tabs": [{"tab_id": "test-tab", "url": "about:blank", "active": True}]}
+            if command["action"] == "evaluate":
+                evaluate_requests.append(command["expression"])
+                if command["expression"] == "document.body":
+                    result = {"ok": False, "code": "EVALUATION_RESULT_UNSERIALIZABLE",
+                              "phase": "evaluate", "error": "An object could not be cloned"}
+                else:
+                    result = {"ok": True, "value": {"restored": True}}
+            assert broker.resolve(self, payload["id"], result)
+
+    socket = DeckSocket()
+    await broker.register(socket)
+    scope = WorkScope(chat_id="chat-live")
+    fabric = create_browser_fabric(
+        data_dir=str(tmp_path / "data"),
+        artifact_store=ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+        adapter_factory=lambda _kind, _profile, _session: EmbeddedBrowserAdapter(broker.request, owner_chat_id=scope.chat_id),
+    )
+    notices = []
+
+    async def connection_failed(chat_id, _session, error):
+        notices.append((chat_id, type(error)))
+
+    monkeypatch.setattr(fabric.preferences, "connection_failed", connection_failed)
+    try:
+        session = await fabric.open_session(kind="embedded", scope=scope)
+        page = fabric.page_ref(session.session_id)
+        with pytest.raises(BrowserUnknownEffect, match="could not be cloned") as failed:
+            await fabric.evaluate(page, "document.body", scope=scope, idempotency_key="clone-failure")
+        assert isinstance(failed.value.__cause__, BrowserCommandError)
+        assert failed.value.__cause__.code == "EVALUATION_RESULT_UNSERIALIZABLE"
+        with pytest.raises(BrowserUnknownEffect, match="uncertain effect"):
+            await fabric.evaluate(page, "document.body", scope=scope, idempotency_key="clone-failure")
+        result = await fabric.evaluate(page, "({restored: true})", scope=scope)
+        assert result["value"] == {"restored": True}
+        assert evaluate_requests == ["document.body", "({restored: true})"]
+        assert notices == []
+
+        broker.unregister(socket)
+        with pytest.raises(BrowserUnknownEffect, match="Open the Main Deck"):
+            await fabric.evaluate(page, "1", scope=scope)
+        assert notices == [("chat-live", BrowserUnavailable)]
+    finally:
+        await fabric.shutdown()
 
 
 @pytest.mark.asyncio
@@ -1486,7 +1682,12 @@ async def test_embedded_observation_forwards_the_requested_element_bound():
             "title": "Visible",
             "url": "https://example.test",
             "text": "Ready",
-            "elements": [],
+            "elements": [
+                {"ref": "b2-1", "role": "combobox", "actions": ["click", "select", "hover", "unknown"]},
+                {"ref": "b2-2", "role": "control", "actions": ["hover"]},
+                {"ref": "b2-3", "role": "textbox", "actions": []},
+                {"ref": "b2-4", "role": "textbox"},
+            ],
             "state": {"title": "Visible", "url": "https://example.test"},
         }
 
@@ -1494,7 +1695,7 @@ async def test_embedded_observation_forwards_the_requested_element_bound():
     adapter._target_ids.add("electron_visible")
     adapter._active_id = "electron_visible"
 
-    await adapter.observe(
+    observation = await adapter.observe(
         "electron_visible",
         max_chars=1_000,
         max_elements=275,
@@ -1507,6 +1708,10 @@ async def test_embedded_observation_forwards_the_requested_element_bound():
         "max_elements": 275, "max_chars": 1_000,
         "owner_chat_id": "",
     }]
+    assert [row["actions"] for row in observation.elements] == [
+        ["click", "select", "hover"], ["hover"], [], ["click", "fill", "keys"],
+    ]
+    assert [row["editable"] for row in observation.elements] == [False, False, False, True]
 
 
 @pytest.mark.asyncio

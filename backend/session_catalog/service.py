@@ -202,6 +202,7 @@ class CatalogService:
             registry=registry,
             enabled_resolver=enabled_resolver,
             worker_root=os.path.join(os.path.dirname(database_path), "mutation-workers"),
+            child_outcome_available=self._child_outcome_available,
             # Composition must inject host policy explicitly. Missing policy is
             # fail-closed so a partial graph cannot silently enable mutation.
             mutation_allowed=(
@@ -549,6 +550,12 @@ class CatalogService:
                 if str(api.get("status") or "") != "available":
                     continue
                 name = str(api.get("name") or "")
+                contract_release = loaded.release_id
+                if category_id == "base" and name == "session":
+                    api, contract_release = session_infrastructure_contract(
+                        loaded, api, self.repository.current,
+                        active_child=bool((condition_flags or {}).get("active_child")),
+                    )
                 transport = dict(api.get("transport") or {})
                 methods = [
                     method for method in (api.get("methods") or ())
@@ -559,7 +566,7 @@ class CatalogService:
                 rows.append({
                     "category_id": category_id,
                     "position": 0,
-                    "slot_id": f"{loaded.release_id}/{category_id}/api-{name}",
+                    "slot_id": f"{contract_release}/{category_id}/api-{name}",
                     "namespace": name,
                     "source_namespace": name,
                     "bundle": name,
@@ -1132,7 +1139,10 @@ class CatalogService:
                 continue
             contract_release = loaded.release_id
             if category_id == "base" and api_name == "session":
-                api, contract_release = session_infrastructure_contract(loaded, api, self.repository.current)
+                api, contract_release = session_infrastructure_contract(
+                    loaded, api, self.repository.current,
+                    active_child=bool((condition_flags or {}).get("active_child")),
+                )
             transport = api.get("transport") if isinstance(api.get("transport"), dict) else {}
             tool_name = str(api.get("tool_name") or transport.get("tool_name") or "")
             if tool_name and tool_name not in enabled:
@@ -1301,6 +1311,12 @@ class CatalogService:
             retained.append(selected)
         return retained
 
+    def _child_outcome_available(self, record) -> bool:
+        role, _, parent = str(getattr(record, "creation_saga_state", "") or "").partition(":")
+        if role != "child" or not parent or self.children is None:
+            return False
+        return self.children.is_running_child(record.chat_id, parent_chat_id=parent)
+
     def namespace_document(
         self,
         chat_id: str,
@@ -1325,7 +1341,11 @@ class CatalogService:
             else ""
         )
         from chat_goals.binding import owner_eligible
-        condition_flags = {"mutation_write": mutation_available, "chat_goal_owner": owner_eligible(record)}
+        condition_flags = {
+            "mutation_write": mutation_available,
+            "chat_goal_owner": owner_eligible(record),
+            "active_child": self._child_outcome_available(record),
+        }
         current_catalog = (
             str(loaded.document.get("schema_revision") or "")
             == CATALOG_SCHEMA_REVISION
@@ -1523,6 +1543,7 @@ class CatalogService:
                 "chat_id": str(chat_id),
                 "kernel_generation": int(record.kernel_generation or 0),
                 "continuation_state": str(record.continuation_state),
+                "child_outcome_available": condition_flags["active_child"],
                 "action_surface": str(identity.action_surface),
                 "trust_profile": str(identity.trust_profile),
                 "overlay_revision": int(identity.overlay_revision or 0),
@@ -1936,10 +1957,9 @@ class CatalogService:
         if any(str(method.get("alias") or method.get("name") or "") == "report_outcome"
                for method in session_api.get("methods") or ()):
             current_parts.append(
-                "If working as an active child session, record a structured outcome before "
-                "your final reply: call session.report_outcome(status=..., summary=...). "
-                "Use completed only when the objective is achieved, continuing for remaining "
-                "authorized work, or blocked for required input. Prose alone is not a report."
+                "Before your final reply to the parent, call session.report_outcome(status=..., summary=...). "
+                "Use completed when the objective is achieved, continuing for remaining authorized work, "
+                "or blocked when you need input."
             )
         if any(str(method.get("alias") or method.get("name") or "") == "context"
                for method in session_api.get("methods") or ()):

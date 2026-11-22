@@ -12,6 +12,7 @@ import {PEER_DELIVERY} from "../peers/peerModels";
 import {peerRequestKey, requestPeer, usePeers} from "../peers/peerStore";
 import {disclosureChoice, disclosureKey, useTraceDisclosure} from "./disclosures";
 import {navigateTo} from "../state/appStore";
+import {useRunQuestion} from "../state/clarificationStore";
 import {chooseContextChat,captureContext,getExternalContextSettings} from "../externalContextSettingsStore";
 
 // Virtualized turns retain disclosures across scroll and overlay visits.
@@ -110,7 +111,7 @@ function TraceEntry({row, live, current, scope, suspended, mutation, waiting}: {
   const duration = formatActivityDuration(step.durationMs);
   const hasDetails = !!(step.argsPreview || step.resultPreview || step.detail);
   const label = thought ? (running ? "Thinking" : step.summaryState === "discarded" ? "Discarded thought" : step.summaryState === "cancelled" ? "Interrupted thought" : "Thought")
-    : waiting && running ? "Waiting for peer reply" : traceActionLabel(step, live, presentation);
+    : step.status === "running" && suspended ? suspended : waiting && running ? "Waiting for peer reply" : traceActionLabel(step, live, presentation);
   const status = running ? "Running" : step.status === "running" ? suspended || "Interrupted" : activityStatusLabel(step.status);
   const exception = step.status && !["running", "ok", "done"].includes(step.status);
   const cellLine = presentation.python && presentation.input?.trimStart().startsWith("#") ? headline : "";
@@ -126,7 +127,7 @@ function TraceEntry({row, live, current, scope, suspended, mutation, waiting}: {
         {exception && !failed && !label.toLowerCase().includes(status.toLowerCase()) ? <small>{status}</small> : null}
         {current ? <Elapsed start={startedAt.current}/> : duration ? <small className="trace-time">{duration}</small> : null}
       </Heading>
-      {!thought && canRevealPaneForStep(step) ? <button type="button" className="trace-entry__related" aria-label={`Open related surface for ${headline}`} title="Open related surface" onClick={() => revealPaneForStep(step)}><Icon name="popout"/></button> : null}
+      {!thought && canRevealPaneForStep(step) ? <button type="button" className="trace-entry__related" aria-label={`Open related surface for ${headline}`} title="Open related surface" onClick={() => void revealPaneForStep(step, scope[0])}><Icon name="popout"/></button> : null}
     </div>
     {open && hasDetails ? <div className="trace-entry__body">
       {thought ? <ThoughtText text={step.detail || ""} streaming={running} preview={preview}/> : <>
@@ -140,7 +141,7 @@ function TraceEntry({row, live, current, scope, suspended, mutation, waiting}: {
         {!step.argsPreview && !step.resultPreview && step.detail ? <pre>{step.detail}</pre> : null}
         {step.evidence?.some(item => item.kind === "file" || item.kind === "url") ? <div className="trace-evidence">
           {step.evidence.filter(item => item.kind === "file" || item.kind === "url").map(item => <button type="button" key={item.id} title={item.value}
-            onClick={() => revealPaneForStep({...step, evidence: [item]})}><Icon name={item.kind === "file" ? "file" : "browser"}/><span>{item.label || item.value}</span><Icon name="popout"/></button>)}
+            onClick={() => void revealPaneForStep({...step, evidence: [item]}, scope[0])}><Icon name={item.kind === "file" ? "file" : "browser"}/><span>{item.label || item.value}</span><Icon name="popout"/></button>)}
         </div> : null}
       </>}
     </div> : null}
@@ -266,13 +267,14 @@ export function TurnActivity({steps, live, streamText, turnStartedAt,ownerLabel=
   const blocks = useMemo(() => timelineBlocks(steps, shownPeerMessages), [steps, shownPeerMessages]);
   const chat = useChatSelection(state=>({sessionId:state.sessionId,mutation:live && state.runtime?.mutationEffectiveEnabled,connected:state.connected,pause:live ? state.pause : null,stopPending:live && state.stopPending,waits:live ? state.peerWaits : undefined}),shallowChatSelection);
   const mutation = !!chat.mutation;
+  const needsAnswer = useRunQuestion(live ? chat.sessionId : "", scope);
   const suspended = live && (!chat.connected ? "Reconnecting" : chat.pause?.state === "paused" ? "Paused"
-    : chat.stopPending ? "Stopping" : chat.pause?.state === "pausing" ? "Pausing" : "") || "";
+    : chat.stopPending ? "Stopping" : chat.pause?.state === "pausing" ? "Pausing" : needsAnswer ? "Waiting for your answer" : "") || "";
   const active = live && !suspended ? currentStep === undefined ? currentTraceStep(steps) : currentStep : null;
   const waiting = !!active?.callId && !!chat.waits?.some(wait => wait.runId === scope && wait.outerCallId === active.callId);
   const fallbackScope = useRef(String(turnStartedAt));
   const rowScope = [chat.sessionId || "", scope ?? fallbackScope.current] as const;
-  const showStatus = live && !suppressStatus && (suspended || (!active && !streamText));
+  const showStatus = live && !suppressStatus && !needsAnswer && (suspended || (!active && !streamText));
   if (!blocks.length && !showStatus) return null;
   return <div className={`turn-timeline turn-activity-stack${live && !suspended ? " is-live" : ""}`}>
     {steps.some(step=>step.omittedBefore) ? <button type="button" className="message-action" disabled={!chat.connected || !chat.sessionId}

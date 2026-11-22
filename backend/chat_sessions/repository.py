@@ -31,6 +31,7 @@ from .models import (
     InvalidConversationGraph,
     SearchHit,
 )
+from .projection import ANCESTRY_SQL, display_excerpt, display_origin_text, history_order, rows_for_ids
 
 
 SCHEMA_VERSION = 2
@@ -673,78 +674,102 @@ class ConversationRepository:
         if not head or not target:
             return False
         row = conn.execute(
-            "WITH RECURSIVE ancestry(node_id) AS ("
-            " SELECT ? UNION SELECT e.from_node_id FROM ancestry a "
-            " CROSS JOIN conversation_edge e "
-            " WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL"
-            ") SELECT 1 FROM ancestry WHERE node_id=? LIMIT 1",
+            ANCESTRY_SQL + "SELECT 1 FROM ancestry WHERE node_id=? LIMIT 1",
             (head, str(conversation_id), target),
         ).fetchone()
         return row is not None
 
     def history_nodes(
-        self, branch_id: str, *, head_node_id: str = "", limit: int = 5000
+        self, branch_id: str, *, head_node_id: str = "", limit: int = 5000, display_only: bool = False,
     ) -> list[ConversationNode]:
         branch = self.require_branch(branch_id)
         head = str(head_node_id or branch.head_node_id)
         if not head:
             return []
         with self._read() as conn:
-            if not self._is_reachable_tx(conn, branch.conversation_id, branch.head_node_id, head):
+            if head != branch.head_node_id and not self._is_reachable_tx(conn, branch.conversation_id, branch.head_node_id, head):
                 raise InvalidConversationGraph(f"node {head!r} is not in branch ancestry")
-            rows = conn.execute(
-                "WITH RECURSIVE ancestry(node_id) AS ("
-                " SELECT ? UNION SELECT e.from_node_id FROM ancestry a "
-                " CROSS JOIN conversation_edge e "
-                " WHERE e.to_node_id=a.node_id AND e.conversation_id=? AND e.from_node_id IS NOT NULL"
-                ") SELECT DISTINCT n.* FROM conversation_node n JOIN ancestry a "
-                "ON a.node_id=n.node_id ORDER BY n.created_at DESC, n.node_id DESC LIMIT ?",
-                (head, branch.conversation_id, min(20000, max(1, limit))),
-            ).fetchall()
-            return [self._node(row) for row in reversed(rows)]
+            ordered = history_order(conn, branch.conversation_id, head, display_only=display_only)
+            ids = ordered[-min(20000, max(1, limit)):]
+            return [self._node(row) for row in rows_for_ids(conn, branch.conversation_id, ids, full=True)]
 
-    def search(
-        self, query: str, *, limit: int = 50, include_archived: bool = False
-    ) -> list[SearchHit]:
-        query_text = _text(query, "query", required=True, limit=1000)
-        cap = min(500, max(1, int(limit)))
-        tokens = re.findall(r"[\w-]+", query_text, flags=re.UNICODE)
+    def _message_matches(self, conn, query, tokens, pattern, visible):
+        select = (
+            "SELECT n.conversation_id,n.node_id,n.role,n.created_at,c.title,c.default_branch_id,t.branch_id,"
+            "CASE WHEN json_type(n.metadata_json,'$.origin')='object' THEN json_extract(n.metadata_json,'$.origin') END AS origin,"
+            "CASE WHEN json_type(n.metadata_json,'$.peer_display')='object' THEN json_extract(n.metadata_json,'$.peer_display') END AS peer,")
+        joins = (" JOIN conversation c ON c.conversation_id=n.conversation_id "
+                 "LEFT JOIN conversation_turn t ON t.turn_id=n.turn_id ")
         if self.fts_enabled and tokens:
-            expression = " AND ".join('"' + token.replace('"', '""') + '"*' for token in tokens[:20])
+            expression = " AND ".join('"' + token + '"*' for token in tokens[:20])
             try:
-                with self._read() as conn:
-                    rows = conn.execute(
-                        "SELECT f.conversation_id, f.node_id, n.role, n.preview, n.created_at, "
-                        "c.title, bm25(conversation_node_fts) AS rank FROM conversation_node_fts f "
-                        "JOIN conversation_node n ON n.node_id=f.node_id "
-                        "JOIN conversation c ON c.conversation_id=f.conversation_id "
-                        "WHERE conversation_node_fts MATCH ? AND c.tombstoned_at IS NULL "
-                        + ("" if include_archived else "AND c.archived=0 ")
-                        + "ORDER BY rank, n.created_at DESC LIMIT ?", (expression, cap),
-                    ).fetchall()
-                    return [SearchHit(
-                        conversation_id=str(row["conversation_id"]), node_id=str(row["node_id"]),
-                        title=str(row["title"]), role=str(row["role"]),
-                        preview=str(row["preview"]), score=-float(row["rank"] or 0),
-                        created_at=float(row["created_at"]),
-                    ) for row in rows]
+                return conn.execute(
+                    select + "substr(snippet(conversation_node_fts,3,'','','…',25),1,500) AS preview,"
+                    "bm25(conversation_node_fts) AS rank FROM conversation_node_fts f "
+                    "JOIN conversation_node n ON n.node_id=f.node_id " + joins
+                    + f"WHERE conversation_node_fts MATCH ? AND {visible} AND n.role IN ('user','assistant') "
+                    "ORDER BY rank,n.created_at DESC,n.node_id", (expression,))
             except sqlite3.OperationalError:
                 self.fts_enabled = False
-        pattern = "%" + query_text.replace("%", "\\%").replace("_", "\\_") + "%"
+        return conn.execute(
+            select + "substr(n.content_text,max(1,instr(lower(n.content_text),lower(?))-80),320) AS preview,"
+            "0 AS rank FROM conversation_node n " + joins + f"WHERE {visible} AND n.role IN ('user','assistant') "
+            "AND (n.content_text LIKE ? ESCAPE '\\' OR n.preview LIKE ? ESCAPE '\\') "
+            "ORDER BY n.created_at DESC,n.node_id", (query, pattern, pattern))
+
+    def search(
+        self, query: str, *, limit: int = 50, include_archived: bool = False, resolve_peer=None,
+    ) -> list[SearchHit]:
+        from functools import lru_cache
+
+        query = _text(query, "query", required=True, limit=1000)
+        cap = min(500, max(1, int(limit)))
+        tokens = re.findall(r"[\w-]+", query, flags=re.UNICODE)
+        pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        visible = "c.tombstoned_at IS NULL" + ("" if include_archived else " AND c.archived=0")
         with self._read() as conn:
-            rows = conn.execute(
-                "SELECT n.conversation_id, n.node_id, n.role, n.preview, n.created_at, c.title "
-                "FROM conversation_node n JOIN conversation c ON c.conversation_id=n.conversation_id "
-                "WHERE c.tombstoned_at IS NULL AND (n.content_text LIKE ? ESCAPE '\\' "
-                "OR n.preview LIKE ? ESCAPE '\\' OR c.title LIKE ? ESCAPE '\\') "
-                + ("" if include_archived else "AND c.archived=0 ")
-                + "ORDER BY n.created_at DESC LIMIT ?", (pattern, pattern, pattern, cap),
-            ).fetchall()
-            return [SearchHit(
-                conversation_id=str(row["conversation_id"]), node_id=str(row["node_id"]),
-                title=str(row["title"]), role=str(row["role"]),
-                preview=str(row["preview"]), score=0.0,
-                created_at=float(row["created_at"]),
-            ) for row in rows]
+            conn.execute("BEGIN")
+            titles = conn.execute(
+                "SELECT c.conversation_id,c.title,c.updated_at,b.branch_id,b.runtime_chat_id FROM conversation c "
+                "JOIN conversation_branch b ON b.branch_id=c.default_branch_id "
+                f"WHERE {visible} AND b.tombstoned_at IS NULL AND c.title LIKE ? ESCAPE '\\' "
+                "ORDER BY c.updated_at DESC,c.conversation_id LIMIT ?", (pattern, cap)).fetchall()
+
+            @lru_cache(maxsize=32)
+            def branches(cid):
+                return conn.execute("SELECT branch_id,runtime_chat_id,head_node_id FROM conversation_branch "
+                    "WHERE conversation_id=? AND tombstoned_at IS NULL ORDER BY branch_id", (cid,)).fetchall()
+
+            @lru_cache(maxsize=4)
+            def reachable(cid, head):
+                return {r[0] for r in conn.execute(ANCESTRY_SQL + "SELECT node_id FROM ancestry", (head, cid))}
+
+            hits = []
+            for row in self._message_matches(conn, query, tokens, pattern, visible):
+                cid, node = row["conversation_id"], row["node_id"]
+                special = display_origin_text(row["role"], json.loads(row["origin"] or "null"),
+                                              json.loads(row["peer"] or "null"), resolve_peer)
+                if special is not None:
+                    words = tokens[:20] if self.fts_enabled and tokens else [query]
+                    if not all(word.casefold() in special.casefold() for word in words):
+                        continue
+                choices = sorted(branches(cid), key=lambda b: (b["branch_id"] != row["branch_id"],
+                                                                b["branch_id"] != row["default_branch_id"]))
+                for branch in choices:
+                    head = branch["head_node_id"]
+                    if node == head or node in reachable(cid, head):
+                        hits.append(SearchHit(
+                            conversation_id=cid, branch_id=branch["branch_id"], session_id=branch["runtime_chat_id"],
+                            node_id=node, title=row["title"], role=row["role"], created_at=row["created_at"],
+                            preview=display_excerpt(special, query, 500)[0] if special is not None else row["preview"],
+                            score=-float(row["rank"] or 0)))
+                        break
+                if len(hits) == cap:
+                    break
+        matched = {hit.conversation_id for hit in hits}
+        title_only = [SearchHit(conversation_id=r["conversation_id"], branch_id=r["branch_id"],
+                      session_id=r["runtime_chat_id"], title=r["title"], preview=r["title"], created_at=r["updated_at"])
+                      for r in titles if r["conversation_id"] not in matched]
+        return (title_only + hits)[:cap]
 
 __all__ = ["ConversationRepository", "SCHEMA_VERSION", "default_conversation_path"]

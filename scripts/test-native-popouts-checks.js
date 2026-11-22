@@ -65,6 +65,11 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     assert.equal((await getJson('/json/list')).filter(item => item.url.includes('surface=utility%3Aoverview')).length, 1);
     await click(overview, 'Keep window on top');
     await waitFor(overview, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'true'`, 'native pin state');
+    const readPin = () => client.evaluate(`window.variant1Deck.controlNativeWindow('utility:overview', 'bounds')`);
+    assert.equal((await readPin()).pinned, true, 'Overview control reflects the native window');
+    await click(overview, 'Keep window on top');
+    await waitFor(overview, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'false'`, 'native unpin state');
+    assert.equal((await readPin()).pinned, false);
     await client.evaluate(`window.variant1Deck.toggleMaximize(); true`);
     await pause(150);
     const owner = await client.evaluate(`({left: screenX, top: screenY, right: screenX + outerWidth, width: outerWidth})`);
@@ -139,6 +144,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     await click(files, 'Keep window on top');
     const placement = await files.evaluate(`({left: screenX, top: screenY, width: outerWidth, height: outerHeight})`);
     await click(client, 'Edit layout');
+    await waitFor(client, `document.querySelector('.workbench-editbar select')`, 'layout editor loaded');
     await client.evaluate(`[...document.querySelectorAll('.workbench-editbar button')].find(button => button.textContent === 'Save as').click(); true`);
     await waitFor(client, `document.querySelector('[aria-label="Layout name"]')`, 'layout name editor');
     await client.evaluate(`document.querySelector('[aria-label="Layout name"]').focus(); true`);
@@ -150,6 +156,7 @@ module.exports = async function testNativePopouts({client, CdpClient, getJson, w
     assert.equal(savedLayout[1].windows.find(window => window.id === `pane:${filesId}`).pinned, true);
     await dock(files, `Dock ${filesTitle} panel`, `document.querySelector('.workbench-files')`);
     await client.evaluate(`(() => { const select = document.querySelector('[aria-label="Layout preset"]'); select.value = 'user-native-design-qa'; select.dispatchEvent(new Event('change', {bubbles: true})); return true; })()`);
+    await client.evaluate(`[...document.querySelectorAll('.workbench-editbar button')].find(b=>b.textContent==='Apply layout').click(); true`);
     const restoredFiles = await childFor(`pane:${filesId}`);
     await waitFor(restoredFiles, `document.querySelector('[aria-label="Keep window on top"]').getAttribute('aria-pressed') === 'true'`, 'saved pin state');
     const restoredPlacement = await restoredFiles.evaluate(`({left: screenX, top: screenY, width: outerWidth, height: outerHeight})`);

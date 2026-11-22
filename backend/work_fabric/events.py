@@ -134,6 +134,7 @@ class WorkEventService:
                     consumer_id=self.consumer_id,
                     lease_epoch=item.lease_epoch,
                     error=f"{type(exc).__name__}: {exc}",
+                    unattempted=items[delivered + 1:],
                     retry_delay_s=delay,
                 )
                 _LOG.exception("Work Fabric event delivery failed: %s", item.event.event_id)

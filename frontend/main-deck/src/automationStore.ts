@@ -36,6 +36,7 @@ export type AutomationRuntime = {
 
 export type AutomationItem = {
   id: string;
+  create_request_id?: string;
   name: string;
   prompt: string;
   enabled: boolean;
@@ -67,9 +68,13 @@ type AutomationState = Readonly<{
   builderOpen: boolean;
   editing: AutomationItem | null;
   editorGeneration: number;
-  pendingSave: {requestId: string; generation: number; label: string} | null;
+  pendingSave: SaveAttempt | null;
+  unconfirmedSave: {attempt:SaveAttempt; readId:string; checked:boolean} | null;
   saveError: string;
 }>;
+type AutomationFields=Pick<AutomationItem,"name"|"prompt"|"trigger"|"misfire_policy">;
+type SaveAttempt={requestId:string; createId:string; generation:number; label:string; target:string; fields:AutomationFields};
+let saveTimer:ReturnType<typeof setTimeout>|undefined;
 
 const store = createModuleStore<AutomationState>({
   initialState: {
@@ -82,6 +87,7 @@ const store = createModuleStore<AutomationState>({
     editing: null,
     editorGeneration: 0,
     pendingSave: null,
+    unconfirmedSave: null,
     saveError: "",
   },
 });
@@ -127,6 +133,7 @@ function parseItems(raw: unknown): AutomationItem[] {
     } : undefined;
     return {
       id: String(row.id || ""),
+      create_request_id: typeof row.create_request_id==="string" ? row.create_request_id : undefined,
       name: String(row.name || "Untitled automation"),
       prompt: String(row.prompt || ""),
       enabled: !!row.enabled,
@@ -161,8 +168,31 @@ export function setAutomationContext(next: RuntimeContext) {
 
 const refreshOnConnection = createReconnectRefresh(refreshAutomations);
 export function setAutomationConnection(status: string) {
+  if (status!=="connected") {
+    interruptSave();
+    const recovery=store.getState().unconfirmedSave;
+    if(recovery && (recovery.readId || recovery.checked)) {
+      patch({unconfirmedSave:{...recovery,readId:"",checked:false}});
+    }
+  }
   refreshOnConnection(status);
   pushWireStatus("automations", status, connected => patch({connected}));
+}
+
+function interruptSave() {
+  const attempt=store.getState().pendingSave;
+  if(!attempt)return;
+  clearTimeout(saveTimer);
+  patch({pendingSave:null,unconfirmedSave:{attempt,readId:"",checked:false},
+    saveError:"Save confirmation was lost. Check the saved definition before retrying."});
+}
+
+export function refreshAutomationDefinitions() {
+  const recovery=store.getState().unconfirmedSave;
+  if(!recovery)return send({type:"automation:list"});
+  const readId=crypto.randomUUID();
+  patch({unconfirmedSave:{...recovery,readId,checked:false}});
+  return send({type:"automation:list",request_id:readId});
 }
 
 export function ingestAutomations(message: Record<string, unknown>) {
@@ -170,6 +200,7 @@ export function ingestAutomations(message: Record<string, unknown>) {
     const {pendingSave, editorGeneration} = store.getState();
     const requestId = String(message.request_id || "");
     if (pendingSave && requestId === pendingSave.requestId && pendingSave.generation === editorGeneration) {
+      clearTimeout(saveTimer);
       store.getContext()?.notify(pendingSave.label, "utility:automations");
       closeAutomationBuilder();
     }
@@ -179,7 +210,11 @@ export function ingestAutomations(message: Record<string, unknown>) {
     const {pendingSave, editorGeneration} = store.getState();
     const requestId = String(message.request_id || "");
     if (pendingSave && requestId === pendingSave.requestId && pendingSave.generation === editorGeneration) {
+      clearTimeout(saveTimer);
       const detail = typeof message.error === "string" ? message.error : typeof message.message === "string" ? message.message : "Automation was not saved";
+      if(detail==="automation_create_conflict" && pendingSave.createId) {
+        interruptSave();refreshAutomationDefinitions();return;
+      }
       patch({pendingSave: null, saveError: detail});
       store.getContext()?.notify(detail, "utility:automations");
     }
@@ -187,6 +222,26 @@ export function ingestAutomations(message: Record<string, unknown>) {
   }
   if (message.type === "automations") {
     const items = parseItems(message.items);
+    const recovery=store.getState().unconfirmedSave;
+    if(recovery && message.request_id && message.request_id===recovery.readId && Array.isArray(message.items)) {
+      const {attempt}=recovery;
+      const saved=items.find(item=>attempt.target ? item.id===attempt.target : item.create_request_id===attempt.createId);
+      if(saved) {
+        const matches=saved.name===attempt.fields.name && saved.prompt===attempt.fields.prompt &&
+          saved.misfire_policy===attempt.fields.misfire_policy &&
+          Object.entries(attempt.fields.trigger).every(([key,value])=>saved.trigger[key as keyof AutomationTrigger]===value);
+        // Keep the mounted editor and anything typed since the interrupted save.
+        patch({editing:saved,unconfirmedSave:null,saveError:matches
+          ? "The saved definition matches the submitted settings. Your draft is available to edit."
+          : "The saved definition differs from your submission. Review your draft before saving."});
+      } else if (attempt.target) {
+        patch({editing:null,unconfirmedSave:null,
+          saveError:"This automation is absent from the refreshed list. You can create a new definition from your draft."});
+      } else {
+        patch({unconfirmedSave:{...recovery,checked:true},
+          saveError:"The refreshed list has no record of this creation. You can retry the same request."});
+      }
+    }
     patch({items, connected: true});
     return;
   }
@@ -201,7 +256,7 @@ export function ingestAutomations(message: Record<string, unknown>) {
 }
 
 export function refreshAutomations() {
-  send({type: "automation:list"});
+  refreshAutomationDefinitions();
   send({type: "automations:history", limit: 100});
 }
 
@@ -210,21 +265,18 @@ export function setAutomationFilter(filter: AutomationFilter) {
 }
 
 export function openAutomationBuilder(item: AutomationItem | null = null) {
-  patch({builderOpen: true, editing: item, editorGeneration: store.getState().editorGeneration + 1, pendingSave: null, saveError: ""});
+  clearTimeout(saveTimer);
+  patch({builderOpen: true, editing: item, editorGeneration: store.getState().editorGeneration + 1, pendingSave: null, unconfirmedSave:null, saveError: ""});
 }
 
 export function closeAutomationBuilder() {
-  patch({builderOpen: false, editing: null, editorGeneration: store.getState().editorGeneration + 1, pendingSave: null, saveError: ""});
+  clearTimeout(saveTimer);
+  patch({builderOpen: false, editing: null, editorGeneration: store.getState().editorGeneration + 1, pendingSave: null, unconfirmedSave:null, saveError: ""});
 }
 
-export function saveAutomation(fields: {
-  name: string;
-  prompt: string;
-  trigger: AutomationTrigger;
-  misfire_policy: "latest" | "skip";
-}) {
+export function saveAutomation(fields: AutomationFields) {
   const state = store.getState();
-  if (!state.builderOpen || state.pendingSave) return false;
+  if (!state.builderOpen || state.pendingSave || (state.unconfirmedSave && !state.unconfirmedSave.checked)) return false;
   const name = fields.name.trim();
   const prompt = fields.prompt.trim();
   if (!name || !prompt) {
@@ -237,15 +289,22 @@ export function saveAutomation(fields: {
     trigger: fields.trigger,
     misfire_policy: fields.misfire_policy,
   };
-  const requestId = `automation-save-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  patch({pendingSave: {requestId, generation: state.editorGeneration, label: state.editing ? "Automation updated" : "Automation created"}, saveError: ""});
+  const requestId = crypto.randomUUID();
+  const createId=state.editing ? "" : state.unconfirmedSave?.attempt.createId || requestId;
+  patch({pendingSave: {requestId,createId, generation: state.editorGeneration, label: state.editing ? "Automation updated" : "Automation created",
+    target:state.editing?.id || "", fields:payload}, unconfirmedSave:state.unconfirmedSave ? {...state.unconfirmedSave,readId:""} : null, saveError: ""});
+  saveTimer=setTimeout(()=>{
+    if(store.getState().pendingSave?.requestId!==requestId)return;
+    interruptSave();refreshAutomationDefinitions();
+  },20_000);
   let sent = false;
   if (state.editing) {
     sent = send({type: "automation:update", request_id: requestId, id: state.editing.id, ...payload});
   } else {
-    sent = send({type: "automation:add", request_id: requestId, enabled: true, ...payload});
+    sent = send({type: "automation:add", request_id: requestId, create_request_id:createId, enabled: true, ...payload});
   }
   if (!sent) {
+    clearTimeout(saveTimer);
     if (store.getState().pendingSave?.requestId === requestId) patch({pendingSave: null, saveError: "Backend offline — automation was not saved"});
     return false;
   }

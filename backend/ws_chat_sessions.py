@@ -1,7 +1,10 @@
 """WebSocket handlers for durable chat session CRUD and search."""
 
+import asyncio
+
 from ws_session_settings import mark_settings_applied, session_settings_command
 
+_NO_SESSION = object()
 
 def _chat_runtime(srv):
     return srv.require_runtime().chat
@@ -56,10 +59,11 @@ def _context_payload(srv, sid: str) -> dict:
     return context
 
 
-def _session_payload(srv, sid: str):
+def _session_payload(srv, sid: str, *, stored=_NO_SESSION):
     from session_catalog.profiles import is_action_surface
 
-    stored = _sessions(srv).get_session(sid)
+    if stored is _NO_SESSION:
+        stored = _sessions(srv).get_session(sid)
     if stored is None:
         return None
     payload = dict(stored)
@@ -296,17 +300,17 @@ def register(on):
 
     @on("chat:sessions")
     async def _chat_sessions(srv, websocket, session, msg):
-        await websocket.send_json(_chat_runtime(srv).sessions_message())
+        await websocket.send_json(await asyncio.to_thread(_chat_runtime(srv).sessions_message))
 
     @on("chat:session:get")
     async def _chat_session_get(srv, websocket, session, msg):
         sid = msg.get("id") or _chat_runtime(srv).viewed_session_id(session)
-        sess = _sessions(srv).get_session(sid)
+        sess = await asyncio.to_thread(_sessions(srv).get_session, sid)
         # Fetching/refreshing a transcript is not navigation. Only explicit
         # new/switch operations select the next input target.
         await websocket.send_json({
             "type": "chat:session",
-            "session": _session_payload(srv, sid) if sess is not None else None,
+            "session": _session_payload(srv, sid, stored=sess),
         })
 
     @on("chat:session:new")
@@ -475,9 +479,13 @@ def register(on):
         """Read-only liveness/result reconciliation without transcript hydration."""
         sid = str(msg.get('session_id') or '')
         request_id = str(msg.get('request_id') or '')[:512]
+        ticket_id = msg.get("ticket_id")
+        ticket_fields = {}
+        if isinstance(ticket_id, str) and 0 < len(ticket_id) <= 96:
+            ticket_fields = {"ticket_id": ticket_id, "submission": {"ticket_id": ticket_id, "status": "unknown"}}
         if not sid or not request_id or not _sessions(srv).has_session(sid):
             await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
-                                       'request_id': request_id, 'error': 'unknown_session'})
+                                       'request_id': request_id, 'error': 'unknown_session', **ticket_fields})
             return
         runtimes = srv.require_runtime().session_runtimes
         observed_run = str(msg.get('run_id') or '')[:512]
@@ -490,10 +498,13 @@ def register(on):
                       if observed_run and observed_admission else None)
         if not runtime:
             await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
-                                       'request_id': request_id, 'error': 'runtime_unavailable'})
+                                       'request_id': request_id, 'error': 'runtime_unavailable', **ticket_fields})
             return
+        if ticket_fields:
+            ticket_fields["submission"] = runtimes.submission_observation(sid, ticket_id, connection_id=session.attachment_id)
         await websocket.send_json({'type': 'chat:execution', 'session_id': sid,
             'request_id': request_id, 'observed_run_id': observed_run,
+            **ticket_fields,
             'observed_admission_id': observed_admission,
             'busy': runtime.get('busy', False),
             'active_run_id': runtime.get('active_run_id', ''),
@@ -656,6 +667,16 @@ def register(on):
             limit = max(1, min(30, int(msg.get("limit") or 12)))
         except (TypeError, ValueError):
             limit = 12
-        items = _sessions(srv).search(query, limit=limit) if query.strip() else []
+        items = await asyncio.to_thread(_sessions(srv).search, query, limit=limit) if query.strip() else []
         await websocket.send_json({"type": "chat:search:results",
                                    "query": query, "items": items})
+
+    @on("chat:history:around")
+    async def _history_around(srv, websocket, session, msg):
+        sid = str(msg.get("session_id") or "")
+        request = str(msg.get("request_id") or "")[:512]
+        node = str(msg.get("node_id") or "")
+        window = (await asyncio.to_thread(_sessions(srv).history_window, sid, node, query=msg.get("query"))
+                  if sid and request and 0 < len(node) <= 512 else None)
+        await websocket.send_json({"type": "chat:history:window", "session_id": sid, "request_id": request,
+            "node_id": node[:512], **(window or {"messages": [], "error": "history_node_unavailable"})})

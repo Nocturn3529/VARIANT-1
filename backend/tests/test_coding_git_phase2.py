@@ -136,6 +136,30 @@ def test_real_git_discovery_status_diff_branches_and_log(tmp_path):
     assert runtime.process.commits(str(root), limit=5)[0].subject == "initial"
 
 
+def test_path_limited_review_excludes_untracked_content_and_checks_same_scope(tmp_path, monkeypatch):
+    root = _repo(tmp_path)
+    runtime = _runtime(tmp_path, recipes={"unit": CheckRecipe("unit", (sys.executable, "-c", "pass"))})
+    scope = WorkScope(chat_id="chat_path_review")
+    repo = runtime.repositories.discover(str(root), scope=scope)
+    (root / "alpha.txt").write_text("selected change\n", encoding="utf-8")
+    unrelated = root / "unrelated.txt"
+    unrelated.write_text("private untracked fixture\n", encoding="utf-8")
+
+    def reject_untracked_read(path, *args, **kwargs):
+        assert Path(path) != unrelated
+        return open(path, *args, **kwargs)
+
+    monkeypatch.setattr("coding.git_process.open", reject_untracked_read, raising=False)
+    monkeypatch.setattr("coding.review.open", reject_untracked_read, raising=False)
+    record = runtime.review.start(repo.repository_id, target="uncommitted", paths=["alpha.txt"], scope=scope)
+    assert [item.path for item in runtime.review.files(record.review_id)] == ["alpha.txt"]
+    unrelated.write_text("different untracked bytes\n", encoding="utf-8")
+    assert runtime.checks.run(record.review_id, "unit", scope=scope).state == "passed"
+    (root / "alpha.txt").write_text("different selected bytes\n", encoding="utf-8")
+    with pytest.raises(ReviewStale):
+        runtime.review.assert_current(record.review_id, scope=scope)
+
+
 @pytest.mark.asyncio
 async def test_run_command_absorbs_typed_git_reads_and_mutations(
     tmp_path,

@@ -117,6 +117,9 @@ export function applyRuntimeSnapshot(id: string, value: unknown): void {
 function hydrateTurn(runtime: ChatRuntimeState | null): void {
   if (!runtime) return;
   const turn = turnApi(), state = getChatState();
+  // A busy snapshot identifies the chat's owner. Only a correlated admission
+  // can establish that a message still awaiting its start belongs to that run.
+  if (state.initialSubmission) return;
   if (runtime.busy) {
     dismissRecoveryNotice();
     if (!turn.isActive()) turn.begin({sessionId:state.sessionId || "", admissionId:runtime.activeAdmissionId, runId:runtime.activeRunId});
@@ -173,7 +176,8 @@ function mergeRunSnapshot(state: ChatState, snapshot: RunSnapshot): Pick<ChatSta
       return advances && (step.summaryState === "running" || newer.summaryState !== "running")
         ? {...step, ...newer, id: step.id} : step;
     }
-    return step.status === "running" && newer.status !== "running" ? {...step, ...newer, id: step.id} : step;
+    if (step.status === "running" && newer.status !== "running") return {...step, ...newer, id: step.id};
+    return newer.cellAction && step.status === newer.status ? {...step, cellAction: newer.cellAction} : step;
   });
   const oldest=snapshot.steps[0]?.ts ?? 0;
   const steps = [...merged, ...remote.values()].filter(step=>!snapshot.omittedBefore || !oldest || step.ts>=oldest)
@@ -220,7 +224,7 @@ export function applySession(session: Record<string, unknown>, navigation?: Chat
   if (sharedTurnActive()) {
     const turnSession = turnApi()?.getSessionId() || state.sessionId || "";
     if (id && turnSession && id !== turnSession) return;
-    const acceptPrefix=!candidateRuntime || !runtimeConflictsWithActiveRun(candidateRuntime);
+    const acceptPrefix=!state.initialSubmission && (!candidateRuntime || !runtimeConflictsWithActiveRun(candidateRuntime));
     const delivered=new Set(acceptPrefix?messages.map(row=>row.ticketId).filter((id):id is string=>!!id):[]);
     const snapshot = acceptPrefix ? parseRunSnapshot(session.run_snapshot, turnApi().snapshot().runId || parsedRuntime?.activeRunId || "",
       turnApi().snapshot().admissionId || parsedRuntime?.activeAdmissionId || "") : null;

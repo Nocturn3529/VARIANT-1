@@ -224,7 +224,7 @@ class ReviewService:
             head=head,
             default_branch=repo.default_branch,
         )
-        status = self.git.status(root, repository_id=repository_id)
+        status = self.git.status(root, repository_id=repository_id, paths=paths)
         observation = self.git.diff(root, selector, paths=paths, context=context)
         patch_sha = hashlib.sha256(observation.patch).hexdigest()
         patch_ref = ""
@@ -351,6 +351,8 @@ class ReviewService:
             "patch_available": bool(snapshot.patch_ref or not snapshot.patch_bytes),
             "origin": str(origin or "manual")[:100],
         }
+        if paths:
+            summary["paths"] = [str(path) for path in paths]
         now = time.time()
         review = ReviewRecord(
             review_id=review_id,
@@ -491,7 +493,9 @@ class ReviewService:
         if review.target in {
             "working", "working_since", "staged", "uncommitted", "base_branch",
         }:
-            current = self.git.status(review.root, repository_id=review.repository_id)
+            current = self.git.status(
+                review.root, repository_id=review.repository_id, paths=review.summary.get("paths"),
+            )
             changed = (
                 current.head_oid != review.head_oid
                 or current.fingerprint != review.status_fingerprint

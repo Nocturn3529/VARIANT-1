@@ -1,4 +1,5 @@
 import type {InputQueueSnapshot,InputQueueItem} from "../protocol/chatQueue";
+import type {ProviderThoughtSource} from "../protocol/chatEvents";
 /**
  * Chat domain types (wire parity with the canonical Conversation session API).
  */
@@ -39,6 +40,7 @@ export type ChatTurnStep = {
   /** Earlier events omitted from this bounded trace; carried by its first row. */
   omittedBefore?: number;
   summaryState?: "running" | "done" | "discarded" | "cancelled";
+  summarySource?: ProviderThoughtSource;
   summaryRevision?: number;
   peerMessage?:import("../protocol/peerActivity").PeerActivity;
   /** A message from another agent that steered into this run. */
@@ -59,6 +61,8 @@ export type ChatTurnStep = {
   /** Bounded input and result projections shown only when a row is expanded. */
   argsPreview?: string;
   resultPreview?: string;
+  /** Host summary of completed native operations in this Python cell. */
+  cellAction?: string;
   /** Millisecond activity boundaries. */
   startedAt?: number;
   completedAt?: number;
@@ -84,6 +88,9 @@ export type ChatTurnReceipt = {
 };
 
 export type ChatMessage = {
+  nodeId?: string;
+  historyExcerpt?: {start: number; end: number; total: number};
+  historyPeer?: boolean;
   admissionId?: string;
   /** A delivered input belongs inside this run's activity chronology. */
   inputBoundary?: boolean;
@@ -246,6 +253,9 @@ export type ChatState = {
   queuedFollowUps: number;
   /** Local group currently collecting optimistic initial/follow-up/final bubbles. */
   activeTurnId: string | null;
+  initialSubmission?: {id:string; requestId:string; user:ChatMessage; uncertain?:boolean; readId?:string; readAt?:number; checkFailed?:boolean};
+  retrySubmission?: {id:string; contents:string};
+  recoveredInput?: {text:string; attachments:ChatAttachment[]; references:ChatBrowserReference[]};
   /** Terminal persistence can arrive before the visible done frame. */
   pendingTurnCommit?: {owner: string; appended?: import("../protocol/chatEvents").ChatAppendedMessage; failed?: boolean};
   /** Active inputs sent but not yet acknowledged/rejected by the backend. */

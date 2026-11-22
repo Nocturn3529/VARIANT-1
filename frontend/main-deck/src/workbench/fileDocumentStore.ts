@@ -8,6 +8,7 @@ export type FileDocument = Readonly<{
   kind: "unknown" | "text" | "binary";
   editable: boolean;
   mtimeMs: number;
+  revision?: string;
   loaded: boolean;
   loading: boolean;
   editing: boolean;
@@ -68,7 +69,7 @@ export async function loadFileDocument(
     if (documents.get(id) !== owner || epoch !== owner.epoch) return;
     if (!result?.ok) throw new Error(result?.error || "Unable to read file");
     const state = owner.store.getState();
-    const text = String(result.text || "");
+    const text = String(result.text || "").replace(/\r\n?/g, "\n");
     const mtimeMs = Number(result.mtimeMs || 0);
     const editable = !result.binary && result.editable !== false && typeof result.text === "string";
     const kind = editable ? "text" : "binary";
@@ -76,10 +77,10 @@ export async function loadFileDocument(
     // replace the user's buffer. The original mtime remains the save fence.
     if (state.editing && !discard) {
       owner.store.setState({loading: false, kind, editable,
-        conflict: !editable || mtimeMs !== state.mtimeMs || text !== state.original,
+        conflict: !editable || mtimeMs !== state.mtimeMs || result.revision !== state.revision || text !== state.original,
         error: editable ? "" : "The file is no longer editable text. Your draft has been kept."});
     } else {
-      owner.store.setState({text, original: text, mtimeMs, kind, editable, dataUrl: String(result.dataUrl || ""),
+      owner.store.setState({text, original: text, mtimeMs, revision: result.revision, kind, editable, dataUrl: String(result.dataUrl || ""),
         loaded: true, loading: false, editing: false, conflict: false});
     }
   } catch (error) {
@@ -116,14 +117,14 @@ export async function saveFileDocument(
   const epoch = ++owner.epoch;
   owner.store.setState({saving: true, loading: false, error: ""});
   try {
-    const result = await write?.(path, state.text, force ? undefined : state.mtimeMs);
+    const result = await write?.(path, state.text, force ? undefined : state.mtimeMs, force ? undefined : state.revision);
     if (documents.get(id) !== owner || epoch !== owner.epoch) return false;
     if (result?.conflict) {
       owner.store.setState({saving: false, conflict: true});
       return false;
     }
     if (!result?.ok) throw new Error(result?.error || "Unable to save file");
-    owner.store.setState({original: state.text, mtimeMs: Number(result.mtimeMs || Date.now()),
+    owner.store.setState({original: state.text, mtimeMs: Number(result.mtimeMs || Date.now()), revision: result.revision,
       saving: false, editing: false, conflict: false});
     return true;
   } catch (error) {

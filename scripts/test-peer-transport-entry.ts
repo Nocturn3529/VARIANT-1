@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import {disposePeers,getPeerState,ingestPeers,inspectPeerRequest,peerDraftKey,peerRequestKey,requestPeer,retryPeerRequest,setPeerConnection,setPeerContext,setPeerDraft,submitPeerDraft} from "../frontend/main-deck/src/peers/peerStore";
 import {grokDeliveryLabel,parseGrokSavedSession} from "../frontend/main-deck/src/peers/grokSessions";
 import {parseGrokBinding} from "../frontend/main-deck/src/peers/grokBindings";
+import {parsePeer} from "../frontend/main-deck/src/peers/peerModels";
+import {refreshInvalidatedReceipts} from "../frontend/main-deck/src/peers/peerStore";
 
 const message=(requestId:string,extra:Record<string,unknown>={})=>({message_id:"opaque-message",exchange_id:"exchange-1",sender_peer_id:"opaque-peer-a",target_peer_id:"opaque-peer-b",request_id:requestId,content:"Review the parser",in_reply_to:"",state:"queued",sequence:1,revision:1,...extra});
 
@@ -98,6 +100,29 @@ export function run() {
   assert.equal(grokDeliveryLabel("inbox",true).label,"Inbox only","connection flags cannot override declared inbox delivery");
   assert.equal(grokDeliveryLabel("agent_context_prompt",false).label,"Automatic wake unavailable");
   assert.match(grokDeliveryLabel("agent_context_prompt",true).detail,/user input/);
+  const descriptor={peer_id:"grok:x",kind:"external_harness",delivery_mode:"agent_context_prompt",
+    live_ingress:true,metadata:{delivery_mode:"inbox"},capabilities:{live_ingress:false}};
+  for(const live of [true,false]) {
+    const peer=parsePeer({...descriptor,live_ingress:live})!;
+    assert.equal(grokDeliveryLabel(peer.delivery_mode,peer.capabilities.live_ingress).label,
+      live ? "Automatic inbox wake" : "Automatic wake unavailable");
+  }
+  const chat="receipt-revisions";
+  for(let i=1;i<=100;i++)ingestPeers({type:"peer:changed",chat_id:chat,message_id:"m"+i,revision:i});
+  const refreshStart=sent.length;
+  refreshInvalidatedReceipts(chat);
+  for(const command of sent.slice(refreshStart))ingestPeers({type:"peers:result",chat_id:chat,operation:"inspect",request_id:command.request_id,
+    ok:true,result:message("",{message_id:command.message_id,revision:Number(String(command.message_id).slice(1))})});
+  assert.equal(sent.length-refreshStart,100);
+  assert.deepEqual(getPeerState().scopes[chat].invalidations,{});
+  ingestPeers({type:"peer:changed",chat_id:chat,message_id:"m50",revision:101});
+  refreshInvalidatedReceipts(chat);const inFlight=sent.at(-1)!;
+  ingestPeers({type:"peer:changed",chat_id:chat,message_id:"m50",revision:102});
+  refreshInvalidatedReceipts(chat);assert.equal(sent.length-refreshStart,101);
+  ingestPeers({type:"peers:result",chat_id:chat,operation:"inspect",request_id:inFlight.request_id,ok:true,result:message("",{message_id:"m50",revision:101})});
+  refreshInvalidatedReceipts(chat);assert.equal(sent.length-refreshStart,102);
+  ingestPeers({type:"peers:result",chat_id:chat,operation:"inspect",request_id:sent.at(-1)!.request_id,ok:true,result:message("",{message_id:"m50",revision:102})});
+  assert.deepEqual(getPeerState().scopes[chat].invalidations,{});
   const setup=requestPeer("chat-z",{operation:"grok:setup"})!;
   setPeerConnection("offline");setPeerConnection("connected");
   assert.equal(getPeerState().requests[peerRequestKey("chat-z",{operation:"grok:setup"})].phase,"unconfirmed");

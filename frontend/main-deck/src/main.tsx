@@ -55,6 +55,7 @@ import {
 } from "./store";
 import { storeModuleHooks } from "./runtime/regStore";
 import {installBrowserDownloads} from "./workbench/browserDownloads";
+import {guardEditorUnload} from "./workbench/previewStore";
 import {installInputModality} from "./ui/inputModality";
 import {ingestBrowserSettings, setBrowserSettingsConnection, setBrowserSettingsContext} from "./browserSettingsStore";
 import {ingestLocalModels, setLocalModelsConnection, setLocalModelsContext} from "./localModelsStore";
@@ -169,7 +170,8 @@ if (typeof __VARIANT1_FIXTURES__ !== "undefined" && __VARIANT1_FIXTURES__
   fixtureLoader.src = new URL("../dev/fixture-loader.js", import.meta.url).href;
   document.head.appendChild(fixtureLoader);
 }
-window.addEventListener("beforeunload", () => {
+guardEditorUnload(window, api?.confirmFileDiscard);
+window.addEventListener("unload", () => {
   disposeBrowserDownloads();
   disposeMic();
   disposeTerminalRuntime();

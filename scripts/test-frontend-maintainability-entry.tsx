@@ -4,9 +4,12 @@ import {createRoot} from "react-dom/client";
 import {AutomationsDestination} from "../frontend/main-deck/src/AutomationsDestination";
 import * as automation from "../frontend/main-deck/src/automationStore";
 import {VoiceSettings} from "../frontend/main-deck/src/VoiceSettings";
-import {setGeneralContext, ingestGeneral} from "../frontend/main-deck/src/generalStore";
+import {setGeneralConnection,setGeneralContext, ingestGeneral} from "../frontend/main-deck/src/generalStore";
 import {CustomEndpointsPanel,LocalRuntimePanel} from "../frontend/main-deck/src/ProviderCenter";
-import {setContext, ingest} from "../frontend/main-deck/src/store";
+import {setContext, setPlatformConnection, ingest} from "../frontend/main-deck/src/store";
+import {MessagingSettings} from "../frontend/main-deck/src/MessagingSettings";
+import {AgentToolsSettings} from "../frontend/main-deck/src/AgentToolsSettings";
+import {ingestAgentTools,setAgentToolsConnection,setAgentToolsContext} from "../frontend/main-deck/src/agentToolsStore";
 import {PreviewPane} from "../frontend/main-deck/src/workbench/PreviewPane";
 import {openBrowser, getPreviewState, closePreview} from "../frontend/main-deck/src/workbench/previewStore";
 import {SurfaceDocumentContext} from "../frontend/main-deck/src/ui/SurfaceDocument";
@@ -64,6 +67,41 @@ async function testEditorOwnership() {
   assert.equal(field(host, "Instruction").value, "Keep this draft");
   assert.equal(document.querySelector('[role="alert"]'), null);
   assert.equal(getToastState().surface, "utility:automations");
+  await act(async()=>automation.setAutomationConnection("connected"));
+  await act(async()=>button(host,"Create automation").click());
+  const interrupted=sent.at(-1)!;
+  await act(async()=>automation.setAutomationConnection("offline"));
+  assert.equal(automation.getAutomationState().pendingSave,null);assert.match(host.textContent!,/confirmation was lost/);
+  await act(async()=>automation.setAutomationConnection("connected"));
+  const read=sent.filter(row=>row.type==="automation:list").at(-1)!;
+  assert.ok(read.request_id);assert.equal(field(host,"Instruction").value,"Keep this draft");
+  await act(async()=>automation.ingestAutomations({type:"automations",request_id:"unrelated",items:[]}));
+  assert.equal(button(host,"Create automation").disabled,true);
+  await act(async()=>automation.ingestAutomations({type:"automations",request_id:read.request_id,items:[]}));
+  assert.equal(button(host,"Create automation").disabled,false);
+  assert.equal(sent.filter(row=>row.type==="automation:add").at(-1),interrupted);
+  await act(async()=>button(host,"Create automation").click());
+  const retried=sent.at(-1)!;
+  assert.notEqual(retried.request_id,interrupted.request_id);assert.equal(retried.create_request_id,interrupted.create_request_id);
+  await act(async()=>automation.setAutomationConnection("offline"));
+  await change(field(host,"Instruction"),"More recent edit");
+  await act(async()=>automation.setAutomationConnection("connected"));
+  const readAgain=sent.filter(row=>row.type==="automation:list").at(-1)!;
+  await act(async()=>automation.ingestAutomations({type:"automations",request_id:readAgain.request_id,items:[
+    {id:"saved",...retried,enabled:true}]}));
+  assert.equal(field(host,"Instruction").value,"More recent edit");
+  assert.equal(button(host,"Save changes").disabled,false);
+  assert.equal(automation.getAutomationState().editing?.id,"saved");
+  const runs=Array.from({length:200},(_,i)=>({automation_id:"saved",status:i<100?"ok":"failed",finished_at:Date.now()/1000-30-i}));
+  await act(async()=>automation.ingestAutomations({type:"automations:history",count:runs.length,items:runs.slice(0,100)}));
+  assert.match(host.textContent!,/100 in the past 7 days · latest 100 of 200 runs/);
+  const trigger={type:"file_change",path:"fixture-folder"};
+  await act(async()=>automation.openAutomationBuilder({...automation.getAutomationState().editing!,trigger}));
+  await change(field(host,"Instruction"),"Preserve trigger");await act(async()=>button(host,"Save changes").click());
+  await act(async()=>automation.setAutomationConnection("offline"));await act(async()=>automation.setAutomationConnection("connected"));
+  const absent=sent.filter(row=>row.type==="automation:list").at(-1)!;
+  await act(async()=>automation.ingestAutomations({type:"automations",items:[],request_id:absent.request_id}));
+  await act(async()=>button(host,"Create automation").click());assert.deepEqual(sent.at(-1)?.trigger,trigger);
   await act(async () => root.unmount());
   automation.closeAutomationBuilder();
   console.log("M08/M46: delayed saves, duplicate submit, and persistent feedback in a detached form passed");
@@ -111,6 +149,83 @@ async function testSpeechAndEndpoints() {
   assert.equal(field(host, "Provider ID").disabled, true); assert.match(host.textContent!, /Edit Endpoint/);
   await act(async () => root.unmount()); host.remove();
   console.log("M26/M27/M28: provider identity, endpoint typing, and voice Escape/Enter/blur passed");
+}
+
+async function testInterruptedForms() {
+  const host=document.createElement("div");document.body.appendChild(host);
+  const root=mount(host);
+  setGeneralContext(context);setAgentToolsContext(context);setContext(context);
+  const click=(node:Element,label:string)=>act(async()=>button(node,label).click());
+  const provider={id:"openai",name:"Fixture speech",kind:"cloud",auth:"api_key",configured:true,config:{model:"old"}};
+  const speech=(model:string)=>ingestGeneral({type:"config",voice:{stt:{provider:"openai",providers:[{...provider,config:{model}}]}}});
+  await act(async()=>{speech("old");root.render(<VoiceSettings/>);});
+  const card=host.querySelector(".voice-provider-card")!;
+  const secret=card.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await change(secret,"fixture-speech");
+  await change(field(card,"Model"),"new");
+  await click(card.querySelector(".voice-provider-credential")!,"Save");
+  await click(card,"Save provider settings");
+  let before=sent.length;
+  await act(async()=>setGeneralConnection("offline"));
+  assert.match(card.textContent!,/confirmation was lost/);assert.equal(secret.value,"fixture-speech");
+  await act(async()=>setGeneralConnection("connected"));
+  await act(async()=>speech("new"));
+  assert.equal(button(card,"Save provider settings").disabled,false);
+  assert.equal(button(card,"Save").disabled,false);assert.match(card.textContent!,/submitted key could not be verified/);
+  assert.equal(sent.slice(before).some(row=>row.type!=="config:get"),false);
+
+  const search=()=>ingestAgentTools({type:"tools",web_search:{provider:"tavily",providers:[
+    {id:"tavily",name:"Tavily",auth:"api_key",configured:true}]}});
+  await act(async()=>{search();root.render(<AgentToolsSettings/>);});
+  const webKey=host.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await change(webKey,"fixture-search");await click(host,"Save");
+  before=sent.length;
+  await act(async()=>setAgentToolsConnection("offline"));
+  await act(async()=>setAgentToolsConnection("connected"));await act(async()=>search());
+  assert.equal(button(host,"Save").disabled,false);assert.equal(webKey.value,"fixture-search");
+  assert.match(host.textContent!,/submitted key could not be verified/);
+  assert.deepEqual(sent.slice(before).map(row=>row.type),["tools:get"]);
+  const schedule=setTimeout;let timeout:()=>void=()=>{throw new Error("missing save timeout");};
+  try {
+    globalThis.setTimeout=((callback:()=>void,delay:number,...args:unknown[])=>{
+      if(delay===20_000)timeout=callback;
+      return schedule(callback,delay,...args);
+    }) as typeof setTimeout;
+    await click(host,"Save");before=sent.length;
+    await act(async()=>timeout());await act(async()=>search());
+  } finally {globalThis.setTimeout=schedule;}
+  assert.equal(webKey.value,"fixture-search");assert.equal(button(host,"Save").disabled,false);
+  assert.deepEqual(sent.slice(before).map(row=>row.type),["tools:get"],"a missing receipt on an open socket only refreshes");
+
+  await act(async()=>{ingest({type:"config",custom_endpoints:[]});root.render(<CustomEndpointsPanel/>);});
+  await change(field(host,"Name"),"Example");await change(field(host,"Endpoint URL"),"https://example.test/v1");
+  await change(field(host,"Default Model"),"sample");await change(field(host,"API Key"),"fixture-endpoint");
+  await click(host,"Save");before=sent.length;
+  await act(async()=>setPlatformConnection("offline"));await act(async()=>setPlatformConnection("connected"));
+  await act(async()=>ingest({type:"cloud:custom-endpoints",items:[
+    {id:"custom-example",name:"Example",base_url:"https://example.test/v1",model:"sample",discover_models:true,is_current:true}]}));
+  assert.match(host.textContent!,/matching endpoint settings/);assert.equal(field(host,"API Key").value,"fixture-endpoint");
+  assert.equal(button(host,"Save").disabled,false);assert.deepEqual(sent.slice(before).map(row=>row.type),["cloud:custom-endpoints:list"]);
+
+  const adapter={id:"example",display_name:"Example",config:{},values:{},runtime_available:true,configured_fields:[],
+    fields:["one","two"].map(key=>({key,label:key,secret:true}))};
+  await act(async()=>{ingest({type:"messaging:gateway",enabled:true,adapters:[adapter],pairing:{pending:[],approved:[]}});root.render(<MessagingSettings/>);});
+  await change(field(host,"one"),"fixture-one");await change(field(host,"two"),"fixture-two");
+  await act(async()=>setPlatformConnection("offline"));before=sent.length;
+  await click(host,"Save changes");assert.equal(sent.length,before);assert.match(host.textContent!,/Reconnect to save/);
+  assert.equal(field(host,"one").value,"fixture-one");
+  await act(async()=>setPlatformConnection("connected"));await click(host,"Save changes");
+  const [first,second]=sent.slice(before).filter(row=>row.type==="messaging:credential:set");
+  const reply=(cmd:Record<string,unknown>,accepted:boolean,error:string,field=cmd.field)=>ingest({
+    type:"messaging:write_result",operation:cmd.type,request_id:cmd.request_id,adapter:cmd.adapter,field,accepted,error});
+  await act(async()=>reply(first,true,"","two"));assert.equal(field(host,"one").value,"fixture-one");
+  await act(async()=>{reply(first,true,"Adapter restart failed");reply(second,false,"Credential write failed");});
+  assert.equal(field(host,"one").value,"");assert.equal(field(host,"two").value,"fixture-two");
+  assert.match(host.textContent!,/Adapter restart failed/);assert.match(host.textContent!,/Credential write failed/);
+  await click(host,"Save changes");const retry=sent.at(-1)!;
+  await change(field(host,"two"),"newer entry");await act(async()=>reply(retry,true,""));
+  assert.equal(field(host,"two").value,"newer entry");
+  await act(async()=>root.unmount());host.remove();
 }
 
 async function testTransportAndWatchers() {
@@ -184,6 +299,7 @@ async function testBrowserNavigation() {
 export async function run() {
   try {
     await testEditorOwnership();
+    await testInterruptedForms();
     await testSpeechAndEndpoints();
     await testTransportAndWatchers();
     await testBrowserNavigation();

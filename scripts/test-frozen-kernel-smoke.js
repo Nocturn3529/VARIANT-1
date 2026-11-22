@@ -21,12 +21,12 @@ const isWin = process.platform === 'win32';
 const python = isWin
   ? path.join(backend, '.venv', 'Scripts', 'python.exe')
   : path.join(backend, '.venv', 'bin', 'python');
-const executable = path.join(
+const executable = path.resolve(process.env.VARIANT1_TEST_KERNEL_EXE || path.join(
   backend,
   'dist',
   'Variant1Backend',
   isWin ? 'Variant1Kernel.exe' : 'Variant1Kernel',
-);
+));
 const scratch = path.join(
   os.tmpdir(),
   `variant1-frozen-kernel-smoke-${randomUUID()}`,

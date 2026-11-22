@@ -7,7 +7,6 @@ import type {
   StreamDoneMessage,
 } from "../protocol";
 import type {
-  ChatEvidence,
   ChatMessage,
   ChatTurnStep,
 } from "./types";
@@ -37,6 +36,7 @@ import {
   snapshotTurnReceipt,
 } from "./receipt";
 import {extractEvidence, mergeEvidence} from "./evidence";
+import {getChatProjects} from "../state/chatProjectStore";
 import {syncPaneFromActivity} from "../workbench/activityRouting";
 import {normalizeActivityStatus} from "./activityModel";
 import {boundedPreview, retainTurnSteps} from "./preview";
@@ -50,30 +50,7 @@ function activityTimeMs(value: number | undefined): number {
 }
 
 /** Upsert a turn step (tool start/result merge on the same key). */
-export function pushTurnStep(partial: {
-  id?: string;
-  summaryState?: ChatTurnStep["summaryState"];
-  summaryRevision?: number;
-  kind: ChatTurnStep["kind"];
-  label: string;
-  detail?: string;
-  status?: ChatTurnStep["status"];
-  tool?: string;
-  key?: string;
-  evidence?: ChatEvidence[];
-  callId?: string;
-  rawStatus?: string;
-  argsPreview?: string;
-  resultPreview?: string;
-  startedAt?: number;
-  completedAt?: number;
-  durationMs?: number;
-  admissionMs?: number;
-  appendDetail?: boolean;
-  peerMessage?:ChatTurnStep["peerMessage"];
-  peerInbound?:ChatTurnStep["peerInbound"];
-  segment?: number;
-}) {
+export function pushTurnStep({appendDetail, ...partial}: Omit<ChatTurnStep, "ts" | "id"> & {id?: string; appendDetail?: boolean}) {
   const state = getChatState();
   if (!sharedTurnActive() && !state.turnActive && !state.streaming) return;
   const key = partial.key || "";
@@ -92,7 +69,7 @@ export function pushTurnStep(partial: {
         if (partial.summaryState === "running" && steps[i].summaryState && steps[i].summaryState !== "running") return;
         const priorDetail = steps[i].detail || "";
         const incomingDetail = partial.detail || "";
-        const detail = partial.appendDetail && incomingDetail
+        const detail = appendDetail && incomingDetail
           ? (incomingDetail.startsWith(priorDetail)
             ? incomingDetail
             : `${priorDetail}${incomingDetail}`)
@@ -110,6 +87,7 @@ export function pushTurnStep(partial: {
           rawStatus: partial.rawStatus || steps[i].rawStatus,
           argsPreview: partial.argsPreview || steps[i].argsPreview,
           resultPreview: partial.resultPreview != null ? partial.resultPreview : steps[i].resultPreview,
+          cellAction: partial.cellAction || steps[i].cellAction,
           startedAt: steps[i].startedAt || partial.startedAt,
           completedAt: partial.completedAt || steps[i].completedAt,
           durationMs: partial.durationMs ?? steps[i].durationMs,
@@ -126,27 +104,11 @@ export function pushTurnStep(partial: {
     }
   }
   steps.push({
+    ...partial,
     id: partial.id || newStepId(),
-    summaryState: partial.summaryState,
-    summaryRevision: partial.summaryRevision,
-    kind: partial.kind,
-    label: partial.label,
-    detail: partial.detail,
     status: partial.status || "done",
-    tool: partial.tool,
-    callId: partial.callId,
-    rawStatus: partial.rawStatus,
-    argsPreview: partial.argsPreview,
-    resultPreview: partial.resultPreview,
-    startedAt: partial.startedAt,
-    completedAt: partial.completedAt,
-    durationMs: partial.durationMs,
-    admissionMs: partial.admissionMs,
     key: key || undefined,
     evidence: partial.evidence?.length ? partial.evidence : undefined,
-    peerMessage:partial.peerMessage,
-    peerInbound:partial.peerInbound,
-    segment: partial.segment,
     ts: partial.completedAt || partial.startedAt || Date.now(),
   });
   patchChatState({turnSteps: retainTurnSteps(steps)});
@@ -176,19 +138,11 @@ export function flushNarration(): void {
  */
 function activityShowsOnMainChat(message: StreamActivityMessage): boolean {
   const event = message.event;
-  const tool = message.tool.trim();
   if (event === "loop:detail") return false;
   // The legacy activity placement tags tool lifecycle as side. Exact call
   // events still belong to this chat's trace; generic side noise does not.
   if (message.surface.toLowerCase() === "side") return !!message.call_id && ["tool:start","tool:result","tool:activity"].includes(event);
-  if (event === "tool:start" || event === "tool:result" || event === "tool:activity") {
-    return true;
-  }
-  if (tool && (message.status || "").toLowerCase() === "running") return true;
-  if (event === "loop:detail") return false;
-  if (event === "task:step" && !(message.text || message.title)) return false;
-  if (message.surface.toLowerCase() === "side") return false;
-  return true;
+  return event !== "task:step" || !!(message.text || message.title) || (!!message.tool.trim() && message.status.toLowerCase() === "running");
 }
 
 export function ingestActivityMessage(message: StreamActivityMessage) {
@@ -222,8 +176,10 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
   const text = boundedPreview((
     message.text || message.args_preview || message.title || ""
   ).trim(), 800);
+  const chatId = message.session_id || getChatState().sessionId || "";
   const evidence = extractEvidence({
     tool,
+    projectRoot: getChatProjects().projects[chatId]?.root,
     argsPreview: message.args_preview,
     text: [message.text, message.title].filter(Boolean).join(" "),
   });
@@ -247,6 +203,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
 
   if (event === "tool:result" || event === "tool:start" || (tool && statusRaw === "running")) {
     syncPaneFromActivity({
+      chatId,
       event,
       tool,
       status: message.status,
@@ -296,6 +253,7 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
       callId: callId || undefined,
       rawStatus: message.status || (status === "error" ? "error" : "ok"),
       resultPreview: text || undefined,
+      cellAction: message.cell_action,
       ...(status !== "running" ? {completedAt} : {}),
       startedAt: durationMs ? completedAt - durationMs : undefined,
       durationMs,
@@ -355,7 +313,8 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
         ts: completedAt,
       } : s
     ));
-    if (text) {
+    // Successful task:done text is a clipped copy of the final chat reply.
+    if (text && terminalStatus !== "ok" && terminalStatus !== "done") {
       steps.push({
         id: newStepId(),
         kind: "note",
@@ -389,21 +348,23 @@ export function ingestActivityMessage(message: StreamActivityMessage) {
 /** Replay enriches an existing exact call only; it cannot create work or reveal UI. */
 function enrichReplayedActivity(message:StreamActivityMessage):void {
   const callId=message.call_id;
-  if(!callId || message.event!=="tool:result")return;
+  const runId=message.run_id;
+  if(!callId || !runId || message.event!=="tool:result")return;
   const status=normalizeActivityStatus(message.status.toLowerCase(),message.event);
   if(status==="running")return;
   let changed=false;
   const update=(step:ChatTurnStep):ChatTurnStep=>{
     if(step.callId!==callId)return step;
     const next={...step,status,rawStatus:message.status || step.rawStatus,
+      cellAction:message.cell_action || step.cellAction,
       resultPreview:message.text?message.text.slice(0,16000):step.resultPreview,
       durationMs:message.duration_ms ?? message.total_duration_ms ?? step.durationMs,
       completedAt:message.ts?activityTimeMs(message.ts):step.completedAt};
     if(JSON.stringify(step)===JSON.stringify(next))return step;
     changed=true;return next;
   };
-  const state=getChatState(),turnSteps=state.turnSteps.map(update);
-  const messages=state.messages.map(row=>row.steps?.some(step=>step.callId===callId)?{...row,steps:row.steps.map(update)}:row);
+  const state=getChatState(),turnSteps=turnApi().snapshot().runId===runId ? state.turnSteps.map(update) : state.turnSteps;
+  const messages=state.messages.map(row=>row.runId===runId && row.steps?.some(step=>step.callId===callId)?{...row,steps:row.steps.map(update)}:row);
   if(changed)patchChatState({turnSteps,messages});
 }
 

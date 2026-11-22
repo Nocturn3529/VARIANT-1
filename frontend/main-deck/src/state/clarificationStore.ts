@@ -1,3 +1,4 @@
+import {useSyncExternalStore} from "react";
 import type {RuntimeContext} from "../types";
 import {createModuleStore} from "./createModuleStore";
 import {createRequestIdFactory} from "./storePrimitives";
@@ -162,6 +163,10 @@ export function useClarificationState() {
 }
 export function useQuestionChatIds(): string[] {
   const state=store.useStore();return Object.keys(state.byChat).filter(id=>state.byChat[id].length);
+}
+export function useRunQuestion(chatId?: string | null, runId?: string): boolean {
+  const read = () => !!(chatId && runId && store.getState().byChat[chatId]?.[0]?.runId === runId);
+  return useSyncExternalStore(store.subscribe, read, read);
 }
 export const getClarificationState = store.getState;
 export function __resetClarificationForTests() {

@@ -262,7 +262,10 @@ function createUpdateService(deps) {
     // The installer can't replace a running backend's files, and Chromium writes
     // tab lists and cookies lazily; both have to settle before we hand over.
     try {
-      await prepareInstall();
+      if (await prepareInstall() === false) {
+        set({status: 'downloaded', error: ''});
+        return {ok: false, reason: 'cancelled'};
+      }
     } catch (error) {
       return failInstall(up, 'prepare_failed', `VARIANT-1 couldn't get ready to install: ${errorText(error)}`);
     }

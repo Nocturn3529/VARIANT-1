@@ -353,6 +353,8 @@ def register_ipython_tool(registry: Any, runtime_provider) -> None:
             "kernel_generation": int(result.generation),
             "ledger_sequence": int(result.ledger_sequence),
         }
+        if result.cell_action:
+            receipt_metadata["cell_action"] = result.cell_action
         if selection is not None:
             receipt_metadata.update({
                 "category_id": str(

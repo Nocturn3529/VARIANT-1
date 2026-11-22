@@ -255,6 +255,10 @@ def main_model_step_node(config: AgentRunConfig, runtime: MainTaskRuntime):
             text = "\n\n".join(str(note) for note in notes)
             messages.append({"role": "user", "content": text, HOST_CONTEXT_PREFIX_KEY: len(text)})
 
+        from chat_goals.binding import current_turn_binding
+        goal_binding = current_turn_binding()
+        if goal_binding is not None:
+            loop["goal_observation"] = goal_binding.observation()
         execution = await execute_model_step(
             messages,
             MainModelStepPolicy(

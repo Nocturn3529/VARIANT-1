@@ -1,11 +1,12 @@
 """Recovery inside the canonical router, never a second agent/tool loop."""
 from __future__ import annotations
 
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 import json
 
 from model_providers import ProviderRequestError
 from model_runtime.context import normalize_model_route, context_limit_tokens, validate_worker_model_route
+from model_runtime.engine_manager import _local_lifecycle_slot
 from model_runtime.provider_recovery import PROFILES, REQUEST_BUDGET, RequestBudget, classify_provider_error
 
 
@@ -13,8 +14,16 @@ def route_key(router, route):
     return router._recovery_cooldowns.key(router, route)
 
 
+def normalize_recovery_route(router, row):
+    # Saved recovery routes select specific weights. Ordinary local chats
+    # select Hardware's current model when a new turn is admitted.
+    if not isinstance(row, dict):
+        raise ValueError("A recovery route must specify a model route object")
+    return normalize_model_route(router, row, model=row.get("model"))
+
+
 def normalized_routes(router, rows):
-    return [normalize_model_route(router, row) for row in rows]
+    return [normalize_recovery_route(router, row) for row in rows]
 
 
 def initial_effective_route(router, primary, policy, allow_recovery=True):
@@ -35,9 +44,13 @@ def portable_messages(messages):
     from model_runtime.message_graph import build_message_graph, render_openai_chat, ToolResultPart
     graph = build_message_graph(messages)
     projected = render_openai_chat(graph)
+    rejected_refs = graph.compactable_rejection_refs()
     for node, row in zip(graph.messages, projected):
-        if any(isinstance(part, ToolResultPart) and part.is_error for part in node.parts):
-            row["is_error"] = True
+        for part in node.parts:
+            if isinstance(part, ToolResultPart) and part.is_error:
+                row["is_error"] = True
+                if part.call_ref in rejected_refs:
+                    row["_variant1_truncated_before_execution"] = True
     return projected
 
 
@@ -152,26 +165,30 @@ async def stream_with_recovery(router, messages, options, *, recovery_profile=No
                 call_options["reasoning_budget"] = None
             # A candidate's exact context limit/capabilities must be re-admitted
             # before OAuth/model I/O. Don't replace primary compaction policy.
-            if changed or explicit_auxiliary:
-                try:
-                    _admit_context(router, candidate, call_messages, call_options)
-                except (ProviderRequestError, ValueError) as error:
-                    last_error = error
-                    _note("candidate_rejected", provider=candidate["provider"], model=candidate["model"], reason="context_or_local_identity")
-                    continue
             visible = False
             diagnostics = call_options.get("stream_diagnostics")
             before_tools = int(getattr(diagnostics, "tool_deltas", 0) or 0)
             try:
-                with router.temporary_model_route(candidate):
-                    if candidate["mode"] == "local":
-                        if enabled and not router.engine_ready:
-                            raise ProviderRequestError("local", "Selected local engine is unavailable", status_code=404)
-                        budget.consume("local")
-                    async with aclosing(router._stream_selected(call_messages, **call_options)) as stream:
-                        async for token in stream:
-                            visible = visible or bool(token)
-                            yield token
+                admit = changed or bool(explicit_auxiliary)
+                gate = _local_lifecycle_slot(router) if admit and candidate["mode"] == "local" else nullcontext()
+                async with gate:
+                    if admit:
+                        try:
+                            _admit_context(router, candidate, call_messages, call_options)
+                        except (ProviderRequestError, ValueError) as error:
+                            last_error = error
+                            _note("candidate_rejected", provider=candidate["provider"], model=candidate["model"],
+                                  reason="context_or_local_identity")
+                            continue
+                    with router.temporary_model_route(candidate):
+                        if candidate["mode"] == "local":
+                            if enabled and not router.engine_ready:
+                                raise ProviderRequestError("local", "Selected local engine is unavailable", status_code=404)
+                            budget.consume("local")
+                        async with aclosing(router._stream_selected(call_messages, **call_options)) as stream:
+                            async for token in stream:
+                                visible = visible or bool(token)
+                                yield token
                 router._recovery_cooldowns.succeeded(key)
                 if enabled and changed and not auxiliary:
                     router.promote_effective_route(candidate)

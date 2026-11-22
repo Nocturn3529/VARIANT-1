@@ -20,6 +20,7 @@ _LOG = logging.getLogger(__name__)
 
 from capability_broker import current_capability_invocation
 from core_invariants import sqlite_session_connection
+from project_context import ProjectBindingError
 from tools import Tool, ToolError
 from work_fabric.handles import remote_handle_envelope
 from work_fabric.jobs import JobExecutionContext, JobResult
@@ -218,6 +219,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     context_text TEXT NOT NULL,
                     action_surface TEXT NOT NULL,
                     model_route_json TEXT NOT NULL DEFAULT '{}',
+                    project_roots_json TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     result_text TEXT NOT NULL DEFAULT '',
                     artifact_ref TEXT NOT NULL DEFAULT '',
@@ -262,6 +264,8 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     conn.execute(f"ALTER TABLE astb_child_handle ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'")
             if "model_route_json" not in columns:
                 conn.execute("ALTER TABLE astb_child_handle ADD COLUMN model_route_json TEXT NOT NULL DEFAULT '{}'")
+            if "project_roots_json" not in columns:
+                conn.execute("ALTER TABLE astb_child_handle ADD COLUMN project_roots_json TEXT NOT NULL DEFAULT '[]'")
             if "work_scope_json" not in columns:
                 conn.execute("ALTER TABLE astb_child_handle ADD COLUMN work_scope_json TEXT NOT NULL DEFAULT '{}'")
             conn.execute("CREATE INDEX IF NOT EXISTS astb_child_goal_idx ON astb_child_handle(json_extract(work_scope_json,'$.goal_id'),parent_chat_id)")
@@ -291,6 +295,10 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 conn.execute(
                     "ALTER TABLE astb_child_handle ADD COLUMN depth INTEGER NOT NULL DEFAULT 1"
                 )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS astb_child_running_chat_idx "
+                "ON astb_child_handle(child_chat_id, parent_chat_id) WHERE status='running'"
+            )
             if "deletion_state" not in columns:
                 conn.execute(
                     "ALTER TABLE astb_child_handle ADD COLUMN "
@@ -927,6 +935,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             str(result.get("result_text") or "")
         )
         result["model_route"] = json.loads(result.pop("model_route_json", "{}") or "{}")
+        result["project_roots"] = json.loads(result.pop("project_roots_json"))
         result["work_scope"] = json.loads(result.pop("work_scope_json", "{}") or "{}")
         result['outcome'] = json.loads(result.pop('outcome_json','{}') or '{}') or {
             'schema':'variant1.child-outcome.v1','status':'unreported',
@@ -953,6 +962,12 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         model_route = self._parent_model_route(str(parent_chat_id))
         # Attribution is inherited from host admission, never model arguments.
         invocation = current_capability_invocation()
+        # A live parent's kernel can still be bound to an earlier project.
+        # Only the spawning cell can attest which roots it actually used.
+        project_roots = (
+            invocation.workspace_root_ids
+            if invocation is not None and invocation.chat_id == str(parent_chat_id) else ()
+        )
         from run_context import current_run_context
         live_context = current_run_context()
         inherited = (invocation.work_scope if invocation and invocation.chat_id == str(parent_chat_id)
@@ -1060,14 +1075,16 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             created = conn.execute(
                 "INSERT INTO astb_child_handle(child_id, child_chat_id, parent_chat_id, "
                 "depth, name, "
-                "task_text, context_text, action_surface, model_route_json, work_scope_json, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "task_text, context_text, action_surface, model_route_json, work_scope_json, "
+                "project_roots_json, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (
                     child_id, child_chat_id, str(parent_chat_id), depth,
                     str(name or "worker")[:80], clean_task[:20_000],
                     str(context or "")[:40_000],
                     child_identity.action_surface, json.dumps(model_route, sort_keys=True),
-                    json.dumps(work_scope.with_updates(chat_id=child_chat_id).to_dict(include_empty=False)), now, now,
+                    json.dumps(work_scope.with_updates(chat_id=child_chat_id).to_dict(include_empty=False)),
+                    json.dumps(project_roots), now, now,
                 ),
             )
             if created.rowcount == 1:
@@ -1158,6 +1175,18 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             catalog = self.host.require_runtime().catalog
             if catalog is not None and child_runtime.identity.action_surface == ACTION_SURFACE:
                 runtime_prompt = catalog.runtime_prompt(row["child_chat_id"], row["task_text"])
+            roots = json.loads(row["project_roots_json"])
+            if not isinstance(roots, list) or any(
+                not isinstance(path, str) or not os.path.isabs(path) for path in roots
+            ):
+                raise ValueError("Invalid saved child project roots")
+            project = {}
+            if roots:
+                if not await asyncio.to_thread(os.path.isdir, roots[0]):
+                    raise ProjectBindingError(
+                        "project_root_unavailable", f"The child's project is unavailable: {roots[0]}"
+                    )
+                project = {"working_directory": roots[0], "project_root": roots[0], "project_roots": roots}
             ctx = self.host.make_run_context(
                 "subagent",
                 row["task_text"],
@@ -1174,6 +1203,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "runtime_identity": child_runtime.identity.to_dict(),
                     "runtime_prompt": runtime_prompt,
                     "work_scope": json.loads(row['work_scope_json'] or '{}'),
+                    **project,
                 },
             )
             with (

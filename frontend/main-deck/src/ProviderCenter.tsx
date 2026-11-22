@@ -20,6 +20,7 @@ import {ProviderKeyRow} from "./ProviderCredentialPool";
 import {Button} from "./ui/Button";
 import {Overlay} from "./ui/Overlay";
 import {activeEngineJob} from "./localEngine";
+import {useSaveRecovery} from "./state/useSaveRecovery";
 
 
 function Status({ok}: {ok: boolean}) {
@@ -340,6 +341,13 @@ function endpointFingerprint(form: EndpointForm): string {
   return JSON.stringify(endpointPayload(form));
 }
 
+/** The saved provider ID follows model_providers.custom_endpoints.endpoint_id. */
+function expectedEndpointId(form: EndpointForm): string {
+  const source = [...(form.id || form.name).trim()].slice(0,120).join("");
+  const slug = source.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").replace(/^custom-/,"");
+  return "custom-" + (slug || "endpoint").slice(0,72).replace(/-+$/,"");
+}
+
 function endpointForm(endpoint: CustomEndpoint): EndpointForm {
   return {
     id: endpoint.id,
@@ -356,7 +364,7 @@ function endpointForm(endpoint: CustomEndpoint): EndpointForm {
 
 export function CustomEndpointsPanel() {
   const {
-    config,
+    config, connected,
     customEndpointReceipt,
   } = usePlatformState();
   const endpoints = config.custom_endpoints || [];
@@ -365,9 +373,26 @@ export function CustomEndpointsPanel() {
   const [pending, setPending] = useState<PendingEndpointOperation | null>(null);
   const [validation, setValidation] = useState<NonNullable<typeof customEndpointReceipt>["validation"]>(null);
   const [operationError, setOperationError] = useState("");
+  const refresh = () => send({type:"cloud:custom-endpoints:list"});
+  const received = !!pending && pending.requestId===customEndpointReceipt?.requestId && pending.operation===customEndpointReceipt.operation;
+  const recovery = useSaveRecovery(received ? null : pending, connected, config.custom_endpoints, {
+    release: () => setPending(null), refresh,
+    describe: request => {
+      const target = endpoints.find(row => row.id === request.targetId);
+      if (request.operation === "remove") return target ? "The endpoint is still listed." : "The endpoint is absent from the refreshed list.";
+      if (request.operation === "activate") return target?.is_current ? "This endpoint is now selected." : "This endpoint is currently inactive.";
+      if (request.operation === "validate") return "Validation was interrupted. Test the endpoint again.";
+      const submitted = JSON.parse(request.fingerprint) as ReturnType<typeof endpointPayload>;
+      const match = target && target.name === submitted.name && target.model === submitted.model
+        && target.base_url === submitted.base_url.replace(/\/+$/, "") && target.discover_models === submitted.discover_models
+        && (target.context_length || 0) === (submitted.context_length || 0) && (!submitted.make_default || target.is_current);
+      return match ? "The refreshed list contains matching endpoint settings." + (submitted.api_key ? " The submitted key remains unverified." : "")
+        : "The refreshed list does not contain the submitted settings. Your edits are kept.";
+    },
+  });
 
   useEffect(() => {
-    if (!pending || customEndpointReceipt?.requestId !== pending.requestId) return;
+    if (!pending || customEndpointReceipt?.requestId !== pending.requestId || customEndpointReceipt.operation !== pending.operation) return;
     const unchanged = pending.fingerprint === endpointFingerprint(form);
     if (!customEndpointReceipt.accepted) {
       setOperationError(customEndpointReceipt.error || "Custom endpoint operation failed");
@@ -402,6 +427,8 @@ export function CustomEndpointsPanel() {
   }
 
   function begin(operation: EndpointOperation, message: {type: string; [key: string]: unknown}, targetId = "") {
+    if (pending || recovery.waiting) return false;
+    recovery.reset();
     const requestId = `custom-endpoint-${operation}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     clearCustomEndpointFeedback();
     setValidation(null);
@@ -410,7 +437,7 @@ export function CustomEndpointsPanel() {
       notifyToast(`Could not ${operation} custom endpoint — backend offline`);
       return false;
     }
-    setPending({requestId, operation, fingerprint: endpointFingerprint(form), targetId});
+    setPending({requestId, operation, fingerprint: endpointFingerprint(form), targetId:targetId || persistedId || expectedEndpointId(form)});
     return true;
   }
 
@@ -424,6 +451,7 @@ export function CustomEndpointsPanel() {
         {endpoints.map(endpoint => <article className="custom-endpoint-row" key={endpoint.id}>
           <button type="button" onClick={() => {
             clearCustomEndpointFeedback();
+            recovery.reset();
             setPersistedId(endpoint.id);
             edit(endpointForm(endpoint));
           }} disabled={!!pending}>
@@ -432,8 +460,8 @@ export function CustomEndpointsPanel() {
             <small>{endpoint.model}{endpoint.has_api_key ? " · API key set" : ""}</small>
           </button>
           <div className="custom-endpoint-row__actions">
-            <Button tone="quiet" disabled={endpoint.is_current || !!pending} onClick={() => begin("activate", {type: "cloud:custom-endpoint:activate", id: endpoint.id}, endpoint.id)}>Use</Button>
-            <button type="button" disabled={!!pending} title="Delete endpoint" aria-label={`Delete ${endpoint.name}`} onClick={() => {
+            <Button tone="quiet" disabled={endpoint.is_current || !!pending || recovery.waiting} onClick={() => begin("activate", {type: "cloud:custom-endpoint:activate", id: endpoint.id}, endpoint.id)}>Use</Button>
+            <button type="button" disabled={!!pending || recovery.waiting} title="Delete endpoint" aria-label={`Delete ${endpoint.name}`} onClick={() => {
               if (window.confirm(`Delete ${endpoint.name}?`)) {
                 begin("remove", {type: "cloud:custom-endpoint:remove", id: endpoint.id}, endpoint.id);
               }
@@ -467,11 +495,13 @@ export function CustomEndpointsPanel() {
         </div>
         {validation ? <p className={validation.ok ? "provider-validation provider-validation--ok" : "provider-validation"}>{validation.message}</p> : null}
         {operationError ? <p className="runtime-error">{operationError}</p> : null}
+        {recovery.message && <p role="status">{recovery.message} {recovery.waiting && connected && <Button onClick={refresh}>Refresh</Button>}</p>}
         <div className="provider-form-actions">
-          <Button tone="quiet" disabled={!!pending || !form.name.trim() || !form.baseUrl.trim()} onClick={() => begin("validate", {type: "cloud:custom-endpoint:validate", endpoint: endpointPayload(form)})}>{pending?.operation === "validate" ? "Testing…" : "Test"}</Button>
-          <Button tone="primary" disabled={!!pending || !form.name.trim() || !form.baseUrl.trim() || !form.model.trim()} onClick={() => begin("save", {type: "cloud:custom-endpoint:save", endpoint: endpointPayload(form)})}>{pending?.operation === "save" ? "Saving…" : "Save"}</Button>
+          <Button tone="quiet" disabled={!!pending || recovery.waiting || !form.name.trim() || !form.baseUrl.trim()} onClick={() => begin("validate", {type: "cloud:custom-endpoint:validate", endpoint: endpointPayload(form)})}>{pending?.operation === "validate" ? "Testing…" : "Test"}</Button>
+          <Button tone="primary" disabled={!!pending || recovery.waiting || !form.name.trim() || !form.baseUrl.trim() || !form.model.trim()} onClick={() => begin("save", {type: "cloud:custom-endpoint:save", endpoint: endpointPayload(form)})}>{pending?.operation === "save" ? "Saving…" : "Save"}</Button>
           {form.id ? <Button tone="quiet" disabled={!!pending} onClick={() => {
             clearCustomEndpointFeedback();
+            recovery.reset();
             setPersistedId("");
             edit(EMPTY_ENDPOINT);
           }}>New endpoint</Button> : null}

@@ -108,14 +108,14 @@ class MessagingGateway:
         return {"enabled": False, "adapters": {}, "sessions": {},
                 "pairing": {"pending": [], "approved": []}}
 
-    def save(self) -> None:
+    def save(self, config: dict | None = None) -> None:
         directory = os.path.dirname(self.config_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
         temp = self.config_path + ".tmp"
         try:
             with open(temp, "w", encoding="utf-8") as handle:
-                json.dump(self.config, handle, indent=2)
+                json.dump(self.config if config is None else config, handle, indent=2)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp, self.config_path)
@@ -238,10 +238,14 @@ class MessagingGateway:
         return dict(value or {})
 
     def update(self, *, enabled=None, adapter: str = "", values: dict = None) -> None:
+        config = dict(self.config)
         if enabled is not None:
-            self.config["enabled"] = bool(enabled)
+            config["enabled"] = bool(enabled)
         if adapter:
-            row = self.config.setdefault("adapters", {}).setdefault(adapter, {})
+            adapters = dict(config.get("adapters") or {})
+            row = dict(adapters.get(adapter) or {})
+            adapters[adapter] = row
+            config["adapters"] = adapters
             if not isinstance(values, dict):
                 raise ValueError("adapter config must be an object")
             allowed = ("enabled", "allowed_users", "allowed_conversations", "prefix",
@@ -278,7 +282,8 @@ class MessagingGateway:
                     else:
                         extras[str(field_key)] = normalized
                 row["fields"] = extras
-        self.save()
+        self.save(config)
+        self.config = config
 
     def _pairing(self) -> dict:
         value = self.config.setdefault("pairing", {"pending": [], "approved": []})
@@ -360,6 +365,8 @@ class MessagingGateway:
         return True, ""
 
     def clean_text(self, envelope: MessageEnvelope) -> str:
+        if envelope.admitted_text is not None:
+            return envelope.admitted_text
         text = str(envelope.text or "").strip()
         prefix = str(self.adapter_config(envelope.adapter).get("prefix") or "")
         if prefix and text.startswith(prefix):
@@ -492,14 +499,30 @@ class MessagingGateway:
     async def _deliver_outbound(self, envelope: MessageEnvelope) -> bool:
         lock = self._outbound_locks.setdefault(envelope.ticket_id, asyncio.Lock())
         async with lock:
-            reply = await asyncio.to_thread(self.ingress.outbound_pending, envelope)
+            reply, confirmed = await asyncio.to_thread(self.ingress.outbound_delivery, envelope)
             if not reply:
                 return True
             adapter = self.adapters.get(envelope.adapter)
             if adapter is None:
                 return False
+
+            async def confirm(start: int, end: int) -> None:
+                write = asyncio.create_task(asyncio.to_thread(
+                    self.ingress.confirm_outbound_chunk, envelope, start, end,
+                ))
+                try:
+                    await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    await write
+                    raise
+
             try:
-                await adapter.send_text(envelope, reply)
+                if confirmed < len(reply):
+                    send_progress = getattr(adapter, "send_text_with_progress", None)
+                    if callable(send_progress):
+                        await send_progress(envelope, reply, offset=confirmed, confirm=confirm)
+                    else:
+                        await adapter.send_text(envelope, reply[confirmed:])
                 await asyncio.to_thread(self.ingress.mark_outbound_delivered, envelope)
                 self._stats["replied"] += 1
                 return True

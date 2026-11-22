@@ -436,6 +436,7 @@ class GitProcess:
         root: str,
         *,
         repository_id: str = "",
+        paths: Sequence[str] | None = None,
         include_untracked: bool = True,
         include_ignored: bool = False,
         fingerprint_content: bool = True,
@@ -462,7 +463,8 @@ class GitProcess:
         args.append("--untracked-files=all" if include_untracked else "--untracked-files=no")
         if include_ignored:
             args.append("--ignored=matching")
-        raw = self.run(root, args, timeout_s=remaining()).stdout
+        suffix = ["--", *(str(path) for path in paths)] if paths else []
+        raw = self.run(root, [*args, *suffix], timeout_s=remaining()).stdout
         headers, entries = self.parse_status(raw)
         ahead = behind = 0
         ab = headers.get("branch.ab", "")
@@ -489,7 +491,7 @@ class GitProcess:
                 (b"index", ["diff", "--cached", "--binary", "--no-ext-diff", "--no-textconv"]),
                 (b"worktree", ["diff", "--binary", "--no-ext-diff", "--no-textconv"]),
             ):
-                payload = self.run(root, diff_args, timeout_s=remaining()).stdout
+                payload = self.run(root, [*diff_args, *suffix], timeout_s=remaining()).stdout
                 fingerprint_material.extend(b"\0" + label + b"\0")
                 fingerprint_material.extend(hashlib.sha256(payload).digest())
             root_real = os.path.realpath(os.path.abspath(root))

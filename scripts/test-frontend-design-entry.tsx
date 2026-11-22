@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
 import {TurnActivity} from "../frontend/main-deck/src/chat/TurnActivity";
+import {RunResults} from "../frontend/main-deck/src/chat/RunResults";
 import {traceRows, traceSummary} from "../frontend/main-deck/src/chat/traceModel";
 import {kernelSamples, kernelSeed, MUTATION_INK} from "../frontend/main-deck/src/motion/kernelField";
 import {AppearanceBindings, getAppearance, setAppearance} from "../frontend/main-deck/src/state/appearanceStore";
@@ -81,6 +82,18 @@ export async function run() {
     assert.equal(activityPresentation({...cells[0], tool: 'search', argsPreview: '{"code":"raw'}).input, '{"code":"raw', 'only Python inputs unwrap code previews');
     const browserCell = {...cells[0], id: 'live-browser-cell', callId: 'live-browser-call', status: 'running' as const, argsPreview: JSON.stringify({code: "page = browser.navigate('https://example.com')"})};
     assert.equal(traceActionLabel(browserCell, true), 'Opening browser page');
+    const measured = {...cells[0], cellAction:"Read process logs", argsPreview: JSON.stringify({code:"tools.read_file('other.txt')"})};
+    assert.equal(traceActionLabel(measured, false), "Read process logs");
+    assert.equal(traceActionLabel({...measured,cellAction:"Read file"}, false), "Read file", "a cell receipt does not identify a source-code filename");
+    assert.equal(traceSummary([measured, {...measured,id:"more-logs"}]).label, "Read process logs (2 cells)");
+    await act(async () => root.render(<RunResults steps={[]}/>));
+    assert.equal(host.querySelector(".message-results"), null, "ordinary replies have no tool report");
+    await act(async () => root.render(<RunResults steps={[
+      {...measured, callId:"confirmed", omittedBefore:2},
+      {...measured, id:"skipped", callId:"skipped", status:"skipped", rawStatus:"skipped", cellAction:undefined},
+      {...measured, id:"unobserved", callId:"pending", rawStatus:"running", cellAction:undefined, resultPreview:"partial output"},
+    ]}/>));
+    assert.equal(host.querySelector(".message-results summary")?.textContent,"2 retained tool results · 1 skipped");
     assert.equal(traceActionLabel({...browserCell, status: 'ok'}, false), 'Opened browser page');
     assert.equal(traceActionLabel({...browserCell, status: 'error'}, false), 'Browser navigation failed');
     assert.equal(traceActionLabel({...browserCell, argsPreview: JSON.stringify({code: 'print("browser.navigate()")'})}, true), 'Running Python');

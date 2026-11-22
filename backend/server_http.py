@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from security import secretstore
 import ws_dispatch
 from ws_transport import transport_disconnected
+from ws_protocol import input_reply_fields
 
 class _NullWebSocket:
     """Best-effort fallback transport after the owning socket has gone away."""
@@ -348,6 +349,9 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
             else srv.require_runtime().chat.orphaned_task_payload(initial_chat_id)
         )
         hello = hello_payload(srv, orphan)
+        if callable(getattr(session_runtimes, "open_submission_origin", None)):
+            session_runtimes.open_submission_origin(session.attachment_id)
+            hello["submission_origin"] = session.attachment_id
         if view_role == "detached_chat":
             hello = {
                 **hello,
@@ -405,8 +409,12 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
             except asyncio.QueueFull:
                 # Never block the acknowledgement reader on ordinary traffic.
                 # This rejected envelope has not executed any domain action.
-                await logged.send_json({"type": "error", "error": "request_queue_full",
-                    "request_id": str(msg.get("request_id") or "")[:512] if isinstance(msg, dict) else ""})
+                if mtype == "chat":
+                    await logged.send_json({"type": "chat:rejected", "error": "request_queue_full",
+                        **input_reply_fields(msg, msg.get("session_id") or session.viewed_session_id)})
+                else:
+                    await logged.send_json({"type": "error", "error": "request_queue_full",
+                        "request_id": str(msg.get("request_id") or "")[:512] if isinstance(msg, dict) else ""})
     except asyncio.CancelledError:
         # ASGI scopes may cancel the endpoint as soon as the peer closes.
         # Cleanup is shielded below; preserve ASGI shutdown cancellation.
@@ -461,6 +469,9 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
                 except Exception:
                     pass
             srv.hub.remove(websocket)
+            retire_origin = getattr(session_runtimes, "retire_submission_origin", None)
+            if callable(retire_origin):
+                retire_origin(session.attachment_id)
             disconnected_chat_id = str(
                 getattr(session.active, "runtime_chat_id", "")
                 or getattr(session, "viewed_session_id", "")

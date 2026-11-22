@@ -7,7 +7,7 @@ const seen=new Set<string>();
 setTerminalContext({notify(){},send(message){
   const value=message as Record<string,unknown>;commands.push(value);
   if(value.type==="terminal:read")setTimeout(()=>{
-    const id=String(value.terminal_id);const text=seen.has(id)?"":`Retained ${id} output\r\n${id === "live" ? "\x1b[?1049h\x1b[2;12H" : ""}\x1b[6n`;
+    const id=String(value.terminal_id);const text=seen.has(id)?"":`Retained ${id} output\r\n${id === "live" ? "\x1b[?1049h\x1b[?2004h\x1b[2;12H" : ""}\x1b[6n`;
     seen.add(id);ingestTerminal({type:"terminal:accepted",operation:"read",request_id:value.request_id,result:{entity:{id,kind:"terminal"},frames:text?[{text}]:[],next_cursor:1}});
   },0);
   if(value.type==="terminal:close")setTimeout(()=>ingestTerminal({type:"terminal:accepted",operation:"close",request_id:value.request_id,result:record(String(value.terminal_id),"terminated")}),0);
@@ -17,6 +17,8 @@ setTerminalContext({notify(){},send(message){
 setTerminalConnection("connected");
 ingestTerminal({type:"execution:snapshot",terminals:[record("archived","exited"),record("live")]});
 const root=createRoot(document.getElementById("variant1-react-root")!);
+// Keep both gestures inside the fixture, including the keyboard handler's mount-time clipboard.
+Object.defineProperty(navigator, "clipboard", {configurable:true, value:{readText:async()=>"first line\nsecond line"}});
 root.render(<div className="app-shell" style={{height:"100vh",display:"flex",flexDirection:"column"}}><TerminalPanel/></div>);
 Object.assign(window,{runTerminalSelection:async()=>{
   const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -27,13 +29,21 @@ Object.assign(window,{runTerminalSelection:async()=>{
   ingestTerminal({type:"terminal:accepted",operation:"read",result:{entity:{id:"live",kind:"terminal"},frames:[{text:"\x1b[6n"}],next_cursor:2}});
   await pause(300);
   const cursorAfter=commands.filter(c=>c.type==="terminal:write").at(-1)?.data;
+  // Exercise real xterm paste handling without opening a PTY or touching the system clipboard.
+  const terminal = document.querySelector<HTMLElement>(".workbench-terminal-instance")!;
+  const beforePaste = commands.length;
+  terminal.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown",{key:"V",ctrlKey:true,shiftKey:true,bubbles:true,cancelable:true}));
+  await pause(20);
+  terminal.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}));
+  await pause(20);
+  const pastes = commands.slice(beforePaste).filter(row=>row.type==="terminal:write").map(row=>row.data);
 
   document.querySelector<HTMLButtonElement>('.workbench-terminal-rail button[title^="archived"]')!.click();
   await pause(500);
   const result={clearPreservedCursor:!!cursorBefore && cursorBefore===cursorAfter && commands.filter(c=>c.type==="terminal:write").length>writesBefore,clearSignals:commands.filter(c=>c.type==="terminal:signal").length,openCommands:commands.filter(value=>value.type==="terminal:open").length,
     writesToClosed:commands.filter(value=>value.type==="terminal:write"&&value.terminal_id==="archived").length,
     commands:commands.filter(value=>value.type==="terminal:open"||value.type==="terminal:write"),
-    emulators:document.querySelectorAll('.xterm').length};
+    pastes,emulators:document.querySelectorAll('.xterm').length};
   document.querySelector<HTMLButtonElement>('button[title="Close terminal"]')!.click();
   await pause(100);
   Object.assign(result,{closedArchivedRemoved:!document.querySelector('[data-terminal-id="archived"]')});

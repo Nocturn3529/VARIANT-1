@@ -552,7 +552,7 @@ def build_catalog_document(registry: Any) -> dict[str, Any]:
     }
 
 
-def session_infrastructure_contract(loaded, api, current_catalog):
+def _compatible_session_contract(loaded, api, current_catalog):
     """Resolve the v5 base session API to its supported successor, retaining every domain slot."""
     transport = api.get("transport") or {}
     if (current_catalog is None or api.get("name") != "session" or
@@ -570,6 +570,19 @@ def session_infrastructure_contract(loaded, api, current_catalog):
                     ("variant1.session.v6", "variant1.session-handler.v7")):
                 return candidate, current.release_id
     return api, loaded.release_id
+
+
+def session_infrastructure_contract(loaded, api, current_catalog, *, active_child: bool):
+    """Project the base session API for this chat, including releases pinned before role filtering."""
+    api, release_id = _compatible_session_contract(loaded, api, current_catalog)
+    if not active_child:
+        methods = [
+            method for method in api.get("methods", ())
+            if isinstance(method, dict)
+            and (method.get("operation") or method.get("alias")) != "report_outcome"
+        ]
+        api = {**api, "methods": methods}
+    return api, release_id
 
 
 def handler_only_catalog_follow_allowed(

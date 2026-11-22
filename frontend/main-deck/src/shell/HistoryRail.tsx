@@ -15,10 +15,12 @@ import {
   setSessionPinned,
   setSessionSearchQuery,
   switchSession,
+  openHistoryMatch,
   retrySessionNavigation,
   returnToDisplayedSession,
   useSessionState,
   type SessionSummary,
+  type SessionSearchHit,
 } from "../state/sessionStore";
 import {closeMobileHistory, navigateTo} from "../state/appStore";
 import {EmptyState} from "../ui/EmptyState";
@@ -180,6 +182,7 @@ function SessionButton({
   hasQuestion = false,
   menuOpen = false,
   onMenu,
+  search,
 }: {
   session: SessionSummary;
   active: boolean;
@@ -188,6 +191,7 @@ function SessionButton({
   hasQuestion?: boolean;
   menuOpen?: boolean;
   onMenu: (button: HTMLButtonElement) => void;
+  search?: {hit: SessionSearchHit; index: number};
 }) {
   const title = session.title || "New chat";
   return <div
@@ -204,13 +208,15 @@ function SessionButton({
       type="button"
       aria-current={active ? "true" : undefined}
       onClick={() => {
-        switchSession(session.id);
-        focusMainComposer();
+        if (search) openHistoryMatch(search.index);
+        else { switchSession(session.id); focusMainComposer(); }
         closeMobileHistory();
       }}
     >
       {working ? <KernelGlyph seed={session.id} size={16} phase="running" mutation={mutation}/> : null}
-      <span className="history-item__title">{title}</span>
+      {search ? <span className="history-item__match"><span className="history-item__title">{title}</span>
+        <small>{search.hit.kind === "title" ? "Conversation title" : search.hit.role === "user" ? "Input" : "VARIANT-1"}{search.hit.snippet ? " · " + search.hit.snippet : ""}</small>
+      </span> : <span className="history-item__title">{title}</span>}
       {hasQuestion ? <span className="history-item__question" aria-label="Answer needed" title="Answer needed">?</span> : null}
     </button>
     <button
@@ -316,10 +322,11 @@ export function HistoryRail() {
       {!sessionState.loading && !sessionState.error && sessionState.searchQuery.trim()
         ? <section className="history-group" data-group="Search results">
             <h2>Search results</h2>
-            {(sessionState.searchResults || []).map(hit => <SessionButton
-              key={`${hit.id}-${hit.ts}`}
+            {(sessionState.searchResults || []).map((hit,index) => <SessionButton
+              key={hit.nodeId || `${hit.id}-${hit.ts}-${index}`}
               session={hit}
-              active={hit.id === sessionState.displayedSessionId}
+              search={{hit,index}}
+              active={sessionState.historyMatch?.index === index && hit.id === sessionState.displayedSessionId}
               working={sessionState.workingSessionIds.includes(hit.id)}
               mutation={hit.id === chat.sessionId && !!chat.runtime?.mutationEffectiveEnabled}
               hasQuestion={questionChats.includes(hit.id)}

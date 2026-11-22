@@ -19,6 +19,7 @@ export type ChatSendCommand = {
   text: string;
   client_id: string;
   session_id: string;
+  request_id?: string;
   admission_id?: string;
   run_id?: string;
   delivery?: "steer" | "follow_up";
@@ -91,6 +92,7 @@ export type ChatWsCommand =
   | ChatSessionAnnotateCommand
   | ChatRuntimeGetCommand
   | {type: "chat:execution:get"; session_id: string; request_id: string; run_id: string; admission_id: string; call_ids: string[]}
+  | {type: "chat:execution:get"; session_id: string; request_id: string; ticket_id: string}
   | ChatRuntimeActionCommand
   | ChatRuntimeMutationSetCommand
   | ChatTtsPreviewCommand

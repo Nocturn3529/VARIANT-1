@@ -52,12 +52,20 @@ app.whenReady().then(async()=>{
  main.showInactive();await pause(150);
  const shapes=[];
  await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Edit layout').click()")});
+ await wait(main,'!!document.querySelector(".workbench-editbar select")');
+ const shape=()=>main.webContents.executeJavaScript('[...document.querySelectorAll(".workbench-split")].map(e=>e.className).join("|")');
+ const applyLayout=()=>main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('.workbench-editbar button')].find(b=>b.textContent==='Apply layout').click()")});
  for(const preset of ['focus','default','terminal-deck','quad']){
+  const before=await shape();
   await main.webContents.executeJavaScript('(()=>{const select=document.querySelector(".workbench-editbar select");select.value='+JSON.stringify(preset)+';select.dispatchEvent(new Event("change",{bubbles:true}));})()');await pause(80);
-  shapes.push(await main.webContents.executeJavaScript('[...document.querySelectorAll(".workbench-split")].map(e=>e.className).join("|")'));
+  assert.equal(await shape(),before,'choosing a preview leaves the workspace in place');
+  assert.match(await main.webContents.executeJavaScript('document.querySelector(".layout-preview").innerText'),/Terminal/);
+  await applyLayout();await pause(80);
+  shapes.push(await shape());
  }
  assert.equal(new Set(shapes).size,4,'each built-in preset changes the scoped layout');
  await main.webContents.executeJavaScript('(()=>{const select=document.querySelector(".workbench-editbar select");select.value="default";select.dispatchEvent(new Event("change",{bubbles:true}));})()');await pause(100);
+ await applyLayout();await pause(100);
  const widthBefore=await main.webContents.executeJavaScript('document.querySelector(".workbench-review").getBoundingClientRect().width');
  await main.webContents.executeJavaScript('(()=>{const x=document.querySelector(".workbench-review").getBoundingClientRect().left;const sash=[...document.querySelectorAll(".workbench-sash--row")].filter(e=>e.getBoundingClientRect().left<x).sort((a,b)=>b.getBoundingClientRect().left-a.getBoundingClientRect().left)[0];sash.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowLeft",bubbles:true}));})()');await pause(100);
  const widthAfter=await main.webContents.executeJavaScript('document.querySelector(".workbench-review").getBoundingClientRect().width');

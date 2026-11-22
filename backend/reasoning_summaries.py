@@ -1,11 +1,22 @@
-"""Provider-exposed summaries stay distinct from private reasoning/replay data."""
+"""Displayable provider thoughts and summaries, separate from replay data."""
 from __future__ import annotations
+import asyncio
 import inspect
 import time
 import uuid
+from dataclasses import dataclass, field
 
 SUMMARY_TEXT_LIMIT = 16_000
 SUMMARY_STEP_LIMIT = 200
+DISPLAY_THOUGHT_SOURCES = ("provider_summary", "provider_reasoning")
+
+
+@dataclass
+class _ReturnedText:
+    identity: str = field(default_factory=lambda: "summary_" + uuid.uuid4().hex)
+    prefix: str = ""
+    next_update: float = 0.0
+    delivery: asyncio.Task | None = None
 
 
 def summary_text(text):
@@ -42,6 +53,57 @@ class ReasoningBuffer:
         self.parts = []
         self.summary_sink = summary_sink
         self.events = {}
+        self._returned: dict[str, _ReturnedText] = {}
+
+    async def returned_thought(self, delta, source="provider_reasoning"):
+        """Publish the plaintext display channel of one eligible provider attempt."""
+        if not isinstance(delta, str) or not delta or not callable(getattr(self.summary_sink, "summary_event", None)):
+            return
+        if source not in DISPLAY_THOUGHT_SOURCES:
+            return
+        stream = self._returned.get(source)
+        if stream is None:
+            stream = self._returned[source] = _ReturnedText()
+        remaining = SUMMARY_TEXT_LIMIT + 1 - len(stream.prefix)
+        if remaining <= 0:
+            return
+        stream.prefix += delta[:remaining]
+        text = stream.prefix.strip()
+        if len(stream.prefix) > SUMMARY_TEXT_LIMIT:
+            marker = "\n[Summary truncated]" if source == "provider_summary" else "\n[Thought truncated]"
+            text = stream.prefix[:SUMMARY_TEXT_LIMIT - len(marker)].rstrip() + marker
+        if not text:
+            return
+        prior = self.events.get(stream.identity)
+        if prior and (prior["text"] == text or prior["status"] != "running"):
+            return
+        event = {"summary_id": stream.identity, "source": source,
+                 "summary_revision": prior["summary_revision"] + 1 if prior else 1,
+                 "text": text, "status": "running", "ts": prior["ts"] if prior else time.time() * 1000}
+        now = time.monotonic()
+        if now >= stream.next_update and stream.delivery is None:
+            stream.next_update = now + 0.075
+            await self.summary_event(event)
+        else:
+            self.events[stream.identity] = event
+            if stream.delivery is None:
+                stream.delivery = asyncio.create_task(self._deliver_latest(stream))
+
+    async def _deliver_latest(self, stream):
+        # Deliver the tail of a burst even if the provider pauses before its
+        # next token. Only one pending delivery exists for each display channel.
+        try:
+            while True:
+                await asyncio.sleep(max(0, stream.next_update - time.monotonic()))
+                event = self.events[stream.identity]
+                if event["status"] != "running":
+                    return
+                stream.next_update = time.monotonic() + 0.075
+                await emit_summary_event(self.summary_sink, event)
+                if self.events[stream.identity] is event:
+                    return
+        finally:
+            stream.delivery = None
 
     async def summary_event(self, event):
         identity = str(event.get("summary_id") or "")
@@ -60,6 +122,11 @@ class ReasoningBuffer:
         await emit_summary_event(self.summary_sink, event)
 
     async def finish(self, status):
+        pending = [stream.delivery for stream in self._returned.values() if stream.delivery is not None]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         for event in list(self.events.values()):
             if event["status"] != "running" and not (status in {"discarded", "cancelled"} and event["status"] == "done"):
                 continue

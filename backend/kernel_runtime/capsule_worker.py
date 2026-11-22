@@ -891,6 +891,7 @@ class KernelCapsuleWorker:
         total_bytes = 0
         estimated_response_bytes = 2048
         reused_values = 0
+        identities: dict[int, tuple[Any, str]] = {}
 
         for raw_name in sorted(namespace, key=str):
             name = str(raw_name)
@@ -998,6 +999,12 @@ class KernelCapsuleWorker:
                 "requirements": _serializer_requirements(value, serializer),
                 "reused": reused,
             }
+            if type(value) in (list, dict) or serializer not in {
+                "text.utf8.v1", "bytes.v1", "json.strict.v1",
+            }:
+                original = identities.setdefault(id(value), (value, name))
+                if original[1] != name:
+                    entry["alias_of"] = original[1]
             if reused:
                 entry["artifact_ref"] = str(previous["artifact_ref"])
                 reused_values += 1
@@ -1084,6 +1091,7 @@ class KernelCapsuleWorker:
             raise ValueError("kernel capsule restore values must be a list")
 
         restored: dict[str, Any] = {}
+        formats: dict[str, tuple[str, str, str]] = {}
         for item in raw_values:
             if not isinstance(item, dict):
                 raise ValueError("kernel capsule value entry must be an object")
@@ -1108,6 +1116,13 @@ class KernelCapsuleWorker:
                     f"kernel capsule variable {name!r} failed integrity verification"
                 )
             serializer = str(item.get("serializer") or "")
+            alias = item.get("alias_of")
+            formats[name] = (serializer, expected_hash, str(item.get("type") or ""))
+            if alias:
+                if not isinstance(alias, str) or alias not in restored or formats[alias] != formats[name]:
+                    raise ValueError(f"kernel capsule variable {name!r} has an invalid alias")
+                restored[name] = restored[alias]
+                continue
             if serializer == "text.utf8.v1":
                 value = raw.decode("utf-8", errors="strict")
             elif serializer == "bytes.v1":

@@ -85,7 +85,7 @@ function BrowserPreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
   const [viewport, setViewport] = useState<ReturnType<typeof measureBrowserViewport> | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
   const webviewRef = useRef<WorkbenchWebview | null>(null);
-  const transferUrl = useRef(preview.pages[tab.id]?.url || tab.target.url || "about:blank");
+  const transferUrl = useRef(tab.committedUrl || preview.pages[tab.id]?.url || tab.target.url || "about:blank");
   const appliedNavigation = useRef(tab.navigation?.revision || 0);
   const [address, setAddress] = useState(preview.pages[tab.id]?.url || tab.target.url);
   const [loading, setLoading] = useState(false);
@@ -122,7 +122,6 @@ function BrowserPreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
       if (guest.isConnected && next.url) transferUrl.current = next.url;
       setAddress(next.url);
       noteBrowserPage(tab.id, next);
-
     };
     const start = () => { loadingRef.current = true; setLoading(true); setFailure(""); sync(); };
     const stop = () => { loadingRef.current = false; setLoading(false); sync(); };
@@ -308,15 +307,15 @@ function BrowserPreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
     if (captureBusy) return;
     setCaptureBusy(true); setCaptureError("");
     try {
-    const result = await runWorkbenchBrowserCommand({action: "screenshot", tab_id: tab.id});
-    const image = String(result.image || "");
-    if (!image) return;
-    openOutputPreview({
-      source: `browser:${tab.id}:screenshot`,
-      url: `data:image/png;base64,${image}`,
-      label: `${page.title || "Browser"} screenshot`,
-      mediaType: "image/png",
-    });
+      const result = await runWorkbenchBrowserCommand({action: "screenshot", tab_id: tab.id});
+      const image = String(result.image || "");
+      if (!image) return;
+      openOutputPreview({
+        source: `browser:${tab.id}:screenshot`,
+        url: `data:image/png;base64,${image}`,
+        label: `${page.title || "Browser"} screenshot`,
+        mediaType: "image/png",
+      }, tab.ownerChatId || "");
     } catch (error) { setCaptureError(error instanceof Error ? error.message : String(error)); }
     finally { setCaptureBusy(false); }
   }
@@ -398,10 +397,16 @@ function BrowserPreview({tab, api}: {tab: PreviewTab; api: RuntimeApi | null}) {
 }
 
 function mediaKind(tab: PreviewTab): "text" | "image" | "pdf" | "html" {
-  const value = `${tab.target.mediaType || ""} ${tab.target.path || tab.target.url}`.toLowerCase();
-  if (/image\//.test(value) || /\.(png|jpe?g|gif|webp|bmp|svg)(?:$|\?)/.test(value)) return "image";
-  if (/pdf/.test(value) || /\.pdf(?:$|\?)/.test(value)) return "pdf";
-  if (/html/.test(value) || /\.html?(?:$|\?)/.test(value)) return "html";
+  const {mediaType, path, url} = tab.target;
+  const mime = (mediaType || /^data:([^;,]*)/i.exec(url)?.[1] || "").split(";", 1)[0].trim().toLowerCase();
+  if (mime.startsWith("image/")) return "image";
+  if (mime === "application/pdf") return "pdf";
+  if (mime === "text/html") return "html";
+  if (mime && mime !== "application/octet-stream") return "text";
+  const name = (path || url.split(/[?#]/, 1)[0]).split(/[\\/]/).pop() || "";
+  if (/\.(?:png|jpe?g|gif|webp|bmp|svg)$/i.test(name)) return "image";
+  if (/\.pdf$/i.test(name)) return "pdf";
+  if (/\.html?$/i.test(name)) return "html";
   return "text";
 }
 
@@ -536,14 +541,4 @@ export function PreviewPane({tabId, api}: {tabId: string; api: RuntimeApi | null
   if (tab.target.kind === "directory") return <FilesPanel directory={tab.target.path} chatId={tab.ownerChatId}/>;
   if (tab.target.kind === "file") return <FilePreview tab={tab} api={api}/>;
   return <OutputPreview tab={tab}/>;
-}
-
-export function previewPaneTitle(tab: PreviewTab): string {
-  if (tab.target.kind === "url") {
-    const page = getPreviewState().pages[tab.id];
-    if (page?.title && page.title !== page.url) return page.title;
-    try { return new URL(page?.url || tab.target.url).hostname.replace(/^www\./, "") || "Browser"; }
-    catch { return "Browser"; }
-  }
-  return tab.target.label || tab.target.path?.split(/[\\/]/).pop() || "Preview";
 }

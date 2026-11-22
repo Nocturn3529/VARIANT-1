@@ -327,6 +327,45 @@ async def test_event_outbox_delivers_and_advances_restart_safe_status(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_outbox_retry_and_competing_dispatch_cannot_skip_a_gap(tmp_path):
+    service = _service(tmp_path)
+    events = service.events
+    repo = service.repository
+    received = []
+    failed = False
+
+    def receive(event):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("retry the first event")
+        received.append(event.sequence)
+
+    events.subscribe(receive)
+    first, second, third = [
+        events.publish("work.changed", aggregate_kind="work", aggregate_id=str(i))
+        for i in range(3)
+    ]
+    assert await events.dispatch_once(limit=2) == 0
+    assert await events.dispatch_once(limit=2) == 0
+    with sqlite3.connect(repo.path) as conn:
+        status, attempts = conn.execute(
+            "SELECT status, attempts FROM work_outbox WHERE event_id=?", (second.event_id,)
+        ).fetchone()
+        assert (status, attempts) == ("pending", 0)
+        conn.execute("UPDATE work_outbox SET available_at=0 WHERE event_id=?", (first.event_id,))
+
+    lease = repo.claim_outbox("another-consumer", limit=1)
+    assert [item.event.sequence for item in lease] == [first.sequence]
+    assert await events.dispatch_once(limit=2) == 0
+    repo.reject_outbox(lease[0].outbox_id, consumer_id="another-consumer",
+                       lease_epoch=lease[0].lease_epoch, error="retry", retry_delay_s=0)
+    assert await events.dispatch_once(limit=2) == 2
+    assert await events.dispatch_once(limit=2) == 1
+    assert received == [first.sequence, second.sequence, third.sequence]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_completes_a_durable_job_and_survives_service_lifecycle(tmp_path):
     service = _service(tmp_path)
     observed = []

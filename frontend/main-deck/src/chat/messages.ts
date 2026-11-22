@@ -11,6 +11,7 @@ import {retainTurnSteps, boundedPreview} from "./preview";
 import {parseTurnReceipt} from "./receipt";
 import {parseEvidence} from "./evidence";
 import {parsePeerActivity} from "../protocol/peerActivity";
+import {isProviderThoughtSource} from "../protocol/chatEvents";
 
 function newStepId(): string {
   return `st-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
@@ -118,7 +119,8 @@ export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | und
     }
     // Reloaded steps should never stay "Live".
     if (status === "running" && !live) status = "interrupted";
-    const publicThought = kind === "thinking" && (row.source === "provider_summary" || row.summary_source === "provider_summary");
+    const thoughtSource = row.source ?? row.summary_source ?? row.summarySource;
+    const publicThought = kind === "thinking" && isProviderThoughtSource(thoughtSource);
     const summaryState = publicThought && ["running","done","discarded","cancelled"].includes(String(row.status))
       ? (row.status === "running" && !live ? "cancelled" : row.status) as ChatTurnStep["summaryState"] : undefined;
     if (publicThought) status = summaryState === "running" ? "running" : "done";
@@ -126,6 +128,7 @@ export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | und
       id: String(row.id || newStepId()),
       kind,
       summaryState,
+      summarySource: publicThought ? thoughtSource : undefined,
       summaryRevision: typeof row.summary_revision === "number" && Number.isSafeInteger(row.summary_revision) ? row.summary_revision : undefined,
       label: label.slice(0, 160),
       detail: row.detail != null ? boundedPreview(String(row.detail), kind === "thinking" || kind === "text" ? 16_000 : 400) : undefined,
@@ -138,6 +141,7 @@ export function parseTurnSteps(raw: unknown, live = false): ChatTurnStep[] | und
       rawStatus: row.raw_status != null ? String(row.raw_status).slice(0, 64) : undefined,
       argsPreview: row.args_preview != null ? boundedPreview(String(row.args_preview), 600) : undefined,
       resultPreview: row.result_preview != null ? boundedPreview(String(row.result_preview), 800) : undefined,
+      cellAction: typeof row.cell_action === "string" ? row.cell_action.slice(0, 140) : undefined,
       startedAt: row.started_at != null ? Number(row.started_at) || undefined : undefined,
       completedAt: row.completed_at != null ? Number(row.completed_at) || undefined : undefined,
       durationMs: row.duration_ms != null ? Math.max(0, Number(row.duration_ms) || 0) : undefined,
@@ -228,7 +232,8 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   if (!role) return null;
   const rawOrigin=row.origin && typeof row.origin==="object" ? row.origin as Record<string,unknown> : {};
   const goalOrigin:ChatMessage["goalOrigin"]=role==="user" && rawOrigin.kind==="goal" && (rawOrigin.event==="submission" || rawOrigin.event==="continuation")
-    ? {event:rawOrigin.event,...(typeof rawOrigin.goal_id==="string" && rawOrigin.goal_id ? {goal_id:rawOrigin.goal_id} : {})} : undefined;
+    ? {event:rawOrigin.event,...(typeof rawOrigin.goal_id==="string" && rawOrigin.goal_id ? {goal_id:rawOrigin.goal_id} : {})}
+    : role === "user" && row.display_kind === "goal" ? {event:"continuation"} : undefined;
   const rawGoalEvent=row.goal_event && typeof row.goal_event==="object" ? row.goal_event as Record<string,unknown> : {};
   const goalEvent:ChatMessage["goalEvent"]=role==="assistant" && rawGoalEvent.event==="achieved" && typeof rawGoalEvent.goal_id==="string"
     ? {event:"achieved",goal_id:rawGoalEvent.goal_id,time_used_s:Math.max(0,Number(rawGoalEvent.time_used_s)||0),tokens_used:Math.max(0,Number(rawGoalEvent.tokens_used)||0)} : undefined;
@@ -257,9 +262,16 @@ export function parseMessage(raw: unknown): ChatMessage | null {
   const delivery = row.delivery === "steer" || row.delivery === "follow_up"
     ? row.delivery
     : undefined;
+  const total = row.text_total_chars, start = row.text_offset ?? 0;
+  const end = typeof start === "number" && typeof total === "number" ? start + Array.from(text).length : 0;
+  const historyExcerpt = typeof total === "number" && typeof start === "number" && Number.isSafeInteger(total) && Number.isSafeInteger(start)
+    && start >= 0 && end <= total && (start > 0 || end < total) ? {start,end,total} : undefined;
   return {
     role,
     text,
+    ...(typeof row.node_id === "string" && row.node_id ? {nodeId: row.node_id} : {}),
+    ...(historyExcerpt ? {historyExcerpt} : {}),
+    ...(role === "user" && row.display_kind === "peer" ? {historyPeer:true} : {}),
     runId: typeof row.run_id === "string" ? row.run_id : undefined,
     ...(origin ? {origin} : {}),
     ...(peerDisplay ? {peerDisplay} : {}),
@@ -299,7 +311,7 @@ export function chatMessagesMatch(local: ChatMessage, remote: ChatMessage): bool
   if (local.role !== remote.role) return false;
   if(local.origin || remote.origin)return !!local.origin && !!remote.origin && local.origin.peer_id===remote.origin.peer_id && local.origin.message_id===remote.origin.message_id;
   if (local.ticketId || remote.ticketId) {
-    return !!local.ticketId && local.ticketId === remote.ticketId;
+    return !!remote.ticketId && (local.ticketId || local.optimisticTurnId) === remote.ticketId;
   }
   if (String(local.text || "") === String(remote.text || "")) return true;
   // Attachment-only display labels are generated independently in the Deck

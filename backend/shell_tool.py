@@ -22,6 +22,7 @@ import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
+from pathlib import Path
 
 import tools
 from run_context import current_run_context
@@ -121,6 +122,15 @@ MAX_OUTPUT_CHARS = 100_000
 DEFAULT_TIMEOUT_S = 120
 MAX_TIMEOUT_S = 600
 
+
+def _project_cwd() -> str:
+    try:
+        from project_context import current_project_context
+        return current_project_context().cwd
+    except Exception:
+        return ""
+
+
 def shell_cwd_candidates() -> list[str]:
     """Return preferred cwd candidates, current project first.
 
@@ -131,11 +141,7 @@ def shell_cwd_candidates() -> list[str]:
     roots: list[str] = []
 
     deps = _bound_deps()
-    try:
-        from project_context import current_project_context
-        active = current_project_context().cwd
-    except Exception:
-        active = ""
+    active = _project_cwd()
     if not active:
         try:
             ctx = current_run_context()
@@ -206,9 +212,12 @@ def resolve_cwd(cwd: str | None) -> str:
     if cwd and str(cwd).strip():
         candidate = os.path.expandvars(os.path.expanduser(str(cwd).strip()))
         if not os.path.isabs(candidate):
-            # Relative to the current project (or ordinary fallback directory).
-            rel = _strip_redundant_root_name(candidate, roots)
-            candidate = roots[0] if not rel else os.path.join(roots[0], rel)
+            relative = candidate.lstrip("\\/") if os.name == "nt" else candidate
+            literal = os.path.join(roots[0], relative)
+            # Resolve an existing literal path before trying the project-name shorthand.
+            candidate = literal if os.path.lexists(literal) else os.path.join(
+                roots[0], _strip_redundant_root_name(candidate, roots),
+            )
         candidate = os.path.realpath(os.path.abspath(candidate))
     else:
         candidate = roots[0]
@@ -475,6 +484,8 @@ async def _run_once(args: dict):
         command = str(args.get("command") or "").strip()
         argv, shell_name = _shell_argv(command)
     workdir = resolve_cwd(args.get("cwd"))
+    project_cwd = _project_cwd()
+    cwd_within_project = Path(workdir).is_relative_to(project_cwd) if project_cwd else None
     timeout_s = _timeout_s(args.get("timeout"))
     environment, environment_profile_id, _terminal_profile = (
         _project_environment(args, noninteractive=True)
@@ -508,8 +519,12 @@ async def _run_once(args: dict):
         f"duration_s: {duration}",
         f"output_cursor: {output_cursor}",
     ]
+    if cwd_within_project is False:
+        lines.insert(3, f"cwd_scope: outside active project ({project_cwd})")
     if result.timed_out:
-        lines.append(f"(timed out after {timeout_s}s; process tree killed)")
+        lines.extend((f"(timed out after {timeout_s}s)", f"process_state: {record.state}"))
+        if record.state == "terminated":
+            lines.append("(process tree killed)")
     if result.truncated or trunc_out or trunc_err:
         lines.append("(output truncated)")
     if artifact_refs:
@@ -527,7 +542,9 @@ async def _run_once(args: dict):
             "Use the returned process handle to inspect, wait for, or stop them."
         )
     text = "\n".join(lines)
-    if result.timed_out or record.state in {"unknown_effect", "failed"}:
+    if result.timed_out:
+        raise tools.ToolError(text, code="command_timeout")
+    if record.state in {"unknown_effect", "failed"}:
         raise tools.ToolError(text)
     if record.exit_code not in (0, None) and bool(args.get("check", False)):
         raise tools.ToolError(text)
@@ -541,6 +558,8 @@ async def _run_once(args: dict):
             # human-readable transcript to recover ordinary process output.
             "stdout": stdout,
             "stderr": stderr,
+            "cwd": workdir,
+            "cwd_within_project": cwd_within_project,
             "process": _execution_handle(record, invocation),
             "exit_code": record.exit_code,
             "duration_s": duration,
@@ -597,8 +616,11 @@ def register(registry, deps: ShellToolDeps) -> None:
         " Ordinary nonzero exits are structured results; set check=true only "
         "when raising is intentionally useful."
         " The default mode=once waits for command exit and applies the command timeout. "
+        "A timeout raises command_timeout with the recorded process ID, state, and exit code. "
         "In Python, its result is a mapping: result['exit_code'], result['stdout'], "
         "result['stderr'], and result['process']; use those keys instead of attribute access. "
+        "result['cwd'] records the launch directory. result['cwd_within_project'] "
+        "reports its relation to the active project when known. "
         "Its result includes a process handle; children deliberately launched "
         "in the background remain owned and controllable after the command exits. "
         "For applications/services that should remain running, use mode=process "
@@ -606,7 +628,8 @@ def register(registry, deps: ShellToolDeps) -> None:
         "Set mode=terminal or mode=process to receive a fluent durable handle; "
         "that handle is the process/terminal itself, not a command-result wrapper. "
         "Call handle.inspect() for observed state and handle.read() for bounded output; "
-        "use mode=terminals or mode=processes to reconnect. Process wait(exit) "
+        "use mode=terminals or mode=processes to reconnect. "
+        "Compare process handles by handle.id. Process wait(exit) "
         "waits for the owned tree, including children after launcher exit. Continued reads, "
         "input, signals, waits, and cleanup live on returned handles. Ordinary "
         "Git is composed with shell commands; review/workspace own higher-level "

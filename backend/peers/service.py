@@ -904,19 +904,11 @@ class PeerCommunicationService:
                 # Any still-unanswered inbound request is attention, including a
                 # mutual request that committed just before this wait began. This
                 # is the deadlock escape for two chats that both ask then wait.
-                attention = [
-                    self._sync_native_state(row)
-                    for row in self.repository.list_messages(
-                        peer_id, after=0, limit=50, direction="incoming",
-                        states=("persisted", "queued", "transport_written", "observed"),
-                    )
-                    if str(row.get("message_id") or "") != str(message_id) and requests_work(row)
-                    and not str(row.get("in_reply_to") or "")
-                ][:1]
-                if attention:
+                attention = self.repository.next_incoming_request(peer_id, excluding=message_id)
+                if attention is not None:
                     return {
                         "status": "attention", "message": message,
-                        "incoming": attention[0],
+                        "incoming": self._sync_native_state(attention),
                     }
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:

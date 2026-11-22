@@ -8,7 +8,11 @@ import sys
 
 import pytest
 
+from artifacts import ContentAddressedArtifactStore
 from desktop_fabric.adapter import AdapterFocus
+from desktop_fabric import create_desktop_fabric
+from desktop_fabric import cua_adapter as cua_adapter_module
+from desktop_fabric.capabilities import _view_result
 from desktop_fabric.cua_adapter import (
     CuaDesktopAdapter,
     host_process_started_at,
@@ -124,11 +128,15 @@ def test_validate_window_rejects_recycled_pid_and_missing_window():
 
 
 @pytest.mark.asyncio
-async def test_observe_and_click_name_the_exact_pid_and_window():
+@pytest.mark.parametrize(("frame", "bounds"), [
+    ({"x": 1, "y": 2, "width": 3, "height": 4}, [1, 2, 4, 6]),
+    ({"x": 176, "y": 302, "w": 240, "h": 46}, [176, 302, 416, 348]),
+])
+async def test_observe_and_click_name_the_exact_pid_and_window(frame, bounds):
     adapter, client = _adapter([
         {"snapshot_id": "s1", "elements": [{
             "element_token": "s1:4", "role": "button", "label": "Save",
-            "actions": ["press"], "frame": {"x": 1, "y": 2, "width": 3, "height": 4},
+            "actions": ["press"], "frame": frame,
         }], "focused_element": "Save"},
         {"effect": "confirmed", "route": "accessibility"},
         {"effect": "refused", "route": "background_unavailable"},
@@ -136,13 +144,14 @@ async def test_observe_and_click_name_the_exact_pid_and_window():
     window = _window()
     observation = await adapter.observe(window, mode="fused")
     assert observation.uia[0]["backend_key"] == "s1:4"
-    assert observation.uia[0]["bounds"] == [1, 2, 4, 6]
+    assert observation.uia[0]["bounds"] == bounds
     assert "invoke" in observation.uia[0]["patterns"]
     assert observation.metadata["focused_element"] == "Save"
     name, request = client.calls[0]
     assert name == "get_window_state"
     assert (request["pid"], request["window_id"]) == (50, 7)
     assert request["include_screenshot"] is False
+    assert request["tree_format"] == "elements"
     element = DesktopElement(
         element_ref="el", observation_id="obs", window_id=window.window_id,
         window_generation=1, element_generation=1, role="button", name="Save",
@@ -161,6 +170,103 @@ async def test_observe_and_click_name_the_exact_pid_and_window():
     )
     assert refused.delivered is False
     assert (client.calls[2][1]["x"], client.calls[2][1]["y"]) == (30, 40)
+
+
+@pytest.mark.parametrize(("action", "delivery", "foreground_hwnd", "reported_delivery", "state"), [
+    ("click", "auto", 99, "background", "verified"),
+    ("set_value", "auto", 99, "semantic", "verified"),
+    ("click", "physical", 7, "physical", "verified"),
+    ("click", "physical", 99, "physical", "unknown_effect"),
+])
+@pytest.mark.asyncio
+async def test_windows_driver_delivery_reaches_durable_service_receipts(
+    tmp_path, monkeypatch, action, delivery, foreground_hwnd, reported_delivery, state,
+):
+    class DeliveryClient(_ScriptedClient):
+        def __init__(self):
+            super().__init__([])
+            self.value = "before"
+            self.snapshot = 0
+
+        def call_tool(self, name, arguments):
+            self.calls.append((name, dict(arguments)))
+            if name == "list_windows":
+                return {"windows": [{
+                    "pid": 50, "window_id": 7, "app_name": "Fixture",
+                    "x": 100, "y": 200, "width": 400, "height": 500,
+                }]}
+            if name == "get_window_state":
+                self.snapshot += 1
+                result = {}
+                if arguments["include_accessibility_tree"]:
+                    if arguments.get("tree_format") == "elements":
+                        result["elements"] = [{
+                            "element_token": f"{self.snapshot}:0", "role": "Edit", "label": "Document",
+                            "value": self.value, "actions": ["press", "set_value"],
+                            "frame": {"x": 120, "y": 220, "w": 30, "h": 15},
+                        }]
+                        result["observations"] = [{"role": "Text", "label": "Document", "value": "caption"}]
+                        result["elements_complete"] = True
+                        result["observations_truncated"] = True
+                    else:
+                        result["tree_markdown"] = '- [0] Edit "Document"'
+                if arguments["include_screenshot"]:
+                    result.update(screenshot_base64="iVBORw0KGgo=", screenshot_width=400, screenshot_height=500)
+                return result
+            assert name in {"click", "set_value"}
+            assert arguments["element_token"] == f"{self.snapshot}:0"
+            self.value = "after"
+            if name == "set_value":
+                return {"effect": "confirmed"}
+            if arguments["delivery_mode"] == "foreground":
+                return {"effect": "confirmed", "path": "pixel", "delivery_mode": "foreground"}
+            return {"effect": "confirmed", "path": "post_message"}
+
+    client = DeliveryClient()
+    adapter = CuaDesktopAdapter(
+        client=client, platform="win32", started_at=lambda _pid: 100.0,
+        locked=lambda: False,
+    )
+    monkeypatch.setattr(cua_adapter_module, "_windows_foreground_hwnd", lambda: foreground_hwnd)
+    fabric = create_desktop_fabric(
+        path=str(tmp_path / "desktop.sqlite3"),
+        artifact_store=ContentAddressedArtifactStore(str(tmp_path / "artifacts")),
+        adapter=adapter, backend_instance_id="fixture",
+    )
+    try:
+        fabric.refresh_catalog()
+        window = "cua:50:7"
+        assert adapter.validate_window(_window())["foreground"] is (foreground_hwnd == 7)
+        source = await fabric.observe(window, mode="uia", include_image=True)
+        assert source.image_ref and len(source.elements) == 2
+        page = _view_result(_window(), source, include_text=True)["control_page"]
+        assert page == {"returned": 2, "total": 2, "has_more": False, "source_complete": False}
+        label = next(item for item in source.elements if item.role == "Text")
+        assert label.value == "caption" and not label.actionable
+        assert not label.backend_key and not label.patterns
+        with pytest.raises(DesktopUnavailable, match="display-only"):
+            await fabric.act(window, "type_text", target=label.element_ref,
+                             arguments={"text": "never sent"}, source_observation=source)
+        assert all(name != "type_text" for name, _args in client.calls)
+        assert client.snapshot == 1
+        result = await fabric.act(
+            window, action, delivery=delivery, target="Document",
+            arguments={"value": "after"} if action == "set_value" else {},
+            expect={"property": "value", "equals": "after"}, include_image_evidence=False,
+            source_observation=source,
+        )
+        persisted = fabric.repository.get_operation(result.operation_id)
+        assert persisted.state == state
+        assert persisted.dispatch["selected_delivery"] == reported_delivery
+        assert persisted.dispatch["input_sent"] is True
+        if state == "verified":
+            assert persisted.evidence["checks"][0]["actual"] == "after"
+        else:
+            assert persisted.evidence["focus_stolen"] is True
+            assert persisted.evidence["input_sent"] is True
+        assert sum(name in {"click", "set_value"} for name, _args in client.calls) == 1
+    finally:
+        fabric.close()
 
 
 @pytest.mark.asyncio

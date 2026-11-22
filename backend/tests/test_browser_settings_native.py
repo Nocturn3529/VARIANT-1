@@ -13,6 +13,37 @@ pytestmark = pytest.mark.skipif(os.environ.get('VARIANT1_BROWSER_NATIVE_TEST') !
 
 
 @pytest.mark.asyncio
+async def test_managed_wait_observes_an_element_inserted_after_admission(tmp_path):
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
+    from browser_fabric.adapters import ManagedPlaywrightAdapter
+
+    chrome = os.environ["VARIANT1_BROWSER_TEST_CHROME"]
+    async with async_playwright() as driver:
+        browser = await driver.chromium.launch(executable_path=chrome)
+        try:
+            page = await browser.new_page()
+            await page.set_content("<main></main>")
+            adapter = ManagedPlaywrightAdapter(str(tmp_path / "wait-profile"))
+            await page.evaluate("""() => setTimeout(() => {
+                const button = document.createElement('button');
+                button.id = 'later';
+                button.textContent = 'Inserted';
+                document.querySelector('main').append(button);
+            }, 300)""")
+            result = await adapter._perform_core(page, "wait", {
+                "condition": "element", "selector": "#later", "state": "visible", "timeout_ms": 3000,
+            })
+            assert result == {"condition": "element", "state": "visible"}
+            assert await page.locator("#later").inner_text() == "Inserted"
+            with pytest.raises(PlaywrightTimeoutError):
+                await adapter._perform_core(page, "wait", {
+                    "condition": "element", "selector": "#absent", "timeout_ms": 50,
+                })
+        finally:
+            await browser.close()
+
+
+@pytest.mark.asyncio
 async def test_headless_recording_dialog_and_cdp_disconnect(tmp_path, monkeypatch):
     from playwright.async_api import async_playwright
     from browser_fabric.adapters import ManagedPlaywrightAdapter

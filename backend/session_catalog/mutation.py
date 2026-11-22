@@ -115,6 +115,7 @@ class MutationManager:
         enabled_resolver: Callable[[], set[str]],
         worker_root: str,
         mutation_allowed: Callable[[], bool] | None = None,
+        child_outcome_available: Callable[[Any], bool] | None = None,
     ) -> None:
         self.path = os.path.abspath(database_path)
         self.artifact_store = artifact_store
@@ -124,6 +125,7 @@ class MutationManager:
         self.registry = registry
         self.enabled_resolver = enabled_resolver
         self.mutation_allowed = mutation_allowed or (lambda: True)
+        self.child_outcome_available = child_outcome_available
         self.worker = MutationWorkerClient(worker_root)
         self._lock = threading.RLock()
         self._initialize()
@@ -677,6 +679,7 @@ class MutationManager:
             )
             overlays = []
         hidden_dispatch = self.registry.get("remote_handle_dispatch")
+        child_outcome_available = getattr(self, "child_outcome_available", None)
         from chat_goals.binding import owner_eligible
         return build_proxy_contracts(
             loaded,
@@ -689,6 +692,7 @@ class MutationManager:
             exclude_proxy=exclude_proxy,
             current_catalog=getattr(getattr(self, "catalog_repository", None), "current", None),
             chat_goal_owner=owner_eligible(record),
+            active_child=bool(record and child_outcome_available and child_outcome_available(record)),
         )
 
     _draft_target_proxy = staticmethod(draft_target_proxy)

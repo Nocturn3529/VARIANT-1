@@ -1377,34 +1377,21 @@ class BrowserFabric:
             request_hash = request_fingerprint(
                 "browser.new_page", {"kind": "new_page", "url": url}
             )
-            existing: OperationRecord | None = None
-            if idempotency_key:
-                # prepare_operation needs a durable target; use the current page
-                # for the ledger until the new target identity is allocated.
-                anchor = self.store.get_target(session.current_target_id)
-                existing, replay = self.store.prepare_operation(
-                    session_id=session_id, target_id=anchor.target_id, kind="new_page",
-                    idempotency_key=idempotency_key, request_fingerprint=request_hash,
-                    generation=session.generation, document_epoch=anchor.document_epoch,
-                    observation_revision=anchor.observation_revision, scope=authority_scope,
-                )
-                if replay:
-                    if existing.state == "committed":
-                        return self.page_ref(session_id, str(existing.result.get("target_id") or ""))
-                    raise BrowserUnknownEffect("new-page replay has an uncertain effect")
             target_id = new_id("page")
+            operation, replay = self.store.prepare_operation(
+                session_id=session_id, target_id=target_id, kind="new_page",
+                idempotency_key=idempotency_key, request_fingerprint=request_hash,
+                generation=session.generation, document_epoch=1,
+                observation_revision=0, scope=authority_scope,
+            )
+            if replay:
+                if operation.state == "committed":
+                    return self.page_ref(session_id, str(operation.result["target_id"]))
+                raise BrowserUnknownEffect("new-page replay has an uncertain effect")
             target = self.store.create_target(
                 target_id=target_id, session_id=session_id, backend_target_id=target_id,
                 url=url, state="opening",
             )
-            operation = existing
-            if operation is None:
-                operation, _ = self.store.prepare_operation(
-                    session_id=session_id, target_id=target_id, kind="new_page",
-                    idempotency_key="", request_fingerprint=request_hash,
-                    generation=session.generation, document_epoch=target.document_epoch,
-                    observation_revision=0, scope=authority_scope,
-                )
             self.store.transition_operation(operation.operation_id, "dispatched")
             try:
                 live = await adapter.new_page(target.backend_target_id, url)
@@ -1503,8 +1490,9 @@ class BrowserFabric:
         if not callable(marker):
             return {"target_id": target.target_id, "mark": clean, "applied": False,
                     "reason": "only visible Deck tabs close when a run ends"}
-        await marker(target.backend_target_id, clean)
-        return {"target_id": target.target_id, "mark": clean, "applied": True}
+        result = await marker(target.backend_target_id, clean)
+        applied = not isinstance(result, Mapping) or bool(result.get("marked", True))
+        return {"target_id": target.target_id, "mark": clean, "applied": applied}
 
     async def show_page(
         self, page: PageRef, *, scope: WorkScope | Mapping[str, Any] | None = None,
@@ -1518,8 +1506,9 @@ class BrowserFabric:
         if not callable(show):
             return {"target_id": target.target_id, "shown": False,
                     "reason": "only the built-in browser tabs can be shown in the Deck"}
-        await show(target.backend_target_id)
-        return {"target_id": target.target_id, "shown": True}
+        result = await show(target.backend_target_id)
+        shown = not isinstance(result, Mapping) or bool(result.get("shown", True))
+        return {"target_id": target.target_id, "shown": shown}
 
     async def close_page(
         self, page: PageRef, *, scope: WorkScope | Mapping[str, Any] | None = None,

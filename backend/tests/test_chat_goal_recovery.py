@@ -8,10 +8,161 @@ import pytest
 
 from chat_goals import ChatGoalService, ChatGoalStore, GoalConflict, GoalNotFound
 from host_chat_service import launch_reserved_chat_turn
-from run_context import Variant1RunContext, current_run_context
+from run_context import Variant1RunContext, bind_run_context, current_run_context
 from tests.test_chat_goals import Host, _service
 from tests.test_session_runtime import _runtime
 from work_fabric.repository import CHAT_GOAL_MIGRATION_VERSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["complete", "blocked", "paused"])
+async def test_late_goal_reply_cannot_change_an_edited_objective(tmp_path, status):
+    host, service = _service(tmp_path)
+    goal = await service.submit("owner", "initial", "First objective")
+    turn = host.launched[0]
+    invocation = SimpleNamespace(run_id=turn.run.run_id, work_scope=turn.run.work_scope)
+    try:
+        with bind_run_context(turn.run):
+            assert service.take_notes("owner", goal["goal_id"]) == []
+            await service.control("owner", goal["goal_id"], "edit", objective="Second objective")
+            assert service.tool_get("owner")["goal"]["objective"] == "Second objective"
+            with pytest.raises(GoalConflict, match="objective"):
+                service.tool_update("owner", status, context=invocation)
+            assert service.current("owner")["status"] == "active"
+            assert not service.completion_event("owner", turn.run.run_id)
+            notes = service.take_notes("owner", goal["goal_id"])
+            assert len(notes) == 1 and "Second objective" in notes[0]
+            service.store.apply_token_delta(goal["goal_id"], 13)
+            updated = service.tool_update("owner", status, context=invocation)
+            assert updated["goal"]["status"] == status
+            assert updated["tokens_used"] == 13
+    finally:
+        await service.control("owner", goal["goal_id"], "clear")
+        turn.done.set_result(None)
+        await turn.task
+
+
+@pytest.mark.asyncio
+async def test_resume_cannot_launch_work_after_a_paused_goal_exhausts_its_budget(tmp_path):
+    host, service = _service(tmp_path)
+    goal = service.tool_create("owner", "Bounded work", token_budget=5)["goal"]
+    goal_id = goal["goal_id"]
+    usage = service.request_usage({"run": {"work_scope": {"chat_id": "owner", "goal_id": goal_id}}})
+    await service.control("owner", goal_id, "pause")
+    usage.settle({"input_tokens": 10})
+    assert service.current("owner")["status"] == "paused"
+    resumed = await service.control("owner", goal_id, "resume")
+    assert resumed["status"] == "budget_limited" and resumed["tokens_used"] == 10
+    assert not host.launched
+    usage.settle({"input_tokens": 3})
+    assert service.current("owner")["status"] == "paused"
+    assert (await service.control("owner", goal_id, "resume"))["status"] == "active"
+    assert len(host.launched) == 1
+    await service.control("owner", goal_id, "clear")
+    host.launched[0].done.set_result(None)
+    await host.launched[0].task
+
+
+@pytest.mark.parametrize("submission", [True, False])
+def test_an_already_active_exhausted_legacy_goal_cannot_admit_a_request(tmp_path, submission):
+    store = ChatGoalStore(str(tmp_path / "work.sqlite"))
+    goal, _ = store.create("owner", "bounded", token_budget=5, creator_run_id=None if submission else "first")
+    with sqlite3.connect(store.path) as conn:
+        conn.execute("UPDATE chat_goal SET tokens_used=5 WHERE goal_id=?", (goal.goal_id,))
+    assert not store.admit_turn("owner", goal.goal_id, "unexpected", submission=submission)
+    limited = store.current("owner")
+    assert limited.status == "budget_limited" and limited.active_since is None
+    assert limited.submission_pending == submission and limited.first_run_id == goal.first_run_id
+
+
+def test_objective_revision_survives_upgrade_aba_edits_and_accounting(tmp_path):
+    path = str(tmp_path / "work.sqlite")
+    store = ChatGoalStore(path)
+    goal, _ = store.create("owner", "A", token_budget=25)
+    store.apply_token_delta(goal.goal_id, 3)
+    with sqlite3.connect(path) as conn:
+        conn.execute("ALTER TABLE chat_goal DROP COLUMN objective_revision")
+    store = ChatGoalStore(path)
+    original = store.current("owner")
+    assert (original.objective, original.tokens_used, original.status) == ("A", 3, "active")
+    first = store.edit(goal.goal_id, "B")
+    latest = store.edit(goal.goal_id, "A")
+    assert original.objective_revision < first.objective_revision < latest.objective_revision
+    store.edit(goal.goal_id, "A")
+    store.apply_token_delta(goal.goal_id, 4)
+    with pytest.raises(GoalConflict, match="objective"):
+        store.transition(goal.goal_id, "complete", expected_objective_revision=original.objective_revision)
+    complete = store.transition(goal.goal_id, "complete", expected_objective_revision=latest.objective_revision)
+    assert complete.tokens_used == 7 and complete.status == "complete"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_resumed_pending_goal_call_uses_the_request_checkpoint(tmp_path, legacy):
+    from agent_engine.presets import chat_task_default
+    from agent_engine.runner import run_main_chat_task
+    from agent_engine.sqlite_snapshot_store import SQLiteRunSnapshotStore
+    from agent_types import ToolBatchResult
+    from assistant_turn import AssistantTurn
+    from tests.test_agent_engine import FakePorts, SPEC
+
+    _host, service = _service(tmp_path)
+    goal = service.tool_create("owner", "Objective A")["goal"]
+    checkpoint = SQLiteRunSnapshotStore(str(tmp_path / "snapshot.sqlite"))
+    actions = [AssistantTurn(tool_calls=({"tool": "ipython", "id": name,
+               "args": {"code": "session.update_goal('complete')"}},)) for name in ("old", "fresh")]
+    model = FakePorts([*actions, AssistantTurn(text="done")])
+    ports = model.build()
+    ports.loop.drain_notes = lambda: service.take_notes("owner", goal["goal_id"])
+    effects = []
+
+    async def run_actions(batch):
+        ctx = current_run_context()
+        call = batch[0]
+        invocation = SimpleNamespace(run_id=ctx.run_id, work_scope=ctx.work_scope)
+        try:
+            service.tool_update("owner", "complete", context=invocation)
+            outcome = "complete"
+        except GoalConflict:
+            outcome = "stale objective"
+        effects.append((call["id"], outcome))
+        return ToolBatchResult(text=outcome, executed=True, outcomes=[{
+            "tool": "ipython", "call_id": call["id"], "model_result": outcome, "ok": outcome == "complete",
+        }])
+
+    ports.loop.run_actions = run_actions
+    options = dict(config=chat_task_default().with_overrides(checkpoints=True), text="Help with this goal",
+                   base_system="system", full_tspec=[SPEC], convo_tail=[], images=[], ports=ports)
+
+    class Saved(Exception):
+        pass
+
+    async def interrupt(completed, next_node, state):
+        if completed == "model_step" and next_node == "tool":
+            observation = state["main"]["loop"]["goal_observation"]
+            assert observation == {"goal_id": goal["goal_id"], "objective_revision": 1}
+            if legacy:
+                state["main"]["loop"].pop("goal_observation")
+            checkpoint.commit_boundary_sync(state, completed_node=completed, next_node=next_node,
+                                            expected_head_sequence=None)
+            raise Saved(state["thread_id"])
+
+    async def run(admission, **kwargs):
+        ctx = Variant1RunContext.create(source="chat", session_id="owner", work_scope={"chat_id": "owner"})
+        assert service.admit_chat_turn(ctx, "owner", admission, "chat")
+        with bind_run_context(ctx):
+            return await run_main_chat_task(**options, **kwargs)
+
+    with pytest.raises(Saved) as saved:
+        await run("first", is_resume=False, resume_snap=None, snapshot_store=checkpoint, commit=interrupt)
+    await service.control("owner", goal["goal_id"], "edit", objective="Objective B")
+    # Reopening the host also loses the transient edit note.
+    service = ChatGoalService(_host, ChatGoalStore(service.store.path))
+    resumed = await run("second", is_resume=True, resume_snap={"thread_id": saved.value.args[0]},
+                        snapshot_store=SQLiteRunSnapshotStore(checkpoint.path))
+    assert effects == [("old", "stale objective"), ("fresh", "complete")]
+    assert any("Objective B" in row.get("content", "") for row in model.stream_messages[1])
+    assert resumed.loop_result.reply == "done" and service.current("owner")["status"] == "complete"
 
 
 @pytest.mark.asyncio

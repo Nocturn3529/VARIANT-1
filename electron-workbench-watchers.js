@@ -8,8 +8,16 @@ function createWorkbenchWatchers({hiddenNames = new Set(), changed = () => {}, f
   maxOwnerWatches = 128, maxOwnerSubscriptions = 512, maxWatches = 512, maxSubscriptions = 2048} = {}) {
   const owners = new Map();
   const subscriptions = new Map();
+  // did-navigate commits a new top-level document. In-page navigation and
+  // subframe loads retain the renderer that owns the subscription IDs.
+  const documentEndEvents = ['destroyed', 'render-process-gone', 'did-navigate'];
   let sequence = 0;
   let nativeCount = 0;
+  function releaseEmptyOwner(sender, owner) {
+    if (owner.entries.size) return;
+    for (const event of documentEndEvents) sender.removeListener(event, owner.dispose);
+    owners.delete(sender);
+  }
   function stop(sender, id) {
     const subscription = subscriptions.get(id);
     if (!subscription || subscription.sender !== sender) return;
@@ -21,7 +29,7 @@ function createWorkbenchWatchers({hiddenNames = new Set(), changed = () => {}, f
       clearTimeout(entry.timer); entry.watcher.close(); owner.entries.delete(entry.key);
       nativeCount--;
     }
-    if (!owner.entries.size) { sender.removeListener('destroyed', owner.dispose); owners.delete(sender); }
+    releaseEmptyOwner(sender, owner);
   }
   function start(sender, target, scope = 'directory') {
     let owner = owners.get(sender);
@@ -32,7 +40,8 @@ function createWorkbenchWatchers({hiddenNames = new Set(), changed = () => {}, f
     }
     if (!owner) {
       owner = {entries:new Map(), subscriptionCount:0, dispose:()=>{ for (const [id, value] of subscriptions) if (value.sender === sender) stop(sender,id); }};
-      owners.set(sender,owner); sender.once('destroyed',owner.dispose);
+      owners.set(sender,owner);
+      for (const event of documentEndEvents) sender.once(event, owner.dispose);
     }
     let entry = owner.entries.get(key);
     if (!entry) {
@@ -60,7 +69,7 @@ function createWorkbenchWatchers({hiddenNames = new Set(), changed = () => {}, f
       };
       try {
         entry.watcher = fileSystem.watch(target,{recursive:scope === 'workspace' && process.platform === 'win32'},(_kind,filename)=>{
-          if (ignored(filename)) return;
+          if (!entry.ids.size || ignored(filename)) return;
           const next = filename ? String(filename) : '';
           entry.filename = entry.filename === undefined ? next : entry.filename === next ? next : '';
           // A bounded notification rate also handles sustained build output.
@@ -79,7 +88,7 @@ function createWorkbenchWatchers({hiddenNames = new Set(), changed = () => {}, f
         owner.entries.set(key,entry);
         nativeCount++;
       } catch (error) {
-        if (!owner.entries.size) {sender.removeListener('destroyed',owner.dispose);owners.delete(sender)}
+        releaseEmptyOwner(sender, owner);
         throw error;
       }
     }

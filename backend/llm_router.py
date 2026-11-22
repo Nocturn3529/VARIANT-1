@@ -591,16 +591,16 @@ class LLMRouter:
 
     @contextmanager
     def temporary_model_route(self, route):
-        from model_runtime.context import normalize_model_route
-        token = _BOUND_MODEL_ROUTE.set(normalize_model_route(self, route))
+        from llm_recovery import normalize_recovery_route
+        token = _BOUND_MODEL_ROUTE.set(normalize_recovery_route(self, route))
         try:
             yield
         finally:
             _BOUND_MODEL_ROUTE.reset(token)
 
     def promote_effective_route(self, route):
-        from model_runtime.context import normalize_model_route
-        normalized = normalize_model_route(self, route)
+        from llm_recovery import normalize_recovery_route
+        normalized = normalize_recovery_route(self, route)
         scope = self.recovery_scope()
         if scope is not None and scope.router is self and scope.effective is not None:
             # Node tasks inherit the same run-owned mapping. Update it so the
@@ -618,14 +618,15 @@ class LLMRouter:
 
     def restore_recovery_checkpoint(self, saved):
         """Restore an allowed route, or require portable wire input on mismatch."""
-        from llm_recovery import normalized_routes, _note
-        from model_runtime.context import normalize_model_route
+        from llm_recovery import normalize_recovery_route, normalized_routes, _note
+        from model_runtime.context import validate_worker_model_route
         scope = self.recovery_scope()
         if scope is None or scope.router is not self or not isinstance(saved, dict):
             return
         scope.force_portable = bool(saved.get("force_portable"))
         try:
-            effective = normalize_model_route(self, saved["effective"])
+            effective = normalize_recovery_route(self, saved["effective"])
+            validate_worker_model_route(self, effective)
             if (saved.get("schema") != "variant1.model-recovery-state.v1"
                     or saved.get("primary_identity") != self.recovery_wire_identity(scope.primary)
                     or saved.get("effective_identity") != self.recovery_wire_identity(effective)):

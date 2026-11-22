@@ -21,7 +21,7 @@ import tempfile
 import threading
 import uuid
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, NamedTuple
 
 import tools
 from core_invariants import cancellation_is_requested
@@ -42,6 +42,7 @@ MAX_COMPLETE_ARTIFACT_BYTES = 16_000_000
 MAX_LIST = 500
 MAX_FIND = 200
 MAX_SEARCH_FILE_BYTES = 2_000_000
+MAX_EXPLICIT_SEARCH_FILE_BYTES = 64 * 1024 * 1024
 
 
 _PATCH_TRANSACTION_LOCK = threading.RLock()
@@ -416,13 +417,47 @@ async def glob_files(args):
     return f"{len(hits)} match(es){suffix}:\n" + "\n".join(hits)
 
 
+class _BoundedSearchReader(io.RawIOBase):
+    """Enforce a byte limit even if a file grows during the scan."""
+
+    def __init__(self, file: io.BufferedReader, size: int):
+        self._file = file
+        self._remaining = size
+
+    def readable(self) -> bool:
+        return True
+
+    @property
+    def limit_reached(self) -> bool:
+        return self._remaining == 0
+
+    def readinto(self, buffer) -> int:
+        if not self._remaining:
+            return 0
+        size = self._file.readinto(memoryview(buffer)[:self._remaining])
+        self._remaining -= size
+        return size
+
+
 async def grep_files(args):
     """Search text contents with ignore-aware traversal and glob filtering."""
     import re as _re
     path = (args.get("path") or ".").strip()
-    pattern = (args.get("pattern") or args.get("query") or "").strip()
+    pattern_mode = args.get("pattern_mode") or "auto"
+    if pattern_mode not in ("auto", "regex", "literal"):
+        raise tools.ToolError("grep pattern_mode must be auto, regex, or literal")
+    pattern = args.get("pattern") or args.get("query") or ""
+    if pattern_mode == "auto":
+        pattern = pattern.strip()
     if not pattern:
         raise tools.ToolError("grep needs a non-empty 'pattern'")
+    requested_size = args.get("max_file_bytes")
+    if requested_size is not None and (
+        type(requested_size) is not int or not 1 <= requested_size <= MAX_EXPLICIT_SEARCH_FILE_BYTES
+    ):
+        raise tools.ToolError(
+            f"grep max_file_bytes must be an integer from 1 to {MAX_EXPLICIT_SEARCH_FILE_BYTES:,}")
+    max_file_bytes = requested_size or MAX_SEARCH_FILE_BYTES
     path_glob = (args.get("glob") or args.get("path_glob") or "").strip()
     try:
         limit = int(args.get("limit") or 80)
@@ -431,12 +466,15 @@ async def grep_files(args):
     limit = max(1, min(limit, MAX_FIND))
     rp = _check(path)
 
+    flags = 0 if args.get("case_sensitive") else _re.IGNORECASE
     try:
-        rx = _re.compile(pattern, _re.IGNORECASE)
-    except _re.error:
-        rx = _re.compile(_re.escape(pattern), _re.IGNORECASE)
+        rx = _re.compile(_re.escape(pattern) if pattern_mode == "literal" else pattern, flags)
+    except (_re.error, OverflowError, RecursionError) as exc:
+        if pattern_mode == "regex":
+            raise tools.ToolError(f"Invalid grep regex: {exc}", code="invalid_regex") from None
+        rx = _re.compile(_re.escape(pattern), flags)
 
-    omissions = {"oversized": 0, "unreadable": 0}
+    omissions = {"oversized": 0, "unreadable": 0, "changed": 0}
     examples = {reason: [] for reason in omissions}
 
     def omitted(reason: str, full: str) -> None:
@@ -446,22 +484,36 @@ async def grep_files(args):
             examples[reason].append(repr(name[:160]))
 
     def _search_file(full: str, out: list[str]) -> bool:
+        capped = False
+        initial_hits = len(out)
         try:
-            with open(full, "rb") as probe:
-                if b"\0" in probe.read(4096):
+            with open(full, "rb") as file:
+                before = os.fstat(file.fileno())
+                if b"\0" in file.read(min(4096, max_file_bytes)):
                     return False
-                if os.fstat(probe.fileno()).st_size > MAX_SEARCH_FILE_BYTES:
+                if before.st_size > max_file_bytes:
                     omitted("oversized", full)
                     return False
-            with open(full, "r", encoding="utf-8", errors="replace") as handle:
-                for number, line in enumerate(handle, 1):
-                    if rx.search(line):
-                        out.append(f"{full}:{number}: {line.rstrip()[:500]}")
-                        if len(out) >= limit:
-                            return True
+                file.seek(0)
+                source = _BoundedSearchReader(file, max_file_bytes)
+                reader = io.BufferedReader(source)
+                with io.TextIOWrapper(reader, encoding="utf-8", errors="replace") as text:
+                    for number, line in enumerate(text, 1):
+                        if rx.search(line):
+                            out.append(f"{full}:{number}: {line.rstrip()[:500]}")
+                            if len(out) >= limit:
+                                capped = True
+                                break
+                after = os.fstat(file.fileno())
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    omitted("changed", full)
+                if source.limit_reached and file.read(1):
+                    del out[initial_hits:]
+                    omitted("oversized", full)
+                    return False
         except (OSError, UnicodeError):
             omitted("unreadable", full)
-        return False
+        return capped
 
     def _plain():
         from file_ignore import IgnoreMatcher
@@ -479,6 +531,8 @@ async def grep_files(args):
             return out, capped
         if not stat.S_ISDIR(mode):
             raise tools.ToolError(f"not a file or folder: {path}")
+        if requested_size is not None:
+            raise tools.ToolError("grep max_file_bytes requires an exact file path")
         matcher = IgnoreMatcher(rp)
         walk = os.walk(rp, followlinks=False, onerror=lambda exc: omitted("unreadable", exc.filename or rp))
         for root, dirs, files in walk:
@@ -503,10 +557,15 @@ async def grep_files(args):
     coverage = []
     if omissions["oversized"]:
         paths = ", ".join(examples["oversized"])
-        coverage.append(f"{omissions['oversized']} over the {MAX_SEARCH_FILE_BYTES:,}-byte limit ({paths})")
+        coverage.append(f"{omissions['oversized']} over the {max_file_bytes:,}-byte limit ({paths})")
     if omissions["unreadable"]:
         coverage.append(f"{omissions['unreadable']} unreadable ({', '.join(examples['unreadable'])})")
     notice = "\nSearch incomplete. Skipped " + ", ".join(coverage) + "." if coverage else ""
+    if omissions["changed"]:
+        paths = ", ".join(examples["changed"])
+        if not notice:
+            notice = "\nSearch incomplete."
+        notice += f" {omissions['changed']} file(s) changed during search ({paths})."
     if not hits:
         if notice:
             return f'No matches in the files searched for "{pattern}" under {path}.' + notice
@@ -516,19 +575,30 @@ async def grep_files(args):
         "or raise limit)"
         if capped else ""
     )
-    return f"{len(hits)} match(es){suffix}:\n" + "\n".join(hits) + notice
+    return f"{len(hits)} match(es){suffix}:" + notice + "\n" + "\n".join(hits)
 
 
-def _file_signature(path: str) -> tuple:
+class _FileSignature(NamedTuple):
+    exists: bool
+    size: int
+    modified_ns: int
+    device: int
+    inode: int
+    mode: int
+
+
+def _file_signature(path: str) -> _FileSignature:
     try:
-        stat = os.stat(path)
-        return True, stat.st_size, stat.st_mtime_ns, getattr(stat, "st_ino", 0)
+        info = os.stat(path, follow_symlinks=False)
+        return _FileSignature(
+            True, info.st_size, info.st_mtime_ns, info.st_dev, info.st_ino, info.st_mode,
+        )
     except FileNotFoundError:
-        return False, 0, 0, 0
+        return _FileSignature(False, 0, 0, 0, 0, 0)
 
 
 _PATCH_OPERATION_FIELDS = frozenset({
-    "path", "action", "content", "find", "replace", "count",
+    "path", "action", "content", "find", "replace", "count", "expected_matches",
 })
 
 
@@ -582,6 +652,12 @@ def _prepare_patch(args: dict) -> list[dict]:
         if action not in {"write", "replace", "delete"}:
             raise tools.ToolError(
                 f"apply_patch change {index} action must be create/write, replace, or delete")
+        expected_matches = raw.get("expected_matches")
+        if expected_matches is not None and (
+            action != "replace" or type(expected_matches) is not int or expected_matches < 1
+        ):
+            raise tools.ToolError(
+                f"apply_patch change {index} expected_matches requires a positive integer for replace")
         if not path:
             raise tools.ToolError(f"apply_patch change {index} needs a path")
         rp = _check(path)
@@ -590,22 +666,10 @@ def _prepare_patch(args: dict) -> list[dict]:
         state = virtual.get(rp)
         if state is None:
             signature = _file_signature(rp)
-            exists = bool(signature[0])
-            original = ""
-            loaded = False
-            if exists:
-                try:
-                    with open(rp, "r", encoding="utf-8", errors="replace") as handle:
-                        original = handle.read()
-                    loaded = True
-                except OSError:
-                    original = ""
             state = {
                 "signature": signature,
-                "exists": exists,
-                "content": original if loaded else None,
-                "loaded": loaded,
-                "original": original if loaded or not exists else "",
+                "exists": signature.exists,
+                "content": None,
             }
             virtual[rp] = state
         signature = state["signature"]
@@ -613,7 +677,6 @@ def _prepare_patch(args: dict) -> list[dict]:
             "action": action,
             "path": rp,
             "signature": signature,
-            "original": state.get("original") or "",
         }
         if action == "write":
             content = raw.get("content")
@@ -621,7 +684,7 @@ def _prepare_patch(args: dict) -> list[dict]:
                 raise tools.ToolError(
                     f"apply_patch write change {index} needs string content")
             row.update(kind="update" if state["exists"] else "create", content=content)
-            state.update(exists=True, content=content, loaded=True)
+            state.update(exists=True, content=content)
         elif action == "replace":
             if not state["exists"]:
                 raise tools.ToolError(f"apply_patch replace target is not a file: {path}")
@@ -641,14 +704,23 @@ def _prepare_patch(args: dict) -> list[dict]:
             if count < 0:
                 raise tools.ToolError(
                     f"apply_patch replace change {index} count cannot be negative")
-            if not state["loaded"]:
-                with open(rp, "r", encoding="utf-8", errors="replace") as handle:
-                    state["content"] = handle.read()
-                state["loaded"] = True
-                if not state.get("original"):
-                    state["original"] = state["content"]
+            if state["content"] is None:
+                try:
+                    with open(rp, "r", encoding="utf-8", newline="") as handle:
+                        state["content"] = handle.read()
+                except UnicodeDecodeError:
+                    raise tools.ToolError(
+                        f"apply_patch replacement requires UTF-8 text: {path}",
+                        code="unsupported_file_encoding",
+                    ) from None
             old = state["content"]
             occurrences = old.count(find)
+            if expected_matches is not None and occurrences != expected_matches:
+                raise tools.ToolError(
+                    f"apply_patch change {index} expected {expected_matches} match(es) "
+                    f"in {path}, found {occurrences}. Use more context or confirm the expected count.",
+                    code="patch_match_count_mismatch",
+                )
             if not occurrences:
                 raise tools.ToolError(f"find text was not found in {path}")
             used = occurrences if count == 0 else min(occurrences, count)
@@ -659,14 +731,16 @@ def _prepare_patch(args: dict) -> list[dict]:
             if not state["exists"]:
                 raise tools.ToolError(f"apply_patch delete target is not a file: {path}")
             row["kind"] = "delete"
-            state.update(exists=False, content=None, loaded=True)
-        row["original"] = state.get("original") or ""
+            state.update(exists=False, content=None)
         prepared.append(row)
     return prepared
 
 
-_PATCH_JOURNAL_SCHEMA = "variant1.file-patch-rollback-wal.v2"
-_LEGACY_PATCH_JOURNAL_SCHEMA = "variant1.file-patch-transaction.v1"
+_PATCH_JOURNAL_SCHEMA = "variant1.file-patch-rollback-wal.v3"
+_LEGACY_PATCH_JOURNAL_SCHEMAS = (
+    "variant1.file-patch-rollback-wal.v2",
+    "variant1.file-patch-transaction.v1",
+)
 
 
 class _PatchCancellationRequested(RuntimeError):
@@ -726,10 +800,18 @@ def _file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
+def _copy_patch_file(source: str, target: str, fd: int) -> None:
+    with os.fdopen(fd, "wb") as staged, open(source, "rb") as original:
+        shutil.copyfileobj(original, staged)
+        staged.flush()
+        shutil.copystat(source, target)
+        os.fsync(staged.fileno())
+
+
 def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool) -> None:
     cleanup_errors: list[str] = []
     for item in document.get("operations") or ():
-        for field in ("candidate", "backup"):
+        for field in ("candidate", "backup", "deleted"):
             path = str(item.get(field) or "")
             if path and os.path.exists(path):
                 try:
@@ -757,51 +839,63 @@ def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool)
         _fsync_directory(os.path.dirname(journal_path))
 
 
+def _is_published_patch_file(item: dict) -> bool:
+    candidate = item.get("candidate")
+    expected = item.get("published_signature")
+    if not candidate or not expected or os.path.lexists(candidate):
+        return False
+    path = item["path"]
+    signature = _file_signature(path)
+    if signature != tuple(expected):
+        return False
+    try:
+        return (
+            _file_sha256(path) == item.get("published_sha256")
+            and _file_signature(path) == signature
+        )
+    except FileNotFoundError:
+        return False
+
+
 def _restore_patch_journal(document: dict, journal_path: str) -> None:
-    operations = list(document.get("operations") or ())
-    for item in reversed(operations):
-        path = str(item.get("path") or "")
-        if not path:
-            raise tools.ToolError(f"patch transaction has an invalid target: {journal_path}")
+    for item in reversed(document.get("operations") or []):
+        path = item["path"]
         parent = os.path.dirname(path) or "."
-        originally_existed = bool(item.get("original_exists"))
-        original_sha = str(item.get("original_sha256") or "")
-        backup = str(item.get("backup") or "")
-        if originally_existed:
-            backup_valid = bool(
-                backup and os.path.isfile(backup)
-                and _file_sha256(backup) == original_sha
-            )
-            target_valid = bool(
-                os.path.isfile(path) and _file_sha256(path) == original_sha
-            )
-            if not backup_valid and not target_valid:
-                raise tools.ToolError(
-                    f"patch rollback evidence is incomplete for {path}; "
-                    f"journal retained at {journal_path}"
-                )
-            if backup_valid and not target_valid:
-                os.makedirs(parent, exist_ok=True)
-                fd, restore = tempfile.mkstemp(
-                    prefix=".variant1-patch-restore-", suffix=".tmp", dir=parent
-                )
-                os.close(fd)
+        deleted = item.get("deleted")
+        if deleted:
+            # A same-directory rename leaves proof even if the process stopped
+            # before the journal recorded its next position.
+            if os.path.isfile(deleted) and not os.path.lexists(path):
                 try:
-                    shutil.copy2(backup, restore)
-                    with open(restore, "r+b") as handle:
-                        os.fsync(handle.fileno())
-                    os.replace(restore, path)
-                    _fsync_directory(parent)
-                finally:
-                    if os.path.exists(restore):
-                        os.remove(restore)
-        elif os.path.lexists(path):
-            if os.path.isdir(path):
-                raise tools.ToolError(
-                    f"patch rollback target became a directory: {path}"
-                )
+                    if os.name == "nt":
+                        os.rename(deleted, path)
+                    else:
+                        os.link(deleted, path)
+                except FileExistsError:
+                    continue
+                _fsync_directory(parent)
+            continue
+        if not _is_published_patch_file(item):
+            continue
+        if not item.get("original_exists"):
             os.remove(path)
             _fsync_directory(parent)
+            continue
+        backup = item["backup"]
+        if not os.path.isfile(backup) or _file_sha256(backup) != item["original_sha256"]:
+            raise tools.ToolError(
+                f"patch rollback evidence is incomplete for {path}. "
+                f"Journal retained at {journal_path}."
+            )
+        fd, restore = tempfile.mkstemp(prefix=".variant1-patch-restore-", suffix=".tmp", dir=parent)
+        try:
+            _copy_patch_file(backup, restore, fd)
+            if _is_published_patch_file(item):
+                os.replace(restore, path)
+                _fsync_directory(parent)
+        finally:
+            if os.path.exists(restore):
+                os.remove(restore)
     _cleanup_patch_journal(document, journal_path, rollback=True)
 
 
@@ -811,14 +905,26 @@ def _recover_patch_journal(journal_path: str) -> None:
     if (
         not isinstance(document, dict)
         or document.get("schema") not in {
-            _PATCH_JOURNAL_SCHEMA, _LEGACY_PATCH_JOURNAL_SCHEMA,
+            _PATCH_JOURNAL_SCHEMA, *_LEGACY_PATCH_JOURNAL_SCHEMAS,
         }
     ):
         raise tools.ToolError(f"unknown patch transaction journal: {journal_path}")
-    if str(document.get("state") or "") == "committed":
+    state = document.get("state")
+    if state == "committed":
         _cleanup_patch_journal(document, journal_path, rollback=False)
-        return
-    _restore_patch_journal(document, journal_path)
+    elif state == "preparing":
+        _cleanup_patch_journal(document, journal_path, rollback=True)
+    elif document["schema"] in _LEGACY_PATCH_JOURNAL_SCHEMAS:
+        # An older interrupted journal lacks publication identities. Preserve
+        # its evidence and leave the current project files in place.
+        retained = f"{journal_path}.{uuid.uuid4().hex}.needs-review"
+        os.replace(journal_path, retained)
+        _fsync_directory(os.path.dirname(journal_path))
+        print(f"[apply_patch] Older interrupted transaction retained at {retained}", flush=True)
+    elif state == "committing":
+        _restore_patch_journal(document, journal_path)
+    else:
+        raise tools.ToolError(f"unknown patch transaction state: {journal_path}")
 
 
 def _recover_patch_transactions() -> int:
@@ -866,8 +972,14 @@ def _apply_direct_patch(
                 raise tools.ToolError(
                     f"file changed while apply_patch was preparing: {op['path']}"
                 )
+            if (
+                os.name == "nt" and op["kind"] == "delete" and op["signature"].exists
+                and not op["signature"].mode & stat.S_IWRITE
+            ):
+                raise PermissionError(f"apply_patch cannot delete a read-only file: {op['path']}")
         made_dirs: set[str] = set()
         journal_operations: list[dict] = []
+        staging_id = uuid.uuid4().hex
         for index, op in enumerate(final_operations):
             path = op["path"]
             parent = os.path.dirname(path) or "."
@@ -878,20 +990,15 @@ def _apply_direct_patch(
                 if next_cursor == cursor:
                     break
                 cursor = next_cursor
-            original_exists = bool(op["signature"][0])
+            original_exists = op["signature"].exists
+            staging_prefix = os.path.join(parent, f".variant1-patch-{staging_id}-{index}")
             journal_operations.append({
                 "path": path,
-                "kind": op["kind"],
-                "candidate": (
-                    os.path.join(parent, f".variant1-patch-{transaction_id}-{index}.candidate")
-                    if op["kind"] in {"create", "update"} else ""
-                ),
-                "backup": (
-                    os.path.join(parent, f".variant1-patch-{transaction_id}-{index}.backup")
-                    if original_exists else ""
-                ),
+                "candidate": staging_prefix + ".candidate" if op["kind"] != "delete" else "",
+                "backup": staging_prefix + ".backup" if original_exists and op["kind"] != "delete" else "",
+                "deleted": staging_prefix + ".deleted" if original_exists and op["kind"] == "delete" else "",
                 "original_exists": original_exists,
-                "original_sha256": _file_sha256(path) if original_exists else "",
+                "original_sha256": _file_sha256(path) if original_exists and op["kind"] != "delete" else "",
             })
         document = {
             "schema": _PATCH_JOURNAL_SCHEMA,
@@ -906,6 +1013,7 @@ def _apply_direct_patch(
         _write_patch_journal(journal_path, document)
         try:
             by_path = {item["path"]: item for item in journal_operations}
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
             for op in final_operations:
                 path = op["path"]
                 item = by_path[path]
@@ -913,15 +1021,19 @@ def _apply_direct_patch(
                 os.makedirs(parent, exist_ok=True)
                 candidate = item["candidate"]
                 if candidate:
-                    with open(candidate, "w", encoding="utf-8", newline="") as handle:
+                    original = op["signature"]
+                    fd = os.open(candidate, flags, 0o600 if original.exists else 0o666)
+                    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
                         handle.write(op["content"])
                         handle.flush()
+                        if original.exists and os.name == "posix":
+                            os.fchmod(handle.fileno(), stat.S_IMODE(original.mode))
                         os.fsync(handle.fileno())
+                    item["published_signature"] = list(_file_signature(candidate))
+                    item["published_sha256"] = _file_sha256(candidate)
                 backup = item["backup"]
                 if backup:
-                    shutil.copy2(path, backup)
-                    with open(backup, "r+b") as handle:
-                        os.fsync(handle.fileno())
+                    _copy_patch_file(path, backup, os.open(backup, flags, 0o600))
             for op in final_operations:
                 if _file_signature(op["path"]) != op["signature"]:
                     raise tools.ToolError(
@@ -940,10 +1052,10 @@ def _apply_direct_patch(
                         f"file changed while apply_patch was committing: {path}"
                     )
                 item = by_path[path]
-                if op["kind"] in {"create", "update"}:
+                if item["candidate"]:
                     os.replace(item["candidate"], path)
-                else:
-                    os.remove(path)
+                elif item["deleted"]:
+                    os.replace(path, item["deleted"])
                 _fsync_directory(os.path.dirname(path) or ".")
                 document["applied_count"] = index + 1
                 _write_patch_journal(journal_path, document)
@@ -1079,8 +1191,16 @@ def _defs():
                    "desc": "folder or file to search under (default current directory)"},
           "pattern": {"type": "string", "required": True,
                       "desc": "regex or literal text to find inside files"},
+          "pattern_mode": {"type": "string", "required": False,
+                           "default": "auto", "enum": ["auto", "regex", "literal"],
+                           "desc": "auto tries regex then literal, regex rejects invalid expressions, literal matches exact text"},
+          "case_sensitive": {"type": "boolean", "required": False,
+                             "default": False, "desc": "match case (default ignores case)"},
           "glob": {"type": "string", "required": False,
                    "desc": "optional filename filter (e.g. *.py)"},
+          "max_file_bytes": {"type": "int", "required": False, "minimum": 1,
+                             "maximum": MAX_EXPLICIT_SEARCH_FILE_BYTES,
+                             "desc": f"override the {MAX_SEARCH_FILE_BYTES:,}-byte size limit for one exact file path, up to 64 MiB"},
           "limit": {"type": "int", "required": False,
                     "desc": "max matches (default 80)"}},
          "Search file contents (regex or literal). Prefer this over shell find/rg.",
@@ -1107,6 +1227,8 @@ def _defs():
                                  "desc": "replacement text for replace"},
                      "count": {"type": "int", "required": False, "minimum": 0,
                                "desc": "replacement limit; 0 means all"},
+                     "expected_matches": {"type": "int", "required": False, "minimum": 1,
+                                          "desc": "exact total matches required before replacing, use 1 for a unique edit"},
                  },
              },
          },
@@ -1121,11 +1243,15 @@ def _defs():
           "content": {"type": "string", "required": False},
           "find": {"type": "string", "required": False},
           "replace": {"type": "string", "required": False},
-          "count": {"type": "int", "required": False, "minimum": 0}},
+          "count": {"type": "int", "required": False, "minimum": 0,
+                    "desc": "replacement limit; 0 means all"},
+          "expected_matches": {"type": "int", "required": False, "minimum": 1,
+                               "desc": "exact total matches required before replacing, use 1 for a unique edit"}},
          "Apply ordered text-file changes as one recoverable batch (a path may repeat): "
          "use path+content (action='create' or action='write' is optional) to create or overwrite, "
          "path+find+replace (action='replace' is optional) "
-         "for exact edits, or action='delete' with path."),
+         "for exact edits, or action='delete' with path. "
+         "Use expected_matches=1 for a unique edit. A match-count mismatch rejects the entire batch."),
     ]
 
 

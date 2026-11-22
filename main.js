@@ -24,6 +24,7 @@ const {
   registerVariant1Scheme,
   createWindowSecurity,
   createInitDataDir,
+  closeDeckBeforeQuit,
   registerAppLifecycle,
 } = require('./electron-app-boot');
 
@@ -84,6 +85,7 @@ const updates = createUpdateService({
     if (deckWindow && !deckWindow.isDestroyed()) deckWindow.webContents.send('update:state', state);
   },
   prepareInstall: async () => {
+    if (!await closeDeckBeforeQuit(deckWindow)) return false;
     // Chromium persists the browser tab list and cookies lazily.
     await Promise.allSettled([session.defaultSession, session.fromPartition('persist:variant1-preview')]
       .flatMap((store) => [store.flushStorageData(), store.cookies.flushStore()]));
@@ -94,7 +96,7 @@ const updates = createUpdateService({
     }
   },
   // A failed install leaves VARIANT-1 open, so bring the backend back.
-  resumeAfterFailedInstall: () => backend.startBackend(),
+  resumeAfterFailedInstall: () => { openDeckWindow('settings'); return backend.startBackend(); },
 });
 
 // --- Window refs -----------------------------------------------------------
@@ -240,7 +242,6 @@ registerBackendIpc({
 
 chatWindows = require('./electron-chat-windows').createChatWindows({appRoot:APP_ROOT,getDeckWindow:()=>deckWindow,
   getBackendInfo:()=>backend.getInfo(),isTrustedIpcSender,hardenAppWindow});
-app.on('before-quit',()=>chatWindows.closeAll());
 
 // --- Deck / Monitor windows ------------------------------------------------
 function ensureAppWindows() {
@@ -281,10 +282,7 @@ function installTray() {
     appRoot: APP_ROOT,
     openDeckWindow: (view) => openDeckWindow(view || 'chat'),
     openMonitor: () => openMonitorWindow(),
-    quitApp: () => {
-      isQuitting = true;
-      app.quit();
-    },
+    quitApp: () => app.quit(),
   });
 }
 
@@ -323,7 +321,7 @@ registerAppLifecycle({
   openDeckWindow: (view) => openDeckWindow(view || 'chat'),
   installTray,
   startBackend: () => backend.startBackend(),
-  stopBackend: () => backend.stopBackend(),
+  stopBackend: () => { chatWindows.closeAll(); return backend.stopBackend(); },
   startUpdates: () => updates.start(),
   getDeckWindow: () => deckWindow,
   setQuitting: (v) => { isQuitting = !!v; },

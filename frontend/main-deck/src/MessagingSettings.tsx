@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useRef, useState, type FormEvent} from "react";
 import {
   refresh,
+  onMessagingWriteResult,
   send,
   setMessagingAdapterEnabled,
   setMessagingGatewayEnabled,
@@ -51,7 +52,7 @@ function PairingRows({title, rows, pending}: {
 }
 
 function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
-  const gateway = usePlatformState().gateway;
+  const {gateway, connected} = usePlatformState();
   const values = adapter.values || {};
   const [edits, setEdits] = useState<Record<string, string>>(() => Object.fromEntries(
     adapter.fields.filter(field => !field.secret)
@@ -59,6 +60,67 @@ function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
   ));
   const [showAdvanced, setShowAdvanced] = useState(false);
   const dirty = useRef(new Set<string>());
+  const revisions = useRef(new Map<string, number>());
+  const writes = useRef(new Map<string, {
+    id: string; operation: string; revision: number; timer: ReturnType<typeof setTimeout>;
+  }>());
+  const [feedback, setFeedback] = useState<Record<string, string>>({});
+  const needsRefresh = useRef(false);
+  const show = (key: string, message: string) => setFeedback(current => ({...current, [key]: message}));
+  useEffect(() => {
+    const pendingWrites = writes.current;
+    const unsubscribe = onMessagingWriteResult(row => {
+      if (row.adapter !== adapter.id || typeof row.field !== "string" || typeof row.accepted !== "boolean") return;
+      const field = row.field;
+      const write = pendingWrites.get(field);
+      if (!write || row.operation !== write.operation || row.request_id !== write.id) return;
+      clearTimeout(write.timer);
+      pendingWrites.delete(field);
+      show(field, String(row.error || (row.accepted ? "" : "Could not save this setting.")));
+      if (row.accepted && field && (revisions.current.get(field) || 0) === write.revision) {
+        if (write.operation === "messaging:credential:set") setEdits(current => ({...current, [field]: ""}));
+        dirty.current.delete(field);
+      }
+    });
+    return () => {
+      unsubscribe();
+      for (const write of pendingWrites.values()) clearTimeout(write.timer);
+      pendingWrites.clear();
+    };
+  }, [adapter.id]);
+  useEffect(() => {
+    if (!connected) {
+      for (const [field, write] of writes.current) {
+        clearTimeout(write.timer);
+        show(field, "Save confirmation was lost. Check the refreshed setting before retrying.");
+        needsRefresh.current = true;
+      }
+      writes.current.clear();
+    } else if (needsRefresh.current) {
+      needsRefresh.current = false;
+      send({type: "messaging:get"});
+    }
+  }, [connected]);
+  function write(field: string, type: string, values: Record<string, unknown>) {
+    if (writes.current.has(field)) return;
+    if (!connected) {
+      show(field, "Reconnect to save. Your entry is kept.");
+      return;
+    }
+    const id = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      writes.current.delete(field);
+      show(field, "Save confirmation timed out. Check the refreshed setting before retrying.");
+      send({type: "messaging:get"});
+    }, 20_000);
+    writes.current.set(field, {id, operation: type, revision: revisions.current.get(field) || 0, timer});
+    show(field, "Saving…");
+    if (!send({type, adapter: adapter.id, request_id: id, ...values})) {
+      clearTimeout(timer);
+      writes.current.delete(field);
+      show(field, "The setting could not be sent. Your entry is kept.");
+    }
+  }
   useEffect(() => {
     setEdits(current => {
       const next = {...current};
@@ -70,7 +132,11 @@ function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
       return next;
     });
   }, [adapter]);
-  const edit = (key:string,value:string) => {dirty.current.add(key);setEdits(current=>({...current,[key]:value}));};
+  const edit = (key:string,value:string) => {
+    dirty.current.add(key);
+    revisions.current.set(key,(revisions.current.get(key) || 0)+1);
+    setEdits(current => ({...current, [key]: value}));
+  };
   const pending = (gateway?.pairing?.pending || []).filter(row => row.platform === adapter.id);
   const approved = (gateway?.pairing?.approved || []).filter(row => row.platform === adapter.id);
   const visibleFields = adapter.fields.filter(field => !field.advanced || showAdvanced);
@@ -78,17 +144,13 @@ function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
 
   function save(event: FormEvent) {
     event.preventDefault();
-    const nonSecret = Object.fromEntries(adapter.fields.filter(field => !field.secret)
+    const nonSecret = Object.fromEntries(adapter.fields.filter(field => !field.secret && dirty.current.has(field.key))
       .map(field => [field.key, String(edits[field.key] || "").trim()]));
-    send({type: "messaging:set", adapter: adapter.id,
-      config: {enabled: !!adapter.config?.enabled, fields: nonSecret}});
+    if (Object.keys(nonSecret).length) write("","messaging:set",{config:{fields:nonSecret}});
     for (const field of adapter.fields.filter(field => field.secret)) {
       const value = String(edits[field.key] || "").trim();
-      if (value) send({type: "messaging:credential:set", adapter: adapter.id,
-        field: field.key, value});
+      if (value) write(field.key,"messaging:credential:set",{field:field.key,value});
     }
-    setEdits(current => ({...current, ...Object.fromEntries(
-      adapter.fields.filter(field => field.secret).map(field => [field.key, ""]))}));
   }
 
   return <form className="messaging-platform-detail" onSubmit={save}>
@@ -123,8 +185,9 @@ function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
             ? "Stored securely — enter to replace"
             : field.placeholder || field.key}/>} 
           {field.secret && adapter.configured_fields.includes(field.key) ? <Button tone="quiet"
-            onClick={() => send({type: "messaging:credential:clear", adapter: adapter.id,
-              field: field.key})}>Remove</Button> : null}</div>
+            disabled={writes.current.has(field.key)}
+            onClick={() => write(field.key,"messaging:credential:clear",{field:field.key})}>Remove</Button> : null}</div>
+        {feedback[field.key] && <small role="status">{feedback[field.key]}</small>}
       </label>)}
       {advancedCount ? <button type="button" className="messaging-advanced"
         onClick={() => setShowAdvanced(value => !value)}>
@@ -137,7 +200,7 @@ function PlatformDetail({adapter}: {adapter: GatewayAdapter}) {
         onChange={allow_all => send({type: "messaging:set", adapter: adapter.id,
           config: {...adapter.config, allow_all}})}/>
     </section>
-    <footer><Button type="submit" tone="primary">Save changes</Button></footer>
+    <footer>{feedback[""] && <p role="status">{feedback[""]}</p>}<Button type="submit" tone="primary">Save changes</Button></footer>
   </form>;
 }
 

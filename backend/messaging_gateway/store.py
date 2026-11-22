@@ -92,6 +92,7 @@ class MessagingIngressStore:
                     conversation_id TEXT NOT NULL,
                     message_id TEXT NOT NULL,
                     reply TEXT NOT NULL,
+                    confirmed_chars INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL DEFAULT 'pending',
                     attempts INTEGER NOT NULL DEFAULT 0,
                     last_error TEXT NOT NULL DEFAULT '',
@@ -110,6 +111,11 @@ class MessagingIngressStore:
                     conn.execute(
                         "ALTER TABLE messaging_outbox ADD COLUMN "
                         "available_at REAL NOT NULL DEFAULT 0"
+                    )
+                if "confirmed_chars" not in columns:
+                    conn.execute(
+                        "ALTER TABLE messaging_outbox ADD COLUMN "
+                        "confirmed_chars INTEGER NOT NULL DEFAULT 0"
                     )
                 # Round-5 cutover: ``unknown`` used to be terminal even though
                 # it represented a turn with no durable ticket. Such rows are
@@ -182,12 +188,13 @@ class MessagingIngressStore:
 
     @staticmethod
     def _envelope(payload: dict[str, Any]) -> MessageEnvelope:
+        admitted_text = str(payload.get("text") or "")
         return MessageEnvelope(
             adapter=str(payload.get("adapter") or ""),
             conversation_id=str(payload.get("conversation_id") or ""),
             message_id=str(payload.get("message_id") or ""),
             user_id=str(payload.get("user_id") or ""),
-            text=str(payload.get("text") or ""),
+            text=str(payload.get("original_text", admitted_text)),
             user_name=str(payload.get("user_name") or ""),
             conversation_name=str(payload.get("conversation_name") or ""),
             reply_to=str(payload.get("reply_to") or ""),
@@ -199,11 +206,15 @@ class MessagingIngressStore:
                 dict(item) for item in (payload.get("attachments") or [])
                 if isinstance(item, dict)
             ),
+            admitted_text=admitted_text,
         )
 
     def admit(self, envelope: MessageEnvelope, text: str) -> IngressRecord:
         payload = self._payload(envelope, text)
         fingerprint = request_fingerprint("messaging.ingress.v1", payload)
+        # Keep the existing normalized identity for old rows. Recovery needs
+        # the original text for authorization and the admitted text for routing.
+        payload["original_text"] = str(envelope.text or "")
         identity = self._identity(envelope)
         now = time.time()
         with sqlite_unit_of_work(
@@ -318,16 +329,6 @@ class MessagingIngressStore:
                 "AND status NOT IN ('routed','rejected')",
                 (str(reply), now, *identity),
             )
-            if str(reply):
-                conn.execute(
-                    "INSERT INTO messaging_outbox(" 
-                    "adapter,conversation_id,message_id,reply,status,created_at,updated_at" 
-                    ") VALUES (?,?,?,?, 'pending',?,?) "
-                    "ON CONFLICT(adapter,conversation_id,message_id) DO UPDATE SET "
-                    "reply=excluded.reply,updated_at=excluded.updated_at "
-                    "WHERE messaging_outbox.status!='delivered'",
-                    (*identity, str(reply), now, now),
-                )
             row = conn.execute(
                 "SELECT * FROM messaging_ingress WHERE adapter=? "
                 "AND conversation_id=? AND message_id=?",
@@ -335,6 +336,14 @@ class MessagingIngressStore:
             ).fetchone()
             if row is None:
                 raise LookupError("messaging ingress admission is unavailable")
+            if row["status"] == "routed" and row["reply"]:
+                conn.execute(
+                    "INSERT INTO messaging_outbox("
+                    "adapter,conversation_id,message_id,reply,status,created_at,updated_at"
+                    ") VALUES (?,?,?,?, 'pending',?,?) "
+                    "ON CONFLICT(adapter,conversation_id,message_id) DO NOTHING",
+                    (*identity, str(row["reply"]), now, now),
+                )
             return self._record(row)
 
     def recoverable_ingress(
@@ -435,13 +444,29 @@ class MessagingIngressStore:
         return result
 
     def outbound_pending(self, envelope: MessageEnvelope) -> str:
+        return self.outbound_delivery(envelope)[0]
+
+    def outbound_delivery(self, envelope: MessageEnvelope) -> tuple[str, int]:
         with sqlite_read_connection(self._connect) as conn:
             row = conn.execute(
-                "SELECT reply FROM messaging_outbox WHERE adapter=? "
+                "SELECT reply,confirmed_chars FROM messaging_outbox WHERE adapter=? "
                 "AND conversation_id=? AND message_id=? AND status='pending'",
                 self._identity(envelope),
             ).fetchone()
-        return str(row["reply"] or "") if row is not None else ""
+        return (str(row["reply"]), int(row["confirmed_chars"])) if row is not None else ("", 0)
+
+    def confirm_outbound_chunk(self, envelope: MessageEnvelope, start: int, end: int) -> None:
+        with sqlite_unit_of_work(
+            self._connect, self._write_lock, fault_name="messaging.outbox_chunk.before_commit"
+        ) as conn:
+            updated = conn.execute(
+                "UPDATE messaging_outbox SET confirmed_chars=?,updated_at=? "
+                "WHERE adapter=? AND conversation_id=? AND message_id=? "
+                "AND status='pending' AND confirmed_chars=?",
+                (end, time.time(), *self._identity(envelope), start),
+            )
+            if end <= start or not updated.rowcount:
+                raise MessagingIngressConflict("outbox chunk no longer matches its pending reply")
 
     def mark_outbound_delivered(self, envelope: MessageEnvelope) -> None:
         with sqlite_unit_of_work(

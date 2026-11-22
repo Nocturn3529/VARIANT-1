@@ -1,13 +1,14 @@
 import {BrowserCommandError, browserDeadline, checkBrowserRequest} from "./browserLifecycle";
-import {allowedBrowserUrl, getPreviewState, setBrowserViewport, type BrowserPageState} from "./previewStore";
+import {allowedBrowserUrl, getPreviewState, noteBrowserPage, setBrowserViewport, type BrowserPageState} from "./previewStore";
 import {applyBrowserViewport, browserWindowSize, DEFAULT_BROWSER_VIEWPORT, measureBrowserViewport, nextBrowserLayoutFrame, parseBrowserViewport} from "./browserViewport";
 import {downloadsForTab, findStartedDownload, isDownloadCommand, runBrowserDownloadCommand} from "./browserDownloads";
 import {browserKeyInput} from "./browserKeyboard";
+import {waitForBrowserElement} from "./browserElementWait";
 
 export type WorkbenchWebview = HTMLElement & {
   /** A retained tab's native presentation; hidden ones are captured and driven in place. */
   getBrowserPresentation?:()=>{visible:boolean;attached:boolean;viewport?:{width:number;height:number}};
-  flushLayout?:()=>Promise<void>;
+  flushLayout?:(settleTransfer?:boolean)=>Promise<void>;
   loadURL?: (url: string) => Promise<void>;
   getURL?: () => string;
   getTitle?: () => string;
@@ -71,6 +72,12 @@ export function registerWorkbenchBrowser(
     handle.document++; handle.ready = false; handle.epoch = 0; handle.failure = ""; mark();
     handle.navigationUrl=detail.url || "";handle.navigationStartedAt=Date.now();
   };
+  const committed = (event: Event) => {
+    const detail = event as Event & {isMainFrame?: boolean; url?: string};
+    if (event.type === "did-navigate-in-page" && detail.isMainFrame !== true) return;
+    const current = page();
+    noteBrowserPage(id, {...current, url: detail.url || current.url}, true);
+  };
   const bind = () => {
     try {
       const guestId = webview.getWebContentsId?.();
@@ -91,6 +98,8 @@ export function registerWorkbenchBrowser(
   };
   const gone = () => { handle.ready = false; handle.epoch = 0; handle.failure = "Browser renderer stopped; reload the tab"; mark(); };
   webview.addEventListener("did-start-navigation", navigate);
+  webview.addEventListener("did-navigate", committed);
+  webview.addEventListener("did-navigate-in-page", committed);
   webview.addEventListener("dom-ready", ready);
   webview.addEventListener("did-attach", bind);
   webview.addEventListener("did-stop-loading", stopped);
@@ -102,6 +111,8 @@ export function registerWorkbenchBrowser(
   activeId = id;
   return () => {
     webview.removeEventListener("did-start-navigation", navigate);
+    webview.removeEventListener("did-navigate", committed);
+    webview.removeEventListener("did-navigate-in-page", committed);
     webview.removeEventListener("dom-ready", ready);
     webview.removeEventListener("did-attach", bind);
     webview.removeEventListener("did-stop-loading", stopped);
@@ -248,12 +259,16 @@ function pageSnapshotScript(epoch: number, maxElements: number, maxChars: number
       element.setAttribute(marker, ref);
       const rect = element.getBoundingClientRect();
       const elementRole = role(element);
-      const editable = element.matches('input,textarea,select,[contenteditable="true"],[role="textbox"]');
+      const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
+      const actions = disabled ? ['hover'] : ['click', 'hover', 'keys'];
+      if (!disabled && !element.readOnly && (element.isContentEditable ||
+        ((elementRole === 'textbox' || elementRole === 'combobox') && 'value' in element && inputType(element) !== 'file'))) actions.push('fill');
+      if (!disabled && element instanceof HTMLSelectElement) actions.push('select');
       elements.push({
-        ref, role: elementRole, name: name(element), input_type: inputType(element),
+        ref, role: elementRole, name: name(element), input_type: inputType(element), actions,
         text: compact(element.innerText).slice(0, 2000),
         value: (inputType(element) !== 'password' && 'value' in element ? String(element.value || '') : '').slice(0, 2000),
-        disabled: !!element.disabled || element.getAttribute('aria-disabled') === 'true',
+        disabled,
         bbox: {x: rect.x, y: rect.y, width: rect.width, height: rect.height},
       });
     }
@@ -309,7 +324,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     checkBrowserRequest(signal);
     if (handles.get(handle.id) !== handle || !handle.webview.isConnected) throw new BrowserCommandError("GUEST_REPLACED", "Browser guest moved or closed; read the current tab again", "guest");
     if (sameDocument && documentGeneration !== handle.document) throw new BrowserCommandError("DOCUMENT_CHANGED", "Browser document changed during the request; read the page again", "document");
-    if (requiresDocument && !handle.ready) throw new BrowserCommandError("GUEST_NOT_READY", handle.failure || "Browser document is not ready; navigate or reload this tab to recover", "ready");
+    if (requiresDocument && !handle.ready) throw new BrowserCommandError(handle.failure ? "GUEST_STOPPED" : "GUEST_NOT_READY", handle.failure || "Browser document is not ready; navigate or reload this tab to recover", "ready");
   };
   valid();
   // A background tab drops input and has no layout while fully hidden; the
@@ -324,11 +339,14 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     valid();
     if (!bound || !bound.ok) throw new BrowserCommandError("GUEST_REPLACED", "Could not bind this browser operation to its guest", "guest");
   }
-  const execute = async (code: string, gesture = false) => {
+  const execute = async (code: string, gesture = false, timeoutMs = 15000, requestSignal = signal) => {
     valid();
     if (!handle.webview.executeJavaScript) throw new BrowserCommandError("GUEST_NOT_READY", "Browser scripting is unavailable");
-    const value = await browserDeadline(handle.webview.executeJavaScript(code, gesture), 15000, "script", signal);
-    valid(); return value;
+    try {
+      return await browserDeadline(handle.webview.executeJavaScript(code, gesture), timeoutMs, "script", requestSignal);
+    } finally {
+      valid();
+    }
   };
   const executeElement = async (ref: string, body: string) => {
     const value = await execute(elementScript(ref, body), true);
@@ -341,7 +359,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
   };
   const webview = handle.webview;
   if(webview.flushLayout && action!=="state" && action!=="tabs"){
-    await browserDeadline(webview.flushLayout(),2000,"viewport",signal);valid();
+    await browserDeadline(webview.flushLayout(action==="screenshot"),2000,"viewport",signal);valid();
   }
   const current = () => ({...state(handle), tab_id: handle.id});
   if (action === "set_visible") return {ok: true, state: current()};
@@ -425,6 +443,7 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     const html = await execute("document.documentElement?.outerHTML || ''");
     return {ok: true, html: String(html || ""), state: current()};
   }
+  if (action === "wait") return waitForBrowserElement(command, webview, valid, execute, signal);
   if (action === "screenshot") {
     // Retained tabs are native views the main process captures in place. A
     // hidden one keeps its native size and nothing is revealed for it.
@@ -478,28 +497,31 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
     if (!result.ok || !result.image) throw new BrowserCommandError(result.error?.startsWith("browser_capture_clipped") ? "VIEWPORT_CLIPPED" : "CAPTURE_FAILED", `Browser capture failed: ${result.error || "empty image"}`, "capture");
     // A hidden native view can retain a different painted viewport from the
     // pane's next layout. Coordinates must describe the actual captured DOM.
-    const actualViewport=result.image_css_width && result.image_css_height ? {...viewport,width:result.image_css_width,height:result.image_css_height} : viewport;
+    const actualViewport=result.image_css_width && result.image_css_height ? {...viewport,width:result.image_css_width,height:result.image_css_height,
+      device_scale_factor:result.device_scale_factor ?? viewport.device_scale_factor} : viewport;
     if(viewport.mode==="fixed" && (actualViewport.width!==viewport.width || actualViewport.height!==viewport.height))
       throw new BrowserCommandError("VIEWPORT_NOT_APPLIED","The requested viewport is not painted yet; inspect the browser before another capture","capture");
     return {ok: true, image: result.image, image_width: result.image_width, image_height: result.image_height,
       viewport:actualViewport, state: {...current(),viewport:actualViewport}};
   }
-  if (action === "click") {
+  if (action === "click" || action === "hover") {
     const ref = targetRef(command.target || command.backend_ref, handle.epoch);
+    if (!webview.sendInputEvent) throw new BrowserCommandError("GUEST_NOT_READY", "Browser pointer input is unavailable", action);
+    const pointer = action.toUpperCase();
     let position: {x: number; y: number} | null = null;
     if (command.position != null) {
       const value = command.position as {x?: unknown; y?: unknown};
       if (typeof value !== "object" || Array.isArray(value)
         || typeof value.x !== "number" || typeof value.y !== "number"
         || !Number.isFinite(value.x) || !Number.isFinite(value.y)) {
-        throw new BrowserCommandError("INVALID_CLICK_POSITION", "Click position must contain finite numeric x and y", "click");
+        throw new BrowserCommandError(`INVALID_${pointer}_POSITION`, "Pointer position must contain finite numeric x and y", action);
       }
       position = {x: value.x, y: value.y};
     }
     const zoom = webview.getZoomFactor?.() ?? 1;
     const point = await executeElement(ref, `
       element.scrollIntoView({block:'center', inline:'center'});
-      element.focus?.();
+      ${action === "click" ? "element.focus?.();" : ""}
       const rect = element.getBoundingClientRect();
       const position = ${JSON.stringify(position)};
       // Playwright offsets start at the padding box, after the border; offsets
@@ -526,44 +548,35 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
         const hit = ${command.force === true} ? null : document.elementFromPoint(x, y);
         if (${command.force === true} || hit === element || element.contains(hit)) return {...geometry, x, y};
       }
-      return {...geometry, error: rect.width <= 0 || rect.height <= 0 ? 'INVALID_CLICK_GEOMETRY'
-        : visible ? 'CLICK_TARGET_BLOCKED' : 'CLICK_OUTSIDE_VIEWPORT'};
+      return {...geometry, error: rect.width <= 0 || rect.height <= 0 ? 'INVALID_${pointer}_GEOMETRY'
+        : visible ? '${pointer}_TARGET_BLOCKED' : '${pointer}_OUTSIDE_VIEWPORT'};
     `);
     const location = point as {x: number; y: number; width: number; height: number; viewportWidth: number; viewportHeight: number; error?: string} | null;
     if (location?.error) {
-      throw new BrowserCommandError(location.error, location.error === "CLICK_TARGET_BLOCKED"
-        ? "No inspected visible element fragment receives the click; uncover the target or inspect again (force skips the hit check)"
-        : "Element has no usable visible click point; inspect or scroll before retrying", "click");
+      throw new BrowserCommandError(location.error, location.error === `${pointer}_TARGET_BLOCKED`
+        ? "Another element covers the target. Uncover it or inspect again."
+        : "Element has no usable visible pointer position. Inspect or scroll before retrying.", action);
     }
     if (!location || ![location.x, location.y, location.width, location.height, location.viewportWidth, location.viewportHeight, zoom].every(Number.isFinite)
       || location.width <= 0 || location.height <= 0 || zoom <= 0) {
-      throw new BrowserCommandError("INVALID_CLICK_GEOMETRY", "Element has no usable click geometry", "click");
+      throw new BrowserCommandError(`INVALID_${pointer}_GEOMETRY`, "Element has no usable pointer geometry", action);
     }
-    if ((webview.getZoomFactor?.() ?? 1) !== zoom) throw new BrowserCommandError("VIEWPORT_CHANGED", "Browser zoom changed while locating the click; inspect again", "click");
+    if ((webview.getZoomFactor?.() ?? 1) !== zoom) throw new BrowserCommandError("VIEWPORT_CHANGED", "Browser zoom changed while locating the target", action);
     // Electron input uses widget coordinates; page zoom converts CSS pixels to
     // widget DIP. OS devicePixelRatio must not be applied a second time.
     const x = Math.round(location.x * zoom), y = Math.round(location.y * zoom);
     if (location.x < 0 || location.y < 0 || x < 0 || y < 0
       || x >= location.viewportWidth * zoom || y >= location.viewportHeight * zoom) {
-      throw new BrowserCommandError("CLICK_OUTSIDE_VIEWPORT", "Requested click point is outside the browser viewport; inspect or scroll before retrying", "click");
+      throw new BrowserCommandError(`${pointer}_OUTSIDE_VIEWPORT`, "Requested point is outside the browser viewport", action);
     }
+    await webview.sendInputEvent({type: "mouseMove", x, y});
+    valid();
+    if (action === "hover") return {ok: true, message: `hovered [${ref}]`, state: current()};
     const button = String(command.button || "left");
     const clickCount = Math.max(1, Number(command.click_count || command.count || 1));
-    await webview.sendInputEvent?.({type: "mouseMove", x, y});
-    await webview.sendInputEvent?.({type: "mouseDown", x, y, button, clickCount});
-    await webview.sendInputEvent?.({type: "mouseUp", x, y, button, clickCount});
+    await webview.sendInputEvent({type: "mouseDown", x, y, button, clickCount});
+    await webview.sendInputEvent({type: "mouseUp", x, y, button, clickCount});
     return {ok: true, message: `clicked [${ref}]`, state: current()};
-  }
-  if (action === "hover") {
-    const ref = targetRef(command.target || command.backend_ref, handle.epoch);
-    const point = await executeElement(ref, `
-      element.scrollIntoView({block:'center', inline:'center'});
-      const rect = element.getBoundingClientRect();
-      return {x: rect.left + rect.width / 2, y: rect.top + rect.height / 2};
-    `);
-    const location = point && typeof point === "object" ? point as {x?: number; y?: number} : {};
-    await webview.sendInputEvent?.({type: "mouseMove", x: Math.round(Number(location.x || 0)), y: Math.round(Number(location.y || 0))});
-    return {ok: true, message: `hovered [${ref}]`, state: current()};
   }
   if (action === "fill") {
     const ref = targetRef(command.target || command.backend_ref, handle.epoch);
@@ -574,7 +587,9 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
       const descriptor = Object.getOwnPropertyDescriptor(
         element.constructor?.['proto' + 'type'], 'value'
       );
-      if (descriptor?.set) descriptor.set.call(element, value); else element.value = value;
+      if (element.isContentEditable) element.textContent = value;
+      else if (descriptor?.set) descriptor.set.call(element, value);
+      else element.value = value;
       element.dispatchEvent(new Event('input', {bubbles:true}));
       element.dispatchEvent(new Event('change', {bubbles:true}));
       return true;
@@ -583,16 +598,22 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
   }
   if (action === "select") {
     const ref = targetRef(command.target || command.backend_ref, handle.epoch);
-    const values = Array.isArray(command.values) ? command.values.map(String) : [String(command.value || "")];
-    await executeElement(ref, `
+    const values = Array.isArray(command.values) ? command.values.map(String) : [String(command.values ?? command.value ?? "")];
+    const selected = await executeElement(ref, `
       const values = ${JSON.stringify(values)};
-      if (!(element instanceof HTMLSelectElement)) throw new Error('element is not a select');
-      for (const option of element.options) option.selected = values.includes(option.value) || values.includes(option.text);
+      if (!(element instanceof HTMLSelectElement) || element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true') return null;
+      const options = Array.from(element.options);
+      const chosen = new Set(values.map(value => options.find(option => option.value === value)
+        || options.find(option => option.label === value)));
+      if (chosen.has(undefined) || (!element.multiple && chosen.size > 1) || [...chosen].some(option => option.matches(':disabled'))) return null;
+      element.selectedIndex = -1;
+      for (const option of chosen) option.selected = true;
       element.dispatchEvent(new Event('input', {bubbles:true}));
       element.dispatchEvent(new Event('change', {bubbles:true}));
       return [...element.selectedOptions].map(option => option.value);
     `);
-    return {ok: true, message: `selected [${ref}]`, state: current()};
+    if (!Array.isArray(selected)) throw new BrowserCommandError("INVALID_SELECT_OPTION", "The select or requested options are unavailable", "select");
+    return {ok: true, value: selected, message: `selected [${ref}]`, state: current()};
   }
   if (action === "keys") {
     const input = keyboard!;
@@ -615,14 +636,14 @@ async function executeCommand(handle: BrowserHandle, command: Record<string, unk
       value = await execute(expression, true);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/could not be cloned|could not be serialized/i.test(message)) {
-        throw new Error(`${message}. Browser evaluate must return serializable data. Invoke function expressions, e.g. (() => document.title)(), and project DOM nodes to plain data. Page effects may already have occurred; inspect before retrying.`);
+      if (!(error instanceof BrowserCommandError) && /could not be cloned|could not be serialized/i.test(message)) {
+        throw new BrowserCommandError("EVALUATION_RESULT_UNSERIALIZABLE", "The result could not be cloned. Invoke function expressions and return plain data. Page effects may already have occurred. Inspect before retrying.", "evaluate");
       }
       throw error;
     }
     let projected: unknown;
     try { projected = value === undefined ? null : JSON.parse(JSON.stringify(value)); }
-    catch { projected = String(value); }
+    catch { throw new BrowserCommandError("EVALUATION_RESULT_UNSERIALIZABLE", "The page ran the expression, but its result could not be serialized as JSON. Return plain data and inspect any effects before retrying.", "evaluate"); }
     return {ok: true, value: projected, state: current()};
   }
   if (action === "drain_downloads") return {ok: true, downloads: [], state: current()};

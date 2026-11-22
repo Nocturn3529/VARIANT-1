@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from ..base import GatewayAdapter, MessageEnvelope
+from ..base import ChunkConfirmation, GatewayAdapter, MessageEnvelope
 from ..media import MAX_REMOTE_ATTACHMENTS, download_and_stage
 
 
@@ -244,21 +244,30 @@ class DiscordAdapter(GatewayAdapter):
         return attachments, notices
 
     async def send_text(self, envelope: MessageEnvelope, text: str) -> None:
+        await self.send_text_with_progress(envelope, text)
+
+    async def send_text_with_progress(
+        self, envelope: MessageEnvelope, text: str, *,
+        offset: int = 0, confirm: ChunkConfirmation | None = None,
+    ) -> None:
         token = await self.gateway.token(self.name)
         client = self.client or httpx.AsyncClient(trust_env=False, timeout=30)
         owned = client is not self.client
         try:
             # Discord caps ordinary bot messages at 2000 characters.
-            for start in range(0, len(text), 1900):
+            for start in range(offset, len(text), 1900):
+                end = min(start + 1900, len(text))
                 response = await client.post(
                     f"https://discord.com/api/v10/channels/{envelope.conversation_id}/messages",
                     headers={"Authorization": f"Bot {token}"},
-                    json={"content": text[start:start + 1900],
+                    json={"content": text[start:end],
                           "message_reference": {
                               "message_id": envelope.message_id,
                               "fail_if_not_exists": False,
                           }})
                 response.raise_for_status()
+                if confirm is not None:
+                    await confirm(start, end)
         finally:
             if owned:
                 await client.aclose()

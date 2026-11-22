@@ -7,7 +7,9 @@ import {KernelGlyph} from "../motion/KernelGlyph";
  * Virtualized transcript and safe Markdown rendering for the Chat destination.
  */
 import {
+  lazy,
   memo,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -15,6 +17,7 @@ import {
   useRef,
   useState,
 } from "react";
+import {useHistoryMatch} from "../state/sessionStore";
 import {
   notifyChat,
   speechKeyFor,
@@ -28,6 +31,7 @@ import {
 import runtimeLib from "./runtimeLib";
 import {RichText} from "./RichText";
 import {TurnActivity} from "./TurnActivity";
+import {RunResults} from "./RunResults";
 import {currentTraceStep} from "./traceModel";
 import {liveActivitySegments} from "./transcriptTimeline";
 import {getTurnSnapshot} from "../state/turnStore";
@@ -40,6 +44,7 @@ import {
 const DEFAULT_TURN_HEIGHT = 180;
 const OVERSCAN = 8;
 const NEAR_BOTTOM_PX = 80;
+const HistoryMatchNavigation = lazy(() => import("../deferred/destinations").then(module=>({default:module.HistoryMatchNavigation})));
 
 type IndexedMessage = {
   message: ChatMessage;
@@ -241,9 +246,15 @@ function MessageArticle({
   speechPhase: SpeechPhase;
   latest?: boolean;
 }) {
-  if(message.origin)return <PeerTranscriptMessage message={{...message,origin:message.origin}}/>;
+  if(message.origin)return <PeerTranscriptMessage message={{...message,origin:message.origin}} index={index}/>;
+  const excerpt = message.historyExcerpt;
+  const excerptLabel = excerpt ? <small className="history-excerpt">Excerpt · characters {excerpt.start+1}–{excerpt.end} of {excerpt.total}</small> : null;
+  if (message.historyPeer) return <article className="message message--peer" data-message-index={index} aria-label="Peer message">
+    <div className="peer-chat"><header><Icon name="peers"/><span>Peer message</span></header>
+      <div className="peer-chat__bubble">{excerptLabel}<p>{message.text}</p></div></div>
+  </article>;
   // The full continuation prompt is model-only; the transcript marks where it ran.
-  if(message.role==="user" && message.goalOrigin?.event==="continuation") return <article className="message message--goal-turn" aria-label="Goal continuation">
+  if(message.role==="user" && message.goalOrigin?.event==="continuation") return <article className="message message--goal-turn" data-message-index={index} aria-label="Goal continuation">
     <p className="message__goal-turn"><Icon name="goal"/>Continuing goal<time>{formatTime(message.ts)}</time></p>
   </article>;
   const role = message.role === "user" ? "user" : "assistant";
@@ -256,16 +267,18 @@ function MessageArticle({
   const outcome = isUser || streaming ? undefined
     : message.outcome || (/^Model error:/.test(text) ? "error" : STOPPED_ONLY.test(text.trim()) ? "stopped" : undefined);
   if (outcome === "stopped" && STOPPED_ONLY.test(text.trim())) {
-    return <article className="message message--assistant message--status" aria-label="VARIANT-1">
+    return <article className="message message--assistant message--status" data-message-index={index} aria-label="VARIANT-1">
       <p className="message__status" role="status"><Icon name="stop"/>Task stopped</p>
     </article>;
   }
 
   return <article
+    data-message-index={index}
     className={`message message--${isUser ? "user" : "assistant"}${streaming ? " runtime-streaming" : ""}${outcome === "error" ? " is-error" : ""}`}
     aria-label={isUser ? "You" : "VARIANT-1"}
   >
     <div className="message__body">
+      {excerptLabel}
       {isUser ? <>
         <div className="message__prompt">
           <AttachmentStrip items={message.attachments} references={message.references} />
@@ -290,6 +303,7 @@ function MessageArticle({
           <RichText value={text} streaming={streaming} />
         </div>
         {message.goalEvent ? <p className="message__goal-achieved" role="status"><Icon name="check"/>Goal achieved in {formatGoalDuration(message.goalEvent.time_used_s)}</p> : null}
+        {!streaming && message.runId && message.steps?.length ? <RunResults steps={message.steps}/> : null}
         {!streaming ? <div className={`message-actions runtime-message-actions${latest ? " is-latest" : ""}`}>
           {message.durability === "failed" ? (
             <span role="status" title="This reply was not committed to chat history">Not saved</span>
@@ -304,7 +318,7 @@ function MessageArticle({
           >
             {playLabel(phase, speechActive)}
           </button>
-          <CopyButton text={message.text || ""} title="Copy response"/>
+          <CopyButton text={message.text || ""} title={message.historyExcerpt ? "Copy shown excerpt" : "Copy response"}/>
         </div> : null}
       </>}
     </div>
@@ -391,9 +405,13 @@ const ChatTurnGroup = memo(function ChatTurnGroup({
 
 export function ChatMessageList() {
   const {
-    messages, streaming, streamText, turnActive, speechKey, speechPhase, turnSteps,
-    lastError, activeTurnId, runtime, sessionId, connected, inputQueue,
+    messages:liveMessages, streaming:liveStreaming, streamText, turnActive:liveTurnActive, speechKey, speechPhase, turnSteps,
+    lastError:liveError, activeTurnId, runtime, sessionId, connected, inputQueue,
   } = useChatState();
+  const match = useHistoryMatch();
+  const historyWindow = match?.hit.id === sessionId ? match.window : undefined;
+  const messages = historyWindow?.messages ?? liveMessages;
+  const streaming = !historyWindow && liveStreaming, turnActive = !historyWindow && liveTurnActive, lastError = historyWindow ? "" : liveError;
   // Another agent's message waits in this chat's queue until the current
   // task ends. Show it where it will land instead of only as a queue count.
   const waitingPeers = useMemo(() => (inputQueue.snapshot?.items || []).filter(item => item.origin), [inputQueue.snapshot]);
@@ -451,8 +469,9 @@ export function ChatMessageList() {
   const columnRef = useRef<HTMLDivElement | null>(null);
   const heightsRef = useRef<number[]>([]);
   const stickToBottomRef = useRef(true);
-  const turnWasActiveRef = useRef(streaming || turnActive);
-  const announceWasActiveRef = useRef(streaming || turnActive);
+  const turnWasActiveRef = useRef(liveStreaming || liveTurnActive);
+  const announceWasActiveRef = useRef(liveStreaming || liveTurnActive);
+  const previousHistoryWindow = useRef(historyWindow);
   const lastStreamingTextRef = useRef("");
   const assistantCountAtTurnStartRef = useRef(
     messages.filter(item => item.role === "assistant").length,
@@ -518,6 +537,23 @@ export function ChatMessageList() {
       );
   }, []);
 
+  const revealMatch = useCallback((messageIndex: number) => {
+    const turnIndex = transcriptTurns.findIndex(turn =>
+      turn.users.some(row=>row.index===messageIndex) || turn.assistants.some(row=>row.index===messageIndex));
+    if (turnIndex < 0 || !scrollRef.current) return;
+    stickToBottomRef.current = false;
+    scrollRef.current.scrollTo({top:turnTop(turnIndex),behavior:"instant"});
+    recompute(false);
+  }, [transcriptTurns,turnTop,recompute]);
+
+  useLayoutEffect(()=>{
+    if (previousHistoryWindow.current === historyWindow) return;
+    previousHistoryWindow.current = historyWindow;
+    heightsRef.current = [];
+    stickToBottomRef.current = !historyWindow && !match;
+    recompute(stickToBottomRef.current);
+  }, [historyWindow,match,recompute]);
+
   useLayoutEffect(() => {
     recompute(stickToBottomRef.current);
   }, [turns, scrollVersion, recompute]);
@@ -572,35 +608,35 @@ export function ChatMessageList() {
   // A new turn starts at the tail. After that, scroll events own stickiness:
   // token/step churn must not drag a reader back down after they scroll up.
   useEffect(() => {
-    const active = streaming || turnActive;
-    if (active && !turnWasActiveRef.current) {
+    const active = liveStreaming || liveTurnActive;
+    if (active && !turnWasActiveRef.current && !match) {
       stickToBottomRef.current = true;
       setScrollVersion(version => version + 1);
     }
     turnWasActiveRef.current = active;
-  }, [streaming, turnActive]);
+  }, [liveStreaming, liveTurnActive, match]);
 
   // Announce one durable completion instead of sending every streaming token
   // through a live region. The ref preserves the final partial text when the
   // backend clears streamText in the same update that closes the turn.
   useEffect(() => {
-    const active = streaming || turnActive;
-    if (streaming && streamText.trim()) lastStreamingTextRef.current = streamText;
+    const active = liveStreaming || liveTurnActive;
+    if (liveStreaming && streamText.trim()) lastStreamingTextRef.current = streamText;
     if (active && !announceWasActiveRef.current) {
-      assistantCountAtTurnStartRef.current = messages.filter(item => item.role === "assistant").length;
+      assistantCountAtTurnStartRef.current = liveMessages.filter(item => item.role === "assistant").length;
       setCompletedAnnouncement("");
     }
     if (!active && announceWasActiveRef.current) {
-      const assistants = messages.filter(item => item.role === "assistant" && item.text);
+      const assistants = liveMessages.filter(item => item.role === "assistant" && item.text);
       const latest = assistants.length > assistantCountAtTurnStartRef.current
         ? assistants[assistants.length - 1]
         : null;
       const text = String(latest?.text || lastStreamingTextRef.current || "").trim();
-      setCompletedAnnouncement(lastError ? "" : (text ? `VARIANT-1 replied: ${text}` : "VARIANT-1 finished responding."));
+      setCompletedAnnouncement(liveError ? "" : (text ? `VARIANT-1 replied: ${text}` : "VARIANT-1 finished responding."));
       lastStreamingTextRef.current = "";
     }
     announceWasActiveRef.current = active;
-  }, [messages, streaming, streamText, turnActive, lastError]);
+  }, [liveMessages, liveStreaming, streamText, liveTurnActive, liveError]);
 
   const slice = useMemo(
     () => turns.slice(windowRange.start, windowRange.end),
@@ -650,6 +686,8 @@ export function ChatMessageList() {
   }, [messages, recompute, userTurnIndexes]);
 
   return <div className="messages-frame">
+  {match && match.hit.id === sessionId ? <Suspense fallback={null}><HistoryMatchNavigation match={match} messages={messages}
+    viewport={scrollRef} reveal={revealMatch}/></Suspense> : null}
   <div
     className="chat-completion-announcement"
     role="status"
@@ -695,7 +733,7 @@ export function ChatMessageList() {
           style={{height: Math.max(0, Math.round(windowRange.bottomPad))}}
         />
       </>}
-      {waitingPeers.length ? <div className="chat-waiting-peers">{waitingPeers.map(item => <PeerTranscriptMessage key={item.ticket_id}
+      {!historyWindow && waitingPeers.length ? <div className="chat-waiting-peers">{waitingPeers.map(item => <PeerTranscriptMessage key={item.ticket_id}
         message={{role: "user", text: "", origin: {kind: "peer", peer_id: item.origin!.peer_id, message_id: item.origin!.message_id},
           ...(item.origin!.content !== undefined ? {peerDisplay: {display_name: item.origin!.display_name, content: item.origin!.content}} : {})}}
         displayName={item.origin!.display_name}

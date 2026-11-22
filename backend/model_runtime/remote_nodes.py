@@ -30,6 +30,12 @@ def _node_id(value: str = "") -> str:
     return (clean[:50] or "node") + "-" + uuid.uuid4().hex[:8]
 
 
+def node_request_headers(node: dict) -> dict:
+    env = str(node.get("api_key_env") or "")
+    token = os.getenv(env, "").strip() if env else ""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
 class RemoteNodeManager:
     """Saved local/LAN controllers with optional lifecycle delegation."""
 
@@ -97,11 +103,6 @@ class RemoteNodeManager:
             self._event("info", "Remote inference node removed", {"node_id": node_id})
         return changed
 
-    def _headers(self, node: dict) -> dict:
-        env = str(node.get("api_key_env") or "")
-        token = str(os.getenv(env) or "") if env else ""
-        return {"Authorization": f"Bearer {token}"} if token else {}
-
     async def probe(self, node_id: str) -> dict:
         node = self.get(node_id)
         if not node:
@@ -122,7 +123,7 @@ class RemoteNodeManager:
             "checked_at": time.time(),
             "error": "",
         }
-        headers = self._headers(node)
+        headers = node_request_headers(node)
         try:
             async with httpx.AsyncClient(timeout=5.0, trust_env=False, headers=headers) as client:
                 models_response = await client.get(f"{node['base_url']}/v1/models")
@@ -168,26 +169,33 @@ class RemoteNodeManager:
         node = self.get(node_id)
         if not node:
             raise ValueError("remote inference node not found")
+        return await self.launch_node(node, remote_recipe_id)
+
+    async def launch_node(self, node: dict, remote_recipe_id: str) -> dict:
         if not remote_recipe_id:
             raise ValueError("remote recipe ID is required")
         management = node.get("management_url") or node["base_url"]
-        async with httpx.AsyncClient(timeout=30.0, trust_env=False, headers=self._headers(node)) as client:
+        async with httpx.AsyncClient(timeout=30.0, trust_env=False, headers=node_request_headers(node)) as client:
             response = await client.post(f"{management}/launch/{remote_recipe_id}")
         if response.status_code >= 300:
             raise RuntimeError(f"remote launch failed ({response.status_code}): {response.text[:300]}")
-        self._event("info", f"Remote recipe launch requested on {node.get('name')}", {"node_id": node_id, "recipe_id": remote_recipe_id})
+        self._event("info", f"Remote recipe launch requested on {node.get('name')}", {"node_id": node["id"], "recipe_id": remote_recipe_id})
         return {"ok": True, "status_code": response.status_code}
 
     async def evict(self, node_id: str) -> dict:
         node = self.get(node_id)
         if not node:
             raise ValueError("remote inference node not found")
+        return await self.evict_node(node)
+
+    async def evict_node(self, node: dict) -> dict:
+        """Retire the controller that accepted the launch, even if its Settings entry changed."""
         management = node.get("management_url") or node["base_url"]
-        async with httpx.AsyncClient(timeout=20.0, trust_env=False, headers=self._headers(node)) as client:
+        async with httpx.AsyncClient(timeout=20.0, trust_env=False, headers=node_request_headers(node)) as client:
             response = await client.post(f"{management}/evict")
         if response.status_code >= 300:
             raise RuntimeError(f"remote eviction failed ({response.status_code}): {response.text[:300]}")
-        self._event("info", f"Remote runtime evicted on {node.get('name')}", {"node_id": node_id})
+        self._event("info", f"Remote runtime evicted on {node.get('name')}", {"node_id": node["id"]})
         return {"ok": True, "status_code": response.status_code}
 
     def _event(self, level: str, message: str, metadata: dict | None = None) -> None:
@@ -195,4 +203,4 @@ class RemoteNodeManager:
             self.event_sink("remote", level, message, metadata)
 
 
-__all__ = ["RemoteNodeManager"]
+__all__ = ["RemoteNodeManager", "node_request_headers"]

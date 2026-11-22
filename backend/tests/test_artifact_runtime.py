@@ -1,18 +1,22 @@
 from __future__ import annotations
 
 import os
+import csv
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from artifacts import (
+    ArtifactRuntimeConflict,
     ArtifactRuntimeNotFound,
     ArtifactRuntimeValidationError,
     ContentAddressedArtifactStore,
     create_artifact_runtime,
 )
 from artifacts.capabilities import register_artifact_tools
+from artifacts.builders import build_artifact
 from capability_broker import CapabilityBroker, InvocationContext
 from tools import ToolRegistry
 from tests.support.astb_runtime import StaticRuntimeRegistry
@@ -40,6 +44,16 @@ def _spec(title: str = "Capability report") -> dict:
     }
 
 
+def test_text_exports_keep_zero_and_false_values():
+    values = [0, False, None]
+    csv_bytes = build_artifact({"rows": [values]}, "csv").payload
+    assert list(csv.reader(csv_bytes.decode("utf-8-sig").splitlines())) == [["0", "False", ""]]
+    markdown = build_artifact({
+        "blocks": [{"type": "table", "rows": [["Count", "Enabled", "Note"], values]}],
+    }, "md").payload.decode("utf-8")
+    assert "| 0 | False |  |" in markdown
+
+
 def test_validation_is_bound_to_current_render_after_builder_upgrade(tmp_path, monkeypatch):
     import artifacts.runtime_service as service
     _work, cas, runtime = _runtime(tmp_path)
@@ -54,7 +68,6 @@ def test_validation_is_bound_to_current_render_after_builder_upgrade(tmp_path, m
     assert first.render_id != second.render_id
     assert first.validation_id != second.validation_id
     assert runtime.validate(identity, "pdf").validation_id == second.validation_id
-    import json
     assert json.loads(cas.read_bytes(second.report_ref))["render_id"] == second.render_id
 
 
@@ -74,7 +87,8 @@ async def test_cancel_during_last_render_leaves_public_alias_and_no_success(tmp_
         release.wait(5)
         return result
     monkeypatch.setattr(runtime, "render", render)
-    job = runtime.publish(new.artifact.artifact_id, "pdf", alias="latest", expected_alias_version=1, validate=False)
+    job = runtime.publish(new.artifact.artifact_id, "pdf", alias="latest", expected_alias_version=1,
+                          validate=False, require_valid=False)
     await work.start()
     try:
         assert await asyncio.to_thread(entered.wait, 3)
@@ -101,7 +115,8 @@ async def test_publication_manifest_failure_rolls_back_alias(tmp_path, monkeypat
             raise OSError("injected publication failure")
         return original(value, **kwargs)
     monkeypatch.setattr(cas, "put_json", put)
-    job = runtime.publish(new.artifact.artifact_id, "pdf", alias="latest", expected_alias_version=1, validate=False)
+    job = runtime.publish(new.artifact.artifact_id, "pdf", alias="latest", expected_alias_version=1,
+                          validate=False, require_valid=False)
     await work.start()
     try:
         terminal = await work.jobs.wait(job.job_id, timeout_s=5)
@@ -214,6 +229,39 @@ async def test_require_valid_rejection_cannot_move_public_alias(tmp_path):
     assert resolved.revision.revision == 1
 
 
+@pytest.mark.asyncio
+async def test_skipped_validation_cannot_satisfy_a_required_publication(tmp_path):
+    work, cas, runtime = _runtime(tmp_path)
+    scope = {"chat_id": "skip-check"}
+    original = runtime.create(title="Existing", kind="report", specification=_spec(), scope=scope, alias="public")
+    invalid = runtime.create(title="Invalid", kind="report", scope=scope, specification={
+        "blocks": [{"type": "paragraph", "text": "Missing citation {{cite:unknown}}"}],
+    })
+    identity = invalid.artifact.artifact_id
+    assert runtime.validate(identity, "pdf").status == "failed"
+    with pytest.raises(ArtifactRuntimeValidationError, match="require_valid needs validate=true"):
+        runtime.publish(identity, "pdf", validate=False, alias="public", expected_alias_version=1)
+
+    unchecked = runtime.publish(identity, "pdf", validate=False, require_valid=False)
+    legacy = work.jobs.create(
+        unchecked.kind, owner_kind=unchecked.owner_kind, owner_id=unchecked.owner_id, scope=unchecked.scope,
+        input_manifest={**unchecked.input_manifest, "require_valid": True, "alias": "public",
+                        "expected_alias_version": 1},
+    )
+    await work.start()
+    try:
+        completed = await work.jobs.wait(unchecked.job_id, timeout_s=10)
+        failed = await work.jobs.wait(legacy.job_id, timeout_s=10)
+    finally:
+        await work.shutdown()
+
+    assert failed.status == "failed" and not failed.result_ref
+    assert completed.status == "succeeded" and completed.progress["valid"] is None
+    manifest = json.loads(cas.read_bytes(completed.result_ref))
+    assert manifest["valid"] is None and manifest["validations"] == []
+    assert runtime.resolve_alias("public", scope=scope).artifact.artifact_id == original.artifact.artifact_id
+
+
 def test_unresolved_citation_placeholder_fails_validation(tmp_path):
     _work, _cas, runtime = _runtime(tmp_path)
     created = runtime.create(
@@ -301,6 +349,17 @@ def test_create_and_revise_retry_by_idempotency_key_return_same_identity(tmp_pat
         idempotency_key="revise-1",
     )
     assert retried.revision.revision == revised.revision.revision == 2
+    creation_retry = runtime.create(
+        title="Idempotent", kind="document", specification=_spec(),
+        scope={"chat_id": "chat-idempotent"}, idempotency_key="create-1",
+    )
+    assert creation_retry.artifact.artifact_id == first.artifact.artifact_id
+    assert creation_retry.revision == revised.revision
+    with pytest.raises(ArtifactRuntimeConflict, match="artifact identity already exists"):
+        runtime.create(
+            title="Idempotent", kind="document", specification=_spec("Next"),
+            scope={"chat_id": "chat-idempotent"}, idempotency_key="create-1",
+        )
 
 
 def test_artifact_scope_is_applied_before_order_and_limit(tmp_path):
@@ -369,7 +428,10 @@ def test_create_retry_reconciles_alias_after_interrupted_assignment(
             scope={"chat_id": "chat-alias-retry"},
             alias="public", idempotency_key="create-alias-retry",
         )
-    assert len(runtime.list(scope={"chat_id": "chat-alias-retry"})) == 1
+    created, = runtime.list(scope={"chat_id": "chat-alias-retry"})
+    revised = runtime.revise(
+        created.artifact.artifact_id, _spec("A later edit"), expected_version=created.artifact.version,
+    )
 
     monkeypatch.setattr(runtime, "_reconcile_create_alias", original)
     replay = runtime.create(
@@ -382,6 +444,16 @@ def test_create_retry_reconciles_alias_after_interrupted_assignment(
     )
     assert calls == 1
     assert resolved.artifact.artifact_id == replay.artifact.artifact_id
+    assert resolved.revision.revision == 1
+    assert replay.revision == revised.revision
+
+    runtime.set_alias(replay.artifact.artifact_id, "public", revision=2,
+                      expected_version=replay.artifact.version, expected_alias_version=1)
+    runtime.create(
+        title="Retry alias", kind="document", specification=_spec(),
+        scope={"chat_id": "chat-alias-retry"}, alias="public", idempotency_key="create-alias-retry",
+    )
+    assert runtime.resolve_alias("public", scope={"chat_id": "chat-alias-retry"}).revision.revision == 2
 
 
 @pytest.mark.asyncio

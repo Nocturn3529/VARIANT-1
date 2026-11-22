@@ -40,7 +40,7 @@ _TERMINAL_METHODS = [
     _method("inspect", "Return the durable terminal descriptor."),
     _method("read", "Read bounded terminal output after a cursor.", _READ_PARAMS),
     _method("write", "Queue raw terminal input; use carriage return for Enter on Windows. Inspect input_writes for delivery or backpressure.", ({"name": "data", "type": "str", "required": True},)),
-    _method("resize", "Resize the terminal; retain the returned replacement handle for later effects.", (
+    _method("resize", "Resize the terminal. Retain the returned handle. Its metadata.resize_receipt reports support and the previous, requested, and effective sizes.", (
         {"name": "cols", "type": "int", "required": True},
         {"name": "rows", "type": "int", "required": True},
     )),
@@ -93,7 +93,10 @@ def execution_handle_envelope(
     host: Any,
     context: InvocationContext,
     record: TerminalRecord | ProcessRecord,
-    *, signal_receipt: dict[str, Any] | None = None,
+    *,
+    signal_receipt: dict[str, Any] | None = None,
+    resize_receipt: dict[str, Any] | None = None,
+    stop_receipt: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the reconstructable IPython handle returned by ``run_command``."""
     if isinstance(record, TerminalRecord):
@@ -101,6 +104,8 @@ def execution_handle_envelope(
             "state": record.state,
             "profile": record.profile,
             "cwd": record.cwd,
+            "cols": record.cols,
+            "rows": record.rows,
             "transport": record.transport,
             "true_pty": bool(record.capabilities.get("true_pty")),
             "output_cursor": int(record.output_cursor),
@@ -135,6 +140,10 @@ def execution_handle_envelope(
         metadata["input_writes"] = status(identity)
     if signal_receipt is not None:
         metadata["signal_receipt"] = dict(signal_receipt)
+    if resize_receipt is not None:
+        metadata["resize_receipt"] = dict(resize_receipt)
+    if stop_receipt:
+        metadata["stop_receipt"] = dict(stop_receipt)
     return remote_handle_envelope(
         service="execution",
         kind=kind,
@@ -212,13 +221,13 @@ async def _handle_router(
                 host, context, runtime.terminals.get(record.terminal_id)
             )
         if method == "resize":
-            runtime.terminals.resize(
+            receipt = runtime.terminals.resize(
                 record.terminal_id,
                 cols=int(arguments.get("cols") or record.cols),
                 rows=int(arguments.get("rows") or record.rows),
             )
             return execution_handle_envelope(
-                host, context, runtime.terminals.get(record.terminal_id)
+                host, context, runtime.terminals.get(record.terminal_id), resize_receipt=receipt,
             )
         if method == "signal":
             receipt = runtime.terminals.signal(
@@ -290,10 +299,11 @@ async def _handle_router(
                 host, context, runtime.processes.get(record.process_id), signal_receipt=receipt,
             )
         if method == "stop":
+            stop_receipt = {}
             updated = await runtime.stop_process(
-                record.process_id, force=bool(arguments.get("force", True)),
+                record.process_id, force=bool(arguments.get("force", True)), stop_receipt=stop_receipt,
             )
-            return execution_handle_envelope(host, context, updated)
+            return execution_handle_envelope(host, context, updated, stop_receipt=stop_receipt)
         raise ToolError(f"unsupported execution.process method: {method}")
     raise ToolError("execution handle kind is unsupported")
 

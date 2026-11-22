@@ -1,5 +1,6 @@
 """Structured, generation-bound child reports; execution status is separate."""
 from __future__ import annotations
+from contextlib import closing
 import json
 import time
 from tools import ToolError
@@ -19,6 +20,13 @@ REPORT_OUTCOME_METHOD = {
 }
 
 class ChildOutcomes:
+    def is_running_child(self, chat_id: str, *, parent_chat_id: str) -> bool:
+        with closing(self._connect()) as conn:
+            return conn.execute(
+                "SELECT 1 FROM astb_child_handle WHERE child_chat_id=? AND parent_chat_id=? AND status='running'",
+                (chat_id, parent_chat_id),
+            ).fetchone() is not None
+
     def bind_outcome_run(self,child_id,generation,run_id):
         """Called by the native worker action boundary, not by the model."""
         revision = None

@@ -145,6 +145,10 @@ async function run() {
     d.updater.calls.length = 0;
     return d;
   };
+  t = await downloaded({prepareInstall: async () => false});
+  assert.deepStrictEqual(await t.svc.install(), {ok: false, reason: 'cancelled'});
+  assert.deepStrictEqual(t.updater.calls, []);
+  assert.deepStrictEqual(t.order, [], 'keeping an editor open leaves the running app and backend alone');
   t = await downloaded({prepareInstall: async () => { throw new Error('the backend is still running (process 4242)'); }});
   let result = await t.svc.install();
   assert.deepStrictEqual(result, {ok: false, reason: 'prepare_failed',

@@ -255,7 +255,7 @@ def validate_worker_model_route(router: Any, route: dict) -> None:
         return
     wanted = str(route.get("model") or "")
     loaded = str(getattr(router, "model_name", "") or "")
-    if wanted and loaded and wanted != loaded:
+    if wanted and wanted != loaded:
         raise ValueError(f"Worker requires local model {wanted!r}; loaded model is {loaded!r}")
 
 

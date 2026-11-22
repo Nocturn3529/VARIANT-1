@@ -18,7 +18,6 @@ from typing import Any, Callable, Mapping, Sequence
 from core_invariants import cancellation_is_requested
 from .local import StructuredChildProcess, inherited_environment, spawn_terminal
 from .models import (
-    ACTIVE_PROCESS_STATES,
     ACTIVE_TERMINAL_STATES,
     BoundedProcessResult,
     ExecutionNotFound,
@@ -385,14 +384,14 @@ class TerminalService:
                     f"terminal {terminal_id} is not controllable (state={record.state})")
             # Fitting a newly attached view often repeats the current geometry.
             # ConPTY would redraw the TUI even though nothing changed.
-            if (record.capabilities.get("resize")
-                    and (record.cols, record.rows) == (width, height)):
-                return {"terminal_id": terminal_id, "supported": True,
-                        "cols": width, "rows": height}
-            supported = bool(runtime.resize(width, height))
-            if supported:
+            same_size = (record.cols, record.rows) == (width, height)
+            supported = bool(
+                (record.capabilities.get("resize") and same_size)
+                or runtime.resize(width, height)
+            )
+            if supported and not same_size:
                 self.repository.resize_terminal(terminal_id, cols=width, rows=height)
-            else:
+            elif not supported:
                 self.repository.record_action(
                     "terminal", terminal_id, "terminal.resize_unsupported",
                     {"cols": width, "rows": height, "transport": runtime.transport},
@@ -400,6 +399,9 @@ class TerminalService:
         return {
             "terminal_id": terminal_id, "supported": supported,
             "cols": width, "rows": height,
+            "previous_cols": record.cols, "previous_rows": record.rows,
+            "effective_cols": width if supported else record.cols,
+            "effective_rows": height if supported else record.rows,
         }
 
     def signal(self, terminal_id: str, name: str = "interrupt") -> dict[str, Any]:
@@ -1031,7 +1033,7 @@ class ProcessService:
         started = time.perf_counter()
         try:
             if kind == "process":
-                ok = record.state in ACTIVE_PROCESS_STATES
+                ok = record.state in {"running", "healthy"}
                 detail: dict[str, Any] = {"kind": kind}
             elif kind == "http":
                 url = str(check.get("url") or "").strip()
@@ -1089,43 +1091,37 @@ class ProcessService:
         interval = max(0.02, min(float(poll_interval_s), 5.0))
         while True:
             record = self.repository.get_process(process_id)
-            if wanted == "exit" and not record.live:
+            if not record.live:
                 return record
-            if wanted == "running" and record.live:
+            if wanted == "running" and record.state in {"running", "healthy"}:
                 return record
             if wanted == "healthy":
                 if record.state == "healthy":
                     return record
-                if not record.live:
-                    return record
-                ok, health = self._check_health(record)
-                if ok:
+                if record.state == "running":
+                    ok, health = self._check_health(record)
                     with self._lock:
                         current = self.repository.get_process(process_id)
-                        if current.live and current.state != "healthy":
+                        same_attempt = (
+                            current.attempt == record.attempt and current.pid == record.pid
+                            and current.pid_started_at == record.pid_started_at
+                            and current.backend_instance_id == record.backend_instance_id
+                        )
+                        if same_attempt and current.state == "running":
                             record = self.repository.transition_process(
-                                process_id, "healthy", exit_code=current.exit_code,
+                                process_id, "healthy" if ok else "running", exit_code=current.exit_code,
                                 health={**current.health, **health},
-                                event_type="process.healthy",
+                                event_type="process.healthy" if ok else "process.health_checked",
                             )
                         else:
                             record = current
-                    return record
-                # Persist bounded latest health evidence without treating every
-                # poll as a process attempt.
-                with self._lock:
-                    current = self.repository.get_process(process_id)
-                    if current.live:
-                        record = self.repository.transition_process(
-                            process_id, current.state, exit_code=current.exit_code,
-                            health={**current.health, **health},
-                            event_type="process.health_checked",
-                        )
+                    if record.state == "healthy" or not record.live:
+                        return record
             if time.monotonic() >= deadline:
                 return record
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
 
-    def stop(self, process_id: str, *, force: bool = True) -> ProcessRecord:
+    def stop(self, process_id: str, *, force: bool = True, stop_receipt: dict | None = None) -> ProcessRecord:
         _close_input(self, process_id)
         with self._lock:
             pending = self._pending.get(process_id)
@@ -1140,6 +1136,11 @@ class ProcessService:
             runtime = self._live.get(process_id)
             record = self.repository.get_process(process_id)
             if not record.live:
+                if stop_receipt is not None:
+                    stop_receipt["outcome"] = (
+                        "already_exited" if pending is None and record.state in {"exited", "terminated"}
+                        and record.exit_code is not None else "state_observed"
+                    )
                 return record
             if runtime is None:
                 self.repository.transition_process(
@@ -1155,6 +1156,8 @@ class ProcessService:
                 raise ExecutionUnavailable(
                     f"process {process_id} remained live without a controllable runtime"
                 )
+            new_request = (pending is None and not self._closing and process_id not in self._stop_requested
+                           and record.state in {"running", "healthy"})
             self._stop_requested.add(process_id)
             record = self.repository.transition_process(
                 process_id, "terminating", event_type="process.termination_requested",
@@ -1167,6 +1170,11 @@ class ProcessService:
             raise ExecutionUnavailable(
                 f"process {process_id} remained live after forced termination"
             )
+        if stop_receipt is not None:
+            # Even a newly requested termination can race a natural exit.
+            observed = (new_request and settled.state == "terminated" and settled.exit_code is not None
+                        and settled.attempt == record.attempt and settled.pid == record.pid)
+            stop_receipt["outcome"] = "exit_after_stop_request" if observed else "state_observed"
         return settled
 
     def shutdown(self, *, terminate_live: bool = True) -> None:
@@ -1311,13 +1319,14 @@ class ExecutionRuntime:
         return result
 
     async def stop_process(
-        self, process_id: str, *, force: bool = True,
+        self, process_id: str, *, force: bool = True, stop_receipt: dict | None = None,
     ) -> ProcessRecord:
         record, cancellation = await self._settle_thread_call(
             f"execution-process-stop:{process_id}",
             self.processes.stop,
             process_id,
             force=force,
+            **({"stop_receipt": stop_receipt} if stop_receipt is not None else {}),
         )
         if cancellation is not None:
             raise cancellation

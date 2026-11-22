@@ -44,6 +44,30 @@ def test_connection_session_does_not_own_a_second_active_input_queue():
 
 
 @pytest.mark.asyncio
+async def test_inventory_stop_before_turn_entry_releases_only_its_admission(tmp_path):
+    from host_chat_service import launch_reserved_chat_turn
+    run = AsyncMock()
+    server, registry, _repo, session, sid = _chat_stack(tmp_path, run)
+    socket = AsyncMock()
+    registry.attach(sid, session.attachment_id, session, socket)
+    admission = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    task = launch_reserved_chat_turn(server, run, socket, "work", session, runtime_admission_id=admission)
+    idle = []
+    registry.register_idle_listener(lambda chat: idle.append((chat, session.busy, registry.active_admission(chat))))
+    await ws_dispatch.HANDLERS["chat:runtime:action"](server, socket, session,
+        {"id": sid, "action": "stop_cell"})
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
+    run.assert_not_awaited()
+    assert idle == [(sid, False, "")] and not registry.is_busy(sid)
+    successor = registry.try_reserve_run(sid, attachment_id=session.attachment_id)
+    assert successor and successor != admission
+    registry.finish_run(admission, status="late_callback")
+    assert registry.active_admission(sid) == successor
+    registry.finish_run(successor, status="done")
+
+
+@pytest.mark.asyncio
 async def test_continue_parked_ticket_uses_normal_turn_and_commits_identity_once(tmp_path):
     from chat_finalize import persist_unfinalized_turn
     from chat_stream import stream_meta

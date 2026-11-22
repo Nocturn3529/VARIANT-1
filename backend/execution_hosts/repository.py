@@ -752,7 +752,10 @@ class ExecutionRepository:
             self._event(
                 conn, entity_kind="terminal", entity_id=terminal_id,
                 event_type="terminal.resized", revision=revision,
-                payload={"cols": int(cols), "rows": int(rows)}, at=now,
+                payload={
+                    "previous_cols": terminal.cols, "previous_rows": terminal.rows,
+                    "cols": int(cols), "rows": int(rows),
+                }, at=now,
             )
         return self.get_terminal(terminal_id)
 

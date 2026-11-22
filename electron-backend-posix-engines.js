@@ -1,6 +1,7 @@
 'use strict';
 
-const {execFileSync} = require('child_process');
+const {execFile} = require('child_process');
+const {promisify} = require('node:util');
 const fs = require('fs');
 const path = require('path');
 
@@ -17,35 +18,33 @@ const POSIX_ENGINE_NAMES = Object.freeze(['llama-server', 'whisper-server']);
  * @param {number|string} pid
  * @param {string} [_command] retained for call-site compatibility; ignored
  * @param {readonly string[]} [names]
- * @param {{ platform?: string, readlinkSync?: Function, resolveDarwinExe?: Function, execFileSync?: Function }} [deps]
+ * @param {{ platform?: string, readlink?: Function, runFile?: Function }} [deps]
  */
-function resolvePosixEngineExecutable(
+async function resolvePosixEngineExecutable(
   pid,
   _command,
   names = POSIX_ENGINE_NAMES,
   deps = {},
 ) {
   const cleanPid = Number(pid);
-  if (!Number.isFinite(cleanPid) || cleanPid <= 1) return '';
+  if (!Number.isSafeInteger(cleanPid) || cleanPid <= 1) return '';
 
   const allowed = names || POSIX_ENGINE_NAMES;
   const platform = deps.platform || process.platform;
-  const readlinkSync = typeof deps.readlinkSync === 'function'
-    ? deps.readlinkSync
-    : fs.readlinkSync;
-
   let linked = '';
   if (platform === 'linux') {
     try {
-      linked = String(readlinkSync('/proc/' + cleanPid + '/exe') || '');
+      linked = await (deps.readlink || fs.promises.readlink)('/proc/' + cleanPid + '/exe');
     } catch (_) {
       return '';
     }
   } else if (platform === 'darwin') {
     try {
-      linked = typeof deps.resolveDarwinExe === 'function'
-        ? String(deps.resolveDarwinExe(cleanPid) || '')
-        : resolveDarwinExecutable(cleanPid, deps);
+      const runFile = deps.runFile || promisify(execFile);
+      const {stdout} = await runFile('/usr/sbin/lsof', [
+        '-a', '-p', String(cleanPid), '-d', 'txt', '-F', 'n',
+      ], {encoding: 'utf8', timeout: 2000});
+      linked = parseLsofTextPath(stdout);
     } catch (_) {
       return '';
     }
@@ -55,7 +54,7 @@ function resolvePosixEngineExecutable(
 
   const exe = linked.replace(/ \(deleted\)$/, '').trim();
   if (!exe || exe === '/') return '';
-  if (!allowed.includes(path.basename(exe))) return '';
+  if (!allowed.includes(path.posix.basename(exe))) return '';
   return exe;
 }
 
@@ -70,30 +69,28 @@ function parseLsofTextPath(output) {
   return unique.length === 1 ? unique[0] : '';
 }
 
-function resolveDarwinExecutable(pid, deps = {}) {
-  const exec = typeof deps.execFileSync === 'function' ? deps.execFileSync : execFileSync;
-  let output = '';
-  try {
-    output = String(exec(deps.lsofPath || '/usr/sbin/lsof', [
-      '-a', '-p', String(pid), '-d', 'txt', '-F', 'n',
-    ], {
-      encoding: 'utf8',
-      timeout: 2000,
-      windowsHide: true,
-    }) || '');
-  } catch (_) {
-    return '';
+async function sweepPosixEngines(roots, {platform, runFile, timeout, log, signal = process.kill}) {
+  const {stdout} = await runFile('ps', ['-ax', '-o', 'pid=', '-o', 'comm='], {encoding: 'utf8', timeout});
+  for (const line of stdout.split('\n')) {
+    const row = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!row || !POSIX_ENGINE_NAMES.includes(path.posix.basename(row[2]))) continue;
+    const pid = Number(row[1]);
+    const exe = await resolvePosixEngineExecutable(pid, '', POSIX_ENGINE_NAMES, {platform, runFile});
+    if (!exe) {
+      log(`[backend] skip posix engine cleanup pid=${pid}: executable identity unverified`);
+    } else if (isOwnedPosixEnginePath(exe, roots)) {
+      try { signal(pid, 'SIGTERM'); } catch { /* process exited */ }
+    }
   }
-  return parseLsofTextPath(output);
 }
 
 function isOwnedPosixEnginePath(exePath, roots) {
-  const exe = path.resolve(String(exePath || ''));
-  if (!exe) return false;
+  if (typeof exePath !== 'string' || !path.posix.isAbsolute(exePath)) return false;
+  const exe = path.posix.resolve(exePath);
   return (roots || []).some((root) => {
-    const resolved = path.resolve(String(root || ''));
-    if (!resolved) return false;
-    const prefix = resolved.endsWith(path.sep) ? resolved : resolved + path.sep;
+    if (typeof root !== 'string' || !path.posix.isAbsolute(root)) return false;
+    const resolved = path.posix.resolve(root);
+    const prefix = resolved.endsWith('/') ? resolved : resolved + '/';
     return exe === resolved || exe.startsWith(prefix);
   });
 }
@@ -101,7 +98,7 @@ function isOwnedPosixEnginePath(exePath, roots) {
 module.exports = {
   POSIX_ENGINE_NAMES,
   parseLsofTextPath,
-  resolveDarwinExecutable,
+  sweepPosixEngines,
   resolvePosixEngineExecutable,
   isOwnedPosixEnginePath,
 };

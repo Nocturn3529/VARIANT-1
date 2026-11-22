@@ -1,6 +1,6 @@
 import {useEffect,useRef,useState} from "react";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
-import {getPeerState,peerRequestKey,requestPeer,usePeers} from "./peerStore";
+import {getPeerState,peerRequestKey,refreshInvalidatedReceipts,requestPeer,usePeers} from "./peerStore";
 
 /** Mounted only by open overlays. Push invalidations coalesce; hidden views do no work. */
 export function usePeerRefresh(chatId:string,kind:"messages"|"grok") {
@@ -27,9 +27,21 @@ export function usePeerRefresh(chatId:string,kind:"messages"|"grok") {
         requestPeer(chatId,{operation:"inbox",direction:"all",limit:100});
         const scope=getPeerState().scopes[chatId];
         if(scope?.cursor)requestPeer(chatId,{operation:"inbox",after:scope.cursor,direction:"all",limit:100});
-        for(const id of scope?.changedIds || [])requestPeer(chatId,{operation:"inspect",message_id:id});
       }
     },120);
     return ()=>clearTimeout(timer);
   },[chatId,kind,state.connected,changed,visibility,owner,pending]);
+  const scope=state.scopes[chatId];
+  const inspectionView=useRef("");
+  useEffect(()=>{
+    if(kind!=="messages" || !state.connected || owner.hidden){inspectionView.current="";return;}
+    if(pending || !scope?.invalidations || !Object.keys(scope.invalidations).length)return;
+    const key=JSON.stringify([chatId,visibility]);
+    const timer=setTimeout(()=>{
+      const retry=inspectionView.current!==key;
+      inspectionView.current=key;
+      refreshInvalidatedReceipts(chatId,retry);
+    },120);
+    return ()=>clearTimeout(timer);
+  },[chatId,kind,state.connected,owner,visibility,pending,scope?.invalidations,state.requests]);
 }

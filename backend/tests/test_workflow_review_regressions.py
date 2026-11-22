@@ -51,7 +51,7 @@ def test_disabling_automation_discards_claims_without_reenable_replay(tmp_path):
         "Timer", "Run", {"type": "interval", "seconds": 60},
     )
     store.admit_trigger(webhook["id"], claim_id="accepted-trigger")
-    store.claim_due_tasks(now_ts=5_000)
+    store.claim_due_tasks(now_ts=scheduled["schedule_started_at"] + 60)
 
     assert store.update(webhook["id"], {"enabled": False})
     assert store.update(scheduled["id"], {"enabled": False})
@@ -82,7 +82,7 @@ def test_recovery_drains_legacy_claims_from_disabled_definitions(tmp_path):
         "Timer", "Run", {"type": "interval", "seconds": 60},
     )
     store.admit_trigger(webhook["id"], claim_id="legacy-trigger")
-    store.claim_due_tasks(now_ts=5_000)
+    store.claim_due_tasks(now_ts=scheduled["schedule_started_at"] + 60)
     # Recreate the persisted pre-fix shape: disabled definitions that still
     # carry accepted claims into the next process.
     for task in store.tasks:
@@ -264,7 +264,7 @@ async def test_webhook_recovery_reuses_original_occurrence_after_edits(tmp_path)
 async def test_claim_snapshot_survives_edit_before_work_admission(tmp_path):
     store, work, workflow, _ = _workflow(tmp_path)
     task = store.add("Original", "Accepted prompt", {"type": "interval", "seconds": 60})
-    claim = store.claim_due_tasks(now_ts=5000)[0]
+    claim = store.claim_due_tasks(now_ts=task["schedule_started_at"] + 60)[0]
     store.update(task["id"], {"prompt": "New prompt"})
     recovered = dict(store.recover_scheduled_claims()[0]["task"],
                      _scheduled_claim_id=claim["claim_id"])

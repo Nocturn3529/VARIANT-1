@@ -3,8 +3,12 @@ import {Icon} from "../ui/Icon";
 import {lazy,Suspense} from "react";
 const PersistentTerminalSurface = lazy(() => import("../workbench/TerminalSurface").then(module=>({default:module.PersistentTerminalSurface})));
 import {focusMainComposer, useSurfaceDocument} from "../ui/SurfaceDocument";
-import {useEffect, useRef} from "react";
+import {useEffect, useRef, useState} from "react";
 import {retainChatDraft} from "../chat/stateCore";
+import {getSessionState} from "../state/sessionStore";
+import {notifyToast} from "../state/toastStore";
+import {usePaneChatOwner} from "../workbench/usePaneChatOwner";
+import type {TerminalSelection} from "../workbench/TerminalSurface";
 import {bindTerminalSlot} from "../workbench/terminalSlot";
 import {
   observeTerminal,
@@ -19,11 +23,25 @@ import {
 
 export function TerminalPanel({chatId = ""}: {chatId?:string}) {
   const ownerDocument = useSurfaceDocument();
+  const owner = usePaneChatOwner(chatId);
   const state = useTerminalState(chatId);
   const slotRef = useRef<HTMLDivElement | null>(null);
   const active = state.terminals.find(item => item.id === state.activeId);
   // Agent-started processes live in the composer's activity overlay, not here.
   const visibleOutput = state.output;
+  const [selection, setSelection] = useState<TerminalSelection | null>(null);
+  const selected = selection?.chatId === chatId && selection.id === active?.id ? selection : null;
+  const transferLabel = `Add ${selected ? "selection" : "output"} to ${owner.label || "chat"}`;
+  const transfer = (text: string) => {
+    if (!chatId || !text) return;
+    retainChatDraft(chatId, text.slice(-12_000), owner.title);
+    const sessions = getSessionState();
+    if (sessions.displayedSessionId === chatId && !sessions.pendingAction) focusMainComposer();
+    else {
+      const surface = ownerDocument.querySelector<HTMLElement>("#native-popout-root > [data-native-surface]")?.dataset.nativeSurface;
+      notifyToast(`Added to ${owner.label}`, surface);
+    }
+  };
 
   useEffect(() => bindTerminalSlot(slotRef.current, chatId), [ownerDocument, chatId]);
 
@@ -52,10 +70,9 @@ export function TerminalPanel({chatId = ""}: {chatId?:string}) {
         <div className="workbench-terminal-actions">
           <button title="Send Ctrl+C to the program; it may cancel input without exiting" disabled={!active} onClick={() => interruptTerminal(chatId)}><span className="workbench-terminal-kbd" aria-hidden="true">^C</span><span className="deck-sr-only">Interrupt</span></button>
           <button title="Clear scrollback without stopping the program or resetting its display modes" disabled={!active} onClick={() => clearTerminalOutput(chatId)}><Icon name="clear"/><span className="deck-sr-only">Clear scrollback</span></button>
-          <button title="Add visible output to chat" disabled={!visibleOutput} onClick={() => {
-            retainChatDraft(chatId,visibleOutput.slice(-12_000));
-            focusMainComposer();
-          }}><Icon name="toChat"/><span className="deck-sr-only">Add to chat</span></button>
+          <button title={transferLabel} aria-label={transferLabel} aria-keyshortcuts={selected ? "Control+L Meta+L" : undefined}
+            disabled={!chatId || (!selected && !visibleOutput)} onMouseDown={event => event.preventDefault()}
+            onClick={() => transfer(selected ? selected.read() : visibleOutput)}><Icon name="toChat"/></button>
           <ConnectorControl chatId={chatId} terminalId={state.activeId}/>
           <button title="Refresh terminals" onClick={() => refreshExecution(chatId)}><Icon name="refresh"/><span className="deck-sr-only">Refresh terminals</span></button>
           <button title="Close terminal" aria-label="Close terminal" disabled={!active} onClick={() => killTerminal(chatId)}><Icon name="close"/></button>
@@ -65,6 +82,6 @@ export function TerminalPanel({chatId = ""}: {chatId?:string}) {
       {state.error ? <div className="workbench-tool-error">{state.error}</div> : null}
       <div ref={slotRef} className="workbench-terminal-slot" aria-label="Interactive terminal"/>
     </div>
-    <Suspense fallback={null}><PersistentTerminalSurface chatId={chatId}/></Suspense>
+    <Suspense fallback={null}><PersistentTerminalSurface chatId={chatId} onSelection={setSelection} onTransfer={transfer}/></Suspense>
   </section>;
 }

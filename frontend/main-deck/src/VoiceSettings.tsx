@@ -8,6 +8,7 @@ import {
 import type {SpeechProviderInfo} from "./types";
 import {Button} from "./ui/Button";
 import {createSwitchRow} from "./ui/Switch";
+import {useSaveRecovery} from "./state/useSaveRecovery";
 
 const SwitchRow = createSwitchRow("gen-row deck-data-row");
 
@@ -25,14 +26,21 @@ function SpeechCredential({
   capability: "stt" | "tts";
   provider: SpeechProviderInfo;
 }) {
-  const receipt = useGeneralState().speechReceipt;
+  const {connected, speechReceipt:receipt} = useGeneralState();
   const [draft, setDraft] = useState("");
   const [requestId, setRequestId] = useState("");
   const [requestAction, setRequestAction] = useState<"set" | "clear">("set");
+  const submitted = useRef("");
+  const refresh = () => sendGeneral({type:"config:get"});
+  const recovery = useSaveRecovery(receipt?.requestId===requestId ? null : requestId || null, connected, provider, {
+    release: () => setRequestId(""), refresh,
+    describe: () => provider.configured ? requestAction==="clear" ? "The refreshed provider still has a credential." : "A credential is configured. The submitted key could not be verified."
+      : "The refreshed provider has no configured credential.",
+  });
   useEffect(() => {
     if (!requestId || receipt?.requestId !== requestId) return;
     if (receipt.accepted) {
-      setDraft("");
+      setDraft(current => current === submitted.current ? "" : current);
       notifyGeneral(`${provider.name} credential ${requestAction === "clear" ? "removed" : "saved"}`);
     } else notifyGeneral(receipt.error || "Could not save speech credential");
     setRequestId("");
@@ -40,7 +48,9 @@ function SpeechCredential({
 
   function save(event: FormEvent) {
     event.preventDefault();
-    if (!draft.trim()) return;
+    if (!draft.trim() || requestId || recovery.waiting) return;
+    recovery.reset();
+    submitted.current = draft;
     const id = `speech-key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sendGeneral({type: "speech:credential:set", request_id: id,
       capability, provider: provider.id, key: draft.trim()})) {
@@ -52,6 +62,9 @@ function SpeechCredential({
   }
 
   function clear() {
+    if (requestId || recovery.waiting) return;
+    recovery.reset();
+    submitted.current = "";
     const id = `speech-key-clear-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sendGeneral({type: "speech:credential:clear", request_id: id,
       capability, provider: provider.id})) {
@@ -67,8 +80,9 @@ function SpeechCredential({
       onChange={event => setDraft(event.target.value)}
       placeholder={provider.configured ? "Enter a replacement key" : "Paste API key"}
       autoComplete="off" spellCheck={false}/></label>
-    <Button type="submit" tone="primary" disabled={!draft.trim() || !!requestId}>Save</Button>
-    {provider.configured ? <Button tone="quiet" disabled={!!requestId} onClick={clear}>Remove</Button> : null}
+    <Button type="submit" tone="primary" disabled={!draft.trim() || !!requestId || recovery.waiting}>Save</Button>
+    {provider.configured ? <Button tone="quiet" disabled={!!requestId || recovery.waiting} onClick={clear}>Remove</Button> : null}
+    {recovery.message && <p role="status">{recovery.message} {recovery.waiting && connected && <Button onClick={refresh}>Refresh</Button>}</p>}
   </form>;
 }
 
@@ -87,8 +101,16 @@ function ProviderOptions({
   const [refAudio, setRefAudio] = useState(String(stored.ref_audio || ""));
   const [refText, setRefText] = useState(String(stored.ref_text || ""));
   const [device, setDevice] = useState(String(stored.device || "cpu"));
-  const receipt = useGeneralState().speechReceipt;
+  const {connected, speechReceipt:receipt} = useGeneralState();
   const [requestId, setRequestId] = useState("");
+  const submitted = useRef<Record<string, unknown>>({});
+  const refresh = () => sendGeneral({type:"config:get"});
+  const recovery = useSaveRecovery(receipt?.requestId===requestId ? null : requestId || null, connected, provider, {
+    release: () => setRequestId(""), refresh,
+    describe: () => Object.entries(submitted.current).every(([key,value]) => String(stored[key] ?? "") === String(value))
+      ? "Refreshed settings match the submitted options."
+      : "Refreshed settings differ from the submitted options. Your edits are kept.",
+  });
 
   useEffect(() => {
     if (!requestId || receipt?.requestId !== requestId) return;
@@ -100,9 +122,12 @@ function ProviderOptions({
 
   function save(event: FormEvent) {
     event.preventDefault();
+    if (requestId || recovery.waiting) return;
+    recovery.reset();
     const fields: Record<string, unknown> = {model, base_url: baseUrl, language};
     if (provider.id === "piper") fields.model_path = modelPath;
     if (provider.id === "neutts") Object.assign(fields, {ref_audio: refAudio, ref_text: refText, device});
+    submitted.current = fields;
     const id = `speech-options-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sendGeneral({type: "tts:set", request_id: id, key: `${capability}_options`,
       value: {provider: provider.id, fields}})) {
@@ -130,7 +155,8 @@ function ProviderOptions({
         <option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="mps">MPS</option>
       </select></label>
     </> : null}
-    <Button type="submit" tone="quiet" disabled={!!requestId}>{requestId ? "Saving…" : "Save provider settings"}</Button>
+    <Button type="submit" tone="quiet" disabled={!!requestId || recovery.waiting}>{requestId ? "Saving…" : "Save provider settings"}</Button>
+    {recovery.message && <p role="status">{recovery.message} {recovery.waiting && connected && <Button onClick={refresh}>Refresh</Button>}</p>}
   </form>;
 }
 

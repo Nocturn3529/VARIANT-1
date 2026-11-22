@@ -7,16 +7,18 @@ from contextvars import Context
 from typing import Any
 
 from core_invariants import cancellation_is_requested
+from text_limits import head_tail_text
 from tool_core import ToolError
 from work_fabric.scope import WorkScope, coerce_work_scope
 
 from .output import OUTPUT_EVENT_SCHEMA, CellOutput, OutputLimits
 from .bridge_protocol import DEFAULT_MAX_FRAME_BYTES
+from .cell_activity import CellActivity
 
 
 MAX_MODEL_ERROR_CHARS = 8_000
 MAX_MODEL_TRACEBACK_LINES = 12
-MAX_MODEL_STREAM_TAIL_CHARS = 2_000
+MAX_MODEL_STREAM_CHARS = 2_000
 
 
 class KernelUnavailable(RuntimeError):
@@ -108,6 +110,7 @@ class ExecutionAdmission:
     # Host-only snapshot for callbacks accepted by the long-lived bridge.
     # Never serialized or sent to the worker.
     callback_context: Context | None = field(default=None, repr=False, compare=False)
+    activity: CellActivity = field(default_factory=CellActivity, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "work_scope", coerce_work_scope(self.work_scope))
@@ -137,6 +140,7 @@ class KernelExecutionResult:
     output_evidence_sha256: str = ""
     output_evidence_bytes: int = 0
     terminate: bool = False
+    cell_action: str = ""  # Display metadata, separate from the model's observation.
 
     @property
     def ok(self) -> bool:
@@ -162,12 +166,14 @@ class KernelExecutionResult:
                 "dropped_bytes": int(self.output.evidence_dropped_bytes),
                 "dropped_events": int(self.output.evidence_dropped_events),
                 "dropped_bodies": int(self.output.evidence_dropped_bodies),
+                "worker_dropped_bytes": self.output.worker_dropped_bytes,
             },
             "truncation": {
                 "admitted_bytes": self.output.admitted_bytes,
                 "dropped_bytes": self.output.dropped_bytes,
                 "admitted_events": self.output.admitted_events,
                 "dropped_events": self.output.dropped_events,
+                "worker_dropped_bytes": self.output.worker_dropped_bytes,
                 "stale_events": self.output.stale_events,
             },
             "error": (
@@ -248,28 +254,24 @@ class KernelExecutionResult:
                 for chunk in self.output._visible_chunks()
                 if str(chunk.get("kind") or "") in {"stdout", "stderr"}
             )
-            parts = [heading]
+            notice = self.output.omission_notice()
+            sections = []
             if streams.strip():
-                parts.extend((
-                    "Output tail:",
-                    streams[-MAX_MODEL_STREAM_TAIL_CHARS:].strip(),
-                ))
+                sections.append(("Output:", head_tail_text(streams.strip(), MAX_MODEL_STREAM_CHARS)))
             if trace:
-                parts.extend(("Traceback tail:", "\n".join(trace)))
-            rendered = "\n".join(part for part in parts if part).strip()
+                sections.append(("Traceback tail:", "\n".join(trace)))
+            rendered = "\n".join(part for part in (
+                heading, notice, *(label + "\n" + body for label, body in sections)
+            ) if part)
             if len(rendered) > MAX_MODEL_ERROR_CHARS:
                 marker = "[diagnostic truncated]"
                 heading = heading[:MAX_MODEL_ERROR_CHARS // 3]
-                sections = []
-                if streams.strip():
-                    sections.append(("Output tail:", streams[-MAX_MODEL_STREAM_TAIL_CHARS:].strip()))
-                if trace:
-                    sections.append(("Traceback tail:", "\n".join(trace)))
-                room = MAX_MODEL_ERROR_CHARS - len(heading) - len(marker) - 2
-                labels = sum(len(label) + 1 for label, _ in sections) + max(0, len(sections) - 1)
+                opening = "\n".join(part for part in (heading, marker, notice) if part)
+                room = MAX_MODEL_ERROR_CHARS - len(opening)
+                labels = sum(len(label) + 2 for label, _ in sections)
                 body_cap = max(0, (room - labels) // max(1, len(sections)))
-                rendered = "\n".join((heading, marker, *(
-                    label + "\n" + body[-body_cap:] if body_cap else label
+                rendered = "\n".join((opening, *(
+                    label + "\n" + head_tail_text(body, body_cap)
                     for label, body in sections
                 )))
             return "\n".join(
@@ -284,7 +286,8 @@ class KernelExecutionResult:
             rendered = f"{heading}: {message}" if message else heading
         if len(rendered) > MAX_MODEL_ERROR_CHARS:
             marker = "\n[diagnostic truncated]"
-            rendered = rendered[:MAX_MODEL_ERROR_CHARS - len(marker)] + marker
+            cap = MAX_MODEL_ERROR_CHARS - len(marker)
+            rendered = (head_tail_text(rendered, cap) if text else rendered[:cap]) + marker
         return "\n".join(
             part for part in (rendered, runtime_note, namespace_footer) if part
         )

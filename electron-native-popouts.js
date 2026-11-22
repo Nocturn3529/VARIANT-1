@@ -31,6 +31,18 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
       try { owner.webContents.send('workbench:window:closed', id); } catch { /* owner is reloading or has crashed */ }
     }
   }
+  function setPinned(win, requested) {
+    try {
+      win.setAlwaysOnTop(requested);
+      // On Windows the default floating level is placed behind the taskbar.
+      // If that removed the topmost state, try the next native window level.
+      if (requested && !win.isAlwaysOnTop() && process.platform === 'win32') {
+        win.setAlwaysOnTop(true, 'pop-up-menu');
+      }
+    } catch (error) { log('[main] popout pin failed: ' + error); }
+    const pinned = !win.isDestroyed() && win.isAlwaysOnTop();
+    return {ok: !win.isDestroyed() && pinned === requested, pinned};
+  }
   function control(id, action, size) {
     if (id === 'deck' && action === 'focus') {
       const deck = getDeckWindow();
@@ -43,7 +55,7 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
     if (action === 'focus') { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
     else if (action === 'minimize') win.minimize();
     else if (action === 'maximize') win.isMaximized() ? win.unmaximize() : win.maximize();
-    else if (action === 'pin') win.setAlwaysOnTop(!win.isAlwaysOnTop());
+    else if (action === 'pin') return setPinned(win, !win.isAlwaysOnTop());
     else if (action === 'close') win.close();
     else if (action === 'bounds') return {ok: true, bounds: win.getBounds(), pinned: win.isAlwaysOnTop()};
     else if (action === 'resize') {
@@ -87,7 +99,7 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
       const height = dimension('height', 600, 240, Math.max(240, workArea.height));
       const x = dimension('left', owner.getBounds().x + 80, workArea.x, workArea.x + workArea.width - width);
       const y = dimension('top', owner.getBounds().y + 80, workArea.y, workArea.y + workArea.height - height);
-      prepared.set(frameName, {id, bounds: {x, y, width, height}});
+      prepared.set(frameName, {id, bounds: {x, y, width, height}, pinned: options.pin === 'true'});
       return {action: 'allow', outlivesOpener: false, overrideBrowserWindowOptions: {
         width, height, x, y, useContentSize: false, minWidth: 300, minHeight: 240,
         frame: false, modal: false, resizable: true, movable: true, minimizable: true,
@@ -107,6 +119,9 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
       prepared.delete(details.frameName);
       windows.set(id, child);
       windowOwners.set(id, owner.webContents);
+      if (request.pinned) child.once('show', () => {
+        if (!child.isDestroyed() && !child.isAlwaysOnTop()) setPinned(child, true);
+      });
       // Chromium window.open may apply content-size/frame adjustments after
       // creation. Set the final native bounds explicitly so presets round-trip.
       child.setBounds(request.bounds);
@@ -124,9 +139,6 @@ function createNativePopoutManager({appRoot, getDeckWindow, isTrustedIpcSender, 
     };
     owner.webContents.on('render-process-gone', closeChildren);
     owner.webContents.on('did-navigate', closeChildren);
-    owner.webContents.on('did-start-navigation', (_event, _url, inPlace, mainFrame) => {
-      if (mainFrame && !inPlace) closeChildren();
-    });
     owner.once('closed', closeChildren);
   }
   return {attach, getWindow:(id,owner)=>windowOwners.get(id) === owner ? windows.get(id) : null,

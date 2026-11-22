@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import base64
+from bisect import bisect_right
 from dataclasses import dataclass, field
 import json
 import re
 from typing import Any, Callable
-from text_limits import utf8_prefix
+from text_limits import utf8_prefix, utf8_suffix
 
 from .worker_context import NAMESPACE_IDENTIFIER_CHARS, NAMESPACE_INVENTORY_LIMIT
 
@@ -58,6 +59,7 @@ class CellOutput:
     dropped_bytes: int = 0
     admitted_events: int = 0
     dropped_events: int = 0
+    worker_dropped_bytes: int = 0
     stale_events: int = 0
     artifact_errors: list[str] = field(default_factory=list)
     evidence_inline_bytes: int = 0
@@ -79,7 +81,7 @@ class CellOutput:
     def truncated(self) -> bool:
         """Whether the concise model projection omitted any output."""
 
-        return bool(self.dropped_bytes or self.dropped_events)
+        return bool(self.dropped_bytes or self.dropped_events or self.worker_dropped_bytes)
 
     def _visible_chunks(self) -> list[dict[str, Any]]:
         """Apply display updates and clear-output semantics to live chunks."""
@@ -125,7 +127,11 @@ class CellOutput:
     def text(self) -> str:
         parts: list[str] = []
         visible = self._visible_chunks()
+        notice = self.omission_notice()
         for chunk in visible:
+            if notice and chunk.get("_sample"):
+                parts.append("\n" + notice + "\n")
+                notice = ""
             text = str(chunk.get("text") or "")
             if text:
                 parts.append(text)
@@ -135,11 +141,8 @@ class CellOutput:
             )
             if heading and not any(heading in part for part in parts):
                 parts.append(heading)
-        if self.truncated:
-            parts.append(
-                "[output projection truncated: "
-                f"{self.dropped_bytes} bytes / {self.dropped_events} events omitted]"
-            )
+        if notice:
+            parts.append("\n" + notice + "\n")
         visible_refs = {
             str(chunk.get("artifact_ref") or "")
             for chunk in visible
@@ -151,6 +154,18 @@ class CellOutput:
         if terminal and not any(terminal == part.strip() for part in parts):
             parts.append(("\n" if parts else "") + terminal)
         return "".join(parts).strip()
+
+    def omission_notice(self) -> str:
+        limits = []
+        if self.worker_dropped_bytes:
+            limits.append(
+                f"worker stream output capped before REPL transport: {self.worker_dropped_bytes} bytes omitted"
+            )
+        if self.dropped_bytes or self.dropped_events:
+            limits.append(
+                f"output projection truncated: {self.dropped_bytes} bytes / {self.dropped_events} events omitted"
+            )
+        return "[" + "; ".join(limits) + "]" if limits else ""
 
     def namespace_footer(self) -> str:
         """Report exceptional namespace loss without narrating normal state.
@@ -192,7 +207,11 @@ class CellOutput:
     def evidence(self) -> dict[str, Any]:
         return {
             "schema": OUTPUT_EVENT_SCHEMA,
-            "events": [dict(event) for event in self.events],
+            "events": [
+                {**{key: value for key, value in event.items() if not key.startswith("_")},
+                 "sequence": sequence}
+                for sequence, event in enumerate(self.events, 1)
+            ],
             "bounds": {
                 "inline_bytes": int(self.evidence_inline_bytes),
                 "artifact_bytes": int(self.evidence_artifact_bytes),
@@ -200,6 +219,7 @@ class CellOutput:
                 "admitted_events": len(self.events),
                 "dropped_events": int(self.evidence_dropped_events),
                 "dropped_bodies": int(self.evidence_dropped_bodies),
+                "worker_dropped_bytes": self.worker_dropped_bytes,
                 "stale_events": int(self.stale_events),
             },
             "namespace_delta": dict(self.namespace_delta),
@@ -221,8 +241,39 @@ class CellOutputCollector:
         self.artifact_store = artifact_store
         self.artifact_scope = str(artifact_scope or "")
         self.on_chunk = on_chunk
-        self.result = CellOutput()
+        self._output = CellOutput()
         self._sequence = 0
+        self._position = 0
+        self._head: list[dict[str, Any]] = []
+        self._tail: list[dict[str, Any]] = []
+        self._head_bytes = 0
+        self._tail_bytes = 0
+        self._tail_only_events = 0
+        self._source_bytes = 0
+        self._source_events = 0
+        self._artifact_lost_bytes = 0
+        self._artifact_lost_events = 0
+        cap = max(0, int(limits.max_cell_bytes))
+        self._tail_limit = cap if limits.max_events == 1 else cap // 4
+        self._tail_events = max(1, limits.max_events // 4) if limits.max_events > 0 else 0
+
+    @property
+    def result(self) -> CellOutput:
+        output = self._output
+        chunks = [
+            {"kind": "clear_output", "sequence": event["_position"], "wait": event["wait"], "bytes": 0}
+            for event in output.events if event.get("type") == "clear_output"
+        ]
+        chunks.extend(self._head)
+        chunks.extend(self._tail)
+        output.chunks = sorted(chunks, key=lambda chunk: (chunk["sequence"], chunk.get("_sample", False)))
+        output.admitted_bytes = self._head_bytes + self._tail_bytes
+        output.admitted_events = len({
+            chunk["_projection_id"] for chunk in (*self._head, *self._tail)
+        })
+        output.dropped_bytes = self._source_bytes - output.admitted_bytes + self._artifact_lost_bytes
+        output.dropped_events = self._source_events - output.admitted_events + self._artifact_lost_events
+        return output
 
     @staticmethod
     def _bytes(value: Any) -> bytes:
@@ -246,7 +297,7 @@ class CellOutputCollector:
             return raw.decode("utf-8", errors="replace")
 
     def stale(self) -> None:
-        self.result.stale_events += 1
+        self._output.stale_events += 1
 
     def accept_namespace_delta(self, content: Any) -> None:
         """Record a metadata-only, bounded projection of persistent names."""
@@ -274,15 +325,15 @@ class CellOutputCollector:
             "updated_omitted": max(0, int(content.get("updated_omitted") or 0)),
             "retained_omitted": max(0, int(content.get("retained_omitted") or 0)),
         }
-        self.result.namespace_delta = delta
+        self._output.namespace_delta = delta
         inventory = content.get("inventory")
         if isinstance(inventory, list):
-            self.result.namespace_inventory = list(dict.fromkeys(
+            self._output.namespace_inventory = list(dict.fromkeys(
                 name for name in inventory[:NAMESPACE_INVENTORY_LIMIT]
                 if isinstance(name, str) and name.isidentifier()
                 and not name.startswith("_") and len(name) <= NAMESPACE_IDENTIFIER_CHARS
             ))
-            self.result.namespace_inventory_omitted = max(
+            self._output.namespace_inventory_omitted = max(
                 0, int(content.get("inventory_omitted") or 0)
             )
 
@@ -291,26 +342,47 @@ class CellOutputCollector:
             "variant1.kernel-execution-control.v1"
         ):
             return
-        self.result.terminate_requested = bool(content.get("terminate"))
-        self.result.terminal_observation = str(
+        self._output.terminate_requested = bool(content.get("terminate"))
+        self._output.terminal_observation = str(
             content.get("observation") or ""
         )[:4_000]
 
-    def _can_record_event(self, content: Any) -> bool:
-        if len(self.result.events) < max(0, int(self.limits.max_events)):
-            return True
-        size = len(self._bytes(content))
-        self.result.evidence_dropped_bytes += size
-        self.result.evidence_dropped_events += 1
-        self.result.dropped_bytes += size
-        self.result.dropped_events += 1
-        return False
+    def _event_slot(self, event: dict[str, Any], position: int) -> int | None:
+        events = self._output.events
+        index = bisect_right(events, position, key=lambda row: row["_position"])
+        cap = max(0, self.limits.max_events)
+        if len(events) < cap:
+            return index
+        self._output.evidence_dropped_events += 1
+        # The newest clear still governs replay if the middle of the cell was
+        # omitted. Give it a slot ahead of text that the clear would hide.
+        victim = cap - self._tail_events if cap > 1 else 0
+        if cap and event["type"] == "clear_output" and index >= victim:
+            victim = min(victim, index - 1)
+        elif cap > 1 and index != victim:
+            existing = victim - int(index < victim)
+            if events[existing]["type"] == "clear_output" and not any(
+                row["type"] == "clear_output" for row in events[existing + 1:]
+            ):
+                victim = 0 if existing else 1
+        if not cap or index == victim:
+            content = event.get("text", event)
+            self._output.evidence_dropped_bytes += len(self._bytes(content))
+            return None
+        removed = events.pop(victim - int(index < victim))
+        self._output.evidence_inline_bytes -= removed["_inline_bytes"]
+        self._output.evidence_dropped_bytes += removed["_retained_bytes"]
+        return index - int(index > victim)
 
-    def _record_event(self, event: dict[str, Any]) -> int:
-        self._sequence += 1
-        recorded = {"sequence": self._sequence, **event}
-        self.result.events.append(recorded)
-        return self._sequence
+    def _record_event(
+        self, event: dict[str, Any], *, position: int, index: int,
+        inline_before: int, artifacts_before: int,
+    ) -> None:
+        inline_bytes = self._output.evidence_inline_bytes - inline_before
+        self._output.events.insert(index, {
+            **event, "_position": position, "_inline_bytes": inline_bytes,
+            "_retained_bytes": inline_bytes + self._output.evidence_artifact_bytes - artifacts_before,
+        })
 
     def _admit(
         self,
@@ -322,60 +394,70 @@ class CellOutputCollector:
         display_id: str = "",
         update: bool = False,
         artifact_ref: str = "",
+        deferred: bool = False,
     ) -> None:
         raw = self._bytes(text)
+        if not raw:
+            return
+        self._sequence += 1
+        self._source_events += 1
+        self._source_bytes += len(raw)
         message_limit = max(1, int(self.limits.max_message_bytes))
-        cell_remaining = max(
-            0, int(self.limits.max_cell_bytes) - self.result.admitted_bytes
-        )
-        event_remaining = max(
-            0, int(self.limits.max_events) - self.result.admitted_events
-        )
-        admitted = min(len(raw), message_limit, cell_remaining) if event_remaining else 0
-        admitted = len(utf8_prefix(raw, admitted))
-        dropped = len(raw) - admitted
-        if admitted:
-            visible = raw[:admitted].decode("utf-8", errors="replace")
-            chunk = {
-                "kind": kind,
-                "media_type": media_type,
-                "text": visible,
-                "bytes": admitted,
-                "sequence": int(sequence),
-            }
-            if display_id:
-                chunk["display_id"] = display_id
-            if update:
-                chunk["update"] = True
-            if artifact_ref:
-                chunk["artifact_ref"] = artifact_ref
-            self.result.chunks.append(chunk)
-            self.result.admitted_bytes += admitted
-            self.result.admitted_events += 1
+        head_room = max(0, int(self.limits.max_cell_bytes) - self._tail_limit - self._head_bytes)
+        head_slots = self.limits.max_events - self._tail_events
+        message_head = message_limit - (message_limit // 4 if len(raw) > message_limit else 0)
+        head = b""
+        if not deferred and len(self._head) < head_slots:
+            head = utf8_prefix(raw, min(head_room, message_head))
+        chunk = {
+            "kind": kind, "media_type": media_type, "sequence": sequence,
+            "_projection_id": self._sequence,
+        }
+        if display_id:
+            chunk.update(display_id=display_id, update=update)
+        if artifact_ref:
+            chunk["artifact_ref"] = artifact_ref
+        if head:
+            sample = {**chunk, "text": head.decode("utf-8"), "bytes": len(head)}
+            self._head.append(sample)
+            self._head_bytes += len(head)
             if self.on_chunk is not None:
                 try:
-                    self.on_chunk(dict(chunk))
+                    self.on_chunk({key: value for key, value in sample.items() if not key.startswith("_")})
                 except Exception:
                     pass
-        if dropped or not event_remaining:
-            self.result.dropped_bytes += max(
-                dropped, len(raw) if not event_remaining else 0
-            )
-            self.result.dropped_events += 1
+        tail = utf8_suffix(raw[len(head):], min(self._tail_limit, message_limit - len(head)))
+        if tail:
+            self._retain_projection_tail(chunk, tail, split=bool(head))
 
-    def _control_chunk(self, *, sequence: int, wait: bool) -> None:
-        chunk = {
-            "kind": "clear_output",
-            "sequence": int(sequence),
-            "wait": bool(wait),
-            "bytes": 0,
-        }
-        self.result.chunks.append(chunk)
+    def _retain_projection_tail(self, chunk: dict[str, Any], raw: bytes, *, split: bool) -> None:
+        # A display update has one semantic row. Keep its first part if it
+        # already fit in the head instead of applying two updates for one event.
+        if split and chunk.get("display_id"):
+            return
+        index = bisect_right(self._tail, chunk["sequence"], key=lambda row: row["sequence"])
+        self._tail.insert(index, {
+            **chunk, "text": raw.decode("utf-8"), "bytes": len(raw),
+            "_sample": True, "_split": split,
+        })
+        self._tail_bytes += len(raw)
+        self._tail_only_events += int(not split)
+        while self._tail_bytes > self._tail_limit or self._tail_only_events > self._tail_events:
+            removed = self._tail.pop(0)
+            self._tail_bytes -= removed["bytes"]
+            new_slot = int(not removed["_split"])
+            self._tail_only_events -= new_slot
+            if self._tail_only_events + new_slot <= self._tail_events:
+                retained = utf8_suffix(removed["text"].encode("utf-8"), self._tail_limit - self._tail_bytes)
+                if retained:
+                    self._tail.insert(0, {**removed, "text": retained.decode("utf-8"), "bytes": len(retained)})
+                    self._tail_bytes += len(retained)
+                    self._tail_only_events += new_slot
 
     def _remember_artifact(self, artifact: dict[str, Any]) -> None:
         ref = str(artifact.get("ref") or "")
-        if ref and not any(str(item.get("ref") or "") == ref for item in self.result.artifacts):
-            self.result.artifacts.append(dict(artifact))
+        if ref and not any(str(item.get("ref") or "") == ref for item in self._output.artifacts):
+            self._output.artifacts.append(dict(artifact))
 
     def _artifact_body(
         self,
@@ -389,11 +471,11 @@ class CellOutputCollector:
         cell_remaining = max(
             0,
             int(self.limits.max_cell_artifact_bytes)
-            - self.result.evidence_artifact_bytes,
+            - self._output.evidence_artifact_bytes,
         )
         if len(raw) > per_body or len(raw) > cell_remaining:
-            self.result.evidence_dropped_bytes += len(raw)
-            self.result.evidence_dropped_bodies += 1
+            self._output.evidence_dropped_bytes += len(raw)
+            self._output.evidence_dropped_bodies += 1
             return {
                 "storage": "omitted",
                 "encoding": encoding,
@@ -401,8 +483,8 @@ class CellOutputCollector:
                 "reason": "artifact_limit",
             }
         if self.artifact_store is None:
-            self.result.evidence_dropped_bytes += len(raw)
-            self.result.evidence_dropped_bodies += 1
+            self._output.evidence_dropped_bytes += len(raw)
+            self._output.evidence_dropped_bodies += 1
             return {
                 "storage": "omitted",
                 "encoding": encoding,
@@ -418,7 +500,7 @@ class CellOutputCollector:
             )
             artifact = ref.to_dict()
             self._remember_artifact(artifact)
-            self.result.evidence_artifact_bytes += len(raw)
+            self._output.evidence_artifact_bytes += len(raw)
             return {
                 "storage": "artifact",
                 "encoding": encoding,
@@ -426,12 +508,12 @@ class CellOutputCollector:
                 "artifact": artifact,
             }
         except Exception as exc:
-            self.result.artifact_errors.append(type(exc).__name__)
-            self.result.evidence_dropped_bytes += len(raw)
-            self.result.evidence_dropped_bodies += 1
+            self._output.artifact_errors.append(type(exc).__name__)
+            self._output.evidence_dropped_bytes += len(raw)
+            self._output.evidence_dropped_bodies += 1
             # Keep legacy projection-loss counters useful to existing callers.
-            self.result.dropped_bytes += len(raw)
-            self.result.dropped_events += 1
+            self._artifact_lost_bytes += len(raw)
+            self._artifact_lost_events += 1
             return {
                 "storage": "omitted",
                 "encoding": encoding,
@@ -455,7 +537,7 @@ class CellOutputCollector:
             except Exception:
                 raw = b""
             if not raw and str(value or ""):
-                self.result.evidence_dropped_bodies += 1
+                self._output.evidence_dropped_bodies += 1
                 return {
                     "storage": "omitted",
                     "encoding": encoding,
@@ -472,10 +554,10 @@ class CellOutputCollector:
         raw = self._bytes(value)
         per_body_limit = max(1, int(self.limits.max_mime_bytes))
         cell_remaining = max(
-            0, int(self.limits.max_cell_bytes) - self.result.evidence_inline_bytes
+            0, int(self.limits.max_cell_bytes) - self._output.evidence_inline_bytes
         )
         if len(raw) <= per_body_limit and len(raw) <= cell_remaining:
-            self.result.evidence_inline_bytes += len(raw)
+            self._output.evidence_inline_bytes += len(raw)
             return {
                 "storage": "inline",
                 "encoding": encoding,
@@ -495,8 +577,8 @@ class CellOutputCollector:
             return bundle
         for index, (raw_media_type, value) in enumerate(data.items()):
             if index >= _MAX_MIME_ALTERNATIVES:
-                self.result.evidence_dropped_bodies += 1
-                self.result.evidence_dropped_bytes += len(self._bytes(value))
+                self._output.evidence_dropped_bodies += 1
+                self._output.evidence_dropped_bytes += len(self._bytes(value))
                 continue
             media_type = str(raw_media_type or "").strip()[:256]
             if not media_type:
@@ -596,27 +678,47 @@ class CellOutputCollector:
             "clear_output",
             "error",
         }
-        if event_type not in admitted_types or not self._can_record_event(event):
+        if event_type not in admitted_types:
             return
+        position = event.get("output_position")
+        if type(position) is not int or position <= 0:
+            position = self._position + 1
+        self._position = max(self._position, position)
+        if event_type in {"stdout", "stderr"}:
+            loss = event.get("worker_dropped_bytes")
+            if type(loss) is int and loss > 0:
+                self._output.worker_dropped_bytes += loss
+            if not event.get("text"):
+                return
+        index = self._event_slot(event, position)
+        storage = {
+            "position": position, "index": index,
+            "inline_before": self._output.evidence_inline_bytes,
+            "artifacts_before": self._output.evidence_artifact_bytes,
+        }
 
         if event_type in {"stdout", "stderr"}:
             stream_text = str(event.get("text") or "")
-            body = self._body(
-                stream_text,
-                media_type="text/plain; charset=utf-8",
-                kind="kernel_stream_body",
-            )
-            sequence = self._record_event({
-                "type": "stream",
-                "name": event_type,
-                "body": body,
-            })
+            body = {}
+            if index is not None:
+                body = self._body(
+                    stream_text,
+                    media_type="text/plain; charset=utf-8",
+                    kind="kernel_stream_body",
+                )
+                self._record_event({"type": "stream", "name": event_type, "body": body}, **storage)
             self._admit(
                 event_type,
                 stream_text,
-                sequence=sequence,
+                sequence=position,
                 artifact_ref=self._descriptor_ref(body),
+                deferred=event.get("deferred") is True,
             )
+            return
+
+        if index is None:
+            self._source_events += 1
+            self._source_bytes += len(self._bytes(event))
             return
 
         if event_type in {"result", "display", "update_display"}:
@@ -654,10 +756,10 @@ class CellOutputCollector:
                 recorded["execution_count"] = int(
                     event.get("execution_count") or 0
                 )
-            sequence = self._record_event(recorded)
+            self._record_event(recorded, **storage)
             self._project_display(
                 bundle,
-                sequence=sequence,
+                sequence=position,
                 display_id=display_id,
                 update=durable_type == "update_display_data",
             )
@@ -665,14 +767,13 @@ class CellOutputCollector:
 
         if event_type == "clear_output":
             wait = bool(event.get("wait"))
-            sequence = self._record_event({"type": "clear_output", "wait": wait})
-            self._control_chunk(sequence=sequence, wait=wait)
+            self._record_event({"type": "clear_output", "wait": wait}, **storage)
             return
 
-        self.result.error_name = str(
+        self._output.error_name = str(
             event.get("name") or "ExecutionError"
         )
-        self.result.error_value = str(event.get("message") or "")
+        self._output.error_value = str(event.get("message") or "")
         trace = [
             _ANSI.sub("", str(line))
             for line in (
@@ -681,34 +782,34 @@ class CellOutputCollector:
                 else ()
             )
         ]
-        self.result.traceback = trace[-24:]
+        self._output.traceback = trace[-24:]
         name_body = self._body(
-            self.result.error_name,
+            self._output.error_name,
             media_type="text/plain; charset=utf-8",
             kind="kernel_error_body",
         )
         value_body = self._body(
-            self.result.error_value,
+            self._output.error_value,
             media_type="text/plain; charset=utf-8",
             kind="kernel_error_body",
         )
         traceback_body = self._body(
-            self.result.traceback,
+            self._output.traceback,
             media_type="application/json",
             kind="kernel_error_traceback",
         )
-        sequence = self._record_event({
+        self._record_event({
             "type": "error",
             "ename": name_body,
             "evalue": value_body,
             "traceback": traceback_body,
-        })
-        rendered = "\n".join(self.result.traceback) or (
-            f"{self.result.error_name}: {self.result.error_value}"
+        }, **storage)
+        rendered = "\n".join(self._output.traceback) or (
+            f"{self._output.error_name}: {self._output.error_value}"
         )
         self._admit(
             "error",
             rendered + "\n",
-            sequence=sequence,
+            sequence=position,
             artifact_ref=self._descriptor_ref(traceback_body),
         )

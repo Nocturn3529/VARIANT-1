@@ -30,7 +30,17 @@ export type EvidenceSource = {
   tool?: string;
   argsPreview?: string;
   text?: string;
+  projectRoot?: string;
 };
+
+/** Resolve on observation so reopening a turn cannot rebase its files onto a different project. */
+export function evidenceFilePath(value: string, root?: string): string {
+  const absolute = (path: string) => /^(?:\/|[a-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+)/i.test(path);
+  if (absolute(value)) return value;
+  if (!root || !absolute(root) || /^[a-z]:|^\\/i.test(value)) return "";
+  const separator = root.includes("\\") ? "\\" : "/";
+  return root.replace(/[\\/]$/, "") + separator + value.replace(/[\\/]/g, separator);
+}
 
 function evidenceId(kind: ChatEvidenceKind, value: string): string {
   return `ev-${kind}:${value.toLowerCase().replace(/\s+/g, " ").slice(0, 80)}`;
@@ -190,7 +200,8 @@ export function extractEvidence(source: EvidenceSource): ChatEvidence[] {
     }
   }
   if (text) harvestLoose(text, tool, out);
-  return out.slice(0, MAX_STEP_EVIDENCE);
+  return out.slice(0, MAX_STEP_EVIDENCE).map(item => item.kind === "file"
+    ? {...item, value: evidenceFilePath(item.value, source.projectRoot) || item.value} : item);
 }
 
 export function mergeEvidence(

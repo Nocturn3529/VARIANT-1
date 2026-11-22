@@ -34,6 +34,8 @@ def initialize(conn):
         CREATE INDEX IF NOT EXISTS context_record_source ON context_record(source_chat_id,source_id);
         CREATE INDEX IF NOT EXISTS context_record_text ON context_record(text_key);
         CREATE INDEX IF NOT EXISTS context_record_scoped_text ON context_record(text_key,source_chat_id);
+        CREATE INDEX IF NOT EXISTS context_incomplete_cells ON context_record(source_chat_id,record_id)
+          WHERE kind='cell' AND json_extract(descriptor_json,'$.search_incomplete')=1;
         CREATE UNIQUE INDEX IF NOT EXISTS context_text_identity ON context_text(text_id);
         CREATE TABLE IF NOT EXISTS context_stream(
           stream_id TEXT PRIMARY KEY,source_chat_id TEXT NOT NULL,kind TEXT NOT NULL,

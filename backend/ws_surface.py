@@ -2,6 +2,44 @@
 
 from __future__ import annotations
 
+
+async def _messaging_write(
+    srv, websocket, msg, *, operation: str, adapter: str, field: str = "",
+    write, refresh, error_key: str,
+) -> None:
+    """Acknowledge a persisted write separately from gateway availability."""
+    accepted = False
+    error = ""
+    try:
+        write()
+        accepted = True
+        await refresh()
+    except Exception:
+        if accepted:
+            error = "The change was saved. The messaging gateway could not refresh."
+        elif error_key == "credential_error":
+            error = "Could not save the messaging credential change."
+        else:
+            error = "Could not save the messaging settings."
+
+    state = srv.gateway.public_state()
+    if accepted:
+        await srv.hub.broadcast(state)
+    request_id = msg.get("request_id")
+    if isinstance(request_id, str) and request_id:
+        await websocket.send_json({
+            "type": "messaging:write_result",
+            "request_id": request_id,
+            "operation": operation,
+            "adapter": adapter,
+            "field": field,
+            "accepted": accepted,
+            "error": error,
+        })
+    if error:
+        await websocket.send_json({**state, error_key: error})
+
+
 def register(on):
     # ---- Messaging gateway ------------------------------------------------------------
 
@@ -12,59 +50,50 @@ def register(on):
     @on("messaging:set")
     async def _messaging_set(srv, websocket, session, msg):
         adapter = str(msg.get("adapter") or "")
-        if "enabled" in msg and not adapter:
-            srv.gateway.update(enabled=bool(msg.get("enabled")))
-        elif adapter:
-            cfg = msg.get("config") if isinstance(msg.get("config"), dict) else {
-                k: msg[k] for k in (
-                    "enabled", "allowed_users", "allowed_conversations",
-                    "prefix", "mention_only", "allow_all", "fields",
-                ) if k in msg
-            }
-            srv.gateway.update(adapter=adapter, values=cfg or {})
-        else:
-            if "enabled" in msg:
+
+        def save():
+            if adapter:
+                cfg = msg.get("config") if isinstance(msg.get("config"), dict) else {
+                    k: msg[k] for k in (
+                        "enabled", "allowed_users", "allowed_conversations",
+                        "prefix", "mention_only", "allow_all", "fields",
+                    ) if k in msg
+                }
+                srv.gateway.update(adapter=adapter, values=cfg)
+            elif "enabled" in msg:
                 srv.gateway.update(enabled=bool(msg.get("enabled")))
-        try:
-            await srv.gateway.reconcile()
-        except Exception as exc:
-            payload = srv.gateway.public_state()
-            payload["lifecycle_error"] = str(exc)
-            await websocket.send_json(payload)
-            return
-        await srv.hub.broadcast(srv.gateway.public_state())
+
+        await _messaging_write(
+            srv, websocket, msg, operation="messaging:set", adapter=adapter,
+            write=save, refresh=srv.gateway.reconcile, error_key="lifecycle_error",
+        )
 
     @on("messaging:credential:set")
     async def _messaging_credential_set(srv, websocket, session, msg):
         adapter = str(msg.get("adapter") or "").strip().lower()
-        try:
-            field = str(msg.get("field") or "").strip()
+        field = str(msg.get("field") or "").strip()
+
+        def save():
             value = str(msg.get("value") or msg.get("token") or "")
             if field:
                 srv.messaging_credentials.set(adapter, field, value)
             else:
                 srv.messaging_credentials.set_token(adapter, value)
-            await srv.gateway.restart()
-        except Exception as exc:
-            payload = srv.gateway.public_state()
-            payload["credential_error"] = str(exc)
-            await websocket.send_json(payload)
-            return
-        await srv.hub.broadcast(srv.gateway.public_state())
 
+        await _messaging_write(
+            srv, websocket, msg, operation="messaging:credential:set", adapter=adapter, field=field,
+            write=save, refresh=srv.gateway.restart, error_key="credential_error",
+        )
 
     @on("messaging:credential:clear")
     async def _messaging_credential_clear(srv, websocket, session, msg):
         adapter = str(msg.get("adapter") or "").strip().lower()
-        try:
-            srv.messaging_credentials.clear(adapter, str(msg.get("field") or ""))
-            await srv.gateway.restart()
-        except Exception as exc:
-            payload = srv.gateway.public_state()
-            payload["credential_error"] = str(exc)
-            await websocket.send_json(payload)
-            return
-        await srv.hub.broadcast(srv.gateway.public_state())
+        field = str(msg.get("field") or "").strip()
+        await _messaging_write(
+            srv, websocket, msg, operation="messaging:credential:clear", adapter=adapter, field=field,
+            write=lambda: srv.messaging_credentials.clear(adapter, field),
+            refresh=srv.gateway.restart, error_key="credential_error",
+        )
 
     @on("messaging:pairing:approve")
     async def _messaging_pairing_approve(srv, websocket, session, msg):

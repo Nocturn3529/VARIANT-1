@@ -88,9 +88,15 @@ def register(on):
             if not isinstance(generation, int) or isinstance(generation, bool) or generation < 1:
                 raise ValueError("generation is required")
             result = await srv.require_runtime().kernel.release_idle(chat_id, expected_generation=generation)
+            errors = {
+                "busy": "Stop the active run before closing this kernel.",
+                "stale": "Kernel generation changed; refresh before closing.",
+                "checkpoint_failed": str((result.get("checkpoint") or {}).get("message")
+                                         or "Checkpoint failed. The kernel is still running."),
+            }
             await websocket.send_json({"type": "kernel:release:result", "request_id": request_id,
                                        "chat_id": chat_id, "ok": result["status"] in {"closed", "absent"},
-                                       "error": "Stop the active run before closing this kernel." if result["status"] == "busy" else "Kernel generation changed; refresh before closing." if result["status"] == "stale" else "",
+                                       "error": errors.get(result["status"], ""),
                                        "result": result})
         except Exception:
             await websocket.send_json({"type": "kernel:release:result", "request_id": request_id,

@@ -2,6 +2,8 @@
 
 const assert = require('assert');
 const {EventEmitter} = require('events');
+const exec = require('node:util').promisify(require('node:child_process').execFile);
+const {sweepPosixEngines} = require('../electron-backend-posix-engines');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -100,7 +102,7 @@ function healthServer(instanceId, isHealthy = () => true) {
 }
 
 function writeRecord(portFile, record) {
-  fs.writeFileSync(portFile, JSON.stringify(record), 'utf8');
+  fs.writeFileSync(portFile, JSON.stringify({process_started_at: 1234.5, ...record}), 'utf8');
 }
 
 function managerFor(portFile, overrides = {}) {
@@ -114,6 +116,10 @@ function managerFor(portFile, overrides = {}) {
     logStream: () => {},
     getStatusWindows: () => [],
     killProcessTree: (pid) => killed.push(pid),
+    runFile: async (_command, args) => {
+      const check = args.indexOf('--check-backend-owner');
+      assert.ok(check >= 0 && args[check + 2] === '1234.5', 'fixture authorizes only its own simulated process');
+    },
     killVariant1EngineProcesses: () => {},
     requestGracefulShutdown: async () => false,
     timings: {
@@ -150,7 +156,7 @@ async function testMissingPackagedBackendNeverSpawnsPython(tempDir) {
     const result = managerFor(path.join(resourcesPath, 'port.json'), {deps: {
       app: {isPackaged: true, getVersion: () => VERSION}, resourcesPath, appRoot: resourcesPath,
       spawnProcess: (...args) => {spawns.push(args); throw new Error('Fixture forbids process launch');},
-      execFileSync: (...args) => {subprocesses.push(args); return '';},
+      runFile: (...args) => {subprocesses.push(args); return {stdout: ''};},
       killVariant1EngineProcesses: () => {},
       setTimer: (callback, delay) => {timers.push({callback, delay}); return timers.length;},
       clearTimer: () => {},
@@ -267,6 +273,136 @@ async function testLiveBackendGetsHealthMissGraceBeforeTermination(tempDir) {
   }
 }
 
+async function testStaleRecordNeedsIndependentOwnership(tempDir) {
+  for (const kind of ['legacy', 'different process', 'owned']) {
+    const server = healthServer('fresh');
+    const port = await listen(server);
+    const portFile = path.join(tempDir, kind + '.json');
+    const stale = {port, pid: process.pid, version: VERSION, token: 'old', instance_id: 'stale'};
+    writeRecord(portFile, {...stale, process_started_at: kind === 'legacy' ? undefined : 111});
+    const child = new EventEmitter();
+    child.pid = 45019;
+    let checks = 0;
+    const fixture = managerFor(portFile, {timings: {healthTimeoutMs: 12, unhealthyGraceMs: 12, healthRetryMs: 2}, deps: {
+      isProcessAlive: () => true,
+      runFile: async (_command, args) => {
+        assert.deepEqual(args.slice(-5), ['--check-backend-owner', String(process.pid), '111', 'stale', portFile]);
+        checks++;
+        if (kind !== 'owned') throw new Error('OS identity mismatch');
+      },
+      createInstanceId: () => 'fresh',
+      spawnProcess: () => {
+        writeRecord(portFile, {port, pid: child.pid, version: VERSION, token: 'fresh', instance_id: 'fresh'});
+        return child;
+      },
+    }});
+    try {
+      await fixture.manager.startBackend();
+      assert.equal((await fixture.manager.getInfo()).pid, child.pid, 'stale identity retires and a fresh launch is usable');
+      assert.equal(checks, kind === 'legacy' ? 0 : 1);
+      assert.deepEqual(fixture.killed, kind === 'owned' ? [process.pid] : [], 'an unrelated PID receives zero signals');
+    } finally {
+      await fixture.manager.stopBackend();
+      await closeServer(server);
+    }
+  }
+}
+
+async function testHealthAttemptsSettleOnce(tempDir) {
+  for (const succeeds of [true, false]) {
+    const portFile = path.join(tempDir, 'health-attempts-' + succeeds + '.json');
+    const timers = new Set();
+    let probes = 0;
+    writeRecord(portFile, {port: 41000, version: VERSION, token: 'health', instance_id: 'health', process_started_at: undefined});
+    const fixture = managerFor(portFile, {timings: {healthTimeoutMs: succeeds ? 500 : 30, healthRetryMs: 2}, deps: {
+      httpGet: (_options, response) => {
+        const req = new EventEmitter();
+        req.destroy = () => queueMicrotask(() => req.emit('error', new Error('closed after timeout')));
+        probes++;
+        if (succeeds) queueMicrotask(() => {
+          if (probes < 4) return req.emit('timeout');
+          const res = Object.assign(new EventEmitter(), {statusCode: 200});
+          response(res);
+          res.emit('data', JSON.stringify({version: VERSION, instance_id: 'health', status: 'ok'}));
+          res.emit('end');
+        });
+        return req;
+      },
+      spawnProcess: () => { throw new Error('fixture complete'); },
+      setTimer: (fn, ms) => {
+        const id = setTimeout(() => { timers.delete(id); fn(); }, ms);
+        timers.add(id);
+        return id;
+      },
+      clearTimer: id => { timers.delete(id); clearTimeout(id); },
+    }});
+    try {
+      await fixture.manager.startBackend();
+      const atSettlement = probes;
+      await new Promise(resolve => setTimeout(resolve, 15));
+      assert.equal(probes, atSettlement, 'no probe survives success or a deadline');
+      assert.equal(probes, succeeds ? 4 : 1);
+      assert.equal(timers.size, succeeds ? 0 : 1, 'only the failed launch can have a restart timer');
+    } finally {
+      await fixture.manager.stopBackend();
+    }
+    assert.equal(timers.size, 0);
+  }
+}
+
+async function testAdoptedPidRecheckedOnEvictionAndQuit(tempDir) {
+  for (const operation of ['eviction', 'quit']) {
+    let healthy = true, checked = 0;
+    const server = healthServer(operation, () => healthy);
+    const port = await listen(server);
+    const portFile = path.join(tempDir, 'adopted-reused-' + operation + '.json');
+    writeRecord(portFile, {port, pid: process.pid, version: VERSION, token: 'fixture', instance_id: operation});
+    const fixture = managerFor(portFile, {deps: {
+      isProcessAlive: () => false,
+      runFile: async () => { checked++; throw new Error('PID now belongs to another process'); },
+    }});
+    try {
+      await fixture.manager.startBackend();
+      healthy = false;
+      if (operation === 'eviction') assert.equal(await fixture.manager.getInfo(), null);
+      else await fixture.manager.stopBackend();
+      assert.equal(checked, 1);
+      assert.deepEqual(fixture.killed, [], 'an earlier health response cannot authorize the current PID');
+      assert.equal(fs.existsSync(portFile), false);
+    } finally {
+      await fixture.manager.stopBackend();
+      await closeServer(server);
+    }
+  }
+}
+
+async function testQuitCancelsAnInFlightStartupProbe(tempDir) {
+  let seenResolve, count = 0;
+  const seen = new Promise(resolve => { seenResolve = resolve; });
+  const server = http.createServer((_request, response) => {
+    count++;
+    if (count === 1) return seenResolve(); // Leave startup's probe outstanding.
+    response.writeHead(503); response.end();
+  });
+  const port = await listen(server);
+  const portFile = path.join(tempDir, 'in-flight-quit.json');
+  writeRecord(portFile, {port, pid: process.pid, token: 'fixture', version: VERSION, instance_id: 'quit', process_started_at: undefined});
+  const fixture = managerFor(portFile, {timings: {probeTimeoutMs: 1000, healthTimeoutMs: 1000, healthRetryMs: 1}});
+  try {
+    const starting = fixture.manager.startBackend();
+    await seen;
+    await fixture.manager.stopBackend();
+    await starting;
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(count, 2, 'only the cancelled startup probe and independent quit check reach the backend');
+    assert.deepEqual(fixture.killed, []);
+  } finally {
+    await fixture.manager.stopBackend();
+    server.closeAllConnections();
+    await closeServer(server);
+  }
+}
+
 async function testAliveStartingBackendRecoversDuringStartupGrace(tempDir) {
   let healthy = false;
   const instanceId = 'startup-grace-recovery';
@@ -362,11 +498,11 @@ async function testOwnedCompletionsProtectWorkButOrdinaryOutputDoesNot(tempDir) 
 }
 
 
-function testPosixEnginePathWithSpaces() {
+async function testPosixEnginePathWithSpaces() {
   const spaced = '/opt/VARIANT-1 App/bin/llama-server';
-  const exe = resolvePosixEngineExecutable(4242, 'ignored argv', undefined, {
+  const exe = await resolvePosixEngineExecutable(4242, 'ignored argv', undefined, {
     platform: 'linux',
-    readlinkSync: (target) => {
+    readlink: (target) => {
       assert.strictEqual(target, '/proc/4242/exe');
       return spaced;
     },
@@ -381,14 +517,14 @@ function testPosixEnginePathWithSpaces() {
     isOwnedPosixEnginePath(exe, ['/opt/other-root']),
     false,
   );
-  const whisper = resolvePosixEngineExecutable(7, '', undefined, {
+  const whisper = await resolvePosixEngineExecutable(7, '', undefined, {
     platform: 'linux',
-    readlinkSync: () => '/data/speech models/whisper-server',
+    readlink: () => '/data/speech models/whisper-server',
   });
   assert.strictEqual(whisper, '/data/speech models/whisper-server');
 }
 
-function testPosixEngineIgnoresArgvLookalikes() {
+async function testPosixEngineIgnoresArgvLookalikes() {
   const enginePath = '/opt/VARIANT-1 App/bin/llama-server';
   const decoys = [
     `tail -f ${enginePath}`,
@@ -396,23 +532,23 @@ function testPosixEngineIgnoresArgvLookalikes() {
     `python3 -c "print('${enginePath}')"`,
   ];
   for (const command of decoys) {
-    const exe = resolvePosixEngineExecutable(501, command, undefined, {
+    const exe = await resolvePosixEngineExecutable(501, command, undefined, {
       platform: 'linux',
-      readlinkSync: () => '/usr/bin/tail',
+      readlink: () => '/usr/bin/tail',
     });
     assert.strictEqual(exe, '',
       `argv lookalike must not select an engine: ${command}`);
   }
   // Even if argv names the engine path, unverified identity skips cleanup.
-  const fromArgvOnly = resolvePosixEngineExecutable(502, enginePath + ' --port 1', undefined, {
+  const fromArgvOnly = await resolvePosixEngineExecutable(502, enginePath + ' --port 1', undefined, {
     platform: 'linux',
-    readlinkSync: () => { const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err; },
+    readlink: () => { const err = new Error('ENOENT'); err.code = 'ENOENT'; throw err; },
   });
   assert.strictEqual(fromArgvOnly, '',
     'stale/missing /proc/pid/exe must not fall back to argv');
 }
 
-function testPosixEngineMultipleAndStalePids() {
+async function testPosixEngineMultipleAndStalePids() {
   const map = {
     10: '/opt/app/bin/llama-server',
     11: '/opt/app/bin/whisper-server',
@@ -420,7 +556,7 @@ function testPosixEngineMultipleAndStalePids() {
   };
   const deps = {
     platform: 'linux',
-    readlinkSync: (target) => {
+    readlink: (target) => {
       const pid = Number(String(target).split('/')[2]);
       if (!(pid in map)) {
         const err = new Error('ENOENT');
@@ -430,26 +566,26 @@ function testPosixEngineMultipleAndStalePids() {
       return map[pid];
     },
   };
-  assert.strictEqual(resolvePosixEngineExecutable(10, '', undefined, deps), map[10]);
-  assert.strictEqual(resolvePosixEngineExecutable(11, '', undefined, deps), map[11]);
-  assert.strictEqual(resolvePosixEngineExecutable(12, '', undefined, deps), map[12]);
-  assert.strictEqual(resolvePosixEngineExecutable(99, 'llama-server', undefined, deps), '');
-  assert.strictEqual(resolvePosixEngineExecutable(0, '', undefined, deps), '');
+  assert.strictEqual(await resolvePosixEngineExecutable(10, '', undefined, deps), map[10]);
+  assert.strictEqual(await resolvePosixEngineExecutable(11, '', undefined, deps), map[11]);
+  assert.strictEqual(await resolvePosixEngineExecutable(12, '', undefined, deps), map[12]);
+  assert.strictEqual(await resolvePosixEngineExecutable(99, 'llama-server', undefined, deps), '');
+  assert.strictEqual(await resolvePosixEngineExecutable(0, '', undefined, deps), '');
   assert.strictEqual(
-    resolvePosixEngineExecutable(10, '', undefined, {platform: 'win32'}),
+    await resolvePosixEngineExecutable(10, '', undefined, {platform: 'win32'}),
     '',
     'Windows has no POSIX executable identity lookup',
   );
 }
 
-function testDarwinEngineUsesLsofTextNotArgv() {
+async function testDarwinEngineUsesLsofTextNotArgv() {
   const engine = '/Applications/VARIANT-1.app/Contents/Resources/bin/llama-server';
   const calls = [];
-  const exe = resolvePosixEngineExecutable(4242, `tail -f ${engine}`, undefined, {
+  const exe = await resolvePosixEngineExecutable(4242, `tail -f ${engine}`, undefined, {
     platform: 'darwin',
-    execFileSync(command, args) {
+    runFile(command, args) {
       calls.push({command, args});
-      return ['p4242', 'ftxt', 'n' + engine].join('\n');
+      return {stdout: ['p4242', 'ftxt', 'n' + engine].join('\n')};
     },
   });
   assert.strictEqual(exe, engine);
@@ -458,20 +594,20 @@ function testDarwinEngineUsesLsofTextNotArgv() {
     args: ['-a', '-p', '4242', '-d', 'txt', '-F', 'n'],
   }]);
   assert.strictEqual(isOwnedPosixEnginePath(exe, ['/Applications/VARIANT-1.app']), true);
-  assert.strictEqual(resolvePosixEngineExecutable(7, engine + ' --port 1', undefined, {
+  assert.strictEqual(await resolvePosixEngineExecutable(7, engine + ' --port 1', undefined, {
     platform: 'darwin',
-    execFileSync() { return 'n/usr/bin/tail\n'; },
+    runFile() { return {stdout: 'n/usr/bin/tail\n'}; },
   }), '');
-  assert.strictEqual(resolvePosixEngineExecutable(8, engine, undefined, {
+  assert.strictEqual(await resolvePosixEngineExecutable(8, engine, undefined, {
     platform: 'darwin',
-    execFileSync() { throw new Error('lsof missing'); },
+    runFile() { throw new Error('lsof missing'); },
   }), '');
-  assert.strictEqual(resolvePosixEngineExecutable(9, '', undefined, {
+  assert.strictEqual(await resolvePosixEngineExecutable(9, '', undefined, {
     platform: 'darwin',
-    execFileSync() { return 'n/bin/llama-server\nn/bin/whisper-server\n'; },
+    runFile() { return {stdout: 'n/bin/llama-server\nn/bin/whisper-server\n'}; },
   }), '');
 }
-function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
+async function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
   if (process.platform !== 'win32') return;
   const calls = [];
   const resourcesPath = path.join(tempDir, 'packaged-resources');
@@ -485,10 +621,10 @@ function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
     log: () => {},
     logStream: () => {},
     getStatusWindows: () => [],
-    execFileSync: (command, args) => calls.push({command, args}),
+    runFile: async (command, args) => { calls.push({command, args}); return {stdout: ''}; },
   });
 
-  manager.killVariant1EngineProcesses();
+  await manager.killVariant1EngineProcesses();
   const powershell = calls.find((call) => call.command === 'powershell.exe');
   assert.ok(powershell, 'Windows cleanup must execute the owned-process query');
   const script = powershell.args.at(-1);
@@ -499,6 +635,48 @@ function testPackagedEngineCleanupUsesOwnedRoots(tempDir) {
   ), 'the user-data speech runtime must be an owned cleanup root');
   assert.match(script, /\.Equals\(\$root,[\s\S]*\.StartsWith\(\$prefix/,
     'cleanup must use exact-root or subtree boundaries instead of a loose prefix');
+  // Run only the read-only WQL on this machine. Exercise the sweep itself with
+  // synthetic rows and a local Stop-Process stub, including a PID reused mid-scan.
+  const query = script.match(/Get-CimInstance Win32_Process -Filter "[^"]+" -ErrorAction Stop/)[0];
+  const shellOptions = {windowsHide: true, timeout: 10000};
+  await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query + ' | Out-Null'], shellOptions);
+  const quote = value => "'" + value.replace(/'/g, "''") + "'";
+  const fixture = [
+    '$birth = [datetime]"2026-01-01T10:00:00Z"',
+    '$rows = @(',
+    ...[resourcesPath, resourcesPath + '-other', resourcesPath].map((base, index) =>
+      `[pscustomobject]@{ProcessId=${2100000000 + index}; ExecutablePath=${quote(path.join(base, 'llama-server.exe'))}; CreationDate=$birth}`),
+    ')',
+    'function Get-CimInstance { $rows }',
+    'function Get-Process { param($Id) $original = $rows | Where-Object { $_.ProcessId -eq $Id };',
+    '  [pscustomobject]@{Id=$Id; Path=$original.ExecutablePath; StartTime=$birth.AddSeconds([int]($Id -eq 2100000002))} }',
+    'function Stop-Process { param($InputObject,[switch]$Force) Write-Output $InputObject.Id }',
+    script,
+  ].join('\n');
+  const {stdout} = await exec('powershell.exe', ['-NoProfile','-NonInteractive','-Command',fixture], shellOptions);
+  assert.equal(stdout.trim(), '2100000000');
+}
+
+async function testMacEngineSweepFiltersBeforeIdentity() {
+  const roots = ['/Applications/VARIANT-1 App'];
+  const engine = roots[0] + '/bin/llama-server';
+  const rows = Array.from({length: 600}, (_, n) => `${n + 2} unrelated`);
+  rows.push('700 ' + engine, '701 /elsewhere/whisper-server');
+  const lookups = [], signals = [];
+  let mainLoopTurn = false;
+  await sweepPosixEngines(roots, {platform: 'darwin', timeout: 1000, log() {},
+    signal: pid => signals.push(pid),
+    runFile: async (file, args) => {
+      if (file === 'ps') return {stdout: rows.join('\n')};
+      assert.equal(file, '/usr/sbin/lsof');
+      lookups.push(args[2]);
+      await new Promise(resolve => setImmediate(() => { mainLoopTurn = true; resolve(); }));
+      return {stdout: 'n' + (args[2] === '700' ? engine : '/elsewhere/whisper-server')};
+    },
+  });
+  assert.deepEqual(lookups, ['700', '701']);
+  assert.deepEqual(signals, [700]);
+  assert.equal(mainLoopTurn, true);
 }
 
 async function testOverlayReceivesOnlyScopedActivityStatus(tempDir) {
@@ -848,6 +1026,9 @@ async function testQuitDuringReadinessUsesVerifiedPortRecord(tempDir) {
   });
   try {
     const starting = result.manager.startBackend();
+    const until = Date.now() + 1000;
+    while (!fs.existsSync(portFile) && Date.now() < until) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(fs.existsSync(portFile), 'the child published before quit');
     await result.manager.stopBackend();
     await starting;
     assert.deepStrictEqual(steps, ['request:44599', 'wait'],
@@ -992,14 +1173,19 @@ async function main() {
     await testShutdownHttpContract();
     await testAdoptedBackendLivenessAndQuitOwnership(tempDir);
     await testLiveBackendGetsHealthMissGraceBeforeTermination(tempDir);
+    await testStaleRecordNeedsIndependentOwnership(tempDir);
+    await testHealthAttemptsSettleOnce(tempDir);
+    await testAdoptedPidRecheckedOnEvictionAndQuit(tempDir);
+    await testQuitCancelsAnInFlightStartupProbe(tempDir);
     await testAliveStartingBackendRecoversDuringStartupGrace(tempDir);
     await testProbeFailureFallsBackToOs(tempDir);
     await testOwnedCompletionsProtectWorkButOrdinaryOutputDoesNot(tempDir);
-    testPosixEnginePathWithSpaces();
-    testPosixEngineIgnoresArgvLookalikes();
-    testPosixEngineMultipleAndStalePids();
-    testDarwinEngineUsesLsofTextNotArgv();
-    testPackagedEngineCleanupUsesOwnedRoots(tempDir);
+    await testPosixEnginePathWithSpaces();
+    await testPosixEngineIgnoresArgvLookalikes();
+    await testPosixEngineMultipleAndStalePids();
+    await testDarwinEngineUsesLsofTextNotArgv();
+    await testMacEngineSweepFiltersBeforeIdentity();
+    await testPackagedEngineCleanupUsesOwnedRoots(tempDir);
     await testOverlayReceivesOnlyScopedActivityStatus(tempDir);
     await testReadinessFailureSchedulesOnlyOneRestart(tempDir);
     await testReadinessRestartWaitsForTreeTermination(tempDir);

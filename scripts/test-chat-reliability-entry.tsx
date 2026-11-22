@@ -180,6 +180,27 @@ export async function run() {
     assert.equal(step.status,"done");
   }
   done("live-thoughts","Finished");
+  reset();
+  for (const id of ["first-run", "second-run"]) {
+    sendUserMessage("Check the process");start(id);
+    const event = (fields: Record<string,unknown>) => incoming({...route(id), ...fields});
+    event({type:"token",segment:1,token:"I’ll check the process logs."});
+    event({type:"tool:activity",event:"tool:start",tool:"ipython",call_id:"shared",status:"running"});
+    event({type:"activity",event:"tool:result",tool:"ipython",call_id:"shared",status:"ok",cell_action:"Read process logs"});
+    event({type:"activity",event:"tool:result",tool:"ipython",call_id:"silent",status:"error",cell_action:"Requested stop and confirmed exit"});
+    event({type:"token",segment:3,token:"The lookup failed. I’ll list the processes again."});
+    event({type:"tool:activity",event:"tool:start",tool:"ipython",call_id:"retry",status:"running"});
+    event({type:"activity",event:"tool:result",tool:"ipython",call_id:"retry",status:"ok",cell_action:"Listed processes"});
+    event({type:"activity",event:"task:done",status:"ok",text:"Finished."});
+    const rows=getChatState().turnSteps;
+    assert.deepEqual(rows.map(s=>s.kind), ["text","tool","tool","text","tool"]);
+    assert.deepEqual(rows.filter(s=>s.kind==="tool").map(s=>s.cellAction), ["Read process logs",undefined,"Listed processes"]);
+    done(id,"Finished.");
+  }
+  incoming({...route("first-run"),type:"activity",event:"tool:result",tool:"ipython",call_id:"shared",
+    status:"ok",cell_action:"Checked process state",durable_replay:true});
+  const sameId=getChatState().messages.filter(m=>m.role==="assistant").map(m=>m.steps?.find(s=>s.callId==="shared"));
+  assert.deepEqual(sameId.map(s=>s?.cellAction),["Checked process state","Read process logs"],"a replay enriches only its own run");
   reset();sendUserMessage("Audit");start("trace-audit");
   const audit=(event:string,extra:Record<string,unknown>={})=>incoming({type:"tool:activity",...route("trace-audit"),event,tool:"read_file",status:"running",surface:"both",...extra});
   audit("tool:start",{call_id:"a"});audit("tool:result",{call_id:"a",status:"error",text:"Synthetic diagnostic"});

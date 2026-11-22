@@ -1,6 +1,8 @@
 import type {RuntimeApi} from "../types";
 import {registerWorkbenchBrowser,type WorkbenchWebview} from "./browserBridge";
+import {BrowserCommandError} from "./browserLifecycle";
 import {noteBrowserPage} from "./previewStore";
+import {nativeSurfaceDocument} from "./nativeWindowStore";
 
 type Attachment={id:string;host:HTMLElement;windowId:string;signature:string;frame:number;timer:ReturnType<typeof setTimeout>|null;cleanup:()=>void;sync:()=>void};
 type RetainedBrowser={guest:WorkbenchWebview;state:Record<string,unknown>;api:RuntimeApi;attachment:Attachment|null;unregister:()=>void;navigationRevision:number;update:Promise<unknown>;layoutError:string};
@@ -32,8 +34,12 @@ export function retainedBrowser(id:string,url:string,api:RuntimeApi,navigationRe
   const browser:RetainedBrowser={guest,state:{url,loading:true,zoomFactor:1},api,attachment:null,unregister:()=>{},navigationRevision,update:Promise.resolve(),layoutError:""};
   const call=async(method:string,args:unknown[]=[])=>{
     const result=await browser.api.workbenchBrowser?.({action:"call",tabId:id,method,args});
-    if(browsers.get(id)!==browser)throw new Error("Browser tab was closed");
-    if(!result?.ok)throw new Error(result?.error || "Browser operation failed");
+    if(browsers.get(id)!==browser)throw new BrowserCommandError("GUEST_REPLACED","Browser tab was closed","guest");
+    if(!result)throw new BrowserCommandError("HOST_DISCONNECTED","The browser host is unavailable","connection");
+    if(!result.ok){
+      if(result.code==="GUEST_REPLACED" || result.code==="GUEST_STOPPED")throw new BrowserCommandError(result.code,result.error || "Browser guest is unavailable","guest");
+      throw new Error(result.error || "Browser operation failed");
+    }
     if(result.state)applyState(id,browser,result.state);return result.value;
   };
   const quiet=(method:string,args:unknown[]=[])=>void call(method,args).catch(error=>emit(browser,"console-message",{level:3,message:String(error)}));
@@ -44,7 +50,23 @@ export function retainedBrowser(id:string,url:string,api:RuntimeApi,navigationRe
     viewport:browser.state.viewport as {width:number;height:number}|undefined});
   guest.isDevToolsOpened=()=>browser.state.devToolsOpened===true;
   guest.lease=async()=>{const result=await browser.api.workbenchBrowser?.({action:"lease",tabId:id,ms:2000});if(result?.ok && result.state && browsers.get(id)===browser)applyState(id,browser,result.state);};
-  guest.flushLayout=async()=>{browser.attachment?.sync();await browser.update;if(browser.layoutError)throw new Error(browser.layoutError);};
+  guest.flushLayout=async(settleTransfer=false)=>{
+    const surface = settleTransfer && browser.attachment?.host.closest<HTMLElement>("[data-native-surface]")?.dataset.nativeSurface;
+    if (surface) {
+      const deadline = Date.now() + 1600;
+      // A popout is opened before its document can adopt the existing guest. Avoid starting
+      // the read on an attachment that the requested presentation is about to replace.
+      while (browsers.get(id) === browser) {
+        const target = nativeSurfaceDocument(surface), current = browser.attachment;
+        if (target && current?.host.ownerDocument === target && current.windowId === (target === document ? "" : surface)) break;
+        if (Date.now() >= deadline) throw new Error("The browser panel is still moving between windows");
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+    }
+    browser.attachment?.sync();
+    await browser.update;
+    if(browser.layoutError)throw new Error(browser.layoutError);
+  };
   guest.loadURL=async value=>{await call("loadURL",[value]);};
   guest.executeJavaScript=(code,userGesture)=>call("executeJavaScript",[code,!!userGesture]);
   guest.sendInputEvent=async event=>{await call("sendInputEvent",[event]);};

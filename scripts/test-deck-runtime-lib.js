@@ -126,8 +126,8 @@ assert.ok(reportBlocks.some(b => b.type === 'table'));
 
 assert.match(
   messageListSource,
-  /turnWasActiveRef[\s\S]*if\s*\(active\s*&&\s*!turnWasActiveRef\.current\)/,
-  'a newly active turn may opt into bottom anchoring',
+  /if\s*\(active\s*&&\s*!turnWasActiveRef\.current\s*&&\s*!match\)[\s\S]*?stickToBottomRef\.current = true/,
+  'a new turn follows the bottom unless the user is reading a selected history match',
 );
 assert.doesNotMatch(
   messageListSource,
@@ -161,8 +161,8 @@ assert.match(activitySource, /rows\.map\(row =>[\s\S]*<TraceEntry row=\{row\}/,
   'the collapsible execution trace must retain recorded row order');
 assert.match(
   activitySource,
-  /className="trace-entry__related"[\s\S]*onClick=\{\(\) => revealPaneForStep\(step\)\}/,
-  'tool activity should retain a semantic keyboard action to its related pane',
+  /<button type="button" className="trace-entry__related"[^\n]*aria-label=[^\n]*onClick=\{\(\) => void revealPaneForStep\(step, scope\[0\]\)\}/,
+  'the related-pane button should remain keyboard accessible and open evidence in its owning chat',
 );
 assert.match(activitySource, /step.kind === "thinking"[\s\S]*showStatus = live && !suppressStatus[\s\S]*!active && !streamText/,
   'thought content and unnamed waits must remain distinct');

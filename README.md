@@ -107,6 +107,10 @@ npm run setup:backend
 npm start
 ```
 
+Backend setup installs the pinned cua-driver for computer use. After updating
+an existing checkout, run `node scripts/install-cua-driver.js` to refresh its
+local copy.
+
 After launch, configure a supported provider or local runtime in the app.
 Provider Settings distinguishes saved accounts from recently checked connections.
 Use **Check** to refresh a service's status; model listing access does not certify

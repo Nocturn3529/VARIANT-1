@@ -1,5 +1,5 @@
 /** Registry-driven web-search Settings surface. */
-import {useEffect, useMemo, useState, type FormEvent} from "react";
+import {useEffect, useMemo, useRef, useState, type FormEvent} from "react";
 import {
   notifyAgentTools,
   refreshAgentTools,
@@ -9,6 +9,7 @@ import {
 import type {WebSearchProvider, WebSearchProviderInfo} from "./types";
 import {Button} from "./ui/Button";
 import {Switch} from "./ui/Switch";
+import {useSaveRecovery} from "./state/useSaveRecovery";
 
 function providerStatus(provider: WebSearchProviderInfo): string {
   if (provider.active) return "Active";
@@ -39,15 +40,22 @@ function ProviderListRow({
 }
 
 function CredentialEditor({provider}: {provider: WebSearchProviderInfo}) {
-  const {toolsReceipt} = useAgentToolsState();
+  const {connected, toolsReceipt} = useAgentToolsState();
   const [draft, setDraft] = useState("");
   const [requestId, setRequestId] = useState("");
+  const submitted = useRef("");
+  const refresh = () => sendAgentTools({type:"tools:get"});
+  const recovery = useSaveRecovery(toolsReceipt?.requestId===requestId ? null : requestId || null, connected, provider, {
+    release: () => setRequestId(""), refresh,
+    describe: () => provider.configured ? submitted.current ? "A credential is configured. The submitted key could not be verified." : "The refreshed provider still has a credential."
+      : "The refreshed provider has no configured credential.",
+  });
 
   useEffect(() => {
     if (!requestId || toolsReceipt?.requestId !== requestId) return;
     if (toolsReceipt.status === "accepted") {
-      setDraft("");
-      notifyAgentTools(`${provider.name} credential saved`);
+      setDraft(current => current === submitted.current ? "" : current);
+      notifyAgentTools(`${provider.name} credential ${submitted.current ? "saved" : "removed"}`);
     } else {
       notifyAgentTools(toolsReceipt.error || `Could not save ${provider.name} credential`);
     }
@@ -57,7 +65,9 @@ function CredentialEditor({provider}: {provider: WebSearchProviderInfo}) {
   function save(event: FormEvent) {
     event.preventDefault();
     const key = draft.trim();
-    if (!key) return;
+    if (!key || requestId || recovery.waiting) return;
+    recovery.reset();
+    submitted.current = draft;
     const id = `web-key-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sendAgentTools({
       type: "web_search:credential:set", request_id: id,
@@ -70,6 +80,9 @@ function CredentialEditor({provider}: {provider: WebSearchProviderInfo}) {
   }
 
   function clear() {
+    if (requestId || recovery.waiting) return;
+    recovery.reset();
+    submitted.current = "";
     const id = `web-key-clear-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (!sendAgentTools({
       type: "web_search:credential:clear", request_id: id,
@@ -102,8 +115,9 @@ function CredentialEditor({provider}: {provider: WebSearchProviderInfo}) {
         autoComplete="off"
         spellCheck={false}
       />
-      <Button type="submit" tone="primary" disabled={!draft.trim() || !!requestId}>Save</Button>
-      {provider.configured ? <Button tone="quiet" disabled={!!requestId} onClick={clear}>Remove</Button> : null}
+      <Button type="submit" tone="primary" disabled={!draft.trim() || !!requestId || recovery.waiting}>Save</Button>
+      {provider.configured ? <Button tone="quiet" disabled={!!requestId || recovery.waiting} onClick={clear}>Remove</Button> : null}
+      {recovery.message && <p role="status">{recovery.message} {recovery.waiting && connected && <Button onClick={refresh}>Refresh</Button>}</p>}
     </form>
     {provider.signup_url ? <a href={provider.signup_url} target="_blank" rel="noreferrer">Get a key ↗</a> : null}
   </section>;
@@ -217,7 +231,7 @@ export function AgentToolsSettings() {
           provider={provider} selected={selected?.id === provider.id}
           onSelect={() => setSelectedId(provider.id)}/>)}
       </nav>
-      {selected ? <ProviderDetail provider={selected}/> : <p className="provider-empty">No search providers available.</p>}
+      {selected ? <ProviderDetail key={selected.id} provider={selected}/> : <p className="provider-empty">No search providers available.</p>}
     </div>
   </div>;
 }

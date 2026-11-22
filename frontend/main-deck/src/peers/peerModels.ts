@@ -14,13 +14,19 @@ export type PeerMessage=Readonly<{
 }>;
 export const record=(value:unknown):Record<string,unknown>=>value && typeof value==="object" && !Array.isArray(value) ? value as Record<string,unknown> : {};
 const version=(value:unknown)=>typeof value==="number" && Number.isSafeInteger(value) && value>=0 ? value : 0;
+export function peerCapabilities(row:Record<string,unknown>):Record<string,unknown> {
+  const capabilities=record(row.capabilities);
+  return typeof row.live_ingress==="boolean" ? {...capabilities,live_ingress:row.live_ingress} : capabilities;
+}
 export function parsePeer(value:unknown):PeerEndpoint|null {
   const row=record(value);
   if(typeof row.peer_id!=="string" || !row.peer_id || !["variant_chat","external_harness"].includes(String(row.kind)))return null;
   return {peer_id:row.peer_id,kind:row.kind as PeerEndpoint["kind"],display_name:String(row.display_name || row.peer_id),status:String(row.status || "unknown"),revision:version(row.revision),
     ...(typeof row.chat_id==="string" ? {chat_id:row.chat_id} : {}),...(typeof row.terminal_id==="string" ? {terminal_id:row.terminal_id} : {}),
     ...(typeof row.external_session_id==="string" ? {external_session_id:row.external_session_id} : {}),
-    project:row.project,model_route:row.model_route,capabilities:record(row.capabilities),delivery_mode:typeof record(row.metadata).delivery_mode==="string" ? String(record(row.metadata).delivery_mode) : ""};
+    project:row.project,model_route:row.model_route,
+    capabilities:peerCapabilities(row),
+    delivery_mode:typeof row.delivery_mode==="string" ? row.delivery_mode : String(record(row.metadata).delivery_mode || "")};
 }
 export function parsePeerMessage(value:unknown):PeerMessage|null {
   const row=record(value);

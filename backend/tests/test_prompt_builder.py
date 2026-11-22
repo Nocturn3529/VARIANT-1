@@ -41,6 +41,15 @@ def test_user_image_context_is_labeled_as_attached_images(tmp_path):
     assert "## Screen" not in out
 
 
+def test_public_progress_guidance_belongs_to_interactive_chat(tmp_path):
+    ctx = PromptContext()
+    progress = "alongside the first tool call in the same response"
+    assert progress in chat_prompt_projection(ctx).stable
+    assert progress not in build_chat_current_context(ctx)
+    assert progress not in build_task_system(ctx)
+    assert progress not in build_subagent_system("", "", template_dirs=(str(tmp_path),))
+
+
 def test_empty_attachment_context_adds_no_screen_access_claim(tmp_path):
     out = build_chat_system(PromptContext())
 

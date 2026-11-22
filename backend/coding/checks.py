@@ -191,7 +191,9 @@ class CheckService:
 
         # A nominally passing command is evidence only for the exact snapshot
         # it began on.  Any mutation during the command stales the review.
-        after = self.reviews.git.status(review.root, repository_id=review.repository_id)
+        after = self.reviews.git.status(
+            review.root, repository_id=review.repository_id, paths=review.summary.get("paths"),
+        )
         changed = (
             after.head_oid != review.head_oid
             or after.fingerprint != review.status_fingerprint

@@ -237,6 +237,9 @@ class DesktopFabric:
         record = self.bind(window)
         self._attach_binding(record)
         live_capture: AdapterCapture = await self.adapter.capture(record)
+        return self._record_capture(record, live_capture)
+
+    def _record_capture(self, record: WindowRecord, live_capture: AdapterCapture) -> DesktopCapture:
         if not live_capture.png:
             raise DesktopUnavailable("desktop capture produced an empty payload")
         artifact = self.artifact_store.put_bytes(
@@ -266,7 +269,11 @@ class DesktopFabric:
                 f"observation mode must be one of {sorted(OBSERVATION_MODES)}")
         record = self.bind(window)
         self._attach_binding(record)
-        live = await self.adapter.observe(record, mode=normalized_mode)
+        observe_with_capture = getattr(self.adapter, "observe_with_capture", None)
+        if include_image and callable(observe_with_capture):
+            live = await observe_with_capture(record, mode=normalized_mode)
+        else:
+            live = await self.adapter.observe(record, mode=normalized_mode)
         return await self._record_observation(
             record, live, mode=normalized_mode, include_image=include_image,
             scope=scope,
@@ -284,10 +291,15 @@ class DesktopFabric:
         capture = None
         capture_error = ""
         if include_image:
-            try:
-                capture = await self.capture(record)
-            except DesktopUnavailable as exc:
-                capture_error = str(exc)
+            if live.image is not None:
+                capture = self._record_capture(record, live.image)
+            elif live.image_error:
+                capture_error = live.image_error
+            else:
+                try:
+                    capture = await self.capture(record)
+                except DesktopUnavailable as exc:
+                    capture_error = str(exc)
         observation_id = new_desktop_id("obs")
         visual = live.visual if mode in {"fused", "visual"} else ()
         uia = live.uia if mode in {"fused", "uia"} else ()
@@ -392,6 +404,9 @@ class DesktopFabric:
                 "The 'id=...' string is not selector syntax. Refresh with "
                 "computer.observe(window=view.window, include_text=True)."
             )
+        if len(matches) > 1:
+            # A display label can repeat the name of its actionable control.
+            matches = [item for item in matches if not item.states.get("display_only")] or matches
         if len(matches) != 1:
             raise DesktopAmbiguousTarget(
                 f"target resolved to {len(matches)} current elements")
@@ -403,6 +418,8 @@ class DesktopFabric:
     ) -> None:
         if not action.strip():
             raise DesktopValidationError("desktop action is required")
+        if element is not None and element.states.get("display_only"):
+            raise DesktopUnavailable("this accessibility row is display-only and has no input target")
         if delivery != "semantic":
             return
         normalized = action.casefold()
@@ -555,25 +572,6 @@ class DesktopFabric:
                               "adapter_error": f"{type(exc).__name__}: {exc}"[:1000]},
                     error=f"desktop delivery outcome is unknown: {exc}"[:1000],
                 )
-            if not dispatch.delivered:
-                return self.repository.transition_operation(
-                    operation.operation_id, expected="dispatched", state="no_effect",
-                    evidence={"delivery_possible": False, "method": dispatch.method,
-                              "automatic_retry": False},
-                )
-            try:
-                after_record, focus_state = await self._post_action_window(record)
-            except BaseException as exc:
-                failed = self.repository.transition_operation(
-                    operation.operation_id, expected="dispatched", state="unknown_effect",
-                    evidence={"delivery_possible": True, "automatic_retry": False,
-                              "input_sent": True, "method": dispatch.method,
-                              "post_action_window_error": f"{type(exc).__name__}: {exc}"[:1000]},
-                    error="input was delivered but window ownership could not be resolved",
-                )
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
-                return failed
             actual_delivery = str(
                 dispatch.metadata.get("selected_delivery")
                 or (
@@ -584,10 +582,39 @@ class DesktopFabric:
                     else "physical"
                 )
             )
-            if actual_delivery != "semantic" and not focus_state.get("accepted"):
+            dispatch_receipt = {
+                "selected_delivery": actual_delivery,
+                "input_sent": dispatch.delivered,
+                "actual_method": dispatch.method,
+                "delivery_possible": dispatch.delivered,
+                "metadata": dict(dispatch.metadata),
+                "automatic_retry": False,
+            }
+            if not dispatch.delivered:
+                return self.repository.transition_operation(
+                    operation.operation_id, expected="dispatched", state="no_effect",
+                    dispatch=dispatch_receipt,
+                    evidence={"delivery_possible": False, "method": dispatch.method,
+                              "automatic_retry": False},
+                )
+            try:
+                after_record, focus_state = await self._post_action_window(record)
+            except BaseException as exc:
+                failed = self.repository.transition_operation(
+                    operation.operation_id, expected="dispatched", state="unknown_effect",
+                    dispatch=dispatch_receipt,
+                    evidence={"delivery_possible": True, "automatic_retry": False,
+                              "input_sent": True, "method": dispatch.method,
+                              "post_action_window_error": f"{type(exc).__name__}: {exc}"[:1000]},
+                    error="input was delivered but window ownership could not be resolved",
+                )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return failed
+            if actual_delivery not in {"semantic", "background"} and not focus_state.get("accepted"):
                 return self.repository.transition_operation(
                     operation.operation_id, expected="dispatched",
-                    state="unknown_effect",
+                    state="unknown_effect", dispatch=dispatch_receipt,
                     evidence={"method": dispatch.method, "focus_stolen": True,
                               "delivery_possible": True, "automatic_retry": False,
                               "input_sent": True, "live_state": focus_state},
@@ -617,7 +644,7 @@ class DesktopFabric:
                 try:
                     self.repository.transition_operation(
                         operation.operation_id, expected="dispatched",
-                        state="unknown_effect",
+                        state="unknown_effect", dispatch=dispatch_receipt,
                         evidence={
                             "method": dispatch.method,
                             "delivery_possible": True,
@@ -632,7 +659,7 @@ class DesktopFabric:
             except BaseException as exc:
                 return self.repository.transition_operation(
                     operation.operation_id, expected="dispatched",
-                    state="unknown_effect",
+                    state="unknown_effect", dispatch=dispatch_receipt,
                     evidence={"method": dispatch.method, "delivery_possible": True,
                               "automatic_retry": False,
                               "input_sent": True,
@@ -642,13 +669,7 @@ class DesktopFabric:
             operation = self.repository.transition_operation(
                 operation.operation_id, expected="dispatched", state="observed",
                 after_observation_id=after.observation_id,
-                dispatch={"selected_delivery": actual_delivery,
-                          "input_sent": True,
-                          "actual_method": dispatch.method,
-                          "delivery_possible": True,
-                          "metadata": dict(dispatch.metadata),
-                          "post_action_owner_recheck": owner_rechecked,
-                          "automatic_retry": False},
+                dispatch={**dispatch_receipt, "post_action_owner_recheck": owner_rechecked},
             )
             if after_record.window_id != record.window_id and not expectation_value:
                 verification = VerificationResult("verified", {

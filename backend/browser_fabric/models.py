@@ -66,6 +66,15 @@ class BrowserUnavailable(BrowserFabricError):
     """A configured adapter cannot currently acquire its browser."""
 
 
+class BrowserCommandError(BrowserFabricError):
+    """The connected browser host acknowledged a failed command."""
+
+    def __init__(self, message: str, *, code: str = "", phase: str = "") -> None:
+        super().__init__(message)
+        self.code = code
+        self.phase = phase
+
+
 class BrowserUnknownEffect(BrowserFabricError):
     """A dispatched mutation ended without an authoritative observation."""
 
@@ -638,6 +647,7 @@ __all__ = [
     "OPERATION_STATES",
     "SESSION_STATES",
     "TARGET_STATES",
+    "BrowserCommandError",
     "BrowserConflict",
     "BrowserExpectedState",
     "BrowserFabricError",

@@ -22,7 +22,7 @@ export type WsMessage<T extends string = string> = Readonly<{
 export const REACT_MODULE_MESSAGE_TYPES = {
   "react-runtime-kernels": ["kernel:inventory:result", "kernel:release:result", "kernel:accepted", "kernel:rejected", "kernel:history"],
   "react-runtime-platform": [
-    "hello", "config", "engine", "tools", "messaging:gateway", "messaging:error",
+    "hello", "config", "engine", "tools", "messaging:gateway", "messaging:error", "messaging:write_result",
     "cloud:usage",
     "cloud:provider:checked",
     "cloud:oauth:disconnect:error",
@@ -70,7 +70,7 @@ export const REACT_MODULE_MESSAGE_TYPES = {
   ],
   "react-runtime-sessions": [
     "chat:project:result", "error",
-    "chat:sessions", "chat:session:deleted", "chat:search:results", "chat:session:error", "chat:switch:result", "chat:new:result",
+    "chat:sessions", "chat:session:deleted", "chat:search:results", "chat:history:window", "chat:session:error", "chat:switch:result", "chat:new:result",
   ],
   "react-runtime-session-context": [
     "chat:context", "model:options", "model:options:error", "session:settings:ack", "session:settings:snapshot",

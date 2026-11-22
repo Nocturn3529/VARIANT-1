@@ -231,6 +231,45 @@ def test_automation_store_add_defaults_to_durable(tmp_path):
     assert listed[0]["durable_checkpoints"] is True
 
 
+@pytest.mark.parametrize("after_minutes", [0, 30])
+def test_new_schedule_waits_for_its_first_occurrence_after_creation(tmp_path, monkeypatch, after_minutes):
+    path = str(tmp_path / "automations.json")
+    started = datetime(2024, 1, 5, 21, 12).timestamp()
+    scheduled = datetime(2024, 1, 5, 22, 12).timestamp()
+    store = AutomationStore(path)
+    with monkeypatch.context() as clock:
+        clock.setattr(automation_store.time, "time", lambda: started)
+        task = store.add("Evening", "Run", {"type": "daily", "time": "22:12"}, create_request_id="new-evening")
+
+    reopened = AutomationStore(path)
+    assert reopened.get(task["id"])["schedule_started_at"] == started
+    assert reopened.claim_due_tasks(now_ts=started) == []
+    assert reopened.claim_due_tasks(now_ts=scheduled - 1) == []
+    assert reopened.add("Evening", "Run", {"type": "daily", "time": "22:12"},
+                        create_request_id="new-evening")["schedule_started_at"] == started
+    assert reopened.claim_due_tasks(now_ts=scheduled + after_minutes * 60)[0]["task"]["id"] == task["id"]
+
+
+def test_trigger_edit_starts_a_new_schedule_after_settling_an_existing_claim(tmp_path, monkeypatch):
+    store = AutomationStore(str(tmp_path / "automations.json"))
+    first_day = datetime(2024, 1, 4, 8).timestamp()
+    with monkeypatch.context() as clock:
+        clock.setattr(automation_store.time, "time", lambda: first_day)
+        task = store.add("Recurring", "Run", {"type": "daily", "time": "09:00"})
+    identifier = task["id"]
+    claim, = store.claim_due_tasks(now_ts=first_day + 3600)
+    edit_time = datetime(2024, 1, 5, 21, 12).timestamp()
+    with monkeypatch.context() as clock:
+        clock.setattr(automation_store.time, "time", lambda: edit_time)
+        assert store.update(identifier, {"trigger": {"type": "daily", "time": "22:12"}})
+
+    assert store.task_for_claim(identifier, claim["claim_id"])["trigger"]["time"] == "09:00"
+    assert store.complete_scheduled_claim(identifier, claim["claim_id"], status="completed")
+    assert store.claim_due_tasks(now_ts=edit_time) == []
+    fresh, = store.claim_due_tasks(now_ts=edit_time + 3600)
+    assert fresh["task"]["trigger"]["time"] == "22:12"
+
+
 def test_automation_store_treats_legacy_missing_field_as_durable(tmp_path):
     store = AutomationStore(str(tmp_path / "automations.json"))
     store.tasks = [{
@@ -519,7 +558,7 @@ async def test_automation_claim_is_finalized_by_terminal_work_event(
 ):
     store = AutomationStore(str(tmp_path / "automations.json"))
     task = store.add("Terminal claim", "Run", {"type": "interval", "seconds": 60})
-    claim = store.claim_due_tasks(now_ts=5_000.0)[0]
+    claim = store.claim_due_tasks(now_ts=task["schedule_started_at"] + 60)[0]
     admitted = dict(claim["task"])
     admitted["_scheduled_claim_id"] = claim["claim_id"]
     work = WorkService.open(str(tmp_path / "work.sqlite3"))
@@ -555,13 +594,15 @@ def test_due_occurrence_is_durably_claimed_before_dispatch(tmp_path):
         {"type": "interval", "seconds": 60},
     )
 
-    claims = store.claim_due_tasks(now_ts=5_000.0)
+    first_due = task["schedule_started_at"] + 60
+    assert store.claim_due_tasks(now_ts=first_due - 1) == []
+    claims = store.claim_due_tasks(now_ts=first_due)
 
     assert len(claims) == 1
     assert claims[0]["task"]["id"] == task["id"]
-    assert store.claim_due_tasks(now_ts=5_030.0) == []
+    assert store.claim_due_tasks(now_ts=first_due + 30) == []
     persisted = store.get(task["id"])
-    assert persisted["last_run"] == 5_000.0
+    assert persisted["last_run"] == first_due
     assert persisted["scheduled_claim"]["claim_id"] == claims[0]["claim_id"]
     assert store.complete_scheduled_claim(
         task["id"], claims[0]["claim_id"], status="completed"
@@ -574,7 +615,8 @@ def test_skipped_scheduled_claim_restores_the_unexecuted_occurrence(tmp_path):
     task = store.add(
         "Retry schedule", "Run once", {"type": "interval", "seconds": 60},
     )
-    claim = store.claim_due_tasks(now_ts=5_000.0)[0]
+    first_due = task["schedule_started_at"] + 60
+    claim = store.claim_due_tasks(now_ts=first_due)[0]
 
     assert store.release_skipped_scheduled_claim(
         task["id"], claim["claim_id"]
@@ -583,7 +625,7 @@ def test_skipped_scheduled_claim_restores_the_unexecuted_occurrence(tmp_path):
     persisted = store.get(task["id"])
     assert persisted["last_run"] == 0.0
     assert persisted.get("scheduled_claim") is None
-    assert store.claim_due_tasks(now_ts=5_001.0)
+    assert store.claim_due_tasks(now_ts=first_due + 1)
 
 
 @pytest.mark.asyncio
@@ -595,7 +637,7 @@ async def test_scheduler_keeps_recovered_claim_until_work_reports_terminal(
     task = first.add(
         "Recover me", "Run once", {"type": "interval", "seconds": 60}
     )
-    claim = first.claim_due_tasks(now_ts=5_000.0)[0]
+    claim = first.claim_due_tasks(now_ts=task["schedule_started_at"] + 60)[0]
     reopened = AutomationStore(str(path))
     invoked = asyncio.Event()
     real_sleep = asyncio.sleep
@@ -625,7 +667,7 @@ async def test_scheduler_keeps_recovered_claim_until_work_reports_terminal(
 async def test_scheduler_cancellation_retains_scheduled_claim(tmp_path, monkeypatch):
     store = AutomationStore(str(tmp_path / "automations.json"))
     task = store.add("Shutdown", "Keep claim", {"type": "interval", "seconds": 60})
-    claim = store.claim_due_tasks(now_ts=5_000.0)[0]
+    claim = store.claim_due_tasks(now_ts=task["schedule_started_at"] + 60)[0]
     started = asyncio.Event()
     real_sleep = asyncio.sleep
 
@@ -707,7 +749,7 @@ def test_automation_mutations_roll_back_when_atomic_save_fails(
         lambda: store.add("New", "No", {"type": "webhook"}),
         lambda: store.update(task["id"], {"name": "Changed"}),
         lambda: store.remove(task["id"]),
-        lambda: store.claim_due_tasks(now_ts=9_000.0),
+        lambda: store.claim_due_tasks(now_ts=task["schedule_started_at"] + 3600),
     )
     for operation in operations:
         with pytest.raises(AutomationPersistenceError):
@@ -758,6 +800,60 @@ async def test_websocket_automation_persistence_error_is_correlated():
         "error": "automation_persistence_failed",
     })
     srv.hub.broadcast.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_websocket_automation_reconciles_a_create_retry_after_reopen(tmp_path):
+    handlers = {}
+
+    def on(*names):
+        def decorate(fn):
+            for name in names:
+                handlers[name] = fn
+            return fn
+        return decorate
+
+    ws_automations.register(on)
+    path = str(tmp_path / "automations.json")
+    runtime = SimpleNamespace(
+        sessions=None, session_runtimes=SimpleNamespace(snapshot=lambda _runtime_id: {}), kernel=None,
+    )
+    websocket = SimpleNamespace(send_json=AsyncMock())
+    srv = SimpleNamespace(
+        automations=AutomationStore(path), router=RouteAwareRouter(),
+        require_runtime=lambda: runtime, hub=SimpleNamespace(broadcast=AsyncMock()),
+    )
+    payload = {
+        "type": "automation:add", "request_id": "first",
+        "create_request_id": "stable-draft-id", "name": "Disposable",
+        "prompt": "Report fixture readiness", "trigger": {"type": "webhook"}, "enabled": False,
+    }
+    await handlers["automation:add"](srv, websocket, None, payload)
+    first = websocket.send_json.await_args.args[0]
+    assert first["request_id"] == "first" and first["create_request_id"] == "stable-draft-id"
+    original = srv.automations.get(first["id"])
+
+    srv.automations = AutomationStore(path)
+    srv.router.model_name = "different-default"
+    await handlers["automation:list"](srv, websocket, None, {"request_id": "reconcile"})
+    listing = websocket.send_json.await_args.args[0]
+    assert listing["request_id"] == "reconcile"
+    assert [(row["id"], row["create_request_id"]) for row in listing["items"]] == [
+        (first["id"], "stable-draft-id"),
+    ]
+    await handlers["automation:add"](srv, websocket, None, {**payload, "request_id": "retry"})
+    assert websocket.send_json.await_args.args[0] == {**first, "request_id": "retry"}
+    assert srv.automations.get(first["id"]) == original
+    assert len(srv.automations.list()) == 1
+
+    await handlers["automation:add"](
+        srv, websocket, None, {**payload, "request_id": "conflict", "prompt": "Different task"},
+    )
+    assert websocket.send_json.await_args.args[0] == {
+        "type": "automation:error", "request_id": "conflict", "action": "add",
+        "error": "automation_create_conflict",
+    }
+    assert len(srv.automations.list()) == 1
 
 
 @pytest.mark.asyncio

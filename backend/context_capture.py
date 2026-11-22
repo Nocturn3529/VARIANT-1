@@ -102,36 +102,85 @@ def canonical(service, conn, owner, head, text_projection):
     return target, {**head, 'node_count': target['count'], 'index_order': 'stable causal prefix'}
 
 
+def _cell_search_record(service, conn, owner, cell, previous=None):
+    """Retry only missing parts. Text already present in a frozen view remains evidence."""
+    descriptor = {**cell, 'source_id': 'cell:' + cell['execution_id'], 'kind': 'cell',
+                  'coverage': 'retained cell evidence; omissions reported on expansion'}
+    descriptor.pop('search_incomplete', None)
+    prior_missing = descriptor.pop('missing_search_parts', None)
+    parts = ('source', 'result')
+    requested = prior_missing or parts
+    text = {}
+    missing = []
+    for part in requested:
+        try:
+            raw = service._artifact_text(cell[part + '_ref'], owner, str(cell.get(part + '_sha256') or ''))
+            if part == 'source':
+                text[part] = raw
+            else:
+                value = json.loads(raw)
+                if not isinstance(value, dict):
+                    raise ValueError('Cell result must be an object')
+                text[part] = str(value.get('text') or value.get('error') or '')
+                evidence = value.get('output_evidence') or {}
+                descriptor['output_evidence'] = {key: evidence[key] for key in ('ref', 'sha256')
+                                                  if isinstance(evidence, dict) and key in evidence}
+        except (KeyError, ValueError, OSError, ToolError):
+            missing.append(part)
+    if previous is not None:
+        # Legacy descriptors marked the whole cell incomplete. Until both
+        # parts can be read, their original search projection remains valid.
+        if len(missing) == len(requested) or (not prior_missing and missing):
+            return previous['record_id'], True
+        for part in parts:
+            if part not in requested:
+                text[part] = conn.execute('SELECT search_text FROM context_text WHERE text_key=?',
+                                          (previous['text_key'],)).fetchone()[0]
+    if missing:
+        descriptor.update(search_incomplete=True, missing_search_parts=missing)
+    text_key = service._index_text(conn, '\n'.join(text[part] for part in parts if part in text))
+    return index.record(conn, owner, descriptor, text_key), bool(missing)
+
+
 def cells(service, conn, owner, upper):
     target = index.stream(conn, owner, 'cell', 'ledger')
+    original = target
+    gap_count = 0
+    gaps = conn.execute("""
+        SELECT r.record_id,r.descriptor_json,r.text_key,m.ordinal
+        FROM context_record r CROSS JOIN context_member m
+        WHERE r.source_chat_id=? AND r.kind='cell' AND json_extract(r.descriptor_json,'$.search_incomplete')=1
+          AND m.stream_id=? AND m.record_id=r.record_id ORDER BY m.ordinal
+    """, (owner, original['stream_id']))
+    for row in gaps:
+        rid, incomplete = _cell_search_record(service, conn, owner, json.loads(row['descriptor_json']), row)
+        gap_count += int(incomplete)
+        if rid == row['record_id']:
+            continue
+        if target is original:
+            # Only a repaired observation needs a new stream. Copy membership
+            # IDs in SQLite once; every earlier view retains its old prefix.
+            target = index.stream(conn, owner, 'cell', 'ledger', fresh=True)
+            target.update(count=original['count'], last_sequence=original['last_sequence'])
+            conn.execute('INSERT INTO context_member SELECT ?,ordinal,record_id FROM context_member WHERE stream_id=?',
+                         (target['stream_id'], original['stream_id']))
+            conn.execute('UPDATE context_stream SET count=?,last_sequence=? WHERE stream_id=?',
+                         (target['count'], target['last_sequence'], target['stream_id']))
+        conn.execute('UPDATE context_member SET record_id=? WHERE stream_id=? AND ordinal=?',
+                     (rid, target['stream_id'], row['ordinal']))
+
     after = target['last_sequence']
     while after < upper:
         page = service.kernel.execution_history(owner, after_sequence=after, through_sequence=upper, limit=100)
         for cell in page['items']:
-            descriptor = {**cell, 'source_id': 'cell:' + cell['execution_id'], 'kind': 'cell',
-                          'coverage': 'retained cell evidence; omissions reported on expansion'}
-            texts = []
-            for part in ('source', 'result'):
-                try:
-                    raw = service._artifact_text(cell[part + '_ref'], owner, str(cell.get(part + '_sha256') or ''))
-                    if part == 'source':
-                        texts.append(raw)
-                    else:
-                        value = json.loads(raw)
-                        if not isinstance(value, dict):
-                            raise ValueError('Cell result must be an object')
-                        texts.append(str(value.get('text') or value.get('error') or ''))
-                        evidence = value.get('output_evidence') or {}
-                        descriptor['output_evidence'] = {key: evidence[key] for key in ('ref', 'sha256') if isinstance(evidence, dict) and key in evidence}
-                except (KeyError, ValueError, OSError, ToolError):
-                    descriptor['search_incomplete'] = True
-            rid = index.record(conn, owner, descriptor, service._index_text(conn, '\n'.join(texts)))
+            rid, incomplete = _cell_search_record(service, conn, owner, cell)
+            gap_count += int(incomplete)
             index.append(conn, target, rid, sequence=int(cell['sequence']))
         next_sequence = int(page['next_sequence'])
         if next_sequence <= after:
             raise ToolError('Cell history cursor did not advance during context capture')
         after = next_sequence
-    return target
+    return target, gap_count
 
 
 def snapshots(service, conn, owner):

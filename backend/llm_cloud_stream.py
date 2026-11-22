@@ -39,6 +39,7 @@ from model_runtime.openai_sse import OpenAIChatSSEDecoder
 from model_runtime.context import context_limit_tokens as _context_limit_tokens
 from model_runtime.request_policy import (
     effective_reasoning_budget,
+    effective_reasoning_rule,
     project_reasoning_policy,
     resolve_cloud_request_policy,
 )
@@ -430,6 +431,42 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
     except Exception as e:
         raise ProviderRequestError(label, f"{label} request failed: {e}") from e
 
+def _nous_thoughts_enabled(router, profile, model, payload):
+    """Use the effective request, including an explicit Off or the model default."""
+    reasoning = payload.get("reasoning")
+    options = reasoning if isinstance(reasoning, dict) else {}
+    effort = options.get("effort") or payload.get("reasoning_effort")
+    if reasoning is False or options.get("enabled") is False or options.get("exclude") is True or effort in ("none", "off"):
+        return False
+    bound_route = getattr(router, "bound_model_route", None)
+    route = bound_route() if callable(bound_route) else None
+    if isinstance(route, dict) and route.get("provider") == "hermes" and route.get("model") == model:
+        if route.get("reasoning_enabled") is False or route.get("reasoning_effort") in ("off", "none"):
+            return False
+        if route.get("reasoning_enabled") is True:
+            return True
+    if options.get("enabled") is True or effort:
+        return True
+    return effective_reasoning_rule(router, profile, model).get("default_enabled") is not False
+
+
+def _nous_thought_parts(delta, plaintext):
+    if "signature" in delta or "encrypted_content" in delta:
+        return
+    if plaintext:
+        # The top-level alias often duplicates the same chunk in reasoning_details.
+        yield plaintext, "provider_reasoning"
+        return
+    details = delta.get("reasoning_details")
+    for part in details if isinstance(details, list) else ():
+        if not isinstance(part, dict) or "signature" in part or "encrypted_content" in part:
+            continue
+        if part.get("type") == "reasoning.text" and isinstance(part.get("text"), str):
+            yield part["text"], "provider_reasoning"
+        elif part.get("type") == "reasoning.summary" and isinstance(part.get("summary"), str):
+            yield part["summary"], "provider_summary"
+
+
 async def call_openai(router, messages, sampling, key, json_mode=False, image_b64=None,
                       base: str = None, model_key: str = "openai_model", label: str = "openai",
                       extra_body: dict = None, reasoning_sink=None,
@@ -453,7 +490,12 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
         (profile.default_model if profile else default_model)
     source_messages = messages
     messages = render_openai_chat(
-        build_message_graph(source_messages, image_b64))
+        build_message_graph(source_messages, image_b64),
+        # Qualify compact replay separately for each provider protocol and model.
+        compact_rejected_ipython=(label == "hermes" and model in {
+            "meituan/longcat-2.5-preview:free", "meituan/longcat-2.5:free",
+        }),
+    )
     request_policy = resolve_cloud_request_policy(profile, model, sampling)
     payload = {
         "model": model,
@@ -481,6 +523,9 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
     prepare_payload = getattr(router, "prepare_cloud_payload", None)
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
+    show_thought = getattr(reasoning_sink, "returned_thought", None) if label == "hermes" else None
+    if show_thought and not _nous_thoughts_enabled(router, profile, model, payload):
+        show_thought = None
     headers = router._provider_headers(profile, key) if profile else {
         "Authorization": f"Bearer {key}"}
     headers["content-type"] = "application/json"
@@ -556,6 +601,25 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     if stream_diagnostics is not None:
                         stream_diagnostics.note_finish_reason(finish_reason)
                     delta = choice.get("delta") or {}
+                    # Nous returns readable thought deltas alongside regular Chat
+                    # Completions output. Replay objects and signatures are separate.
+                    rc = next((value for value in (
+                        delta.get("reasoning_content"), delta.get("reasoning"), delta.get("thinking"),
+                    ) if isinstance(value, str) and value), "")
+                    if rc:
+                        if reasoning_sink is None:
+                            reasoning.append(rc)
+                        else:
+                            try:
+                                reasoning_sink(rc)
+                            except Exception:
+                                pass
+                    if show_thought:
+                        for piece, source in _nous_thought_parts(delta, rc):
+                            try:
+                                await show_thought(piece, source)
+                            except Exception:
+                                pass  # A display failure cannot fail the provider request.
                     tok = delta.get("content")
                     if not tok and isinstance(delta.get("refusal"), str):
                         tok = delta.get("refusal")
@@ -569,22 +633,6 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                             tool_call_sink.add_openai_delta(delta.get("tool_calls"))
                         except Exception:
                             pass
-                    # Compatible thinking models use `reasoning_content`,
-                    # `reasoning`, or `thinking`. A sink keeps that channel
-                    # separate from the visible reply.
-                    rc = (
-                        delta.get("reasoning_content")
-                        or delta.get("reasoning")
-                        or delta.get("thinking")
-                    )
-                    if rc:
-                        if reasoning_sink is not None:
-                            try:
-                                reasoning_sink(rc)
-                            except Exception:
-                                pass
-                        else:
-                            reasoning.append(rc)
                 decoder.require_terminal(
                     f"{label} stream",
                     error_factory=lambda message: ProviderRequestError(

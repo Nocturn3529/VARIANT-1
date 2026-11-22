@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 
 import httpx
 
-from ..base import GatewayAdapter, MessageEnvelope
+from ..base import ChunkConfirmation, GatewayAdapter, MessageEnvelope
 from ..media import MAX_REMOTE_ATTACHMENTS, download_and_stage
+
+
+def _telegram_error(operation: str, exc: Exception) -> str:
+    """Keep diagnostics independent of credential-bearing URLs and bodies."""
+    detail = (
+        f"HTTP {exc.response.status_code}"
+        if isinstance(exc, httpx.HTTPStatusError)
+        else type(exc).__name__
+    )
+    return f"Telegram {operation} failed ({detail})"
 
 
 class TelegramAdapter(GatewayAdapter):
@@ -62,7 +73,7 @@ class TelegramAdapter(GatewayAdapter):
                     raise
                 except Exception as exc:
                     self.connected = False
-                    self.last_error = str(exc)
+                    self.last_error = _telegram_error("polling", exc)
                     await asyncio.sleep(3)
         finally:
             self.connected = False
@@ -170,8 +181,7 @@ class TelegramAdapter(GatewayAdapter):
                 payload = info.json()
                 if isinstance(payload, dict) and payload.get("ok") is False:
                     notices.append(
-                        f"[Telegram attachment {name} was rejected before download: "
-                        f"{str(payload.get('description') or 'unknown Telegram error')}.]"
+                        f"[Telegram rejected attachment {name} before download.]"
                     )
                     continue
                 file_path = str(((payload.get("result") or {}).get("file_path") or ""))
@@ -204,31 +214,47 @@ class TelegramAdapter(GatewayAdapter):
                 await client.aclose()
         return attachments, notices
 
+    @asynccontextmanager
+    async def _delivery_client(self, timeout: float):
+        client = self.client
+        if client is not None:
+            yield client
+        else:
+            async with httpx.AsyncClient(trust_env=False, timeout=timeout) as owned:
+                yield owned
+
     async def send_text(self, envelope: MessageEnvelope, text: str) -> None:
+        await self.send_text_with_progress(envelope, text)
+
+    async def send_text_with_progress(
+        self, envelope: MessageEnvelope, text: str, *,
+        offset: int = 0, confirm: ChunkConfirmation | None = None,
+    ) -> None:
         token = await self.gateway.token(self.name)
-        client = self.client or httpx.AsyncClient(trust_env=False, timeout=30)
-        owned = client is not self.client
+        if not token:
+            raise RuntimeError("Telegram bot token is not configured")
         try:
-            # Telegram caps one message at 4096 characters.
-            for start in range(0, len(text), 4000):
-                response = await client.post(
-                    f"https://api.telegram.org/bot{token}/sendMessage",
-                    json={"chat_id": envelope.conversation_id, "text": text[start:start + 4000],
-                          "reply_to_message_id": envelope.message_id})
-                response.raise_for_status()
-        finally:
-            if owned:
-                await client.aclose()
+            async with self._delivery_client(30) as client:
+                # Telegram caps one message at 4096 characters.
+                for start in range(offset, len(text), 4000):
+                    end = min(start + 4000, len(text))
+                    response = await client.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": envelope.conversation_id, "text": text[start:end],
+                              "reply_to_message_id": envelope.message_id})
+                    response.raise_for_status()
+                    if confirm is not None:
+                        await confirm(start, end)
+        except Exception as exc:
+            raise RuntimeError(_telegram_error("reply delivery", exc)) from None
 
     async def send_typing(self, envelope: MessageEnvelope) -> None:
         token = await self.gateway.token(self.name)
         if not token:
             return
-        client = self.client or httpx.AsyncClient(trust_env=False, timeout=10)
-        owned = client is not self.client
         try:
-            await client.post(f"https://api.telegram.org/bot{token}/sendChatAction",
-                              json={"chat_id": envelope.conversation_id, "action": "typing"})
-        finally:
-            if owned:
-                await client.aclose()
+            async with self._delivery_client(10) as client:
+                await client.post(f"https://api.telegram.org/bot{token}/sendChatAction",
+                                  json={"chat_id": envelope.conversation_id, "action": "typing"})
+        except Exception as exc:
+            raise RuntimeError(_telegram_error("typing notification", exc)) from None

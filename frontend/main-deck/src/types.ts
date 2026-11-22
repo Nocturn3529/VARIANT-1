@@ -432,6 +432,7 @@ export type GeneralState = {
 };
 
 export type RuntimeApi = {
+  confirmFileDiscard?: (message: string) => boolean;
   supportsNativeWindows?: boolean;
   controlNativeWindow?: (id: string, action: "focus" | "minimize" | "maximize" | "pin" | "close" | "ready" | "bounds" | "resize", size?: {width: number; height: number}) => Promise<{ok?: boolean; pinned?: boolean; bounds?: {x: number; y: number; width: number; height: number}}>;
   onNativeWindowClosed?: (listener: (id: string) => void) => (() => void);
@@ -461,13 +462,15 @@ export type RuntimeApi = {
     truncated?: boolean;
     size?: number;
     mtimeMs?: number;
+    revision?: string;
     mediaType?: string;
   }>;
-  writeWorkbenchFile?: (path: string, text: string, expectedMtimeMs?: number) => Promise<{
+  writeWorkbenchFile?: (path: string, text: string, expectedMtimeMs?: number, revision?: string) => Promise<{
     ok?: boolean;
     conflict?: boolean;
     error?: string;
     mtimeMs?: number;
+    revision?: string;
   }>;
   renameWorkbenchPath?: (path: string, name: string) => Promise<{ok?: boolean; error?: string; path?: string}>;
   trashWorkbenchPath?: (path: string) => Promise<{ok?: boolean; error?: string}>;
@@ -486,9 +489,9 @@ export type RuntimeApi = {
   getWorkbenchReviewFiles?: (path:string, options:WorkbenchReviewOptions) => Promise<WorkbenchGitStatus & {truncated?:boolean;baseOid?:string;headOid?:string;comparison?:{baseRef:string;baseSource:string;baseOid:string;headOid:string};countBasis?:string;aggregate?:WorkbenchReviewAggregate}>;
   getWorkbenchReviewDiff?: (path:string,file:string,options:WorkbenchReviewOptions & {context?:number}) => Promise<WorkbenchReviewDiff>;
   runWorkbenchGit?: (action: string, path: string, options?: Record<string, unknown>) => Promise<Record<string, unknown>>;
-  captureWorkbenchPreview?: (webContentsId: number) => Promise<{ok?: boolean; image?: string; image_width?: number; image_height?: number; image_css_width?:number; image_css_height?:number; error?: string}>;
+  captureWorkbenchPreview?: (webContentsId: number) => Promise<{ok?: boolean; image?: string; image_width?: number; image_height?: number; image_css_width?:number; image_css_height?:number; device_scale_factor?:number; error?: string}>;
     bindWorkbenchBrowser?: (tabId: string, guestId: number, operationId?: string) => Promise<{ok?: boolean}>;
-    workbenchBrowser?: (command:Record<string,unknown>)=>Promise<{ok?:boolean;state?:Record<string,unknown>;value?:unknown;error?:string}>;
+    workbenchBrowser?: (command:Record<string,unknown>)=>Promise<{ok?:boolean;state?:Record<string,unknown>;value?:unknown;code?:string;error?:string}>;
     onWorkbenchBrowserEvent?: (callback:(event:{tabId:string;guestId?:number;event:string;details?:Record<string,unknown>;state?:Record<string,unknown>})=>void)=>()=>void;
   workbenchDownloads?: (command: Record<string, unknown>) => Promise<{ok?: boolean; error?: string; downloads?: unknown[]; [key: string]: unknown}>;
   onWorkbenchDownloads?: (callback: (rows: unknown) => void) => () => void;

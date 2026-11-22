@@ -15,6 +15,21 @@ export const MAX_ATTACHMENTS = 6;
 export {MAX_TURN_STEPS} from "./preview";
 
 export let context: RuntimeContext | null = null;
+let submissionOrigin = "";
+let awaitingSubmissionOrigin = false;
+export function setSubmissionOrigin(value = "") {
+  submissionOrigin = value;
+  awaitingSubmissionOrigin = false;
+}
+export function disconnectSubmissionOrigin() {
+  if (submissionOrigin) awaitingSubmissionOrigin = true;
+  submissionOrigin = "";
+}
+export function newInitialTicket():string | null {
+  if (awaitingSubmissionOrigin) return null;
+  const uuid=crypto.randomUUID();
+  return submissionOrigin ? `${submissionOrigin}.${uuid}` : `turn-${uuid}`;
+}
 
 export let state: ChatState = {
   agentTeam:initialAgentTeam(),
@@ -77,6 +92,7 @@ export function activateChatState(id: string): void {
   sessions.set(id, state);focusTurnSession(id);
   for (const [key, value] of sessions) {
     if (sessions.size <= 8) break;
+    if (value.recoveredInput) continue;
     const activeGoal=!!value.goal.goal && value.goal.goal.status!=="complete";
     const unconfirmedTrace=value.messages.some(message=>message.tracePersistence==="pending" || message.tracePersistence==="failed");
     if (key !== id && !value.turnActive && !value.runtime?.busy && value.speechPhase==="idle" && !value.attachmentsPreparing && !value.draft && !value.attachments.length && !value.references.length && !value.pendingActiveInputs.length && !value.inputQueue.snapshot?.items.length && !value.inputQueue.action && !value.goal.pending && !activeGoal && !unconfirmedTrace && !value.agentTeam.active && !value.agentTeam.selectedId && canReleaseChatProjection(key)) {
@@ -114,12 +130,14 @@ function attachmentUrlsInState(value: ChatState): Set<string> {
     }
   };
   collect(value.attachments);
+  collect(value.initialSubmission?.user.optimisticAttachmentRetry);
+  collect(value.recoveredInput?.attachments);
   for (const message of value.messages) collect(message.attachments);
   return urls;
 }
 
 function revokeRemovedAttachmentUrls(previous: ChatState, next: ChatState): void {
-  if(previous.attachments===next.attachments && previous.messages===next.messages)return;
+  if(previous.attachments===next.attachments && previous.messages===next.messages && previous.initialSubmission?.user===next.initialSubmission?.user && previous.recoveredInput===next.recoveredInput)return;
   const retained = attachmentUrlsInState(next);
   for (const url of attachmentUrlsInState(previous)) {
     if (retained.has(url)) continue;
@@ -153,7 +171,23 @@ export function getChatState(): ChatState {
   return state;
 }
 
+export function restoreRejectedText(current:string, rejected:string):string {
+  if (!current) return rejected;
+  if (!rejected || current === rejected) return current;
+  return `${rejected}\n\n${current}`;
+}
+
+/** A late ordinary send result must leave the Goal editor and its revision intact. */
+function restoreMessageDraft(next:ChatState):ChatState {
+  const held=next.recoveredInput;
+  if(!held || next.goal.composing)return next;
+  return {...next,recoveredInput:undefined,draft:restoreRejectedText(next.draft,held.text),
+    attachments:held.attachments.length ? [...held.attachments.filter(item=>!next.attachments.some(other=>other.id===item.id)),...next.attachments] : next.attachments,
+    references:held.references.length ? [...held.references.filter(item=>!next.references.some(other=>other.tabId===item.tabId)),...next.references] : next.references};
+}
+
 export function setChatState(next: ChatState): void {
+  next=restoreMessageDraft(next);
   noteComposerChange(next);
   revokeRemovedAttachmentUrls(state, next);
   state = next;
@@ -161,7 +195,7 @@ export function setChatState(next: ChatState): void {
 }
 
 export function patchChatState(partial: Partial<ChatState>): void {
-  const next = {...state, ...partial};
+  const next = restoreMessageDraft({...state, ...partial});
   noteComposerChange(next);
   revokeRemovedAttachmentUrls(state, next);
   state = next;
@@ -170,6 +204,7 @@ export function patchChatState(partial: Partial<ChatState>): void {
 
 /** Mutate state without emit (caller emits once after batched updates). */
 export function replaceChatState(next: ChatState): void {
+  next=restoreMessageDraft(next);
   noteComposerChange(next);
   revokeRemovedAttachmentUrls(state, next);
   state = next;
@@ -282,6 +317,7 @@ export function initialChatState(): ChatState {
 }
 
 export function resetChatStateBag(): void {
+  setSubmissionOrigin();
   const next = initialChatState();
   noteComposerChange(next);
   revokeRemovedAttachmentUrls(state, next);

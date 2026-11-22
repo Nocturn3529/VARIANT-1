@@ -4,6 +4,7 @@ import {
   closeAutomationBuilder,
   openAutomationBuilder,
   relativeAutomationTime,
+  refreshAutomationDefinitions,
   removeAutomation,
   runAutomation,
   saveAutomation,
@@ -24,12 +25,14 @@ function triggerValue(item: AutomationItem | null, key: string, fallback: string
 }
 
 function AutomationBuilder({item}: {item: AutomationItem | null}) {
-  const {pendingSave, saveError} = useAutomationState();
+  const {pendingSave, unconfirmedSave, saveError} = useAutomationState();
   const saving = !!pendingSave;
+  const awaitingCheck=!!unconfirmedSave && !unconfirmedSave.checked;
   const [name, setName] = useState(item?.name || "");
   const [prompt, setPrompt] = useState(item?.prompt || "");
   const [triggerType, setTriggerType] = useState(item?.trigger?.type || "daily");
-  const retainedTrigger = !!item?.trigger && !["daily","weekdays","weekly","interval","cron"].includes(triggerType);
+  const [originalTrigger] = useState(item?.trigger);
+  const retainedTrigger = !!originalTrigger && !["daily","weekdays","weekly","interval","cron"].includes(triggerType);
   const [time, setTime] = useState(triggerValue(item, "time", "08:00"));
   const [day, setDay] = useState(triggerValue(item, "day", "mon"));
   const [seconds, setSeconds] = useState(triggerValue(item, "seconds", "3600"));
@@ -39,7 +42,7 @@ function AutomationBuilder({item}: {item: AutomationItem | null}) {
   function submit(event: FormEvent) {
     event.preventDefault();
     let trigger: AutomationTrigger;
-    if (retainedTrigger) trigger = {...item!.trigger};
+    if (retainedTrigger) trigger = {...originalTrigger};
     else if (triggerType === "weekly") trigger = {type: "weekly", day, time};
     else if (triggerType === "interval") {
       trigger = {type: "interval", seconds: Math.max(60, Number(seconds) || 3600)};
@@ -73,8 +76,8 @@ function AutomationBuilder({item}: {item: AutomationItem | null}) {
       {triggerType === "cron" && <label><span>Cron</span><input value={expr} onChange={e => setExpr(e.target.value)} placeholder="0 9 * * *" required/></label>}
       <label><span>Missed schedule</span><select value={misfire} onChange={e => setMisfire(e.target.value as "latest" | "skip")}><option value="latest">Run latest once</option><option value="skip">Skip</option></select></label>
     </fieldset>
-    {saveError ? <p className="workbench-tool-error" role="alert">{saveError}</p> : null}
-    <div className="automation-builder__actions"><Button onClick={closeAutomationBuilder}>Cancel</Button><Button tone="primary" type="submit" disabled={saving}>{saving ? "Saving…" : item ? "Save changes" : "Create automation"}</Button></div>
+    {saveError ? <p className="workbench-tool-error" role="alert">{saveError} {unconfirmedSave && <Button onClick={refreshAutomationDefinitions}>Refresh definitions</Button>}</p> : null}
+    <div className="automation-builder__actions"><Button onClick={closeAutomationBuilder}>Cancel</Button><Button tone="primary" type="submit" disabled={saving || awaitingCheck}>{saving ? "Saving…" : item ? "Save changes" : "Create automation"}</Button></div>
   </form>;
 }
 
@@ -179,9 +182,9 @@ export function AutomationsDestination() {
           <small className="deck-metric__detail">local history</small>
         </article>
         <article className="deck-metric">
-          <span className="deck-metric__label">7-day health</span>
+          <span className="deck-metric__label">Recent success rate</span>
           <strong className="deck-metric__value">{healthy === null ? "—" : `${healthy}%`}</strong>
-          <small className="deck-metric__detail">{recent.length} recent runs</small>
+          <small className="deck-metric__detail">{recent.length} in the past 7 days · latest {state.history.length} of {state.historyCount} runs</small>
         </article>
       </section>
       <div className="automations-grid">

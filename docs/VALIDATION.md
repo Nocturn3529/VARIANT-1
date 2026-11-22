@@ -50,6 +50,7 @@ npm run test:python:desktop
 ```
 
 Use a dedicated environment because these tests can create windows and processes.
+On Windows, `test:python:desktop` adds the WinForms Desktop Fabric smoke after pytest. Run `node scripts/install-cua-driver.js` first and use an interactive desktop.
 They are not prerequisites for every documentation-only pull request.
 
 ## Frozen backend and kernel checks

@@ -86,18 +86,20 @@ class SpeechService:
         wav: bytes,
         language: str | None = None,
     ) -> str:
-        if self.stt_provider() == "local":
-            await self.host.voice.ensure_started()
-            return await self.host.voice.transcribe(wav, language=language)
-        root = self.config().get("stt")
+        provider = self.stt_provider()
+        config = self.config()
+        root = config.get("stt")
         root = root if isinstance(root, dict) else {}
-        options = root.get(self.stt_provider())
+        options = root.get(provider)
         options = options if isinstance(options, dict) else {}
         lang = str(language or options.get("language") or "").strip() or None
         if lang and lang.lower() in {"auto", "detect", "none"}:
             lang = None
+        if provider == "local":
+            await self.host.voice.ensure_started()
+            return await self.host.voice.transcribe(wav, language=lang)
         return await providers.transcribe(
-            self.stt_provider(), self.host.router, self.config(), wav,
+            provider, self.host.router, config, wav,
             language=lang,
         )
 

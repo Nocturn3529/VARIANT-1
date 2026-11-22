@@ -101,7 +101,7 @@ function GrokDialog({chatId,onClose}:{chatId:string;onClose:()=>void}) {
       {valid && !bindings.length ? <p>No Grok connections are registered.</p>:null}
       {bindings.map(binding=>{
         const reconnect=peers.requests[peerRequestKey(chatId,{operation:"grok:connect",binding_id:binding.binding_id})];
-        const delivery=grokDeliveryLabel(binding.delivery_mode,binding.automatic_wake_available);
+        const delivery=grokDeliveryLabel(binding.delivery_mode,binding.capabilities.live_ingress);
         const localTerminal=!!binding.terminal_id && (!binding.terminal_chat_id || binding.terminal_chat_id===chatId) && terminals.terminals.some(row=>row.id===binding.terminal_id);
         return <article key={binding.binding_id} className="grok-peer-binding" data-binding-id={binding.binding_id}>
           <header><strong>Grok Build</strong><span>{binding.status}</span></header>

@@ -16,11 +16,34 @@ from observability import context_lineage
 from agent_types import ToolBatchResult
 from desktop_fabric.tool import DESKTOP_LOG_TOOLS as _DESKTOP_LOG_TOOLS
 from run_context import current_run_context
+from text_limits import head_tail_text
 from tool_core import CapabilityReceipt, ToolError, ToolExecutionResult
 
 
 def _arguments_sha256(raw_args: dict) -> str:
     return canonical_digest(raw_args or {})
+
+
+def _cell_display(outcome: dict, context) -> dict:
+    """Use the same retained outer receipt for a live result and its replay."""
+    if outcome.get("tool") != "ipython" or outcome.get("status") != "ok":
+        return {}
+    receipt = outcome.get("capability_receipt")
+    if not isinstance(receipt, dict) or receipt.get("status") != "ok":
+        return {}
+    metadata, origin, capability = (receipt.get(key) for key in ("result_metadata", "attribution", "capability"))
+    if not all(isinstance(value, dict) for value in (metadata, origin, capability)):
+        return {}
+    if (capability.get("capability_id") != "ipython"
+            or origin.get("surface") != "provider" or origin.get("chat_id") != context.chat_id
+            or origin.get("run_id") != context.run_id or origin.get("outer_tool_call_id") != context.outer_tool_call_id):
+        return {}
+    if metadata.get("projection") == "astb-mount-selection-v2" and type(metadata.get("unchanged")) is bool:
+        return {"cell_action": "Checked tool category" if metadata["unchanged"] else "Selected tool category"}
+    label = metadata.get("cell_action")
+    if metadata.get("projection") == "kernel-execution-v2" and isinstance(label, str) and label:
+        return {"cell_action": label[:140]}
+    return {}
 
 
 @dataclass
@@ -464,6 +487,7 @@ async def execute_tool_batch(
                 ),
                 durable_replay=True,
                 receipt_id=str(replayed.get("receipt_id") or ""),
+                **_cell_display(replayed, invocation_context),
             )
             continue
         admission_ms = int(
@@ -569,8 +593,11 @@ async def execute_tool_batch(
             source_out = str(value or "")
             out = source_out
             if len(source_out) > ports.max_result_chars:
-                out = (source_out[:ports.max_result_chars]
-                       + f"\n…(truncated, {len(source_out)} chars)")
+                if name == "ipython":
+                    out = head_tail_text(source_out, ports.max_result_chars)
+                else:
+                    out = (source_out[:ports.max_result_chars]
+                           + f"\n…(truncated, {len(source_out)} chars)")
             results.append(f"[{name}] {out}")
             terminal_outcome = record_outcome(
                 name, raw_args, out, ok=True, executed=attempted,
@@ -589,7 +616,8 @@ async def execute_tool_batch(
                        ),
                        text=_safe_clip(ports, out, 400),
                        receipt_id=(capability_receipt.receipt_id
-                                   if capability_receipt is not None else ""))
+                                   if capability_receipt is not None else ""),
+                       **_cell_display(terminal_outcome, invocation_context))
         else:
             diagnostic = _error_summary(out, 300)
             results.append(f"[{name}] error: {diagnostic}")

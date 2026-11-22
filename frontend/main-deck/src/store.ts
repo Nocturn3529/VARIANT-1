@@ -14,6 +14,11 @@ const credentialRequestId = createRequestIdFactory("credential-list");
 const credentialRequests = new Map<string, {id: string; timer: ReturnType<typeof setTimeout>}>();
 const providerChecks = new Map<string, {id: string; timer: ReturnType<typeof setTimeout>}>();
 const providerCheckId = createRequestIdFactory("provider-check");
+const messagingWriteListeners = new Set<(message: Record<string,unknown>) => void>();
+export function onMessagingWriteResult(listener: (message: Record<string,unknown>) => void) {
+  messagingWriteListeners.add(listener);
+  return () => { messagingWriteListeners.delete(listener); };
+}
 
 export function checkProviderConnection(provider: string) {
   if (!store.getState().connected || providerChecks.has(provider)) return false;
@@ -190,6 +195,8 @@ export function ingest(message: Record<string, unknown>) {
     });
   } else if (type === "tools") {
     store.setState({tools: message});
+  } else if (type === "messaging:write_result") {
+    for (const listener of messagingWriteListeners) listener(message);
   } else if (type === "messaging:gateway") {
     const gateway = message as unknown as GatewayState;
     store.setState({gateway});

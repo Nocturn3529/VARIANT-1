@@ -122,6 +122,10 @@ def _remember_run_step(message: dict) -> None:
         call_id = str(message.get("call_id") or "").strip()[:128]
         if event not in {"tool:start", "tool:result"} or not call_id:
             return
+        if message.get("durable_replay"):
+            run = _LIVE_RUNS.get(session_id)
+            if not run or run["run_id"] != run_id or call_id not in run["steps"]:
+                return
         run = _live_run(session_id, run_id)
         ts_ms = float(message.get("ts") or time.time()) * 1000
         step = dict(run["steps"].get(call_id) or {
@@ -130,6 +134,9 @@ def _remember_run_step(message: dict) -> None:
         tool = str(message.get("tool") or step.get("tool") or "")[:80]
         step.update(tool=tool, label=tool or "Tool")
         if event == "tool:start":
+            # A delayed start for this call must not undo its result.
+            if "completed_at" in step:
+                return
             step["status"] = "running"
             step["started_at"] = ts_ms
             preview = message.get("args_preview")
@@ -138,6 +145,8 @@ def _remember_run_step(message: dict) -> None:
         else:
             step["status"] = str(message.get("status") or "ok")[:24]
             step["completed_at"] = ts_ms
+            if tool == "ipython" and step["status"] == "ok" and message.get("cell_action"):
+                step["cell_action"] = message["cell_action"][:140]
             text = message.get("text")
             if text:
                 step["result_preview"] = str(text)[:800]
@@ -155,16 +164,23 @@ def _context_run_identity() -> tuple[str, str]:
 
 
 def remember_run_narration(step: dict) -> None:
-    """Keep one narration step (kind "text") on the bound run's live record."""
+    remember_run_display_step(step)
+
+
+def remember_run_display_step(step: dict, *, admission_id: str = "") -> None:
+    """Retain a provider display step for reconnects to the bound run."""
 
     session_id, run_id = _context_run_identity()
     if not session_id or not run_id or not step.get("id"):
         return
     with _LAST_SESSION_ACTIVITY_LOCK:
         run = _live_run(session_id, run_id)
-        _put_run_step(run, dict(step))
+        row = dict(step)
+        if admission_id:
+            row["admission_id"] = admission_id
+        _put_run_step(run, row)
         live = run["live"]
-        if live is not None and live[0] == step.get("segment"):
+        if step.get("kind") == "text" and live is not None and live[0] == step.get("segment"):
             # That call's text is now this completed narration step, not a
             # reply still being written.
             run["live"] = None
@@ -194,7 +210,8 @@ def run_snapshot(session_id: str, run_id: str, admission_id: str = "") -> dict |
         run = _LIVE_RUNS.get(str(session_id or ""))
         if run is None or not run_id or run["run_id"] != run_id:
             return None
-        steps = [dict(step) for step in run["steps"].values()]
+        steps = [dict(step) for step in run["steps"].values()
+                 if not admission_id or not step.get("admission_id") or step["admission_id"] == admission_id]
         segment, parts, live_admission = run["live"] or (0, [], "")
         if admission_id and live_admission and live_admission != admission_id:
             segment, parts = 0, []

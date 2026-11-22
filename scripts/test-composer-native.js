@@ -50,6 +50,8 @@ async function native(){
     await check(`!document.querySelector('.is-energizing')&&document.querySelector('.composer-mutation-control').getAnimations({subtree:true}).every(a=>a.playState!=='running')`,'activation settles with no permanent animation loop');
     await click('#model-button');await until(`!!document.querySelector('[data-model-option]')`,'models loaded');
     await check(`document.activeElement?.getAttribute('aria-label')==='Search models'`,'model search receives keyboard focus');
+    await win.webContents.insertText('reasoning-fixture');
+    await until(`document.querySelectorAll('[data-model-option]').length===1 && document.querySelector('[data-model-option]').textContent.includes('Reasoning model')`,'typing immediately filters models');
     await click('.model-picker__options-trigger');
     await check(`!!document.querySelector('.model-picker__effort-menu')`,'reasoning options open by explicit action');await capture('model-picker');
     await run(`document.querySelector('#model-menu').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}))`);

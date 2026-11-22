@@ -1,5 +1,8 @@
 import asyncio
+import sqlite3
+from contextlib import closing
 from dataclasses import replace
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -22,6 +25,7 @@ from work_fabric.scope import WorkScope
 from work_fabric.service import WorkService
 from work_fabric.capabilities import register_work_fabric_tools
 from tests.support.model_routes import RouteAwareRouter
+from tests.test_session_catalog import catalog_stack  # noqa: F401
 
 _TEST_WORK_SERVICES = []
 _TEST_CHILD_MANAGERS = []
@@ -105,6 +109,140 @@ def _manager(database_path, host, artifact_store):
 
 def _runtimes(host):
     return host.require_runtime().session_runtimes
+
+
+@pytest.mark.asyncio
+async def test_child_writes_in_admitted_kernel_project_across_restart(catalog_stack, tmp_path, monkeypatch):
+    from host_run_context import make_run_context
+    from kernel_runtime.integration import register_ipython_tool
+    from run_context import bind_run_context
+
+    registry, _, runtimes, artifacts, broker, catalog, kernel = catalog_stack
+    project, extra, later, data = [tmp_path / name for name in ("project", "shared", "later", "data")]
+    for directory in (project, extra, later, data):
+        directory.mkdir()
+    monkeypatch.delenv("VARIANT1_PROJECT_ROOT", raising=False)
+    database = tmp_path / "astb.sqlite3"
+    host = _Host(database)
+    host.app_root, host.data_dir = str(tmp_path), str(data)
+    host.make_run_context = partial(make_run_context, host)
+    host.emit_activity = AsyncMock()
+    projects = {"parent": {"root": str(project)}}
+    rt = host.require_runtime()
+    rt.sessions = SimpleNamespace(get_project=projects.get)
+    rt.registry, rt.session_runtimes, rt.session_artifacts = registry, runtimes, artifacts
+    rt.broker, rt.catalog, rt.kernel = broker, catalog, kernel
+    manager = _manager(database, host, artifacts)
+    catalog.host, catalog.children = host, manager
+    monkeypatch.setattr(manager, "_enqueue", AsyncMock(return_value="held"))
+    register_work_fabric_tools(host)
+    registry.remove("children")
+    register_children_tool(registry, manager)
+    register_ipython_tool(registry, host.require_runtime)
+    cell = registry.get("ipython").handler
+
+    contexts = []
+
+    async def child_turn(*_args, **_kwargs):
+        contexts.append(current_run_context())
+        await cell({"code": "from pathlib import Path\n"
+                            "with Path('child-result.txt').open('a', encoding='utf-8') as f:\n"
+                            "    print('written', file=f)"})
+        return "DONE: wrote a relative file"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", child_turn)
+    try:
+        parent = host.make_run_context("chat", "warm kernel", metadata={"chat_id": "parent"})
+        roots = [str(project), str(extra)]
+        parent.metadata["project_roots"] = roots
+        with bind_run_context(parent):
+            await cell({"code": "warm = True"})
+        projects["parent"] = {"root": str(later)}
+        changed = host.make_run_context("chat", "delegate", metadata={"chat_id": "parent"})
+        assert changed.metadata["working_directory"] == str(later)
+        changed.metadata["project_environment"] = {"PARENT_ONLY": "example"}
+        with bind_run_context(changed):
+            await cell({"category": "operate", "code": "child = children.spawn(task='Write a relative file')"})
+        child, = manager.list("parent")
+        child_id, chat_id = child["child_id"], child["child_chat_id"]
+        assert kernel.execution_history("parent")["items"][-1]["workspace_root_ids"] == roots
+
+        await manager._run(child_id)
+        settled = manager.inspect("parent", child_id)
+        assert settled["status"] == "completed", settled["error"]
+        assert (project / "child-result.txt").is_file(), contexts[-1].metadata["working_directory"]
+        assert settled["project_roots"] == roots
+        assert manager.inspection_snapshot("parent", child_id=child_id)["children"][0]["project_roots"] == roots
+        assert await kernel.close_chat(chat_id)
+        restored = ChildSessionManager(str(database), host, artifacts)
+        monkeypatch.setattr(restored, "_enqueue", AsyncMock(return_value="held"))
+        await restored.restart("parent", child_id)
+        await restored._run(child_id)
+        assert restored.inspect("parent", child_id)["status"] == "completed"
+        assert (project / "child-result.txt").read_text(encoding="utf-8").splitlines() == ["written"] * 2
+        assert all(not (directory / "child-result.txt").exists() for directory in (extra, later, data))
+        assert [row["workspace_root_ids"] for row in kernel.execution_history(chat_id)["items"]] == [roots] * 2
+        for ctx in contexts:
+            assert ctx.session_id == ctx.work_scope.chat_id == chat_id
+            assert ctx.desktop_binding.owner_id == ctx.run_id
+            assert ctx.desktop_binding.binding_id != changed.desktop_binding.binding_id
+            assert "project_environment" not in ctx.metadata
+        assert len({ctx.desktop_binding.binding_id for ctx in contexts}) == 2
+
+        await kernel.close_chat(chat_id)
+        await kernel.close_chat("parent")
+        project.rename(tmp_path / "moved-project")
+        await restored.restart("parent", child_id)
+        await restored._run(child_id)
+        unavailable = restored.inspect("parent", child_id)
+        assert unavailable["status"] == "failed" and str(project) in unavailable["error"]
+        assert unavailable["project_roots"] == roots and len(contexts) == 2
+        assert not (data / "child-result.txt").exists()
+    finally:
+        await kernel.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_child_project", [False, True])
+async def test_legacy_child_without_admitted_roots_resolves_its_own_project(tmp_path, monkeypatch, has_child_project):
+    from host_run_context import make_run_context
+    from run_context import bind_run_context
+
+    parent_project, child_project, data = [tmp_path / name for name in ("parent", "child", "data")]
+    for directory in (parent_project, child_project, data):
+        directory.mkdir()
+    monkeypatch.delenv("VARIANT1_PROJECT_ROOT", raising=False)
+    database = tmp_path / "children.sqlite3"
+    artifacts = ContentAddressedArtifactStore(str(tmp_path / "artifacts"))
+    host = _Host(database)
+    host.app_root, host.data_dir = str(tmp_path), str(data)
+    host.make_run_context = partial(make_run_context, host)
+    host.emit_activity = AsyncMock()
+    projects = {"parent": {"root": str(parent_project)}}
+    host.require_runtime().sessions = SimpleNamespace(get_project=projects.get)
+    manager = _manager(database, host, artifacts)
+    monkeypatch.setattr(manager, "_enqueue", AsyncMock(return_value="held"))
+    with bind_run_context(host.make_run_context("chat", "parent", metadata={"chat_id": "parent"})):
+        child = await manager.spawn("parent", task="Read local files")
+    assert child["project_roots"] == []
+    if has_child_project:
+        projects[child["child_chat_id"]] = {"root": str(child_project)}
+    # Reopen a database with the pre-upgrade schema and an existing child.
+    with closing(sqlite3.connect(database)) as conn, conn:
+        conn.execute("ALTER TABLE astb_child_handle DROP COLUMN project_roots_json")
+    upgraded = ChildSessionManager(str(database), host, artifacts)
+    seen = []
+
+    async def child_turn(*_args, **_kwargs):
+        seen.append(current_run_context().metadata["working_directory"])
+        return "DONE"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", child_turn)
+    await upgraded._run(child["child_id"])
+    observed = upgraded.inspect("parent", child["child_id"])
+    assert observed["status"] == "completed", observed["error"]
+    assert seen == [str(child_project if has_child_project else data)]
+    assert observed["project_roots"] == []
 
 
 @pytest.mark.asyncio
