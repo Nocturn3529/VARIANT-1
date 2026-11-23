@@ -83,6 +83,13 @@ app.whenReady().then(async()=>{
  await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Show right panel').click()")});await pause(80);
  console.log('Native layouts: four scoped presets, docked Review growth, and complete auxiliary panel hiding passed');
  console.log("CHAT_TEST_READY");
+ const mainSocket=sockets.find(connection=>!connection.pinned).socket;
+ function turnFrame(socket,chatId,frame) {
+  socket.send(JSON.stringify({source:'chat',session_id:chatId,admission_id:'admission-'+chatId,run_id:'run-'+chatId,...frame}));
+ }
+ turnFrame(mainSocket,'main-a',{type:'start'});
+ turnFrame(mainSocket,'main-a',{type:'token',token:'Main chat stream'});
+ await wait(main,'document.querySelector(".chat-turn--live")?.textContent.includes("Main chat stream")');
  const response=await main.webContents.executeJavaScript('window.variant1Deck.openChatWindow("chat-b","Detached chat")');assert.equal(response.ok,true);
 
  await wait(main,'document.querySelector(".window-count")?.textContent==="1"');
@@ -96,6 +103,23 @@ app.whenReady().then(async()=>{
  assert.ok(sockets.some(s=>s.role==='detached_chat'&&s.pinned==='chat-b'));
  const peer=sockets.find(s=>s.role==='detached_chat');peer.socket.send(JSON.stringify({type:'chat:session',session:{id:'foreign',title:'Wrong chat',messages:[]}}));await pause(100);
  assert.match(await child.webContents.executeJavaScript('document.querySelector(".titlebar__name").textContent'),/Detached chat/);
+ turnFrame(peer.socket,'chat-b',{type:'start'});
+ turnFrame(peer.socket,'chat-b',{type:'token',token:'Detached chat stream'});
+ await wait(child,'document.querySelector(".chat-turn--live")?.textContent.includes("Detached chat stream")');
+ peer.socket.send(JSON.stringify({type:'chat:session',session:{id:'chat-b',title:'Renamed while streaming',messages:[]}}));
+ await wait(child,'document.querySelector(".titlebar__name")?.textContent==="Renamed while streaming"');
+ await main.webContents.executeJavaScript('document.querySelector("[data-session-id=chat-c] .history-item__select").click()');
+ await wait(main,'document.querySelector("[data-session-id=chat-c] .history-item__select")?.getAttribute("aria-current")==="true" && !document.querySelector(".chat-turn--live")');
+ const escapeKey='document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))';
+ assert.equal(await main.webContents.executeJavaScript(escapeKey),true,'the newly selected idle chat leaves Escape available');
+ turnFrame(mainSocket,'main-a',{type:'done',text:'Main chat complete'});
+ assert.equal(await child.webContents.executeJavaScript(escapeKey),false,'the active detached chat handles Escape');
+ turnFrame(peer.socket,'chat-b',{type:'done',text:'Detached chat complete'});
+ await wait(child,'!document.querySelector(".chat-turn--live") && document.querySelector(".chat-workspace")?.textContent.includes("Detached chat complete")');
+ const cancellations=frames.filter(frame=>frame.type==='cancel');
+ assert.deepEqual(cancellations.map(frame=>[frame.role,frame.session_id,frame.admission_id,frame.run_id]),[['detached_chat','chat-b','admission-chat-b','run-chat-b']]);
+ assert.equal(await child.webContents.executeJavaScript(escapeKey),true,'the settled detached chat releases Escape');
+ console.log('Native streaming: main header inventory, switching to an idle chat, detached title and scoped Escape passed');
  child.showInactive();child.webContents.invalidate();await pause(250);
  fs.writeFileSync(${JSON.stringify(path.join(out,'detached-chat.png'))},(await child.webContents.capturePage()).toPNG());
 
@@ -135,7 +159,7 @@ app.whenReady().then(async()=>{
  child.hide();
  await main.webContents.executeJavaScript('window.variant1Deck.openChatWindow("chat-b","Detached chat")');assert.equal(manager.list().length,1);
  await child.webContents.executeJavaScript('window.variant1Deck.close()');await pause(150);assert.equal(manager.list().length,0);assert.equal(main.isDestroyed(),false);
- assert.equal(frames.filter(f=>['chat:session:new','chat:stop','cancel'].includes(f.type)).length,0,'opening/closing a view cannot submit or cancel work');
+ assert.equal(frames.filter(f=>['chat:session:new','chat:stop','cancel'].includes(f.type) && f!==cancellations[0]).length,0,'opening/closing a view cannot submit or cancel work');
  fs.writeFileSync(${JSON.stringify(path.join(out,'chat-window-frames.json'))},JSON.stringify(frames,null,2));
  console.log('Native chat windows: startup cover, compact pinned view, no host takeover, foreign snapshot rejection, reuse and view-only close passed');
 }).catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{if(manager)manager.closeAll();for(const {socket} of sockets)socket.terminate();if(server)server.close();app.exit(process.exitCode||0);});

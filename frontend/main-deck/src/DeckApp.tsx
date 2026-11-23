@@ -6,7 +6,7 @@ import {ActionPalette} from "./ui/ActionPalette";
 import {openPalette} from "./state/paletteStore";
 import {Icon} from "./ui/Icon";
 import {lazy, Suspense, useEffect} from "react";
-import {cancelChatTurn, notifyChat, useChatState} from "./chatStore";
+import {cancelChatTurn, notifyChat, shallowChatSelection, useChatSelection} from "./chatStore";
 import {LazySurface} from "./ui/LazySurface";
 import {focusMainComposer} from "./ui/SurfaceDocument";
 import {Overlay, OverlayHeader} from "./ui/Overlay";
@@ -102,7 +102,10 @@ function SectionFooter({api}: {api: RuntimeApi | null}) {
 export function DeckApp({api}: {api: RuntimeApi | null}) {
   const nativeWindows = useNativeWindows();
   const app = useAppState();
-  const chat = useChatState();
+  const chat = useChatSelection(
+    state => ({title: state.title, turnActive: state.turnActive}),
+    shallowChatSelection,
+  );
   const workbench = useWorkbenchState();
   useEffect(() => installNativeWindowBridge(api), [api]);
   useEffect(()=>!detachedChatId() ? installChatWindowInventory(api) : undefined,[api]);

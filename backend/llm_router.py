@@ -1620,10 +1620,13 @@ class LLMRouter:
         return headers
 
     @staticmethod
-    def _openai_url(base: str, path: str) -> str:
+    def _openai_url(base: str, path: str, *, profile=None) -> str:
         base = str(base or "").rstrip("/")
         clean = path.lstrip("/")
-        return f"{base}/{clean}" if base.endswith("/v1") else f"{base}/v1/{clean}"
+        versioned = str(getattr(profile, "versioned_base_url", "") or "").rstrip("/")
+        if base.endswith("/v1") or (versioned and base == versioned):
+            return f"{base}/{clean}"
+        return f"{base}/v1/{clean}"
 
     def nous_model_available(self, model: str) -> bool | None:
         return model in self._nous_models if self._nous_models is not None else None
@@ -1727,7 +1730,7 @@ class LLMRouter:
             raise LocalEngineError(f"no base URL configured for {prov}")
         try:
             if profile.api_style == "openai":
-                url = profile.models_url or self._openai_url(base, "models")
+                url = profile.models_url or self._openai_url(base, "models", profile=profile)
                 headers = self._provider_headers(profile, key)
                 async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
                     r = await client.get(url, headers=headers)
@@ -1739,7 +1742,7 @@ class LLMRouter:
                     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     return sorted(set(ids))
             elif profile.api_style == "anthropic":
-                url = base.rstrip("/") + "/v1/models"
+                url = profile.models_url or self._openai_url(base, "models", profile=profile)
                 headers = self._provider_headers(profile, key)
                 headers["anthropic-version"] = "2023-06-01"
                 async with httpx.AsyncClient(timeout=15, trust_env=False) as client:

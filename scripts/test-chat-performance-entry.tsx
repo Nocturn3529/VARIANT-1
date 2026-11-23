@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
+import {Session} from "node:inspector/promises";
+import {pathToFileURL} from "node:url";
 import {act,Profiler} from "react";
 import {createRoot} from "react-dom/client";
+import {DeckApp} from "../frontend/main-deck/src/DeckApp";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
 import {ComposerGoalStatus} from "../frontend/main-deck/src/chat/ComposerGoal";
 import {InputQueuePanel} from "../frontend/main-deck/src/chat/InputQueuePanel";
@@ -12,6 +15,42 @@ import {__resetChatStoreForTests} from "../frontend/main-deck/src/chatStore";
 import {noteDisplayedSession,__resetSessionStoreForTests} from "../frontend/main-deck/src/state/sessionStore";
 import type {ChatTurnStep} from "../frontend/main-deck/src/chat/types";
 
+// A Profiler surrounding the shell also sees legitimate transcript commits.
+// V8's in-process function counts distinguish an actual rerender of each component.
+async function checkFullDeck(root: ReturnType<typeof createRoot>, host: HTMLElement) {
+  const inspector = new Session();
+  async function renders() {
+    const {result} = await inspector.post("Profiler.takePreciseCoverage");
+    const bundle = result.find(script => script.url === pathToFileURL(__filename).href);
+    assert.ok(bundle, "expected the assembled Deck fixture in the coverage sample");
+    const counts = {DeckApp:0, Workbench:0, ChatComposer:0, ChatMessageList:0};
+    for (const fn of bundle.functions) {
+      if (Object.hasOwn(counts, fn.functionName)) counts[fn.functionName as keyof typeof counts] += fn.ranges[0].count;
+    }
+    return counts;
+  }
+  inspector.connect();
+  try {
+    await inspector.post("Profiler.enable");
+    await inspector.post("Profiler.startPreciseCoverage", {callCount:true, detailed:false});
+    await act(async () => root.render(<DeckApp api={null}/>));
+    const mounted = await renders();
+    for (const [name,count] of Object.entries(mounted)) assert.ok(count > 0, `missing render counter for ${name}`);
+    for (let i=1; i<=5; i++) await act(async () => patchChatState({streamText:`Visible stream ${i}`}));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    const counts = await renders();
+    console.log("Five full Deck stream updates", JSON.stringify(counts));
+    assert.equal(counts.DeckApp, 0, "stream text must not rerender the shell");
+    assert.equal(counts.Workbench, 0);
+    assert.equal(counts.ChatComposer, 0);
+    assert.ok(counts.ChatMessageList > 0);
+    assert.match(host.querySelector(".chat-turn--live")?.textContent || "", /Visible stream 5/);
+  } finally {
+    inspector.disconnect();
+    await act(async () => root.render(null));
+  }
+}
+
 export async function run() {
   __resetChatStoreForTests();__resetSessionStoreForTests();
   setChatContext({send:()=>true,isOpen:()=>true,notify(){}});
@@ -22,6 +61,7 @@ export async function run() {
   const track=(id:string)=>{commits[id]=(commits[id]||0)+1;};
   const components=[['composer',<ChatComposer/>],['goal',<ComposerGoalStatus/>],['queue',<InputQueuePanel/>],['team',<AgentTeamPanel/>],['transcript',<ChatMessageList/>]] as const;
   try {
+    await checkFullDeck(root,host);
     await act(async()=>root.render(<>{components.map(([id,element])=><Profiler key={id} id={id} onRender={()=>track(id)}>{element}</Profiler>)}</>));
     for(const id of Object.keys(commits))commits[id]=0;
     for(let index=0;index<20;index++)await act(async()=>patchChatState({streamText:`Current ${index}`}));

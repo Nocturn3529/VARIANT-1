@@ -68,7 +68,8 @@ def _o(name: str, display: str, base: str, env: tuple[str, ...], model: str,
            "temperature",
        ), completion_token_field: str = "max_tokens",
        max_completion_patterns: tuple[str, ...] = (),
-       sampling_forbidden_patterns: tuple[str, ...] = (), wire_model_rules: tuple[dict, ...] = ()) -> ProviderProfile:
+       sampling_forbidden_patterns: tuple[str, ...] = (), wire_model_rules: tuple[dict, ...] = (),
+       versioned_base: bool = False) -> ProviderProfile:
     return ProviderProfile(
         name=name, display_name=display, aliases=aliases, base_url=base,
         models_url=models_url, env_vars=env, auth_style=auth,
@@ -87,6 +88,7 @@ def _o(name: str, display: str, base: str, env: tuple[str, ...], model: str,
         prompt_cache_body_field=prompt_cache_body_field,
         prompt_cache_header=prompt_cache_header,
         wire_model_rules=deepcopy(wire_model_rules),
+        versioned_base_url=base if versioned_base else "",
     )
 
 
@@ -201,6 +203,7 @@ def builtin_profiles() -> list[ProviderProfile]:
            description="Fireworks OpenAI-compatible inference."),
         _o("deepinfra", "DeepInfra", "https://api.deepinfra.com/v1/openai",
            ("DEEPINFRA_API_KEY",), "", reasoning=True, vision=True,
+           versioned_base=True,
            signup="https://deepinfra.com/dash/api_keys",
            description="Open models through DeepInfra's compatible API."),
         _o("nebius-token-factory", "Nebius Token Factory",
@@ -365,7 +368,7 @@ def builtin_profiles() -> list[ProviderProfile]:
         _o("xiaomi", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", ("XIAOMI_API_KEY",),
            "mimo-v2-flash", aliases=("mimo", "xiaomi-mimo"), reasoning=True),
         _o("zai", "Z.AI", "https://api.z.ai/api/paas/v4", ("ZAI_API_KEY", "GLM_API_KEY"),
-           "glm-5", aliases=("glm", "z.ai", "zhipu"), reasoning=True),
+           "glm-5", aliases=("glm", "z.ai", "zhipu"), reasoning=True, versioned_base=True),
         _o(
             "ollama", "Ollama Desktop Cloud", "http://127.0.0.1:11434/v1", (),
             "gemma4:31b-cloud", auth="optional", reasoning=True, vision=True,

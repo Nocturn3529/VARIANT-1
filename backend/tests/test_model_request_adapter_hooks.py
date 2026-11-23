@@ -17,6 +17,8 @@ import llm_cloud_stream as cloud
 import llm_local_stream as local
 import llm_openai_codex_responses as codex_responses
 import llm_xai_responses as xai_responses
+from llm_router import LLMRouter
+from model_providers import CredentialLease
 from model_runtime.prompt_cache import resolve_prompt_cache_identity
 import tool_calling
 
@@ -106,7 +108,7 @@ class _Router:
     def _provider_headers(self, _profile, key):
         return {"Authorization": f"Bearer {key}"}
 
-    def _openai_url(self, base, path):
+    def _openai_url(self, base, path, *, profile=None):
         return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
     def provider_profile(self, _name):
@@ -130,7 +132,7 @@ def _profile(
 ):
     values = dict(
         name=name,
-        auth_style="query" if name == "gemini" else "bearer",
+        auth_style="x-goog-api-key" if name == "gemini" else "bearer",
         base_url=base_url,
         default_model=default_model,
         omit_temperature=False,
@@ -145,6 +147,54 @@ def _profile(
     )
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider,override,expected_base,chat", [
+    ("deepinfra", "", "https://api.deepinfra.com/v1/openai", True),
+    ("zai", "", "https://api.z.ai/api/paas/v4", True),
+    ("commandcode-anthropic", "", "https://api.commandcode.ai/provider/v1", False),
+    ("openai", "", "https://api.openai.com/v1", True),
+    ("deepinfra", "https://gateway.invalid/compat/", "https://gateway.invalid/compat/v1", True),
+])
+async def test_actual_provider_request_urls(tmp_path, monkeypatch, provider, override, expected_base, chat):
+    router = LLMRouter({}, str(tmp_path), data_dir=str(tmp_path))
+    monkeypatch.delenv("VARIANT1_OPENAI_BASE", raising=False)
+    profile = router.provider_profile(provider)
+    key = CredentialLease(provider, "fixture", "Fixture", "synthetic-credential", base_url=override)
+    seen = []
+
+    async def fresh(_name):
+        return True
+
+    def receive(request):
+        seen.append((request.method, str(request.url)))
+        if request.method == "GET":
+            return httpx.Response(200, json={"data": [{"id": "fixture"}]})
+        return httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n',
+        )
+
+    monkeypatch.setattr(router, "_credential_leases", lambda _name: [key])
+    monkeypatch.setattr(router, "ensure_oauth_fresh", fresh)
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda *args, **kw: _REAL_ASYNC_CLIENT(*args, transport=httpx.MockTransport(receive), **kw),
+    )
+    try:
+        if chat:
+            assert [
+                part async for part in cloud.call_cloud_once(
+                    router, profile, key, "fixture", [{"role": "user", "content": "fixture"}],
+                    {"max_tokens": 16}, False, None, None,
+                )
+            ] == ["ok"]
+        assert await router.list_cloud_models(provider) == ["fixture"]
+    finally:
+        await router._manifest_bus.stop()
+
+    expected = [("POST", expected_base + "/chat/completions")] if chat else []
+    assert seen == [*expected, ("GET", expected_base + "/models")]
 
 
 def _install_transport(monkeypatch, adapter_module, body: str):

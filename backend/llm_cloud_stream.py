@@ -541,10 +541,8 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
         body_field=str(getattr(profile, "prompt_cache_body_field", "") or ""),
         header_name=str(getattr(profile, "prompt_cache_header", "") or ""),
     )
-    # Be /v1-aware: a base that already ends in /v1 (xAI, NVIDIA) must not get a
-    # second /v1 appended (which would 404).
     b = (base or (profile.base_url if profile else "https://api.openai.com/v1")).rstrip("/")
-    url = router._openai_url(b, "chat/completions")
+    url = router._openai_url(b, "chat/completions", profile=profile)
     request_started = time.perf_counter()
     decoder = OpenAIChatSSEDecoder()
     event_hooks = None

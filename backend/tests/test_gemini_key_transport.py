@@ -32,11 +32,13 @@ async def transport(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["ok", "http", "embedded", "transport", "subscription"])
+@pytest.mark.parametrize("kind", ["ok", "saved_query", "http", "embedded", "transport", "subscription"])
 async def test_gemini_chat_api_key_never_enters_request_url(transport, monkeypatch, kind):
     router, install = transport
     subscription = kind == "subscription"
     profile = router.provider_profile("google-antigravity" if subscription else "gemini")
+    if kind == "saved_query":
+        profile = profile.with_overrides({"auth_style": "query"})
     if subscription:
         monkeypatch.setattr(router, "_oauth_rec", lambda _name: {"project_id": "fixture-project"})
 
@@ -68,7 +70,7 @@ async def test_gemini_chat_api_key_never_enters_request_url(transport, monkeypat
         router, [{"role": "user", "content": "fixture"}], {"max_tokens": 32},
         _KEY, profile=profile, model="fixture",
     )
-    if kind in {"ok", "subscription"}:
+    if kind in {"ok", "saved_query", "subscription"}:
         assert [part async for part in stream] == ["ok"]
     else:
         with pytest.raises(ProviderRequestError) as caught:

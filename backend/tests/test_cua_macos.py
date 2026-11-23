@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from desktop_fabric import cua_adapter
-from desktop_fabric.cua_client import CuaDriverError, pinned_cua_driver_version
+from desktop_fabric.cua_client import CuaDriverError, CuaToolError, pinned_cua_driver_version
 from desktop_fabric.cua_macos import (
     MacDriverClient,
     MacDriverDaemon,
@@ -170,6 +170,8 @@ class _Proxy:
         if name == "check_permissions":
             assert arguments == {"prompt": False}
             return dict(self.permissions)
+        if isinstance(self.error, Exception):
+            raise self.error
         if self.error:
             raise CuaDriverError(self.error)
         return {"ok": True}
@@ -263,6 +265,18 @@ def test_a_dead_daemon_marks_the_pair_for_restart():
     client.open()
     with pytest.raises(CuaDriverError, match="System Settings"):
         client.call_tool("click", {})
+
+
+@pytest.mark.parametrize("kind", [CuaDriverError, CuaToolError])
+def test_permission_hint_preserves_transport_vs_driver_rejection(kind):
+    client, _ = _client(error=kind("Accessibility is not granted"))
+    client.open()
+    try:
+        with pytest.raises(CuaDriverError, match="System Settings") as caught:
+            client.call_tool("click", {})
+        assert type(caught.value) is kind
+    finally:
+        client.close()
 
 
 def test_macos_selects_the_app_bundle_or_says_why_not(tmp_path, monkeypatch):

@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -808,14 +809,88 @@ def _copy_patch_file(source: str, target: str, fd: int) -> None:
         os.fsync(staged.fileno())
 
 
+def _owns_patch_staging_paths(document: dict, journal_path: str) -> bool:
+    """Recognize the staging names written by this and earlier WAL formats."""
+    transaction = document.get("transaction_id")
+    if not transaction or os.path.basename(journal_path) != f"{transaction}.json":
+        return False
+    items = document.get("operations") or []
+    if not isinstance(items, list) or any(not isinstance(item, dict)
+            or not isinstance(item.get("path"), str) or not os.path.isabs(item["path"]) for item in items):
+        return False
+    targets = {os.path.normcase(os.path.abspath(item["path"])) for item in items}
+    nonce = None if document["schema"] == _PATCH_JOURNAL_SCHEMA else transaction
+    for index, item in enumerate(items):
+        parent = os.path.dirname(os.path.abspath(item["path"]))
+        for field in ("candidate", "backup", "deleted"):
+            staged = item.get(field)
+            if not staged:
+                continue
+            if not isinstance(staged, str) or not os.path.isabs(staged):
+                return False
+            path = os.path.normcase(os.path.abspath(staged))
+            if path in targets or os.path.dirname(path) != os.path.normcase(parent):
+                return False
+            if nonce is None:
+                match = re.fullmatch(r"\.variant1-patch-([0-9a-f]{32})-\d+\.\w+", os.path.basename(path))
+                if not match:
+                    return False
+                nonce = match[1]
+            if os.path.basename(path) != f".variant1-patch-{nonce}-{index}.{field}":
+                return False
+    return True
+
+
+def _retain_patch_journal(journal_path: str) -> None:
+    retained = f"{journal_path}.{uuid.uuid4().hex}.needs-review"
+    os.replace(journal_path, retained)
+    _fsync_directory(os.path.dirname(journal_path))
+    print(f"[apply_patch] Transaction evidence retained at {retained}", flush=True)
+
+
+def _remove_patch_staging(path: str, *, expected_sha256: str) -> bool:
+    """Remove an owned staging file. Return False if its identity is uncertain."""
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
+    except PermissionError:
+        if os.name != "nt":
+            raise
+        info = os.lstat(path)
+        if not info.st_file_attributes & stat.FILE_ATTRIBUTE_READONLY:
+            raise  # A share lock or an ACL failure still needs recovery.
+        if (not expected_sha256 or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                or info.st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            return False
+        # An open CRT read handle keeps this Windows pathname from being
+        # replaced between checking the WAL copy and clearing its read-only bit.
+        with open(path, "rb") as staged:
+            if (not os.path.samestat(info, os.fstat(staged.fileno()))
+                    or hashlib.file_digest(staged, "sha256").hexdigest() != expected_sha256
+                    or os.fstat(staged.fileno()).st_nlink != 1):
+                return False
+            os.chmod(path, stat.S_IWRITE, follow_symlinks=False)
+        try:
+            os.remove(path)
+        except OSError:
+            if os.path.lexists(path) and os.path.samestat(info, os.lstat(path)):
+                os.chmod(path, stat.S_IREAD, follow_symlinks=False)
+            raise
+    return True
+
+
 def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool) -> None:
     cleanup_errors: list[str] = []
     for item in document.get("operations") or ():
         for field in ("candidate", "backup", "deleted"):
             path = str(item.get(field) or "")
-            if path and os.path.exists(path):
+            if path:
                 try:
-                    os.remove(path)
+                    digest_field = "published_sha256" if field == "candidate" else "original_sha256"
+                    if not _remove_patch_staging(path, expected_sha256=item.get(digest_field, "")):
+                        _retain_patch_journal(journal_path)
+                        return
                 except OSError as exc:
                     cleanup_errors.append(f"{path}: {exc}")
     if rollback:
@@ -894,8 +969,8 @@ def _restore_patch_journal(document: dict, journal_path: str) -> None:
                 os.replace(restore, path)
                 _fsync_directory(parent)
         finally:
-            if os.path.exists(restore):
-                os.remove(restore)
+            if not _remove_patch_staging(restore, expected_sha256=item["original_sha256"]):
+                raise tools.ToolError(f"Unconfirmed restore staging file retained at {restore}")
     _cleanup_patch_journal(document, journal_path, rollback=True)
 
 
@@ -910,17 +985,14 @@ def _recover_patch_journal(journal_path: str) -> None:
     ):
         raise tools.ToolError(f"unknown patch transaction journal: {journal_path}")
     state = document.get("state")
-    if state == "committed":
+    if (document["schema"] in _LEGACY_PATCH_JOURNAL_SCHEMAS and state not in {"preparing", "committed"}
+            or not _owns_patch_staging_paths(document, journal_path)):
+        # Never roll back an older ambiguous publication or remove an unowned path.
+        _retain_patch_journal(journal_path)
+    elif state == "committed":
         _cleanup_patch_journal(document, journal_path, rollback=False)
     elif state == "preparing":
         _cleanup_patch_journal(document, journal_path, rollback=True)
-    elif document["schema"] in _LEGACY_PATCH_JOURNAL_SCHEMAS:
-        # An older interrupted journal lacks publication identities. Preserve
-        # its evidence and leave the current project files in place.
-        retained = f"{journal_path}.{uuid.uuid4().hex}.needs-review"
-        os.replace(journal_path, retained)
-        _fsync_directory(os.path.dirname(journal_path))
-        print(f"[apply_patch] Older interrupted transaction retained at {retained}", flush=True)
     elif state == "committing":
         _restore_patch_journal(document, journal_path)
     else:
@@ -973,10 +1045,11 @@ def _apply_direct_patch(
                     f"file changed while apply_patch was preparing: {op['path']}"
                 )
             if (
-                os.name == "nt" and op["kind"] == "delete" and op["signature"].exists
+                os.name == "nt" and op["signature"].exists
                 and not op["signature"].mode & stat.S_IWRITE
             ):
-                raise PermissionError(f"apply_patch cannot delete a read-only file: {op['path']}")
+                action = "delete" if op["kind"] == "delete" else "replace"
+                raise PermissionError(f"apply_patch cannot {action} a read-only file: {op['path']}")
         made_dirs: set[str] = set()
         journal_operations: list[dict] = []
         staging_id = uuid.uuid4().hex
