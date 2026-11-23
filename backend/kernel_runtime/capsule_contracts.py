@@ -16,6 +16,10 @@ WORKER_CAPTURE_REQUEST_SCHEMA = "variant1.kernel-capsule-capture-request.v1"
 SERIALIZER_REGISTRY_SCHEMA = "variant1.kernel-serializer-registry.v1"
 
 
+class CapsuleRestoreUnknownEffect(RuntimeError):
+    """The worker could not roll back a partially applied restore."""
+
+
 def serializer_registry_document(
     package_versions: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
@@ -115,6 +119,7 @@ def serializer_registry_document(
 
 
 __all__ = [
+    "CapsuleRestoreUnknownEffect",
     "SERIALIZER_REGISTRY_SCHEMA",
     "WORKER_CAPSULE_SCHEMA",
     "WORKER_CAPTURE_REQUEST_SCHEMA",

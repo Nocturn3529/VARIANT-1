@@ -104,19 +104,31 @@ async def stream_with_recovery(router, messages, options, *, recovery_profile=No
         finally:
             REQUEST_BUDGET.reset(token)
         return
-    effective_mode = (router.bound_model_route() or scope.primary)["mode"] if scope is not None else None
-    if scope is None or (requested_mode in {"local", "cloud"} and requested_mode != effective_mode):
-        selected = normalize_model_route(router, mode=requested_mode if requested_mode in {"local", "cloud"} else router.mode)
-        with router.bind_model_route(selected, allow_recovery=allow_recovery):
-            # An explicit per-call mode override must not inherit native state
-            # from the different route that owns the enclosing run.
-            override_messages = portable_messages(messages) if scope is not None else messages
-            async with aclosing(stream_with_recovery(router, override_messages, options,
-                    recovery_profile=recovery_profile, allow_recovery=allow_recovery)) as stream:
-                async for token in stream:
-                    yield token
-        return
+    binding = nullcontext()
+    if scope is None or (
+        requested_mode in {"local", "cloud"}
+        and requested_mode not in {
+            scope.primary["mode"], (router.bound_model_route() or scope.primary)["mode"],
+        }
+    ):
+        selected_mode = requested_mode if requested_mode in {"local", "cloud"} else router.mode
+        selected = normalize_model_route(router, mode=selected_mode)
+        binding = router.bind_model_route(selected, allow_recovery=allow_recovery)
+        if scope is not None:
+            # A different route must not inherit provider-native replay state.
+            messages = portable_messages(messages)
 
+    with binding:
+        async with aclosing(_stream_bound_recovery(
+            router, messages, options,
+            recovery_profile=recovery_profile, allow_recovery=allow_recovery,
+        )) as stream:
+            async for part in stream:
+                yield part
+
+
+async def _stream_bound_recovery(router, messages, options, *, recovery_profile, allow_recovery):
+    scope = router.recovery_scope()
     policy = scope.policy
     enabled = bool(allow_recovery and scope.allow_recovery and policy["enabled"])
     auxiliary = bool(options.get("internal_projection")) or recovery_profile in PROFILES

@@ -12,7 +12,7 @@ from typing import Any
 from background_tasks import OwnedTaskSet
 from peer_message_contract import PEER_REPLY_HINT
 
-from session_runtime.models import TICKET_TERMINAL_STATES
+from session_runtime.models import InputTicket, TICKET_TERMINAL_STATES
 from .repository import MESSAGE_DIRECTIONS, PeerRepository
 from .delivery import MESSAGE_KINDS, requests_work, grok_delivery_status
 
@@ -374,16 +374,15 @@ class PeerCommunicationService:
                         evidence={**row.get('evidence', {}), 'native_wait_failure':'recipient_unsettled'}))
             after = ids[-1]
 
-    def native_wait_failure(self, peer_id, message_id):
-        message = self._message_for_peer(peer_id, message_id)
-        if not requests_work(message) or not _native_chat_id(message.get('target_peer_id', '')):
+    def _native_wait_failure(self, message):
+        chat_id = _native_chat_id(message.get('target_peer_id', ''))
+        if not chat_id or not requests_work(message):
             return None
-        if self._native_completion(message) is not None:
-            return None
+        evidence = message.get('evidence') or {}
         if (message.get('state') == 'failed'
                 or (message.get('state') == 'parked' and not self._parked_resumable(message))
-                or message.get('evidence', {}).get('native_wait_failure')
-                or self.sessions.get_session(_native_chat_id(message['target_peer_id'])) is None):
+                or evidence.get('native_wait_failure') or evidence.get('ticket_state') == 'transcript_failed'
+                or not self.sessions.has_session(chat_id)):
             return message.get('error') or 'Recipient work is unavailable; inspect before continuing'
         return None
 
@@ -499,14 +498,16 @@ class PeerCommunicationService:
             + PEER_REPLY_HINT
         )
 
-    def _sync_native_state(self, row: Mapping[str, Any], *, idle: bool = False) -> dict[str, Any]:
+    def _sync_native_state(self, row: Mapping[str, Any], *, idle: bool = False,
+                           ticket: InputTicket | None = None) -> dict[str, Any]:
         message = dict(row)
         ticket_id = str(message.get("delivery_ticket_id") or "")
         if (message.get('evidence') or {}).get('native_wait_failure'):
             return message  # Durable terminal observation, not a live queue projection.
         if not ticket_id or not _native_chat_id(str(message.get("target_peer_id") or "")):
             return message
-        ticket = self.session_runtimes.repository.get_ticket(ticket_id)
+        if ticket is None:
+            ticket = self.session_runtimes.repository.get_ticket(ticket_id)
         if ticket is None:
             return message
         if idle and ticket.state == "parked" and ticket.error == "turn_ok_before_input_delivery":
@@ -626,8 +627,14 @@ class PeerCommunicationService:
         event = self._idle_events.get(chat_id)
         if event is not None:
             event.set()
+        needs_wake = False
         for row in self.repository.pending_native(chat_id=chat_id):
-            self._sync_native_state(row, idle=True)
+            updated = self._sync_native_state(row, idle=True)
+            if (event is None and not needs_wake and updated["state"] in {"persisted", "queued"}
+                    and self._actionable_request(updated) is not None):
+                needs_wake = True
+        if needs_wake:
+            self._schedule_native_wake(chat_id)
 
     async def _wake_native(self, chat_id: str) -> None:
         idle_delay = 0.1
@@ -879,10 +886,31 @@ class PeerCommunicationService:
 
         return update
 
+    def _actionable_request(self, message: dict) -> dict | None:
+        ticket_id = message.get("delivery_ticket_id")
+        if not ticket_id or not _native_chat_id(message["target_peer_id"]):
+            return message  # External delivery or a durable request awaiting native admission.
+        ticket = self.session_runtimes.repository.get_ticket(ticket_id)
+        if ticket is None:
+            return None
+        current = self._sync_native_state(message, ticket=ticket)
+        # Already claimed or consumed requests may still be waiting for an
+        # explicit reply. Only a queued ticket is new work for the recipient.
+        return current if ticket.state == "queued" and current["state"] == "queued" else None
+
+    def _incoming_attention(self, peer_id: str, excluding: str) -> dict | None:
+        after = 0
+        while rows := self.repository.incoming_request_candidates(peer_id, excluding=excluding, after=after):
+            for row in rows:
+                attention = self._actionable_request(row)
+                if attention is not None:
+                    return attention
+            after = rows[-1]["sequence"]
+        return None
+
     async def wait_message(
         self, peer_id: str, message_id: str, timeout_s: float = 30.0, *, _invocation=None,
     ) -> dict[str, Any]:
-        message = self._message_for_peer(peer_id, message_id)
         deadline = asyncio.get_running_loop().time() + max(
             0.0, min(float(timeout_s), 30.0)
         )
@@ -890,29 +918,29 @@ class PeerCommunicationService:
         try:
             while True:
                 event = self._change_event
+                message = self._message_for_peer(peer_id, message_id)
                 reply = self.repository.find_reply(message_id)
                 if reply is not None:
                     return {
                         "status": "replied",
-                        "message": self._message_for_peer(peer_id, message_id),
+                        "message": message,
                         "reply": reply,
                     }
-                completion = self.native_completion(peer_id, message_id)
+                completion = self._native_completion(message)
                 if completion is not None:
-                    return {'status':'settled', 'message':self._message_for_peer(peer_id,message_id),
-                            'completion':completion}
-                # Any still-unanswered inbound request is attention, including a
-                # mutual request that committed just before this wait began. This
-                # is the deadlock escape for two chats that both ask then wait.
-                attention = self.repository.next_incoming_request(peer_id, excluding=message_id)
+                    return {"status": "settled", "message": message, "completion": completion}
+                failure = self._native_wait_failure(message)
+                if failure:
+                    return {"status": "unavailable", "message": message, "error": failure}
+                attention = self._incoming_attention(peer_id, excluding=message_id)
                 if attention is not None:
                     return {
                         "status": "attention", "message": message,
-                        "incoming": self._sync_native_state(attention),
+                        "incoming": attention,
                     }
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
+                    return {"status": "pending", "message": message}
                 if _invocation is not None and not event.is_set():
                     try:
                         display = self._wait_display(peer_id, message, _invocation)
@@ -924,7 +952,7 @@ class PeerCommunicationService:
                 try:
                     await asyncio.wait_for(event.wait(), timeout=remaining)
                 except TimeoutError:
-                    return {"status": "pending", "message": self._message_for_peer(peer_id, message_id)}
+                    continue  # Recheck durable outcomes at the timeout boundary.
         finally:
             if display is not None:
                 display("done")

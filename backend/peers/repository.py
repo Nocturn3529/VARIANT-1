@@ -599,14 +599,16 @@ class PeerRepository:
             ).fetchall()
         return [self._message(row) or {} for row in rows]
 
-    def next_incoming_request(self, peer_id: str, *, excluding: str) -> dict[str, Any] | None:
+    def incoming_request_candidates(self, peer_id: str, *, excluding: str, after: int) -> list[dict]:
         with self._connect() as conn:
-            return self._message(conn.execute(
-                "SELECT * FROM peer_message WHERE target_peer_id=? AND message_id<>? "
+            rows = conn.execute(
+                "SELECT * FROM peer_message WHERE target_peer_id=? AND message_id<>? AND sequence>? "
                 "AND message_kind='request' AND in_reply_to='' "
-                "AND state IN ('persisted','queued','transport_written','observed') "
-                "ORDER BY sequence LIMIT 1", (str(peer_id), str(excluding)),
-            ).fetchone())
+                "AND (state IN ('persisted','queued','transport_written') "
+                "OR (state='observed' AND target_peer_id NOT LIKE 'chat:%')) "
+                "ORDER BY sequence LIMIT 32", (str(peer_id), str(excluding), after),
+            ).fetchall()
+        return [self._message(row) for row in rows]
 
     def update_message(
         self, message_id: str, *, state: str | None = None,

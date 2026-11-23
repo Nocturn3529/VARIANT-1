@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const vm = require('node:vm');
-const {execFileSync} = require('node:child_process');
+const {execFile, execFileSync} = require('node:child_process');
 const {createRequire} = require('node:module');
 const root = path.resolve(__dirname, '..');
 const file = path.join(root, 'electron-deck-ipc.js');
@@ -23,6 +23,20 @@ const opens = [], reveals = [];
 const deck = {}, monitor = {}, overlay = {};
 let picks = 0;
 let saves=0,saveChoice={canceled:true},saveOptions;
+let readInvocations = null;
+function fixtureExecFile(executable, args, options, callback) {
+  if (readInvocations) {
+    assert.equal(executable, 'git');
+    assert.ok(args.includes('core.fsmonitor=false'));
+    assert.equal(options.env.GIT_PAGER, 'cat');
+    assert.ok(args.includes('core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null')));
+    if (args.some(arg => ['show', 'diff-tree', 'diff'].includes(arg))) {
+      assert.ok(args.includes('--no-ext-diff') && args.includes('--no-textconv'));
+    }
+    readInvocations.push(args);
+  }
+  return execFile(executable, args, options, callback);
+}
 const moduleResult = {exports: {}};
 vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
   module: moduleResult, exports: moduleResult.exports,
@@ -31,7 +45,7 @@ vm.runInNewContext(fs.readFileSync(file, 'utf8'), {
     BrowserWindow: {fromWebContents: sender => sender},
     dialog: {showOpenDialog: async () => {picks++; return {canceled: true};},showSaveDialog:async(_owner,options)=>{saves++;saveOptions=options;return saveChoice;}},
     shell: {openPath: async value => {opens.push(value); return '';}, showItemInFolder: value => reveals.push(value)},
-  } : localRequire(id),
+  } : id === 'child_process' ? {execFile: fixtureExecFile} : localRequire(id),
   __dirname: root, process, Buffer, console, setTimeout, clearTimeout,
 }, {filename: file});
 moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
@@ -76,6 +90,27 @@ moduleResult.exports.registerDeckIpc({app: {}, appRoot: root,
     assert.equal(fs.readFileSync(path.join(repo, oldPath), 'utf8'), 'first\n');
     git('add', '--', oldPath);
     git('-c','user.name=Deck fixture','-c','user.email=fixture@example.test','-c','commit.gpgSign=false','commit','-qm','Initial');
+    fs.writeFileSync(path.join(repo, oldPath), 'working copy\n');
+    git('config', 'core.fsmonitor', 'true');
+    readInvocations = [];
+    try {
+      const status = await handlers.get('workbench:git:status')({sender:deck}, repo);
+      assert.equal(status.ok, true, status.error);
+      const file = status.files.find(row => row.path === oldPath);
+      assert.deepEqual([file.status, file.added, file.removed], [' M', 1, 1]);
+      const diff = await handlers.get('workbench:git:review-diff')({sender:deck}, repo, oldPath, {scope:'unstaged'});
+      assert.equal(diff.ok, true, diff.error);
+      assert.match(diff.diff, /\+working copy/);
+      const history = await handlers.get('workbench:git:history')({sender:deck}, repo, {allBranches:true, limit:5});
+      assert.equal(history.ok, true, history.error);
+      assert.equal(history.commits.length, 1);
+      const command = readInvocations.find(args => args.includes('status'));
+      assert.equal(git(...command.slice(0, command.indexOf('status')), 'config', '--bool', '--get', 'core.fsmonitor').trim(), 'false');
+      assert.equal(git('config', '--local', '--bool', '--get', 'core.fsmonitor').trim(), 'true');
+    } finally {
+      readInvocations = null;
+      git('config', '--unset', 'core.fsmonitor');
+    }
     fs.writeFileSync(path.join(repo, oldPath), 'staged version\n');
     git('add', '--', oldPath);
     fs.unlinkSync(path.join(repo, oldPath));

@@ -214,6 +214,44 @@ async def test_hub_drops_a_socket_only_when_its_send_fails():
 
 
 @pytest.mark.asyncio
+async def test_serialization_failure_skips_only_the_frame_and_preserves_order():
+    import json
+
+    class Socket:
+        def __init__(self, broken=False):
+            self.messages = []
+            self.broken = broken
+            self.closed = False
+
+        async def send_json(self, payload):
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            if self.broken:
+                raise ValueError("transport failed on a serializable frame")
+            self.messages.append(json.loads(encoded))
+
+        async def close(self):
+            self.closed = True
+
+    hub = WSHub()
+    first, second, broken = Socket(), Socket(), Socket(broken=True)
+    for ws in (first, second, broken):
+        hub.add(ws)
+    frames = [
+        {"type": "test", "n": 1},
+        {"type": "test", "n": object()},
+        {"type": "test", "n": 2},
+    ]
+    before, rejected, after = [hub.publish(frame) for frame in frames]
+    await asyncio.gather(*before, *rejected, *after)
+    await asyncio.sleep(0)
+    assert [row["n"] for row in first.messages] == [1, 2]
+    assert second.messages == first.messages
+    assert all(not future.result() for future in rejected)
+    assert {first, second} == hub.active
+    assert broken.closed
+
+
+@pytest.mark.asyncio
 async def test_hub_closes_a_socket_that_falls_too_far_behind():
     class StuckSocket:
         def __init__(self):

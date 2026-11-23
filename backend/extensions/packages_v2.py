@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import operator
 import os
 from pathlib import Path
 import shutil
@@ -34,14 +35,18 @@ def _semver(value: str) -> tuple[int, int, int]:
         raise ExtensionPackageError(f"invalid compatibility version: {value}") from exc
 
 
+_VERSION_COMPARISONS = ((">=", operator.ge), ("<=", operator.le), ("==", operator.eq),
+                        (">", operator.gt), ("<", operator.lt), ("=", operator.eq))
+
+
 def _range_allows(version: str, expression: str) -> bool:
     current = _semver(version)
     for token in str(expression or "").split():
-        if token.startswith(">=") and current < _semver(token[2:]): return False
-        if token.startswith(">") and current <= _semver(token[1:]): return False
-        if token.startswith("<=") and current > _semver(token[2:]): return False
-        if token.startswith("<") and current >= _semver(token[1:]): return False
-        if token.startswith("=") and current != _semver(token[1:]): return False
+        for prefix, compare in _VERSION_COMPARISONS:
+            if token.startswith(prefix):
+                if not compare(current, _semver(token[len(prefix):])):
+                    return False
+                break
     return True
 
 

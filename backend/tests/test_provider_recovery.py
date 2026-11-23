@@ -106,6 +106,20 @@ def test_structured_failures_preserve_cause(status, code, expected):
     if expected in {"content_policy","quota","context","authentication"}: assert not classify_provider_error(error).retryable
 
 
+@pytest.mark.parametrize("typed", [False, True])
+@pytest.mark.parametrize("detail,expected", [
+    ("monthly usage limit reached", "quota"),
+    ("Too many requests per minute", "rate_limit"),
+])
+def test_generic_throttle_type_preserves_quota_evidence(typed, detail, expected):
+    error = ProviderRequestError("openai", detail, status_code=429)
+    if typed:
+        annotate_provider_error(error, {"error": {"type": "rate_limit_error", "code": 429}})
+    failure = classify_provider_error(error)
+    assert failure.kind == expected
+    assert failure.retryable == (expected == "rate_limit")
+
+
 @pytest.mark.parametrize('byok,model_specific',[(False,True),(True,False),(None,False)])
 def test_shared_openrouter_upstream_throttle_is_distinct_from_account_limits(byok,model_specific):
     error=ProviderRequestError('openrouter','Provider returned error',status_code=429)
@@ -565,6 +579,41 @@ async def test_legacy_unbound_chain_reserves_attempts_for_its_configured_backup(
     assert await consume(result) == ["ok"]
     assert calls == ["openai"] * 3 + ["anthropic"]
     assert REQUEST_BUDGET.get() is None and result.bound_model_route() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pinned", [False, True])
+@pytest.mark.parametrize("fallback_cooling", [False, True])
+async def test_explicit_cloud_mode_falls_back_from_cooldown_once(tmp_path, monkeypatch, pinned, fallback_cooling):
+    from contextlib import nullcontext
+    from llm_recovery import route_key
+
+    local = {"mode": "local", "provider": "local", "model": "fixture.gguf"}
+    primary = {**PRIMARY, "model": "pinned-cloud"} if pinned else PRIMARY
+    result = router(tmp_path, monkeypatch, fallback_routes=[local])
+    monkeypatch.setattr(LLMRouter, "engine_ready", property(lambda self: True))
+    monkeypatch.setattr(LLMRouter, "model_name", property(lambda self: "fixture.gguf"))
+    cooling = Failure("rate_limit", retryable=True, fallback=True, reset_at=time.time() + 60)
+    result._recovery_cooldowns.failed(route_key(result, primary), cooling)
+    if fallback_cooling:
+        result._recovery_cooldowns.failed(route_key(result, local), cooling)
+    calls = []
+
+    async def dispatch(_messages, **kwargs):
+        calls.append((kwargs["route"], result.bound_model_route()["model"]))
+        yield "local result"
+
+    monkeypatch.setattr(result, "_stream_selected", dispatch)
+    with result.bind_model_route(primary) if pinned else nullcontext():
+        if fallback_cooling:
+            with pytest.raises(ProviderRequestError, match="not yet eligible"):
+                await consume(result, route="cloud")
+            assert not calls
+        else:
+            assert await consume(result, route="cloud") == ["local result"]
+            assert calls == [("local", "fixture.gguf")]
+    assert result.bound_model_route() is None
+    assert REQUEST_BUDGET.get() is None
 
 
 @pytest.mark.asyncio

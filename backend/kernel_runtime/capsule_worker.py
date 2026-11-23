@@ -24,6 +24,7 @@ from typing import Any, Callable, Iterable
 
 from core_invariants import canonical_json_bytes as _canonical_json_bytes
 from .capsule_contracts import (
+    CapsuleRestoreUnknownEffect,
     SERIALIZER_REGISTRY_SCHEMA,
     WORKER_CAPSULE_SCHEMA,
     WORKER_CAPTURE_REQUEST_SCHEMA,
@@ -1248,7 +1249,7 @@ class KernelCapsuleWorker:
                 raise RuntimeError(
                     "capsule_restore_rolled_back: namespace reinstall failed"
                 ) from restore_error
-            raise RuntimeError(
+            raise CapsuleRestoreUnknownEffect(
                 "capsule_restore_unknown_effect: restore and rollback both failed"
             ) from restore_error
         return {

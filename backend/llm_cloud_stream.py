@@ -181,7 +181,7 @@ def _embedded_error_status(error: dict) -> int:
     return 0
 
 
-def _provider_stream_error(label: str, obj) -> ProviderRequestError | None:
+def _provider_stream_error(label: str, obj, *, api_key: str = "") -> ProviderRequestError | None:
     """Convert an HTTP-200 provider error envelope into a typed failure."""
 
     if not isinstance(obj, dict) or not obj.get("error"):
@@ -189,10 +189,12 @@ def _provider_stream_error(label: str, obj) -> ProviderRequestError | None:
     raw = obj.get("error")
     error = raw if isinstance(raw, dict) else {"message": str(raw)}
     status = _embedded_error_status(error)
-    message = str(error.get("message") or error.get("type") or raw)[:300]
+    message = str(error.get("message") or error.get("type") or raw)
+    if api_key:
+        message = message.replace(api_key, "[redacted]")
     failure = ProviderRequestError(
         label,
-        f"{label} stream error{f' {status}' if status else ''}: {message}",
+        f"{label} stream error{f' {status}' if status else ''}: {message[:300]}",
         status_code=status,
         retry_after_seconds=_embedded_retry_after_seconds(error),
     )
@@ -208,6 +210,9 @@ def _provider_stream_error(label: str, obj) -> ProviderRequestError | None:
         or ""
     )
     annotate_provider_error(failure, obj)
+    if api_key:
+        failure.provider_error_type = failure.provider_error_type.replace(api_key, "[redacted]")
+        failure.provider_error_code = failure.provider_error_code.replace(api_key, "[redacted]")
     return failure
 
 
@@ -774,7 +779,7 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
 
-    headers = router._provider_headers(profile,key) if profile else {}
+    headers = router._provider_headers(profile, key) if profile else {"x-goog-api-key": key}
     headers["Content-Type"] = "application/json"
     prompt_cache = apply_prompt_cache_identity(
         prompt_cache_identity,
@@ -789,8 +794,7 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     # the endpoint returns a single chunked JSON *array*, which can't be parsed
     # line-by-line and yields no tokens.
     url = f"{base}/models/{model}:streamGenerateContent?alt=sse"
-    if not profile or profile.auth_style == "query":
-        url += f"&key={key}"
+    api_key = headers.get("x-goog-api-key", "")
     subscription = label == 'google-antigravity'
     if subscription:
         from model_runtime.google_ai import prepare_request
@@ -826,6 +830,8 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
                 router._observe_cloud_response(label, model, resp)
                 if resp.status_code != 200:
                     body = await resp.aread()
+                    if api_key:
+                        body = body.replace(api_key.encode("utf-8"), b"[redacted]")
                     raise _http_provider_error(label, resp, body)
                 async for line in resp.aiter_lines():
                     line = line.strip()
@@ -841,7 +847,7 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
                     if subscription:
                         from model_runtime.google_ai import unwrap_response
                         obj = unwrap_response(obj)
-                    stream_error = _provider_stream_error(label, obj)
+                    stream_error = _provider_stream_error(label, obj, api_key=api_key)
                     if stream_error is not None:
                         raise stream_error
                     if isinstance(obj.get("usageMetadata"), dict):
@@ -893,11 +899,13 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     except LocalEngineError:
         raise
     except (httpx.TimeoutException, httpx.TransportError) as e:
+        detail = type(e).__name__ if api_key else str(e)
         raise ProviderRequestError(
-            label, f"{label} transport failed: {e}", status_code=503,
-        ) from e
+            label, f"{label} transport failed: {detail}", status_code=503,
+        ) from (None if api_key else e)
     except Exception as e:
-        raise ProviderRequestError(label, f"{label} request failed: {e}") from e
+        detail = type(e).__name__ if api_key else str(e)
+        raise ProviderRequestError(label, f"{label} request failed: {detail}") from (None if api_key else e)
 
 
 # ── Multi-provider cloud orchestration (fallback chain + credentials) ─────────

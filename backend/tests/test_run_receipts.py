@@ -10,6 +10,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from observability import activity
 from agent_engine.runner import _merge_live_run_observability
 from chat_pipeline import chat_task
@@ -476,3 +478,92 @@ def test_failed_chat_receipt_recovers_completed_calls_without_live_metrics(tmp_p
         assert history['receipt']['tool_calls'] == 8
         assert len(repository.run_settlement_history(sid)['items']) == 1
     asyncio.run(scenario())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["ok", "cancelled", "write_failed", "ack_lost", "projection_failed"])
+async def test_idle_observes_the_exact_submission_outcome(tmp_path, monkeypatch, outcome):
+    from session_runtime import SessionRuntimeRegistry, SessionRuntimeRepository
+    from session_runtime.models import SubmissionAlreadyRecorded
+
+    store = open_sessions(tmp_path / "sessions")
+    chat = store.create_session()
+    repo = SessionRuntimeRepository(str(tmp_path / "runtime.sqlite3"))
+    registry = SessionRuntimeRegistry(repo)
+    ticket = "one-initial-submission"
+    admission = registry.try_reserve_run(chat, initial_ticket_id=ticket, submission_fingerprint="same")
+    session = ConnectionSession(viewed_session_id=chat)
+    seq = session.reserve_turn()
+    session.active.turn_session_id = chat
+    entered = asyncio.Event()
+    calls = []
+    idle = []
+
+    async def run(_ws, text, _session, **_kwargs):
+        calls.append(text)
+        entered.set()
+        if outcome == "cancelled":
+            await asyncio.Event().wait()
+        _session.active.terminal_reply = "Finished once"
+
+    if outcome in {"write_failed", "ack_lost"}:
+        write = repo.store_run_settlement
+
+        def inject(*args):
+            if outcome == "ack_lost":
+                write(*args)
+            raise OSError("fixture storage failure")
+
+        monkeypatch.setattr(repo, "store_run_settlement", inject)
+    elif outcome == "projection_failed":
+        project = store.set_last_run_receipt
+
+        def fail_projection(sid, receipt):
+            if receipt.get("settled"):
+                raise OSError("fixture display projection failure")
+            return project(sid, receipt)
+
+        monkeypatch.setattr(store, "set_last_run_receipt", fail_projection)
+    registry.register_idle_listener(lambda sid: idle.append((
+        registry.submission_observation(sid, ticket, connection_id=""),
+        store.get_last_run_receipt(sid),
+    )))
+    ports = SimpleNamespace(io=SimpleNamespace(sessions=store, runtime_registry=registry,
+        emit=AsyncMock(), hub=None), session=SimpleNamespace(make_run_context=_make_chat_context, handle_chat=run))
+    socket = SimpleNamespace(send_json=AsyncMock())
+    task = asyncio.create_task(chat_task(ports, socket, "Perform once", session,
+        turn_seq=seq, ticket_id=ticket, runtime_admission_id=admission))
+    await asyncio.wait_for(entered.wait(), 3)
+    if outcome == "cancelled":
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+
+    assert not registry.is_busy(chat) and not session.busy
+    assert len(idle) == 1
+    observed, last_receipt = idle[0]
+    assert observed["admission_id"] == admission
+    assert observed["run_id"] == "chat-receipt-run"
+    frames = [call.args[0] for call in socket.send_json.await_args_list]
+    if outcome == "write_failed":
+        assert observed["status"] == "unknown" and "settlement" not in observed
+        assert last_receipt["settled"] is False and last_receipt["status"] == "unknown"
+        assert not any(frame["type"] == "run:settled" for frame in frames)
+        assert any(frame.get("event") == "run:settlement_unknown" and frame["status"] == "unknown"
+                   and frame["admission_id"] == admission for frame in frames)
+    else:
+        assert observed["status"] == "settled"
+        settlement = observed["settlement"]
+        status = "cancelled" if outcome == "cancelled" else "ok"
+        assert settlement["receipt"]["status"] == status and settlement["receipt"]["settled"]
+        if outcome == "projection_failed":
+            assert last_receipt["settled"] is False
+        else:
+            assert settlement["receipt"] == last_receipt
+        assert settlement["final_reply"] == ("Task stopped." if status == "cancelled" else "Finished once")
+        assert [frame["receipt"] for frame in frames if frame["type"] == "run:settled"] == [settlement["receipt"]]
+    with pytest.raises(SubmissionAlreadyRecorded):
+        registry.try_reserve_run(chat, initial_ticket_id=ticket, submission_fingerprint="same")
+    assert calls == ["Perform once"]

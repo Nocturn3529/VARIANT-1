@@ -19,6 +19,14 @@ const {
 } = require('./electron-backend-posix-engines');
 
 const MAX_BACKEND_RESTARTS = 5;
+const COMPLETION_SOURCES = new Map([
+  ['kernel:execution_result', 'kernel'],
+  ['request_complete', 'model'],
+  ['tool:result', 'tool'],
+  ['task:done', 'run'],
+  ['broker:result', 'capability'],
+  ['run:settled', 'run'],
+]);
 const DEFAULT_BACKEND_TIMINGS = Object.freeze({
   cachedHealthTtlMs: 2000,
   probeTimeoutMs: 1500,
@@ -151,8 +159,8 @@ function createBackendManager(deps) {
   let portFile = null;
   let backendLastVerifiedAt = 0;
   let backendHealthMissStartedAt = 0;
-  let backendLastWorkAt = 0;
-  const backendWorkTails = new Map();
+  let lastOwnedCompletion = null;
+  const backendWorkLinePrefixes = new Map();
   let backendHealthProbe = null;
   let backendStartPromise = null;
   let startupController = null;
@@ -205,8 +213,9 @@ function createBackendManager(deps) {
     if (processIsAlive(cached.pid)) {
       if (!backendHealthMissStartedAt) backendHealthMissStartedAt = missedAt;
       const missAge = missedAt - backendHealthMissStartedAt;
-      const completingWork = backendProc && backendLastWorkAt > 0
-        && missedAt - backendLastWorkAt < timings.unhealthyGraceMs
+      const completingWork = backendProc && lastOwnedCompletion
+        && lastOwnedCompletion.instanceId === cached.instance_id
+        && missedAt - lastOwnedCompletion.at < timings.unhealthyGraceMs
         && (reason === 'timeout' || reason === 'connection_error');
       if (missAge < timings.unhealthyGraceMs || completingWork) {
         // A busy asyncio loop is not evidence that the process died. Keep the
@@ -276,14 +285,15 @@ function createBackendManager(deps) {
     });
   }
 
-  function observeOwnedWork(chunk, stream) {
-    const lines = ((backendWorkTails.get(stream) || '') + String(chunk)).split(/\r?\n/);
-    backendWorkTails.set(stream, lines.pop().slice(-2048));
+  function observeOwnedWork(chunk, stream, instanceId) {
+    const lines = ((backendWorkLinePrefixes.get(stream) || '') + String(chunk)).split(/\r?\n/);
+    // The Python emitter puts level, source and event first. Keep that header
+    // across chunks even when diagnostic fields make the rest of the line long.
+    backendWorkLinePrefixes.set(stream, lines.pop().slice(0, 256));
     for (const line of lines) {
-      // Only completed framework work on the currently owned process's pipe
-      // counts. Ordinary output, request starts and repeated polling do not.
-      if (/^\[[^\]]+\] \[INFO\] \[(?:kernel|model|tool|run|capability)\] (?:kernel:execution_result|request_complete|tool:result|task:done|broker:result|run:settled)\b/.test(line)) {
-        backendLastWorkAt = now();
+      const fields = /^\[op\] level=info source=([\w.-]+) event=([\w.:-]+)(?:\s|$)/.exec(line);
+      if (fields && COMPLETION_SOURCES.get(fields[2]) === fields[1]) {
+        lastOwnedCompletion = {instanceId, at: now()};
       }
     }
   }
@@ -699,18 +709,18 @@ function createBackendManager(deps) {
         ),
       });
       backendProc = child;
-      backendLastWorkAt = 0;
-      backendWorkTails.clear();
+      lastOwnedCompletion = null;
+      backendWorkLinePrefixes.clear();
     } catch (err) {
       log('[backend] spawn threw: ' + err.message);
       return scheduleRestart();
     }
 
     if (child.stdout && typeof child.stdout.on === 'function') {
-      child.stdout.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stdout');logStream('[backend] ', d);});
+      child.stdout.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stdout',launchInstanceId);logStream('[backend] ', d);});
     }
     if (child.stderr && typeof child.stderr.on === 'function') {
-      child.stderr.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stderr');logStream('[backend:err] ', d);});
+      child.stderr.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stderr',launchInstanceId);logStream('[backend:err] ', d);});
     }
 
     let rejectProcessFailure;
@@ -967,7 +977,7 @@ function createBackendManager(deps) {
  *
  * @param {object} opts
  * @param {import('electron').IpcMain} opts.ipcMain
- * @param {(event: any, win?: any) => boolean} opts.isTrustedIpcSender
+ * @param {(event: any) => boolean} opts.isTrustedIpcSender  Bound to the owning Deck window.
  * @param {() => object|null} opts.getInfo
  */
 function registerBackendIpc({ ipcMain, isTrustedIpcSender, getInfo }) {

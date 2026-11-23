@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
+import {EventEmitter} from "node:events";
+import {readFileSync} from "node:fs";
+import path from "node:path";
+import {runInNewContext} from "node:vm";
 import {act} from "react";
 import {createRoot} from "react-dom/client";
+import {DeckApp} from "../frontend/main-deck/src/DeckApp";
+import {getAppState} from "../frontend/main-deck/src/state/appStore";
+import type {RuntimeApi} from "../frontend/main-deck/src/types";
 import {PythonKernelsTab} from "../frontend/main-deck/src/overview/PythonKernelsTab";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
 import {initialChatState, setChatState, setChatContext} from "../frontend/main-deck/src/chat/stateCore";
@@ -126,6 +133,22 @@ export async function run() {
   await observe([finished("c4"), {...row, chat_id: "B", title: "Measured chat", resources: {process: {rss_bytes: 128 * 1024 * 1024},
     tree: {rss_bytes: 256 * 1024 * 1024, processes: 2, complete: true}, measurement_source: "psutil"}}]);
   assert.deepEqual(memoryMetric(), ["≥ 256 MiB", "1 unmeasured"]);
+  const ipc = new EventEmitter();
+  let api: RuntimeApi = {};
+  runInNewContext(readFileSync(path.join(__dirname, "../deck-preload.js"), "utf8"), {
+    require: () => ({ipcRenderer: ipc, contextBridge: {
+      exposeInMainWorld: (_name: string, bridge: RuntimeApi) => { api = {onNavigate:bridge.onNavigate}; },
+    }}),
+  });
+  await act(async () => root.render(<DeckApp api={api}/>));
+  assert.equal(ipc.listenerCount("deck:navigate"), 1);
+  await act(async () => root.render(null));
+  assert.equal(ipc.listenerCount("deck:navigate"), 0);
+  await act(async () => root.render(<DeckApp api={api}/>));
+  assert.equal(ipc.listenerCount("deck:navigate"), 1, "remount has one preload navigation listener");
+  await act(async () => { ipc.emit("deck:navigate", {}, "settings"); });
+  assert.equal(getAppState().view, "settings", "the mounted Deck receives navigation");
   await act(async () => root.unmount()); host.remove();
+  assert.equal(ipc.listenerCount("deck:navigate"), 0);
   console.log("Session experience: authoritative readiness, no auto-send, advanced mutation, correlated inventory, generation-fenced release, kernel history across reconnects and catch-up, and partial memory totals passed");
 }

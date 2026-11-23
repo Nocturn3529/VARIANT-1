@@ -412,6 +412,41 @@ async def test_deleted_sender_still_has_durable_attribution_at_admission(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_idle_requeues_a_runnable_request_after_its_wake_task_has_gone(tmp_path):
+    service, runtimes, sessions, _, first, second = _stack(tmp_path)
+    runtime = SimpleNamespace(sessions=sessions, session_runtimes=runtimes)
+    host = SimpleNamespace(hub=SimpleNamespace(broadcast=AsyncMock()), require_runtime=lambda: runtime)
+    chat = ChatService(host=host, transcript=None, models=None)
+    service.chat_service = chat
+    received = []
+    finished = asyncio.Event()
+
+    async def run(transport, text, session, **kwargs):
+        received.append(kwargs["ticket_id"])
+        runtimes.complete_transcript_commit(second, [{"id": kwargs["ticket_id"]}])
+        finished.set()
+
+    chat.run_task = run
+    admission = runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission, run_id="preceding", thread_id="preceding")
+    try:
+        request = await service.send("chat:" + first, "chat:" + second, "Do this once")
+        wake = service._wake_tasks[second]
+        await asyncio.sleep(0)
+        wake.cancel()
+        await asyncio.gather(wake, return_exceptions=True)
+        assert second not in service._wake_tasks
+        runtimes.park_queued_input_tickets(second, reason="turn_ok_before_input_delivery")
+        runtimes.finish_run(admission, status="ok")
+        await asyncio.wait_for(finished.wait(), 1)
+        assert received == [request["delivery_ticket_id"]]
+        assert runtimes.repository.get_ticket(received[0]).state == "completed"
+    finally:
+        runtimes.finish_run(admission, status="test_cleanup")
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('prior_turn', ['idle', 'ended', 'busy'])
 async def test_real_chat_service_wakes_without_view_and_chains_peer_turns(tmp_path, prior_turn):
     service, runtimes, sessions, _chat, first, second = _stack(tmp_path)

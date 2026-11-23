@@ -106,10 +106,7 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
   const workbench = useWorkbenchState();
   useEffect(() => installNativeWindowBridge(api), [api]);
   useEffect(()=>!detachedChatId() ? installChatWindowInventory(api) : undefined,[api]);
-  useEffect(() => {
-    const unsubscribe = api?.onNavigate?.(view => { if (isPrimaryView(view)) navigateTo(view); });
-    return typeof unsubscribe === "function" ? () => { unsubscribe(); } : undefined;
-  }, [api]);
+  useEffect(() => api?.onNavigate?.(view => { if (isPrimaryView(view)) navigateTo(view); }), [api]);
   useEffect(() => {
     const unsubscribe = api?.onVoiceToggle?.(() => { navigateTo("chat"); toggleMic(); });
     return typeof unsubscribe === "function" ? unsubscribe : undefined;

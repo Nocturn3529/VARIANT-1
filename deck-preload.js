@@ -105,8 +105,11 @@ contextBridge.exposeInMainWorld('variant1Deck', {
 
 
   // Main Deck navigation and frameless window controls.
-  onNavigate: (cb) =>
-    ipcRenderer.on('deck:navigate', (_e, view) => cb(view)),
+  onNavigate: cb => {
+    const listener = (_event, view) => cb(view);
+    ipcRenderer.on('deck:navigate', listener);
+    return () => ipcRenderer.removeListener('deck:navigate', listener);
+  },
   onVoiceToggle: (cb) => {
     const listener = () => cb();
     ipcRenderer.on('voice:toggle', listener);

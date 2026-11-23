@@ -95,7 +95,8 @@ function runFile(executable, args, options = {}) {
 
 const runGitRead = limitReadConcurrency(2);
 function readGit(args, options = {}) {
-  return runGitRead(() => runFile('git', gitArgs(args), {...options, env: gitCommandEnv()}));
+  const readArgs = gitArgs(['-c', 'core.fsmonitor=false', ...args]);
+  return runGitRead(() => runFile('git', readArgs, {...options, env: gitCommandEnv({GIT_PAGER:'cat'})}));
 }
 
 async function gitRoot(startPath) {
@@ -165,7 +166,7 @@ async function workbenchGitStatus(startPath) {
  * @param {() => import('electron').BrowserWindow|null} deps.getDeckWindow
  * @param {() => import('electron').BrowserWindow|null} deps.getMonitorWindow
  * @param {() => void} [deps.openMonitorWindow]
- * @param {(event: any, win?: import('electron').BrowserWindow|null) => boolean} deps.isTrustedIpcSender
+ * @param {(event: any, win: import('electron').BrowserWindow|null) => boolean} deps.isTrustedIpcSender
  * @param {() => object} deps.readSettings
  * @param {(s: object) => void} deps.writeSettings
  * @param {(msg: string) => void} deps.log
@@ -231,7 +232,9 @@ function registerDeckIpc(deps) {
   ));
 
   ipcMain.on('log', (event, msg) => {
-    if (isTrustedIpcSender(event)) log('[renderer] ' + String(msg || ''));
+    if (isTrustedIpcSender(event, deckWin()) || isTrustedIpcSender(event, monWin())) {
+      log('[renderer] ' + String(msg || ''));
+    }
   });
 
   ipcMain.handle('dialog:pickFolder', async (event) => {

@@ -468,32 +468,62 @@ async function testProbeFailureFallsBackToOs(tempDir) {
 }
 
 async function testOwnedCompletionsProtectWorkButOrdinaryOutputDoesNot(tempDir) {
-  let healthy=true,clock=1000;
-  const instanceId='owned-progress',killed=[];
+  const backend = path.join(__dirname, '..', 'backend');
+  const venvPython = path.join(backend, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const python = fs.existsSync(venvPython) ? venvPython : process.platform === 'win32' ? 'python' : 'python3';
+  const emitter = path.join(backend, 'observability', 'operational_log.py');
+  const {stdout} = await exec(python, ['-I', '-B', '-c', [
+    'import runpy, sys',
+    'op = runpy.run_path(sys.argv[1])',
+    'op["mirror_activity"]({"event":"task:start", "run_id":"fixture"})',
+    'op["mirror_model_usage"]({"run":{"run_id":"fixture"}})',
+  ].join('\n'), emitter], {windowsHide:true, timeout:10000});
+  const [start, completion] = stdout.trimEnd().split(/\r?\n/);
+  const boundary = completion.indexOf('request_complete') + 'request_'.length;
+  assert.ok(completion.includes('request_complete'));
+  let healthy=true,clock=1000,instanceId='owned-progress-1',child;
+  const killed=[],children=new Map();
   const server=http.createServer((_req,res)=>{
     if(!healthy)return; // A real transport deadline, not a changed identity.
     res.end(JSON.stringify({status:'ok',version:VERSION,instance_id:instanceId}));
   });
   const port=await listen(server),portFile=path.join(tempDir,'owned-progress.json');
-  const child=new EventEmitter();child.pid=44501;
-  child.stdout=new EventEmitter();child.stderr=new EventEmitter();
   const result=managerFor(portFile,{killed,timings:{probeTimeoutMs:10,unhealthyGraceMs:20},deps:{
     now:()=>clock,isProcessAlive:()=>true,createInstanceId:()=>instanceId,
-    spawnProcess:()=>{writeRecord(portFile,{port,pid:child.pid,token:'fixture-token',version:VERSION,instance_id:instanceId});return child;},
-    killProcessTree:pid=>{killed.push(pid);child.exitCode=0;queueMicrotask(()=>child.emit('exit',0,null));},
+    spawnProcess:()=>{
+      child=new EventEmitter();child.pid=44501+children.size;
+      child.stdout=new EventEmitter();child.stderr=new EventEmitter();children.set(child.pid,child);
+      writeRecord(portFile,{port,pid:child.pid,token:'fixture-token',version:VERSION,instance_id:instanceId});return child;
+    },
+    killProcessTree:pid=>{const target=children.get(pid);killed.push(pid);target.exitCode=0;queueMicrotask(()=>target.emit('exit',0,null));},
   }});
   try {
     await result.manager.startBackend();healthy=false;clock++;
     assert.ok(await result.manager.getInfo());
     clock+=21;
-    child.stdout.emit('data','[fixture] [INFO] [model] request_com');
-    child.stdout.emit('data','plete run_id=fixture\n');
+    child.stdout.emit('data',completion.slice(0,boundary));
+    child.stdout.emit('data',completion.slice(boundary)+'\r');
+    child.stdout.emit('data','\n');
     assert.ok(await result.manager.getInfo(),'fresh completed work survives an expired health grace interval');
     assert.deepEqual(killed,[]);
     assert.ok(result.logs.some(line=>line.includes('owned work still completing')));
-    child.stdout.emit('data','ordinary output\n');clock+=21;
+    clock+=21;
+    child.stdout.emit('data','ordinary output\n'+start+'\n');
     assert.equal(await result.manager.getInfo(),null,'expired progress retains bounded hung-backend recovery');
     assert.deepEqual(killed,[child.pid]);
+    const retired=child;
+    await result.manager.stopBackend();
+    healthy=true;instanceId='owned-progress-2';
+    await result.manager.startBackend();
+    assert.notEqual(child,retired);healthy=false;clock++;
+    assert.ok(await result.manager.getInfo(),'replacement gets its own ordinary health grace');
+    clock+=21;
+    retired.stdout.emit('data',completion+'\n');
+    child.stdout.emit('data',completion.slice(0,boundary));
+    child.stderr.emit('data',completion.slice(boundary)+'\n');
+    child.stdout.emit('data','\n');
+    assert.equal(await result.manager.getInfo(),null,'a retired child or mismatched pipe fragments cannot extend the replacement grace');
+    assert.deepEqual(killed,[retired.pid,child.pid]);
   } finally {await result.manager.stopBackend();server.closeAllConnections();await closeServer(server);}
 }
 

@@ -3251,6 +3251,90 @@ def test_capsule_worker_rolls_back_user_namespace_if_reinstall_fails():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault", [
+    "pre_apply", "rollback_succeeded", "rollback_failed",
+    "status", "schema", "restored_names", "removed_names", "namespace_reinstalled",
+])
+async def test_manual_restore_retires_only_an_uncertain_generation(kernel_stack, monkeypatch, fault):
+    manager, runtimes, _ = kernel_stack
+    chat = "manual-restore"
+    runtimes.ensure_runtime(chat, is_new=True)
+
+    async def cell(label, code):
+        result = await manager.execute(chat_id=chat, code=code, run_id=label, outer_tool_call_id=label)
+        assert result.ok, result.to_dict()
+        return result.generation
+
+    try:
+        generation = await cell("seed", "value = 'saved'")
+        capsule = await manager.create_capsule(runtime_chat_id=chat)
+        setup = "value = 'live'"
+        if fault.startswith("rollback_"):
+            # This fixture affects only the disposable worker. The restore and its
+            # rollback both call the real worker's namespace reinstall function.
+            setup += """
+import kernel_runtime.worker_bridge as bridge_module
+original_install = bridge_module.install_document
+def reinstall(*args, remaining=[FAILURES], original=original_install, **kwargs):
+    if remaining[0]:
+        remaining[0] -= 1
+        raise RuntimeError('fixture reinstall fault')
+    return original(*args, **kwargs)
+bridge_module.install_document = reinstall
+""".replace("FAILURES", "2" if fault == "rollback_failed" else "1")
+        assert await cell("change", setup) == generation
+        lease = manager._leases[chat]
+        process = lease.process
+        original = lease._repl_control
+        if fault == "status":
+            receive = lease.transport.receive
+
+            async def malformed_status(**kwargs):
+                frame = await receive(**kwargs)
+                if frame.get("type") == "done" and "restored_names" in (frame.get("result") or {}):
+                    return {**frame, "status": "invalid"}
+                return frame
+
+            monkeypatch.setattr(lease.transport, "receive", malformed_status)
+        close = lease.close
+        retirement = []
+
+        async def record_close(*, reason, hard=False):
+            retirement.append((lease.generation, lease.execution_lock.locked(), reason))
+            await close(reason=reason, hard=hard)
+
+        monkeypatch.setattr(lease, "close", record_close)
+
+        async def control(operation, **kwargs):
+            if operation != "capsule_restore":
+                return await original(operation, **kwargs)
+            if fault == "pre_apply":
+                value = {**kwargs["payload"]["values"][0], "name": "capsule_restore_unknown_effect!"}
+                kwargs["payload"] = {**kwargs["payload"], "values": [value]}
+            result = await original(operation, **kwargs)
+            # Corrupt only the acknowledgement after the real restore has applied.
+            invalid = {"schema": "unexpected", "restored_names": ["other"],
+                       "removed_names": 1, "namespace_reinstalled": "false"}
+            return {**result, fault: invalid[fault]} if fault in invalid else result
+
+        monkeypatch.setattr(lease, "_repl_control", control)
+        with pytest.raises(KernelCapsuleError) as caught:
+            await manager.restore_capsule(runtime_chat_id=chat, capsule_ref=capsule.artifact_ref)
+        if fault in {"pre_apply", "rollback_succeeded"}:
+            assert caught.value.code == "capsule_worker_error"
+            assert retirement == []
+            assert manager._leases[chat] is lease and process.poll() is None
+            assert await cell("check-live", "assert value == 'live'") == generation
+        else:
+            assert caught.value.code == "capsule_restore_unknown_effect"
+            assert retirement == [(generation, True, "capsule_restore_unknown_effect")]
+            assert process.poll() is not None and manager.status(chat)["state"] == "absent"
+            assert await cell("check-new", "assert 'value' not in globals()") > generation
+    finally:
+        await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_kernel_capsule_round_trip_and_namespace_reinstallation(kernel_stack):
     manager, runtimes, artifacts = kernel_stack
     runtimes.ensure_runtime("chat-capsule", is_new=True)

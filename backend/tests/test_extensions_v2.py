@@ -88,6 +88,30 @@ def _service(tmp_path):
                                    environment_builder=lambda *_: {"mode": "fake"})
 
 
+@pytest.mark.parametrize(("requirement", "accepted"), [
+    (">=0.0.9", True), (">=0.1.0", True), (">=0.1.1", False),
+    (">0.0.9", True), (">0.1.0", False), (">0.1.1", False),
+    ("<=0.0.9", False), ("<=0.1.0", True), ("<=0.1.1", True),
+    ("<0.0.9", False), ("<0.1.0", False), ("<0.1.1", True),
+    ("==0.0.9", False), ("==0.1.0", True), ("==0.1.1", False),
+    ("=0.0.9", False), ("=0.1.0", True), ("=0.1.1", False),
+    (">=0.0.9 <0.2.0", True), (">=0.1.0 <0.1.0", False),
+])
+def test_install_checks_each_version_comparison(tmp_path, requirement, accepted):
+    source = _package(tmp_path / "source", "1.0.0")
+    manifest_path = source / "variant1.plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["compatibility"]["variant1"] = requirement
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    service = _service(tmp_path)  # host version 0.1.0
+    if accepted:
+        assert service.install(str(source))["active"]
+    else:
+        with pytest.raises(ExtensionPackageError, match="incompatible"):
+            service.install(str(source))
+        assert service.search() == []
+
+
 def test_model_extension_surface_is_one_connectors_object():
     from extensions.capabilities_v2 import register_extension_v2_tools
     from tools import ToolRegistry

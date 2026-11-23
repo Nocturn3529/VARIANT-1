@@ -143,20 +143,24 @@ def classify_provider_error(error) -> Failure:
     if codes & {"context_length_exceeded", "context_window_exceeded", "input_too_long"} or status == 413:
         return Failure("context")
     quota_codes = {"insufficient_quota", "usage_limit_reached", "quota_exceeded", "billing_error", "payment_required"}
-    detail = str(error).casefold() if not codes else ""
-    if codes & quota_codes or status == 402 or any(marker in detail for marker in (
+    rate_limit_codes = {"rate_limit_error", "rate_limit_exceeded", "too_many_requests", "resource_exhausted"}
+    if codes & quota_codes or status == 402:
+        return Failure("quota", fallback=True, reset_at=reset)
+    if status == 429 and getattr(error, 'model_specific_rate_limit', False):
+        return Failure('rate_limit', retryable=True, fallback=True, reset_at=reset, model_specific=True)
+    generic_throttle = status in {0, 429} and codes <= (rate_limit_codes | {"429", "rate_limit", "rate_limited"})
+    detail = str(error).casefold() if not codes or generic_throttle else ""
+    if any(marker in detail for marker in (
         "insufficient_quota", "usage_limit_reached", "monthly usage limit reached", "available balance", "out of budget", "quota exceeded",
         "gousagelimiterror", "freeusagelimiterror", "billing limit", "billing error")):
         return Failure("quota", fallback=True, reset_at=reset)
-    if status == 429 and getattr(error,'model_specific_rate_limit',False):
-        return Failure('rate_limit',retryable=True,fallback=True,reset_at=reset,model_specific=True)
     if codes & {"upstream_rate_limit", "upstream_blocked", "provider_policy_blocked"}:
         return Failure("upstream", fallback=True, reset_at=reset)
     if status in {401, 403}:
         return Failure("authentication", fallback=True)
     if status == 404 or codes & {"model_not_found", "model_not_available"}:
         return Failure("model_unavailable", fallback=True)
-    if status == 429 or codes & {"rate_limit_error", "rate_limit_exceeded", "too_many_requests", "resource_exhausted"}:
+    if status == 429 or codes & rate_limit_codes:
         return Failure("rate_limit", retryable=True, fallback=True, reset_at=reset)
     if status in {408, 409} or status >= 500 or codes & {"overloaded_error", "server_error", "api_error", "timeout_error"}:
         return Failure("transient", retryable=True, fallback=True, reset_at=reset)

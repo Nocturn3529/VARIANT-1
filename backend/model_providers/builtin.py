@@ -161,7 +161,7 @@ def builtin_profiles() -> list[ProviderProfile]:
             name="gemini", display_name="Google Gemini", api_style="gemini",
             aliases=("google", "google-gemini"),
             base_url="https://generativelanguage.googleapis.com/v1beta",
-            env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"), auth_style="query",
+            env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"), auth_style="x-goog-api-key",
             default_model="gemini-2.0-flash", supports_vision=True, supports_reasoning=True,
             reasoning_model_rules=deepcopy(_GEMINI_REASONING_RULES),
             signup_url="https://aistudio.google.com/",

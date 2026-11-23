@@ -1337,8 +1337,14 @@ class KernelLease:
                 self._record_background_event(event)
             if event_id == request_id and event_type == "done":
                 terminal = event
-        if str(terminal.get("status") or "") != "ok":
+        if terminal.get("status") != "ok":
             error = terminal.get("error") or {}
+            if operation == "capsule_restore":
+                if terminal.get("status") != "error" or not isinstance(error, dict):
+                    raise KernelCapsuleError("capsule_restore_unknown_effect", "Invalid restore completion.")
+                if error.get("code") != "repl_control_error":
+                    raise KernelCapsuleError("capsule_restore_unknown_effect",
+                                             str(error.get("message") or "Unconfirmed restore outcome."))
             raise KernelUnavailable(str(error.get("message") or f"REPL {operation} failed"))
         result = terminal.get("result")
         return dict(result) if isinstance(result, dict) else {}
@@ -1399,37 +1405,29 @@ class KernelLease:
                 payload=payload,
                 timeout_s=control_timeout,
             )
-            encoded_size = len(
-                json.dumps(
-                    result,
-                    allow_nan=False,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            )
+            try:
+                encoded_size = len(json.dumps(
+                    result, allow_nan=False, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8"))
+            except (TypeError, ValueError, RecursionError) as exc:
+                raise KernelCapsuleError("capsule_protocol_error", "Invalid capsule response.") from exc
             if encoded_size > int(max_response_bytes):
                 raise KernelCapsuleError(
                     "capsule_response_too_large",
                     "Kernel capsule response exceeded the host-owned byte bound.",
                 )
             return result
-        except KernelCapsuleError:
-            if operation == "restore" and not self._closed:
-                await self.close(
-                    reason="capsule_restore_unknown_effect", hard=True
-                )
+        except KernelCapsuleError as exc:
+            if operation == "restore" and exc.code != "capsule_restore_unknown_effect":
+                raise KernelCapsuleError("capsule_restore_unknown_effect", str(exc),
+                                         details={"reason": exc.code}) from exc
             raise
         except Exception as exc:
-            code = (
-                "capsule_restore_unknown_effect"
-                if "capsule_restore_unknown_effect" in str(exc)
-                else "capsule_worker_error"
-            )
-            raise KernelCapsuleError(code, str(exc)) from exc
+            raise KernelCapsuleError("capsule_worker_error", str(exc)) from exc
         finally:
             self.last_used_at = time.monotonic()
             if (
-                not self._closed
+                self.state == "busy" and not self._closed
                 and self.process is not None
                 and self.process.poll() is None
             ):

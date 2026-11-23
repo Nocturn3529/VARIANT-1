@@ -15,7 +15,7 @@ const {WebSocketServer}=require(${JSON.stringify(require.resolve('ws'))});
 const fs=require('node:fs'),assert=require('node:assert/strict');
 const boot=require(${JSON.stringify(path.join(root,'electron-app-boot.js'))});
 boot.applyGpuFlags(app);boot.registerVariant1Scheme(protocol);app.setPath('userData',${JSON.stringify(path.join(temp,'profile'))});
-const pause=ms=>new Promise(r=>setTimeout(r,ms));let main,manager,server;const frames=[],sockets=[];
+const pause=ms=>new Promise(r=>setTimeout(r,ms));let main,monitor,manager,server;const frames=[],sockets=[];
 async function wait(win,expression){for(let i=0;i<400;i++){if(await win.webContents.executeJavaScript(expression))return;await pause(50);}throw new Error('Timed out: '+expression);}
 app.whenReady().then(async()=>{
  app.on("browser-window-created",(_event,win)=>win.webContents.on("console-message",event=>console.log("CHAT_TEST_CONSOLE",event.message)));
@@ -37,7 +37,14 @@ app.whenReady().then(async()=>{
  });
  main=new BrowserWindow({show:false,width:1240,height:820,webPreferences:{preload:${JSON.stringify(path.join(temp,'preload.cjs'))},sandbox:true,contextIsolation:true,nodeIntegration:false}});
  let firstInfo=true;ipcMain.handle('test:backend',async()=>{if(firstInfo){firstInfo=false;await pause(14000);}return info;});
- manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:()=>main,getBackendInfo:()=>info,isTrustedIpcSender:e=>e.sender===main.webContents,hardenAppWindow:()=>{},show:false});
+ const owners={getDeckWindow:()=>main,getMonitorWindow:()=>monitor};
+ const {isTrustedIpcSender}=boot.createWindowSecurity(owners);
+ manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:owners.getDeckWindow,getBackendInfo:()=>info,isTrustedIpcSender,hardenAppWindow:()=>{},show:false});
+ require(${JSON.stringify(path.join(root,'electron-deck-ipc.js'))}).registerDeckIpc({app,...owners,isTrustedIpcSender,getLogBuffer:()=>['fixture status']});
+ monitor=new BrowserWindow({show:false,webPreferences:{preload:${JSON.stringify(path.join(root,'monitor-preload.js'))},sandbox:true,contextIsolation:true,nodeIntegration:false}});
+ await monitor.loadURL('variant1://app/frontend/monitor.html');
+ assert.deepEqual(await monitor.webContents.executeJavaScript('window.variant1Monitor.getLogHistory()'),['fixture status']);
+ monitor.destroy();monitor=null;
  await main.loadURL('variant1://app/frontend/main-deck/index.html');
  main.showInactive();
  await wait(main,'!!document.querySelector(".startup-cover")');await pause(200);main.webContents.invalidate();await pause(80);

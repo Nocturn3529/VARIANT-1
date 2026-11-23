@@ -24,7 +24,7 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""
     env_vars: tuple[str, ...] = ()
-    auth_style: str = "bearer"  # bearer | x-api-key | query | optional
+    auth_style: str = "bearer"  # bearer | x-api-key | x-goog-api-key | optional
     default_model: str = ""
     fallback_models: tuple[str, ...] = ()
     # Fail closed. Provider/model profiles must explicitly opt into image input;
