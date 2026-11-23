@@ -3,13 +3,17 @@ from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
+import traceback
 from types import SimpleNamespace
 
 import pytest
 
 from core_invariants import request_fingerprint
 from extensions.runtime_v2 import create_extension_v2_runtime
-from extensions.worker_host import PluginIdempotencyConflict, PluginInvocationFailed, PluginWorkerHost
+from extensions.worker_host import (
+    PluginIdempotencyConflict, PluginInvocationFailed, PluginWorkerHost, PluginWorkerLost,
+    UnknownPluginEffect,
+)
 from messaging_gateway.base import MessageEnvelope
 from messaging_gateway.extension_adapter import ExtensionMessagingAdapter
 
@@ -114,7 +118,8 @@ async def test_gateway_credentials_are_available_only_to_the_dispatch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_upgrade_reuses_a_completed_messaging_operation_after_rotation(tmp_path):
+@pytest.mark.parametrize("verified", [True, False])
+async def test_upgrade_scrubs_messaging_receipts_without_replaying_effects(tmp_path, verified):
     runtime = _runtime(tmp_path)
     contribution = runtime.packages.resolved_contributions(kind="messaging_adapters")[0]
     digest = contribution["package_digest"]
@@ -124,19 +129,24 @@ async def test_upgrade_reuses_a_completed_messaging_operation_after_rotation(tmp
     old_fingerprint = request_fingerprint("plugin.invoke", {
         "package_digest": digest, "contribution_kind": "messaging_adapters",
         "contribution_id": _CONTRIBUTION, "handler": "fixture:dispatch",
-        "effect_class": "external_effect", "arguments": old, "context": context,
+        "effect_class": "external_effect",
+        "arguments": old if verified else {**arguments, "text": "different"},
+        "context": context,
     })
     path = runtime.workers.path
     with closing(sqlite3.connect(path)) as conn, conn:
         conn.execute("DELETE FROM extension_worker_migration")
+        if not verified:
+            conn.execute("INSERT INTO extension_worker_migration VALUES ('messaging-credentials-v1')")
         conn.execute(
             "INSERT INTO extension_worker_operation_v2 "
             "(operation_id,dedupe_key,idempotency_key,request_fingerprint,package_id,package_digest,"
-            "contribution_id,handler,effect_class,status,arguments_json,context_json,result_json,prepared_at,"
-            "attempt_count) VALUES (?,?,?,?,?,?,?,?,?,'succeeded',?,?,?,0,1)",
+            "contribution_id,handler,effect_class,status,arguments_json,context_json,result_json,error_json,"
+            "prepared_at,attempt_count) VALUES (?,?,?,?,?,?,?,?,?,'succeeded',?,?,?,?,0,1)",
             ("existing", "send-once", "send-once", old_fingerprint, _PACKAGE, digest,
              _CONTRIBUTION, "fixture:dispatch", "external_effect",
-             json.dumps(old), json.dumps(context), json.dumps({"sent": True, "echo": old["token"]})),
+             json.dumps(old), json.dumps(context), json.dumps({"sent": True, "echo": old["token"]}),
+             json.dumps({"message": old["credentials"]["access"]}) if not verified else ""),
         )
 
     def unexpected_dispatch(*_args):
@@ -147,14 +157,61 @@ async def test_upgrade_reuses_a_completed_messaging_operation_after_rotation(tmp
         try:
             new = {**arguments, "token": "fixture-token-new", "credentials": {"access": "fixture-access-new"}}
             options = {"context": context, "idempotency_key": "send-once", "contribution_kind": "messaging_adapters"}
-            receipt = await host.invoke(_PACKAGE, _CONTRIBUTION, new, **options)
-            assert receipt["operation_id"] == "existing" and receipt["replayed"]
-            assert receipt["attempt_count"] == 1
-            assert receipt["result"] == {"sent": True, "echo": "[redacted]"}
-            assert host.operation("existing")["arguments"] == arguments
+            operation = host.operation("existing")
+            assert operation["status"] == "succeeded"
+            assert operation["attempt_count"] == 1
+            assert operation["arguments"] == arguments
+            assert operation["result"] == {"sent": True, "echo": "[redacted]"}
+            if verified:
+                receipt = await host.invoke(_PACKAGE, _CONTRIBUTION, new, **options)
+                assert receipt["operation_id"] == "existing" and receipt["replayed"]
+            else:
+                assert operation["error"] == {"message": "[redacted]"}
+                with pytest.raises(PluginIdempotencyConflict):
+                    await host.invoke(_PACKAGE, _CONTRIBUTION, new, **options)
             with pytest.raises(PluginIdempotencyConflict):
                 await host.invoke(_PACKAGE, _CONTRIBUTION, {**new, "text": "different"}, **options)
         finally:
             await host.shutdown()
     assert "fixture-token-old" not in _database_dump(path)
     assert "fixture-access-old" not in _database_dump(path)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persist_terminal", [True, False])
+async def test_lost_messaging_worker_surfaces_only_redacted_diagnostics(tmp_path, monkeypatch, persist_terminal):
+    runtime = _runtime(tmp_path)
+    host = runtime.workers
+    secret = "fixture-token-transport"
+
+    async def lose_worker(*_args, **_kwargs):
+        raise PluginWorkerLost(f"lost worker for {secret}")
+
+    async def get_worker(_package):
+        return SimpleNamespace(generation=1, request=lose_worker, retire_requested=False)
+
+    async def drop_worker(_digest, _worker):
+        pass
+
+    monkeypatch.setattr(host, "_get_worker", get_worker)
+    monkeypatch.setattr(host, "_drop_worker", drop_worker)
+    transition = host._transition
+
+    def settle(operation_id, expected, status, **kwargs):
+        if status == "unknown_effect" and not persist_terminal:
+            return host._operation(operation_id)
+        return transition(operation_id, expected, status, **kwargs)
+
+    monkeypatch.setattr(host, "_transition", settle)
+    try:
+        error_type = UnknownPluginEffect if persist_terminal else PluginInvocationFailed
+        with pytest.raises(error_type, match="lost worker for") as caught:
+            await host.invoke(
+                _PACKAGE, _CONTRIBUTION, {"operation": "poll", "token": secret, "credentials": {}},
+                contribution_kind="messaging_adapters", context={"surface": "messaging"},
+            )
+        assert "[redacted]" in str(caught.value)
+        assert secret not in "".join(traceback.format_exception(caught.value))
+        assert secret not in _database_dump(host.path)
+    finally:
+        await host.shutdown()

@@ -6,7 +6,7 @@ import pytest_asyncio
 
 from llm_cloud_stream import call_gemini
 from llm_router import LLMRouter
-from model_providers import CredentialLease, ProviderRequestError
+from model_providers import CredentialLease, ProviderProfile, ProviderRequestError
 from model_runtime.llama_server import LocalEngineError
 from speech import providers as speech
 
@@ -32,13 +32,19 @@ async def transport(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["ok", "saved_query", "http", "embedded", "transport", "subscription"])
+@pytest.mark.parametrize("kind", ["ok", "saved_query", "plugin_query", "http", "embedded", "transport", "subscription"])
 async def test_gemini_chat_api_key_never_enters_request_url(transport, monkeypatch, kind):
     router, install = transport
     subscription = kind == "subscription"
     profile = router.provider_profile("google-antigravity" if subscription else "gemini")
     if kind == "saved_query":
         profile = profile.with_overrides({"auth_style": "query"})
+    if kind == "plugin_query":
+        router.provider_registry.register(ProviderProfile(
+            name="fixture-gemini", display_name="Fixture Gemini",
+            api_style="gemini", base_url=profile.base_url, auth_style="query",
+        ), origin={"kind": "plugin"})
+        profile = router.provider_profile("fixture-gemini")
     if subscription:
         monkeypatch.setattr(router, "_oauth_rec", lambda _name: {"project_id": "fixture-project"})
 
@@ -70,7 +76,7 @@ async def test_gemini_chat_api_key_never_enters_request_url(transport, monkeypat
         router, [{"role": "user", "content": "fixture"}], {"max_tokens": 32},
         _KEY, profile=profile, model="fixture",
     )
-    if kind in {"ok", "saved_query", "subscription"}:
+    if kind in {"ok", "saved_query", "plugin_query", "subscription"}:
         assert [part async for part in stream] == ["ok"]
     else:
         with pytest.raises(ProviderRequestError) as caught:

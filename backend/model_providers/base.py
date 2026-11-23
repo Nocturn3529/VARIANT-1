@@ -64,6 +64,10 @@ class ProviderProfile:
     # Some OpenAI-compatible APIs already version their base by another path.
     versioned_base_url: str = ""
 
+    def __post_init__(self) -> None:
+        if self.api_style == "gemini" and self.auth_style == "query":
+            object.__setattr__(self, "auth_style", "x-goog-api-key")
+
     def for_model(self, model: str) -> "ProviderProfile":
         if self.wire_transport not in {"", "responses"}:
             raise ValueError("invalid provider wire transport")
@@ -98,8 +102,6 @@ class ProviderProfile:
             "wire_transport", "wire_model_rules",
         }
         updates = {key: values[key] for key in allowed if key in values}
-        if updates.get("auth_style") == "query" and updates.get("api_style", self.api_style) == "gemini":
-            updates["auth_style"] = "x-goog-api-key"
         for field_name in ("reasoning_model_rules", "wire_model_rules"):
             if field_name in updates:
                 updates[field_name] = tuple(deepcopy(dict(rule)) for rule in (updates[field_name] or ()) if isinstance(rule, Mapping))

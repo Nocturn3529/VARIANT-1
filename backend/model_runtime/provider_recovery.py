@@ -142,7 +142,10 @@ def classify_provider_error(error) -> Failure:
         return Failure("content_policy")
     if codes & {"context_length_exceeded", "context_window_exceeded", "input_too_long"} or status == 413:
         return Failure("context")
-    quota_codes = {"insufficient_quota", "usage_limit_reached", "quota_exceeded", "billing_error", "payment_required"}
+    quota_codes = {
+        "insufficient_quota", "usage_limit_reached", "quota_exceeded", "billing_error",
+        "payment_required", "gousagelimiterror", "freeusagelimiterror",
+    }
     rate_limit_codes = {"rate_limit_error", "rate_limit_exceeded", "too_many_requests", "resource_exhausted"}
     if codes & quota_codes or status == 402:
         return Failure("quota", fallback=True, reset_at=reset)

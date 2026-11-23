@@ -120,6 +120,14 @@ def test_generic_throttle_type_preserves_quota_evidence(typed, detail, expected)
     assert failure.retryable == (expected == "rate_limit")
 
 
+@pytest.mark.parametrize("field", ["type", "code"])
+@pytest.mark.parametrize("kind", ["GoUsageLimitError", "FreeUsageLimitError"])
+def test_named_usage_limit_is_a_non_retryable_quota_failure(field, kind):
+    error = ProviderRequestError("opencode-go", "request rejected", status_code=429)
+    annotate_provider_error(error, {"error": {field: kind}})
+    assert classify_provider_error(error) == Failure("quota", fallback=True)
+
+
 @pytest.mark.parametrize('byok,model_specific',[(False,True),(True,False),(None,False)])
 def test_shared_openrouter_upstream_throttle_is_distinct_from_account_limits(byok,model_specific):
     error=ProviderRequestError('openrouter','Provider returned error',status_code=429)

@@ -47,6 +47,8 @@ def _range_allows(version: str, expression: str) -> bool:
                 if not compare(current, _semver(token[len(prefix):])):
                     return False
                 break
+        else:
+            raise ExtensionPackageError(f"unsupported compatibility constraint: {token}")
     return True
 
 

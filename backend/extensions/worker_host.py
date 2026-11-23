@@ -555,7 +555,7 @@ class PluginWorkerHost:
 
     @staticmethod
     def _upgrade_messaging_receipts(conn: sqlite3.Connection) -> None:
-        migration = "messaging-credentials-v1"
+        migration = "messaging-credentials-v2"
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute(
             "SELECT 1 FROM extension_worker_migration WHERE name=?", (migration,),
@@ -575,9 +575,12 @@ class PluginWorkerHost:
                 context = json.loads(row["context_json"])
                 package = {**dict(row), "contribution_kind": "messaging_adapters"}
                 contribution = str(row["contribution_id"])
-                if _invocation_fingerprint(package, contribution, arguments, context) != row["request_fingerprint"]:
-                    continue
                 public = _messaging_public_arguments(arguments)
+                # An empty fingerprint cannot match a later invocation.
+                # Scrub every gateway row and preserve retry identity only for a verified receipt.
+                fingerprint = ""
+                if _invocation_fingerprint(package, contribution, arguments, context) == row["request_fingerprint"]:
+                    fingerprint = _invocation_fingerprint(package, contribution, public, context)
                 credentials = _messaging_credential_values(arguments)
                 result, error = (
                     _stable(_without_credential_values(json.loads(row[field]), credentials)) if row[field] else ""
@@ -587,8 +590,7 @@ class PluginWorkerHost:
                     "UPDATE extension_worker_operation_v2 SET arguments_json=?,request_fingerprint=?,"
                     "result_json=?,error_json=? WHERE operation_id=?",
                     (
-                        _stable(public), _invocation_fingerprint(package, contribution, public, context),
-                        result, error, row["operation_id"],
+                        _stable(public), fingerprint, result, error, row["operation_id"],
                     ),
                 )
         conn.execute("INSERT INTO extension_worker_migration(name) VALUES (?)", (migration,))
@@ -906,12 +908,11 @@ class PluginWorkerHost:
         error = json.loads(str(row.get("error_json") or "{}"))
         message = str(error.get("message") or f"plugin operation {status}")
         if status == "unknown_effect":
-            raise UnknownPluginEffect(str(row["operation_id"]), message)
-        if status == "failed":
-            raise PluginInvocationFailed(
-                message, operation_id=str(row["operation_id"]),
-                code=str(error.get("code") or "plugin_failed"),
-            )
+            raise UnknownPluginEffect(str(row["operation_id"]), message) from None
+        raise PluginInvocationFailed(
+            message, operation_id=str(row["operation_id"]),
+            code=str(error.get("code") or "plugin_failed"),
+        ) from None
 
     async def _prepare_invocation(
         self,
@@ -1271,8 +1272,8 @@ class PluginWorkerHost:
                     )
                     self._raise_terminal(row)
                     raise PluginInvocationFailed(
-                        str(exc), operation_id=operation_id, code=type(exc).__name__
-                    ) from exc
+                        error["message"], operation_id=operation_id, code=error["code"],
+                    ) from None
                 finally:
                     current = self._inflight.get(external_request_id)
                     if current is not None and current[1] == correlation_id:

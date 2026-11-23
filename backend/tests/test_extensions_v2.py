@@ -112,6 +112,19 @@ def test_install_checks_each_version_comparison(tmp_path, requirement, accepted)
         assert service.search() == []
 
 
+@pytest.mark.parametrize("requirement", ["^2.0.0", "~2.0.0", "!=0.1.0", "2.0.0", ">=0.1.0 ^2.0.0"])
+def test_install_rejects_unsupported_version_constraints(tmp_path, requirement):
+    source = _package(tmp_path / "source", "1.0.0")
+    manifest_path = source / "variant1.plugin.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["compatibility"]["variant1"] = requirement
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    service = _service(tmp_path)
+    with pytest.raises(ExtensionPackageError, match="unsupported compatibility constraint"):
+        service.install(str(source))
+    assert service.search() == []
+
+
 def test_model_extension_surface_is_one_connectors_object():
     from extensions.capabilities_v2 import register_extension_v2_tools
     from tools import ToolRegistry
