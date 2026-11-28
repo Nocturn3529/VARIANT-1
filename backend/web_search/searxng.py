@@ -463,7 +463,8 @@ class SearxngServer:
         await self._owned_containers()
         self.ready = True
 
-    async def _stop_owned(self) -> None:
+    async def _stop_owned(self) -> bool:
+        stopped = False
         for runtime, _, info in await self._owned_containers():
             if not info["running"]:
                 continue
@@ -471,7 +472,9 @@ class SearxngServer:
             remaining = await self._inspect(runtime, info["id"])
             if remaining is not None and remaining["running"]:
                 raise SearxngError(f"The owned SearXNG container is still running (stop status {code}).")
+            stopped = True
         self._owned = self._container_running = False
+        return stopped
 
     async def stop(self, *, force: bool = False) -> None:
         """A manual or shutdown Stop requires the same exact managed ownership."""
@@ -483,8 +486,7 @@ class SearxngServer:
         if self._start_lock is None:
             self._start_lock = asyncio.Lock()
         async with self._start_lock:
-            await self._stop_owned()
-            if self.managed and self._uses_local_managed_endpoint():
+            if await self._stop_owned():
                 self.ready = False
 
     async def _autostart_retry_loop(self) -> None:

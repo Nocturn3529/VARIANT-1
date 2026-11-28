@@ -157,6 +157,7 @@ async def test_probe_or_force_stop_cannot_claim_an_independent_server(tmp_path, 
         assert mgr.base_url == cfg["base_url"]
     assert not mgr.public_status()["owned"]
     await mgr.stop(force=True)
+    assert mgr.ready  # The endpoint remained reachable and no stop was issued.
     assert all(call[0] == "container" for call in runtime.calls)
     assert runtime.rows[cid]["State"]["Running"]
 
