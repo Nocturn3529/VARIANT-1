@@ -15,10 +15,8 @@ class SecretEgressBlocked(RuntimeError):
     terminal_reason = "host_preflight_error"
     cause_class = "harness"
 
-    def __init__(self, findings: list[dict[str, str]], *, local_ref: str = "", cloud_ref: str = ""):
+    def __init__(self, findings: list[dict[str, str]]):
         self.findings = tuple(dict(row) for row in findings)
-        self.local_ref = str(local_ref or "")
-        self.cloud_ref = str(cloud_ref or "")
         codes = sorted({str(row.get("code") or "suspected_secret") for row in findings})
         super().__init__(
             "cloud request blocked by the secret-egress firewall "
@@ -30,8 +28,6 @@ class SecretEgressBlocked(RuntimeError):
 @dataclass(frozen=True)
 class EgressProjection:
     payload: dict[str, Any]
-    local_ref: str = ""
-    cloud_ref: str = ""
     known_replacements: int = 0
     redacted_history_fields: int = 0
 
@@ -146,10 +142,8 @@ class SecretEgressFirewall:
     def __init__(
         self,
         *,
-        artifact_store: Any = None,
         known_secret_resolver: Callable[[], Iterable[tuple[str, str]]] | None = None,
     ) -> None:
-        self.artifact_store = artifact_store
         self.known_secret_resolver = known_secret_resolver
 
     def _known(self) -> list[tuple[str, str]]:
@@ -269,44 +263,27 @@ class SecretEgressFirewall:
                 out.append(row)
         return out
 
-    @staticmethod
-    def _redact_findings(payload: dict[str, Any], findings: list[dict[str, str]]) -> dict[str, Any]:
-        out = copy.deepcopy(payload)
-        paths = {row["path"] for row in findings}
-        for parts, _text in list(_walk_strings(out)):
-            if _pointer(parts) in paths:
-                _replace_at(out, parts, "{{VARIANT1_SUSPECTED_SECRET:BLOCKED}}")
-        return out
-
-    def project(
-        self,
-        payload: dict[str, Any],
-        *,
-        provider: str,
-        model: str,
-        scope: str = "",
-    ) -> EgressProjection:
+    def project(self, payload: dict[str, Any]) -> EgressProjection:
         if not isinstance(payload, dict):
             raise TypeError("cloud provider payload must be an object")
-        local_projection = copy.deepcopy(payload)
+        cloud_projection = copy.deepcopy(payload)
         replacement_count = 0
         for label, secret in self._known():
             placeholder = "{{VARIANT1_SECRET:" + re.sub(
                 r"[^A-Za-z0-9_.-]", "_", label
             )[:80] + "}}"
-            for parts, text in list(_walk_strings(local_projection)):
-                if _is_provider_reasoning_ciphertext(local_projection, parts):
+            for parts, text in list(_walk_strings(cloud_projection)):
+                if _is_provider_reasoning_ciphertext(cloud_projection, parts):
                     continue
                 if secret in text:
                     _replace_at(
-                        local_projection,
+                        cloud_projection,
                         parts,
                         text.replace(secret, placeholder),
                     )
                     replacement_count += text.count(secret)
 
-        findings = self._findings(local_projection)
-        cloud_projection = copy.deepcopy(local_projection)
+        findings = self._findings(cloud_projection)
         redacted_history_fields = 0
         finding_paths = {row['path'] for row in findings}
         for parts, _ in list(_walk_strings(cloud_projection)):
@@ -315,46 +292,15 @@ class SecretEgressFirewall:
             if replacement is not None:
                 _replace_at(cloud_projection, parts, replacement)
                 redacted_history_fields += 1
-        findings = self._findings(cloud_projection)
-        cloud_projection = self._redact_findings(cloud_projection, findings)
-        local_ref = ""
-        cloud_ref = ""
-        if self.artifact_store is not None:
-            local_artifact = self.artifact_store.put_json(
-                {
-                    "schema": "variant1.model-egress.local.v1",
-                    "provider": str(provider or ""),
-                    "model": str(model or ""),
-                    "payload": local_projection,
-                },
-                kind="model_egress_local_projection",
-                scope=scope,
-            )
-            cloud_artifact = self.artifact_store.put_json(
-                {
-                    "schema": "variant1.model-egress.cloud.v1",
-                    "provider": str(provider or ""),
-                    "model": str(model or ""),
-                    "payload": cloud_projection,
-                },
-                kind="model_egress_cloud_projection",
-                scope=scope,
-            )
-            local_ref = local_artifact.ref
-            cloud_ref = cloud_artifact.ref
+        if redacted_history_fields:
+            findings = self._findings(cloud_projection)
         if findings:
-            raise SecretEgressBlocked(
-                findings,
-                local_ref=local_ref,
-                cloud_ref=cloud_ref,
-            )
+            raise SecretEgressBlocked(findings)
         # JSON roundtrip protects provider adapters from custom mapping values
         # and proves the result is a normal wire object.
         safe = json.loads(json.dumps(cloud_projection, ensure_ascii=False))
         return EgressProjection(
             payload=safe,
-            local_ref=local_ref,
-            cloud_ref=cloud_ref,
             known_replacements=replacement_count,
             redacted_history_fields=redacted_history_fields,
         )

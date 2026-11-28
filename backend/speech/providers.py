@@ -467,7 +467,7 @@ async def _gemini_tts(router, definition: dict, options: dict, text: str,
     try:
         async with httpx.AsyncClient(trust_env=False, timeout=90) as client:
             response = await client.post(f"{base}/models/{model}:generateContent",
-                                         params={"key": key}, json=payload)
+                                         headers={"x-goog-api-key": key}, json=payload)
         response.raise_for_status()
         data = response.json()
         parts = data["candidates"][0]["content"]["parts"]
@@ -480,8 +480,10 @@ async def _gemini_tts(router, definition: dict, options: dict, text: str,
         return AudioResult(_wav_from_pcm(base64.b64decode(encoded)), "audio/wav")
     except SpeechProviderError:
         raise
+    except httpx.HTTPStatusError as exc:
+        raise SpeechProviderError(f"Gemini TTS failed: HTTP {exc.response.status_code}") from None
     except Exception as exc:
-        raise SpeechProviderError(f"Gemini TTS failed: {exc}") from exc
+        raise SpeechProviderError(f"Gemini TTS failed: {type(exc).__name__}") from None
 
 
 def _numpy_wav(samples: Any, rate: int = 24000) -> bytes:

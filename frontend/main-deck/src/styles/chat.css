@@ -77,6 +77,37 @@
 }
 .runtime-code-block figcaption button:hover { border-color: var(--deck-line-strong); color: var(--deck-text-primary); }
 .runtime-code-block pre { margin: 0; overflow: auto; border: 0; border-radius: 0; }
+.runtime-code-block__body { position: relative; }
+.runtime-code-block__body.is-collapsed { max-height: 340px; overflow: clip; }
+.runtime-code-block__fade {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 56px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 8px;
+  background: linear-gradient(to bottom, transparent, var(--deck-void-raised) 82%);
+  pointer-events: none;
+}
+.runtime-code-block__expand {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius-md);
+  color: var(--deck-text-secondary);
+  background: var(--deck-surface-panel);
+  font: 500 var(--deck-text-xs)/1 var(--font-mono);
+  pointer-events: auto;
+  cursor: pointer;
+}
+.runtime-code-block__expand:hover { color: var(--deck-text-primary); background: var(--deck-surface-raised); }
+.runtime-code-block__actions { display: flex; justify-content: center; padding: 6px; border-top: 1px solid var(--deck-line-soft); background: var(--deck-surface-panel); }
 .runtime-code-block code { tab-size: 2; }
 /* Agent-generated code uses the same syntax palette as the file preview. */
 .syntax-keyword { color: var(--deck-syntax-keyword); }

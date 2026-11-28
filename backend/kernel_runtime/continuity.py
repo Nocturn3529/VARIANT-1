@@ -1644,6 +1644,23 @@ class KernelContinuityCoordinator:
             verified=True,
         )
 
+    @staticmethod
+    def _validate_restore_ack(response: dict, expected_names: tuple[str, ...]) -> None:
+        if not isinstance(response, dict) or response.get("schema") != WORKER_CAPSULE_SCHEMA:
+            reason = "Kernel applied a restore but returned an invalid completion schema."
+        elif (not isinstance(names := response.get("restored_names"), list)
+              or not all(isinstance(name, str) for name in names)
+              or sorted(names) != list(expected_names)):
+            reason = "Kernel restore completion does not match the manifest value set."
+        elif (not isinstance(removed := response.get("removed_names"), list)
+              or not all(isinstance(name, str) for name in removed)):
+            reason = "Kernel restore returned an invalid list of removed names."
+        elif response.get("namespace_reinstalled") is not True:
+            reason = "Kernel restore did not confirm host namespace reinstallation."
+        else:
+            return
+        raise KernelCapsuleError("capsule_restore_unknown_effect", reason)
+
     async def restore_capsule(
         self,
         *,
@@ -1771,6 +1788,7 @@ class KernelContinuityCoordinator:
         }
         document, refs = self.manager.namespace_document(chat_id, identity)
         lease._refs.update(refs)
+        expected_names = tuple(sorted(item.name for item in selected_values))
         async with lease.execution_lock:
             if lease.state != "ready" or lease._closed:
                 raise KernelCapsuleError(
@@ -1778,32 +1796,24 @@ class KernelContinuityCoordinator:
                     "Kernel generation became unavailable before capsule restore.",
                 )
             await lease._sync_namespace(document)
-            response = await lease._capsule_request(
-                "restore",
-                worker_payload,
-                max_response_bytes=self.manager.capsule_limits.max_worker_response_bytes,
-            )
-        if str(response.get("schema") or "") != WORKER_CAPSULE_SCHEMA:
-            raise KernelCapsuleError(
-                "capsule_restore_unknown_effect",
-                "Kernel applied a restore but returned an invalid completion schema.",
-            )
-        restored_names = tuple(str(item) for item in response.get("restored_names") or ())
-        expected_names = tuple(sorted(item.name for item in selected_values))
-        if tuple(sorted(restored_names)) != expected_names:
-            raise KernelCapsuleError(
-                "capsule_restore_unknown_effect",
-                "Kernel restore completion does not match the manifest value set.",
-            )
+            try:
+                response = await lease._capsule_request(
+                    "restore", worker_payload,
+                    max_response_bytes=self.manager.capsule_limits.max_worker_response_bytes,
+                )
+                self._validate_restore_ack(response, expected_names)
+            except KernelCapsuleError as exc:
+                if exc.code == "capsule_restore_unknown_effect":
+                    # Fence the possibly modified namespace before a waiting cell can enter.
+                    await lease.close(reason=exc.code, hard=True)
+                raise
         result = KernelCapsuleRestoreResult(
             runtime_chat_id=chat_id,
             capsule_ref=str(capsule_ref),
             kernel_generation=int(lease.generation),
-            restored_names=tuple(sorted(restored_names)),
-            removed_names=tuple(
-                sorted(str(item) for item in response.get("removed_names") or ())
-            ),
-            namespace_reinstalled=bool(response.get("namespace_reinstalled")),
+            restored_names=expected_names,
+            removed_names=tuple(sorted(response["removed_names"])),
+            namespace_reinstalled=True,
             compatibility=compatibility,
             skipped_names=(
                 tuple(sorted(compatibility.skipped_names))
@@ -1811,11 +1821,6 @@ class KernelContinuityCoordinator:
                 else ()
             ),
         )
-        if not result.namespace_reinstalled:
-            raise KernelCapsuleError(
-                "capsule_restore_unknown_effect",
-                "Kernel restore did not confirm host namespace reinstallation.",
-            )
         self._latest_capsules[chat_id] = manifest
         try:
             lineage_ref = self._record_capsule_pointer(

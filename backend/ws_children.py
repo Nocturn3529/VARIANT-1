@@ -7,7 +7,7 @@ def register(on):
         sid=str(msg.get('session_id') or '');rid=str(msg.get('request_id') or '')
         try:
             runtime=srv.require_runtime()
-            if not sid or not rid or runtime.sessions.get_session(sid) is None:
+            if not sid or not rid or not runtime.sessions.has_session(sid):
                 raise ValueError('A known session_id and request_id are required')
             manager=runtime.catalog.children
             if manager is None:raise RuntimeError('Child runtime is unavailable')

@@ -196,7 +196,7 @@ function ingestOwnedChat(message: ChatWsMessage) {
       return;
 
     case "chat:session:error":
-      notifyChat(message.error || "Could not update session");
+      if (message.operation !== "chat:session:delete") notifyChat(message.error || "Could not update session");
       return;
 
     case "chat:runtime:mutation:set:done": {

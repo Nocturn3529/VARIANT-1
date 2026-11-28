@@ -7,6 +7,9 @@ import json
 import hashlib
 import builtins
 import stat
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -671,6 +674,64 @@ async def test_apply_patch_rollback_wal_is_owned_by_the_broker_operation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_committed_patch_cleanup_failure_and_correlated_retry(file_scope, monkeypatch, persistent):
+    target = file_scope / "item.txt"
+    target.write_text("item-v1")
+    args = {"path": str(target), "find": "v1", "replace": "extra-v1"}
+    reg = tools.ToolRegistry()
+    builtin_tools.register(reg)
+    broker = CapabilityBroker(registry=reg, runtime_registry=StaticRuntimeRegistry(),
+                              enabled_resolver=lambda: {"apply_patch"})
+    ctx = InvocationContext(chat_id="chat", run_id="run", outer_tool_call_id="outer",
+        cell_execution_id="cell", nested_call_id="patch", catalog_release_id="test", idempotency_key="once")
+    unlink = builtin_tools._remove_patch_staging
+    faults = []
+
+    def deny_backup(path, **kwargs):
+        if path.endswith(".backup") and (persistent or not faults):
+            faults.append(path)
+            raise PermissionError("fixture backup in use")
+        return unlink(path, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(builtin_tools, "_remove_patch_staging", deny_backup)
+        receipt = await broker.invoke_name("apply_patch", args, ctx)
+        assert receipt.ok and "Applied 1" in receipt.result_value
+        assert ("cleanup is pending" in receipt.result_value) is persistent
+        duplicate = await broker.invoke_name("apply_patch", args, ctx)
+        assert duplicate.receipt_id == receipt.receipt_id and target.read_text() == "item-extra-v1"
+        pending = list((file_scope / "patch-transactions").glob("*.json"))
+        assert bool(pending) is persistent
+        if pending:
+            assert json.loads(pending[0].read_text())["state"] == "committed"
+            reopened = CapabilityBroker(registry=reg, runtime_registry=StaticRuntimeRegistry(),
+                                        enabled_resolver=lambda: {"apply_patch"})
+            recovered = await reopened.invoke_name("apply_patch", args, ctx)
+            assert recovered.ok and "already committed" in recovered.result_value
+            assert target.read_text() == "item-extra-v1"
+        await builtin_tools.apply_patch({"path": str(file_scope / "other.txt"), "content": "different edit"})
+    await builtin_tools.apply_patch(args)
+    assert target.read_text() == "item-extra-extra-v1"
+    assert not list((file_scope / "patch-transactions").glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_denied_final_commit_marker_rolls_back_new_file(file_scope, monkeypatch):
+    write = builtin_tools._write_patch_journal
+    def inject(path, document):
+        if document["state"] == "committed":
+            assert json.loads(Path(path).read_text())["state"] == "committing"
+            raise PermissionError("final marker denied")
+        return write(path, document)
+    monkeypatch.setattr(builtin_tools, "_write_patch_journal", inject)
+    target = file_scope / "new.txt"
+    with pytest.raises(PermissionError, match="final marker denied"):
+        await builtin_tools.apply_patch({"path": str(target), "content": "appeared briefly"})
+    assert not target.exists() and not list((file_scope / "patch-transactions").glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_applies_repeated_paths_in_order(file_scope):
     target = file_scope / "ordered.txt"
     target.write_text("first=one\nsecond=two\nstatus=pending\n", encoding="utf-8")
@@ -810,6 +871,117 @@ def test_patch_recovery_finds_publication_before_progress_was_recorded(file_scop
     assert builtin_tools._recover_patch_transactions() == 1
     assert target.read_bytes() == b"before"
     assert not list(file_scope.glob(".variant1-patch-*"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only file semantics")
+@pytest.mark.parametrize("action", ["replace", "delete"])
+async def test_readonly_target_preserves_batch_and_next_workspace(file_scope, action):
+    protected = file_scope / "readonly.txt"
+    protected.write_bytes(b"original\r\n")
+    protected.chmod(stat.S_IREAD)
+    prior = file_scope / "prior.txt"
+    prior.write_text("keep")
+    try:
+        change = {"path": str(protected), "action": action}
+        if action == "replace":
+            change.update(find="original", replace="changed")
+        with pytest.raises(PermissionError, match="read-only"):
+            await builtin_tools.apply_patch({"changes": [{"path": str(prior), "content": "new"}, change]})
+        assert prior.read_text() == "keep" and protected.read_bytes() == b"original\r\n"
+        assert protected.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        other = file_scope / "second-project" / "unrelated.txt"
+        await builtin_tools.apply_patch({"path": str(other), "content": "works"})
+        assert other.read_text() == "works"
+        assert not list(file_scope.glob(".variant1-patch-*"))
+        assert not list((file_scope / "patch-transactions").glob("*.json"))
+    finally:
+        protected.chmod(stat.S_IWRITE)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows read-only staging cleanup")
+@pytest.mark.parametrize(("version", "state"), [(2, "preparing"), (2, "committed"),
+                                                (3, "committing"), (3, "committed")])
+def test_fresh_process_recovers_old_readonly_backup_without_reapplying(file_scope, version, state):
+    folder = file_scope / "first-project"
+    folder.mkdir()
+    original = folder / "file.txt"
+    original.write_bytes(b"newer independent save")
+    original.chmod(stat.S_IREAD)
+    transaction = "patch_" + "a" * 32
+    nonce = transaction if version == 2 else "b" * 32
+    backup = folder / f".variant1-patch-{nonce}-0.backup"
+    candidate = backup.with_suffix(".candidate")
+    backup.write_bytes(b"old bytes")
+    backup.chmod(stat.S_IREAD)
+    candidate.write_bytes(b"never replay")
+    document = {"schema": f"variant1.file-patch-rollback-wal.v{version}",
+                "transaction_id": transaction, "state": state, "operations": [{
+                    "path": str(original), "original_exists": True,
+                    "original_sha256": hashlib.sha256(b"old bytes").hexdigest(),
+                    "candidate": str(candidate), "backup": str(backup),
+                }]}
+    journal = file_scope / "patch-transactions" / (transaction + ".json")
+    builtin_tools._write_patch_journal(str(journal), document)
+    other = file_scope / "second-project" / "unrelated.txt"
+    try:
+        subprocess.run([sys.executable, "-B", "-c",
+            "import asyncio, sys, builtin_tools; asyncio.run(builtin_tools.apply_patch("
+            "{'path': sys.argv[1], 'content': 'new project'}))", str(other)],
+            cwd=Path(builtin_tools.__file__).parent, capture_output=True, text=True,
+            timeout=15, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        assert other.read_text() == "new project"
+        assert original.read_bytes() == b"newer independent save"
+        assert original.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        assert not backup.exists() and not candidate.exists() and not journal.exists()
+    finally:
+        original.chmod(stat.S_IWRITE)
+        if backup.exists():
+            backup.chmod(stat.S_IWRITE)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [1, 2, 3])
+async def test_recovery_retains_an_unrecognized_stage_without_removing_user_files(file_scope, version):
+    original = file_scope / "notes.txt"
+    original.write_text("kept by the user")
+    transaction = "patch_" + "c" * 32
+    journal = file_scope / "patch-transactions" / (transaction + ".json")
+    schema = ("variant1.file-patch-transaction.v1" if version == 1
+              else f"variant1.file-patch-rollback-wal.v{version}")
+    document = {"schema": schema, "transaction_id": transaction, "state": "committed",
+                "operations": [{"path": str(original), "backup": str(original), "candidate": ""}]}
+    builtin_tools._write_patch_journal(str(journal), document)
+    other = file_scope / "another-project" / "new.txt"
+    await builtin_tools.apply_patch({"path": str(other), "content": "done"})
+    assert original.read_text() == "kept by the user" and other.read_text() == "done"
+    retained, = journal.parent.glob(journal.name + ".*.needs-review")
+    assert json.loads(retained.read_text(encoding="utf-8")) == document
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "nt", reason="Windows hard-linked read-only attributes")
+async def test_readonly_staging_alias_cannot_change_a_users_file(file_scope):
+    original = file_scope / "outside-copy.txt"
+    original.write_bytes(b"shared")
+    stage = file_scope / (".variant1-patch-" + "a" * 32 + "-0.backup")
+    os.link(original, stage)
+    original.chmod(stat.S_IREAD)
+    transaction = "patch_" + "d" * 32
+    journal = file_scope / "patch-transactions" / (transaction + ".json")
+    document = {"schema": builtin_tools._PATCH_JOURNAL_SCHEMA, "transaction_id": transaction,
+                "state": "committed", "operations": [{"path": str(file_scope / "target.txt"),
+                "backup": str(stage), "original_sha256": hashlib.sha256(b"shared").hexdigest()}]}
+    builtin_tools._write_patch_journal(str(journal), document)
+    try:
+        other = file_scope / "another-project" / "new.txt"
+        await builtin_tools.apply_patch({"path": str(other), "content": "done"})
+        assert original.read_bytes() == b"shared"
+        assert original.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY
+        assert other.read_text() == "done" and not journal.exists()
+        assert list(journal.parent.glob(journal.name + ".*.needs-review"))
+    finally:
+        original.chmod(stat.S_IWRITE)
 
 
 @pytest.mark.asyncio

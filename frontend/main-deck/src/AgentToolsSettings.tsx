@@ -125,6 +125,11 @@ function CredentialEditor({provider}: {provider: WebSearchProviderInfo}) {
 
 function SearxngEditor() {
   const state = useAgentToolsState();
+  const runtimeName = state.searxngRuntime.toLowerCase().replace(/\.exe$/, "");
+  const runtime = runtimeName === "podman" ? "Podman" : runtimeName === "docker" ? "Docker" : "";
+  const ownership = state.searxngManaged && state.searxngOwned
+    ? ["Managed by VARIANT-1", runtime].filter(Boolean).join(" · ")
+    : !state.searxngManaged || state.searxngReady ? "External endpoint" : "Configured for managed startup";
   const [baseUrl, setBaseUrl] = useState(state.searxngBaseUrl);
   useEffect(() => setBaseUrl(state.searxngBaseUrl), [state.searxngBaseUrl]);
 
@@ -142,10 +147,10 @@ function SearxngEditor() {
         {state.searxngReady
           ? `Running at ${state.searxngBaseUrl}`
           : state.searxngDockerAvailable
-            ? "Use an existing URL or let VARIANT-1 manage a Docker container."
-            : "Enter an existing SearXNG URL. Docker was not detected."}
+            ? "Use an existing URL or let VARIANT-1 manage a container."
+            : "Enter an existing SearXNG URL. No container runtime was detected."}
       </small></span>
-      <em>{state.searxngRunning ? "Running" : state.searxngReady ? "Reachable" : "Stopped"}</em>
+      <em>{state.searxngRunning ? "Running" : state.searxngReady ? "Reachable" : "Stopped"} · {ownership}</em>
     </div>
     <form className="search-provider-credential" onSubmit={save}>
       <input aria-label="SearXNG base URL" value={baseUrl}
@@ -158,7 +163,7 @@ function SearxngEditor() {
     </form>
     {state.searxngError ? <p className="runtime-error" role="alert">{state.searxngError}</p> : null}
     <div className="search-provider-toggle">
-      <span><strong>Start managed server with VARIANT-1</strong><small>Only applies to the managed Docker runtime.</small></span>
+      <span><strong>Start managed server with VARIANT-1</strong><small>Uses the configured container runtime.</small></span>
       <Switch checked={state.searxngAutostart} disabled={!state.searxngManaged}
         aria-label="Auto-start SearXNG"
         onChange={value => sendAgentTools({

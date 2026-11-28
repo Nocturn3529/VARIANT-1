@@ -156,13 +156,7 @@ def build_astb_services(host, *, registry: Any, chat_sessions: Any) -> AstbServi
                     rows.append((f"mcp.{server_id}.header.{name}", str(value)))
         return rows
 
-    from model_runtime.secret_egress import SecretEgressFirewall
-
     host.router.register_model_secret_resolver(host_managed_model_secrets)
-    host.router.set_secret_egress_firewall(SecretEgressFirewall(
-        artifact_store=session_artifacts,
-        known_secret_resolver=host.router._known_model_secrets,
-    ))
     from observability.display_projection import set_display_secret_resolver
     set_display_secret_resolver(host.router._known_model_secrets)
 

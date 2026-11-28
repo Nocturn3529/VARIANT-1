@@ -268,6 +268,10 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 conn.execute("ALTER TABLE astb_child_handle ADD COLUMN project_roots_json TEXT NOT NULL DEFAULT '[]'")
             if "work_scope_json" not in columns:
                 conn.execute("ALTER TABLE astb_child_handle ADD COLUMN work_scope_json TEXT NOT NULL DEFAULT '{}'")
+            for name in ("birth_origin", "execution_origin"):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE astb_child_handle ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
+            conn.execute("CREATE INDEX IF NOT EXISTS astb_child_birth_idx ON astb_child_handle(birth_origin,created_at,child_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS astb_child_goal_idx ON astb_child_handle(json_extract(work_scope_json,'$.goal_id'),parent_chat_id)")
             if "run_generation" not in columns:
                 conn.execute(
@@ -916,7 +920,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
     def _public(self, row: sqlite3.Row, *, messages: bool = False) -> dict[str, Any]:
         result = {
             key: row[key] for key in row.keys()
-            if key not in {"task_text", "context_text"}
+            if key not in {"task_text", "context_text", "birth_origin", "execution_origin"}
         }
         if messages:
             with self._lock, self._connect() as conn:
@@ -943,6 +947,39 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
         }
         result.pop('outcome_run_id',None)
         return result
+
+    def _turn_origin(self, parent_chat_id: str) -> str:
+        from run_context import current_run_context
+
+        run = current_run_context()
+        if run is None:
+            return ""
+        meta = run.metadata
+        if str(run.session_id or meta.get("chat_id") or "") != parent_chat_id:
+            return ""
+        admission = str(meta.get("admission_id") or "")
+        run_id = str(meta.get("admission_run_id") or "")
+        if not admission or not run_id:
+            return ""
+        live = self.runtimes.pause_snapshot(parent_chat_id)
+        if (live["admission_id"], live["run_id"]) != (admission, run_id):
+            return ""
+        # A child generation carries its origin even if the root has since settled.
+        return meta.get("_child_receipt_origin", json.dumps([parent_chat_id, run_id, admission]))
+
+    def receipt_descendants(self, chat_id: str, run_id: str, admission_id: str) -> dict:
+        origin = json.dumps([chat_id, run_id, admission_id])
+        with self._lock, closing(self._connect()) as conn:
+            rows = conn.execute(
+                "SELECT child_id, count(*) OVER () AS total, "
+                "sum(run_generation>1 OR status IN ('completed','failed','cancelled')) OVER () AS terminal "
+                "FROM astb_child_handle WHERE birth_origin=? ORDER BY created_at,child_id LIMIT 32",
+                (origin,),
+            ).fetchall()
+        total = int(rows[0]["total"]) if rows else 0
+        terminal = int(rows[0]["terminal"]) if rows else 0
+        return {"total": total, "active": total - terminal, "terminal": terminal,
+                "ids": [row["child_id"] for row in rows], "truncated": total > len(rows)}
 
     async def spawn(
         self,
@@ -975,6 +1012,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                      if live_context and live_context.session_id == str(parent_chat_id) else None)
         from chat_goals.binding import attributed_scope
         work_scope = attributed_scope(live_context, inherited)
+        origin = self._turn_origin(str(parent_chat_id))
         if parent_runtime.continuation_state == "paused_budget_exhausted":
             raise RuntimeError("parent continuation budget is exhausted")
         created_revision = None
@@ -1076,15 +1114,15 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                 "INSERT INTO astb_child_handle(child_id, child_chat_id, parent_chat_id, "
                 "depth, name, "
                 "task_text, context_text, action_surface, model_route_json, work_scope_json, "
-                "project_roots_json, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
+                "project_roots_json,birth_origin,execution_origin,status,created_at,updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)",
                 (
                     child_id, child_chat_id, str(parent_chat_id), depth,
                     str(name or "worker")[:80], clean_task[:20_000],
                     str(context or "")[:40_000],
                     child_identity.action_surface, json.dumps(model_route, sort_keys=True),
                     json.dumps(work_scope.with_updates(chat_id=child_chat_id).to_dict(include_empty=False)),
-                    json.dumps(project_roots), now, now,
+                    json.dumps(project_roots), origin, origin, now, now,
                 ),
             )
             if created.rowcount == 1:
@@ -1203,9 +1241,11 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "runtime_identity": child_runtime.identity.to_dict(),
                     "runtime_prompt": runtime_prompt,
                     "work_scope": json.loads(row['work_scope_json'] or '{}'),
+                    "_child_receipt_origin": row["execution_origin"],
                     **project,
                 },
             )
+            ctx.metadata.update(admission_id=admission_id, admission_run_id=ctx.run_id)
             with (
                 bind_run_context(ctx),
                 observe_usage(observe),
@@ -1395,6 +1435,7 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
                     "authority is available"
                 )
         restart_revision = None
+        restart_origin = self._turn_origin(str(parent_chat_id))
         with self._lock, self._connect() as conn:
             # Fence concurrent restart callers again under the write lock.
             latest=conn.execute('SELECT * FROM astb_child_handle WHERE child_id=?',(child_id,)).fetchone()
@@ -1425,10 +1466,10 @@ class ChildSessionManager(ChildOutcomes,ChildInspection,ChildObservations):
             changed = conn.execute(
                 "UPDATE astb_child_handle SET status='queued', result_text='', terminal_reason='', "
                 "artifact_ref='', error='', usage_json='{}', started_at=NULL, "
-                "completed_at=NULL,run_generation=run_generation+1,"
+                "completed_at=NULL,run_generation=run_generation+1,execution_origin=?,"
                 "usage_rollup_state='complete',usage_rollup_error='',work_job_id='',updated_at=? "
                 "WHERE child_id=?",
-                (time.time(), str(child_id)),
+                (restart_origin, time.time(), str(child_id)),
             )
             if changed.rowcount == 1:
                 restart_revision = self._clock_revision(conn)

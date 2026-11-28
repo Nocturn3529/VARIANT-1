@@ -3,7 +3,7 @@ const path = require('node:path');
 const {BrowserWindow, ipcMain, shell} = require('electron');
 const {isAllowedExternalUrl} = require('./electron-security');
 
-function createChatWindows({appRoot,getDeckWindow,getBackendInfo,isTrustedIpcSender,hardenAppWindow,show=true}) {
+function createChatWindows({appRoot,getDeckWindow,openDeckWindow,getBackendInfo,isTrustedIpcSender,hardenAppWindow,show=true}) {
   const windows = new Map();
   const titles = new Map();let revision=0;
   const snapshot=()=>({revision,windows:[...windows].filter(([,win])=>!win.isDestroyed()).map(([chat_id,win])=>({chat_id,title:titles.get(chat_id)||'Chat',focused:win.isFocused()}))});
@@ -38,6 +38,10 @@ function createChatWindows({appRoot,getDeckWindow,getBackendInfo,isTrustedIpcSen
     catch(error){if(!win.isDestroyed())win.destroy();return {ok:false,error:String(error)};}
   });
   ipcMain.handle('chat-window:backendInfo',event=>owned(event) ? getBackendInfo() : null);
+  ipcMain.handle('chat-window:openUpdates',event=>{
+    if (!owned(event) && !isTrustedIpcSender(event,getDeckWindow())) return {ok:false};
+    return {ok:!!openDeckWindow('updates')};
+  });
   ipcMain.handle('chat-window:control',(event,action)=>{
     const win=owned(event);if(!win)return {ok:false};
     if(action==='close')win.close();else if(action==='minimize')win.minimize();else if(action==='maximize')win.isMaximized()?win.unmaximize():win.maximize();else return {ok:false};

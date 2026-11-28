@@ -25,7 +25,6 @@ import {
 } from "react";
 import {ChatDestination} from "../ChatDestination";
 import {TerminalPanel} from "../context/TerminalPanel";
-import {FilesPanel} from "../context/FilesPanel";
 import {LazySurface} from "../ui/LazySurface";
 import {getTerminalSnapshot, killTerminal, openNewTerminal, selectTerminal} from "../context/terminalStore";
 import {HistoryRail} from "../shell/HistoryRail";
@@ -87,7 +86,8 @@ import {
 } from "./workbenchStore";
 import {allPaneIds,findGroupOfPane, type DropPosition, type GroupNode, type LayoutNode, type SplitNode} from "./layoutModel";
 
-// The Review pane is off the startup path; it loads on first open.
+// The side panes are off the startup path; they load on first open.
+const FilesPanel = lazy(() => import("../deferred/destinations").then(module => ({default: module.FilesPanel})));
 const ReviewPanel = lazy(() => import("../deferred/destinations").then(module => ({default: module.ReviewPanel})));
 const PreviewPane = lazy(() => import("../deferred/destinations").then(module => ({default: module.PreviewPane})));
 const LayoutPresetEditor = lazy(() => import("../deferred/destinations").then(module => ({default: module.LayoutPresetEditor})));
@@ -582,7 +582,7 @@ export function Workbench({api}: {api: RuntimeApi | null}) {
       const owner=session.id, project=projects.projects[owner] !== undefined ? projects.projects[owner] : session.project;
       const picker=<div className="workbench-preview__state"><p>No project selected for this chat.</p><button onClick={()=>void chooseChatProject(owner)}>Choose project folder</button>{projects.errors[owner] ? <p role="alert">{projects.errors[owner]}</p>:null}</div>;
       const moreFiles=async()=>{const path=await api?.pickFolder?.();if(path)openDirectoryPreview(path,owner);};
-      rows.set(chatPaneId("files",owner), {id:chatPaneId("files",owner),label:project?.name || "Files",icon:"folder",close:"hide",newTab:()=>void moreFiles(),render:()=> <>{project ? <FilesPanel key={project.root} directory={project.root} chatId={owner} onChooseProject={()=>void chooseChatProject(owner)}/> : picker}</>});
+      rows.set(chatPaneId("files",owner), {id:chatPaneId("files",owner),label:project?.name || "Files",icon:"folder",close:"hide",newTab:()=>void moreFiles(),render:()=> <>{project ? <LazySurface label="Files"><FilesPanel key={project.root} directory={project.root} chatId={owner} onChooseProject={()=>void chooseChatProject(owner)}/></LazySurface> : picker}</>});
       rows.set(chatPaneId("review",owner),{id:chatPaneId("review",owner),label:"Review",icon:"review",close:"hide",render:()=>project ? <LazySurface label="Review"><ReviewPanel key={project.root} directory={project.root} chatId={owner}/></LazySurface> : picker});
       rows.set(chatPaneId("terminal",owner),{id:chatPaneId("terminal",owner),label:"Terminal",icon:"terminal",close:"hide",render:()=> <TerminalPanel chatId={owner}/>});
     }

@@ -23,6 +23,7 @@ from desktop_fabric.cua_adapter import (
 from desktop_fabric.cua_client import (
     CuaDriverClient,
     CuaDriverError,
+    CuaToolError,
     cua_driver_env,
     unwrap_tool_result,
 )
@@ -287,7 +288,7 @@ async def test_right_click_double_click_and_drag_use_the_driver_argument_names()
 
 @pytest.mark.asyncio
 async def test_delivery_follows_the_fabric_and_retries_in_the_foreground_when_asked():
-    refusal = CuaDriverError(
+    refusal = CuaToolError(
         "Background delivery is not available for target window class 'TkTopLevel' on this event "
         'kind (text_input). Retry this action with delivery_mode:"foreground"; Cua Driver will '
         'activate the target for the action and restore the previous foreground afterward.')
@@ -305,6 +306,16 @@ async def test_delivery_follows_the_fabric_and_retries_in_the_foreground_when_as
         await adapter.dispatch(window, action="type_text", delivery="semantic", element=None,
                                arguments={"text": "c"})
     assert len(client.calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_input_with_foreground_hint_in_diagnostics_is_not_retried():
+    error = CuaDriverError('cua-driver timed out. Earlier diagnostic: retry this action with delivery_mode:"foreground"')
+    adapter, client = _adapter([error])
+    with pytest.raises(DesktopUnavailable, match="timed out"):
+        await adapter.dispatch(_window(), action="type_text", delivery="auto", element=None,
+                               arguments={"text": "send once"})
+    assert [args["delivery_mode"] for _, args in client.calls] == ["background"]
 
 
 @pytest.mark.asyncio
@@ -428,6 +439,28 @@ def test_host_refuses_a_driver_that_does_not_match_the_pin():
     with pytest.raises(CuaDriverError, match="does not match the pinned 0.28.2"):
         host.call("list_windows", {}, read_only=True)
     assert client.closed == 1
+
+
+def test_failed_retirement_is_retried_before_starting_another_driver():
+    class RetiringClient(_ScriptedClient):
+        def close(self):
+            super().close()
+            if self.closed == 1:
+                raise OSError("fixture process still exiting")
+
+    first = RetiringClient([_Died("lost input acknowledgement")])
+    second = _ScriptedClient([{"fresh": True}])
+    clients = iter([first, second])
+    host = CuaDriverHost(["fixture"], client_factory=lambda _: next(clients), expected_version="")
+    try:
+        with pytest.raises(CuaDriverError, match="retire"):
+            host.call("click", {})
+        assert not host.status()["running"] and first.closed == 1 and second.opened == 0
+        assert host.call("list_windows", {}, read_only=True) == {"fresh": True}
+        assert first.closed == 2
+        assert [name for name, _ in first.calls + second.calls] == ["click", "list_windows"]
+    finally:
+        host.close()
 
 
 def test_driver_environment_has_no_secrets_and_telemetry_is_off():

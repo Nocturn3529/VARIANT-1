@@ -2,57 +2,60 @@ import json
 
 import pytest
 
-from artifacts.store import ContentAddressedArtifactStore
+from llm_router import LLMRouter
 from model_runtime.secret_egress import SecretEgressBlocked, SecretEgressFirewall
+from observability import trace_events
 
 
-def _read_json(store, ref):
-    return json.loads(store.read_bytes(ref).decode("utf-8"))
-
-
-def test_known_managed_secret_is_replaced_before_cloud_dispatch(tmp_path):
-    store = ContentAddressedArtifactStore(str(tmp_path / "artifacts"))
+def test_known_managed_secret_is_replaced_before_cloud_dispatch():
     secret = "sk-live-THIS_IS_A_MANAGED_SECRET_123456"
     firewall = SecretEgressFirewall(
-        artifact_store=store,
         known_secret_resolver=lambda: [("provider.test", secret)],
     )
     result = firewall.project(
         {"messages": [{"role": "user", "content": f"accidental {secret}"}]},
-        provider="xai",
-        model="grok-4.6",
-        scope="chat-a",
     )
     rendered = json.dumps(result.payload)
     assert secret not in rendered
     assert "VARIANT1_SECRET:provider.test" in rendered
     assert result.known_replacements == 1
-    assert result.local_ref and result.cloud_ref
-    # Configured vault values are absent even from the private source artifact.
-    assert secret not in json.dumps(_read_json(store, result.local_ref))
 
 
-def test_unregistered_likely_secret_blocks_and_records_sanitized_projection(tmp_path):
-    store = ContentAddressedArtifactStore(str(tmp_path / "artifacts"))
-    firewall = SecretEgressFirewall(artifact_store=store)
-    with pytest.raises(SecretEgressBlocked) as caught:
-        firewall.project(
-            {"messages": [{
-                "role": "user",
-                "content": "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
-            }]},
-            provider="anthropic",
-            model="claude-test",
-            scope="chat-b",
+def test_accepted_and_blocked_requests_record_metadata_only(tmp_path, monkeypatch):
+    recorder = trace_events.TraceRecorder()
+    trace_path = tmp_path / "trace.jsonl"
+    recorder.configure_for_tests(path=str(trace_path), enabled=True)
+    monkeypatch.setattr(trace_events, "RECORDER", recorder)
+    router = LLMRouter({}, str(tmp_path), data_dir=str(tmp_path))
+    known = "managed-fixture-secret-123456"
+    suspected = "abcdefghijklmnopqrstuvwxyz123456"
+    monkeypatch.setattr(
+        router, "_secret_egress_firewall",
+        SecretEgressFirewall(known_secret_resolver=lambda: [("provider.test", known)]),
+    )
+    accepted = router.prepare_cloud_payload(
+        {
+            "messages": [{"role": "user", "content": f"fixture prompt {known}"}],
+            "media": "fixture media bytes",
+            "tools": [{"description": "fixture tool content"}],
+        },
+        provider="gemini", model="fixture",
+    )
+    assert "VARIANT1_SECRET:provider.test" in json.dumps(accepted)
+    with pytest.raises(SecretEgressBlocked):
+        router.prepare_cloud_payload(
+            {"messages": [{"role": "user", "content": f"Authorization: Bearer {suspected}"}]},
+            provider="gemini", model="fixture",
         )
-    error = caught.value
-    assert error.local_ref and error.cloud_ref
-    assert "abcdefghijklmnopqrstuvwxyz123456" not in json.dumps(
-        _read_json(store, error.cloud_ref)
-    )
-    assert "VARIANT1_SUSPECTED_SECRET:BLOCKED" in json.dumps(
-        _read_json(store, error.cloud_ref)
-    )
+    recorder.flush()
+    text = trace_path.read_text(encoding="utf-8")
+    rows = [json.loads(line) for line in text.splitlines()]
+    events = [row for row in rows if row["event"] == "model:egress"]
+    assert [row["status"] for row in events] == ["accepted", "blocked"]
+    assert events[0]["attributes"]["known_replacements"] == 1
+    assert events[1]["attributes"]["finding_count"] == 1
+    for private in (known, suspected, "fixture prompt", "fixture media bytes", "fixture tool content"):
+        assert private not in text
 
 
 def test_schema_describing_an_api_key_is_not_mistaken_for_a_value():
@@ -66,8 +69,6 @@ def test_schema_describing_an_api_key_is_not_mistaken_for_a_value():
                 },
             }]
         },
-        provider="xai",
-        model="grok-4.6",
     )
     assert result.payload["tools"][0]["name"] == "connect"
 
@@ -84,7 +85,7 @@ def test_completed_kernel_history_can_be_withheld_without_exposing_credentials(r
                                 'function':{'name':'ipython','arguments':arguments}}]},
                                 {'role':'tool','tool_call_id':'call-a','content':'handshake failed'}]}
     original = json.dumps(payload)
-    result = SecretEgressFirewall().project(payload, provider='test', model='test')
+    result = SecretEgressFirewall().project(payload)
     assert secret not in json.dumps(result.payload)
     assert 'retained Python state' in json.dumps(result.payload)
     assert result.redacted_history_fields == 1
@@ -96,13 +97,13 @@ def test_completed_kernel_history_can_be_withheld_without_exposing_credentials(r
     root = 'input' if responses else 'messages'
     payload[root].pop()
     with pytest.raises(SecretEgressBlocked):
-        SecretEgressFirewall().project(payload, provider='test', model='test')
+        SecretEgressFirewall().project(payload)
 
 
 def test_unresolved_user_secret_is_a_host_preflight_failure():
     from observability.run_receipts import terminal_cause_class
     with pytest.raises(SecretEgressBlocked) as caught:
-        SecretEgressFirewall().project({'messages':[{'role':'user','content':'password = SyntheticCredential98765'}]}, provider='test', model='test')
+        SecretEgressFirewall().project({'messages':[{'role':'user','content':'password = SyntheticCredential98765'}]})
     assert terminal_cause_class(caught.value.terminal_reason) == 'harness'
 
 
@@ -110,7 +111,7 @@ def test_local_password_expression_does_not_trigger_literal_assignment_block():
     arguments = json.dumps({'code': "password=local_config.get('server_password')\nclient.connect(password)"})
     payload = {'messages':[{'role':'assistant','tool_calls':[{'id':'a','type':'function','function':{'name':'ipython','arguments':arguments}}]},
                            {'role':'tool','tool_call_id':'a','content':'connected locally'}]}
-    result = SecretEgressFirewall().project(payload, provider='test', model='test')
+    result = SecretEgressFirewall().project(payload)
     assert result.payload == payload and result.redacted_history_fields == 0
 
 
@@ -122,8 +123,6 @@ def test_known_secret_resolver_failure_blocks_even_a_benign_payload():
     with pytest.raises(SecretEgressBlocked) as caught:
         firewall.project(
             {"messages": [{"role": "user", "content": "hello"}]},
-            provider="xai",
-            model="grok-4.6",
         )
 
     assert len(caught.value.findings) == 1
@@ -138,8 +137,6 @@ def test_known_secret_resolver_empty_result_is_not_a_failure():
     firewall = SecretEgressFirewall(known_secret_resolver=lambda: [])
     result = firewall.project(
         {"messages": [{"role": "user", "content": "hello"}]},
-        provider="xai",
-        model="grok-4.6",
     )
     assert result.payload["messages"][0]["content"] == "hello"
     assert result.known_replacements == 0
@@ -157,8 +154,6 @@ def test_provider_reasoning_ciphertext_is_replayed_byte_exact_without_scanning()
                 "summary": [],
             }],
         },
-        provider="openai-codex",
-        model="gpt-test",
     )
 
     assert result.payload["input"][0]["encrypted_content"] == ciphertext
@@ -178,8 +173,6 @@ def test_reasoning_ciphertext_is_not_corrupted_by_known_secret_substitution():
                 "summary": [],
             }],
         },
-        provider="openai-codex",
-        model="gpt-test",
     )
 
     assert result.payload["input"][0]["encrypted_content"] == managed
@@ -198,8 +191,6 @@ def test_ordinary_encrypted_content_field_remains_firewalled():
                     "encrypted_content": suspected,
                 }],
             },
-            provider="openai-codex",
-            model="gpt-test",
         )
 
     assert caught.value.findings[0]["code"] == "token_prefix"

@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('variant1Deck', {
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   // Updates download and install only when the user asks.
   getUpdateState: () => ipcRenderer.invoke('update:getState'),
+  openDeckUpdates: () => ipcRenderer.invoke('chat-window:openUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   cancelUpdateDownload: () => ipcRenderer.invoke('update:cancel'),
   installUpdate: () => ipcRenderer.invoke('update:install'),
@@ -105,8 +106,11 @@ contextBridge.exposeInMainWorld('variant1Deck', {
 
 
   // Main Deck navigation and frameless window controls.
-  onNavigate: (cb) =>
-    ipcRenderer.on('deck:navigate', (_e, view) => cb(view)),
+  onNavigate: cb => {
+    const listener = (_event, view) => cb(view);
+    ipcRenderer.on('deck:navigate', listener);
+    return () => ipcRenderer.removeListener('deck:navigate', listener);
+  },
   onVoiceToggle: (cb) => {
     const listener = () => cb();
     ipcRenderer.on('voice:toggle', listener);

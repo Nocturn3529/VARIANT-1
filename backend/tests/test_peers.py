@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -65,9 +66,167 @@ async def test_peer_receiver_launch_does_not_inherit_sender_goal_run_or_chat(tmp
         await service.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_native_peer_metadata_does_not_read_long_transcripts(tmp_path, monkeypatch):
+    service, runtimes, sessions, _chat, first, second = _stack(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    binding = sessions.set_project(second, str(project))
+    for chat_id in (first, second):
+        sessions.append_messages(chat_id, [
+            *({"role": "user", "text": f"Prior input {i}"} for i in range(1001)),
+            *({"role": "assistant", "text": "Prior answer", "run_id": f"run-{i}"} for i in range(3)),
+        ])
+
+    history_sizes = []
+    display_lookups = []
+    read_tables = set()
+    read_history = sessions.repository.history_nodes
+    connect = sessions.repository._connect
+
+    def observe_history(*args, **kwargs):
+        rows = read_history(*args, **kwargs)
+        history_sizes.append(len(rows))
+        return rows
+
+    def authorize(action, table, *_args):
+        if action == sqlite3.SQLITE_READ:
+            read_tables.add(table)
+        return sqlite3.SQLITE_OK
+
+    def observe_reads():
+        conn = connect()
+        conn.set_authorizer(authorize)
+        return conn
+
+    sessions.bind_peer_display(service.message_display, lambda *ids: display_lookups.append(ids))
+    monkeypatch.setattr(sessions.repository, "history_nodes", observe_history)
+    monkeypatch.setattr(sessions.repository, "_connect", observe_reads)
+    try:
+        sent = await service.send(f"chat:{first}", f"chat:{second}", "New request")
+        assert sent["state"] == "queued"
+        ticket = runtimes.repository.get_ticket(sent["delivery_ticket_id"])
+        assert ticket.chat_id == second and ticket.source == f"peer:chat:{first}"
+        assert (sum(history_sizes), len(display_lookups)) == (0, 0)
+
+        roster = {row["chat_id"]: row for row in service.list_peers(kind="variant_chat")}
+        assert set(roster) == {first, second}
+        assert roster[second] == service.get_peer(f"chat:{second}")
+        assert roster[second]["display_name"] == "Second" and roster[second]["project"] == binding
+
+        assert sessions.set_flag(second, archived=True)
+        parked = await service.send(f"chat:{first}", f"chat:{second}", "Request to an archived chat")
+        assert parked["state"] == "parked" and parked["delivery_ticket_id"] == ""
+        assert service.get_peer(f"chat:{second}")["archived"] is True
+        assert not read_tables.intersection({"conversation_node", "conversation_edge", "conversation_turn"})
+        assert not history_sizes and not display_lookups
+    finally:
+        await service.shutdown()
+        await runtimes.shutdown()
+
+
 async def _settle_service(service, runtimes):
     await service.shutdown()
     await runtimes.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_restart_and_poll_wake_beyond_first_recipient_page_without_duplicate_admission(tmp_path, monkeypatch):
+    from contextlib import closing
+
+    service, runtimes, sessions, _, first, backlog = _stack(tmp_path)
+    tail = sessions.create_session("Tail")
+    missed = sessions.create_session("Missed wake")
+    await service.shutdown()
+    # Durable pre-restart rows. Keep the first recipient busy throughout.
+    with closing(service.repository._connect()) as conn, conn:
+        conn.executemany("INSERT INTO peer_message(message_id,exchange_id,sender_peer_id,target_peer_id,content,"
+                         "delivery,state,revision,created_at,updated_at,message_kind) "
+                         "VALUES(?,? ,?,?,'fixture','steer','persisted',1,1,1,'request')",
+                         [(f"message-{i}", f"exchange-{i}", "chat:"+first, "chat:"+backlog) for i in range(500)])
+    def persist(chat, message):
+        service.repository.persist_message({"message_id": message, "exchange_id": message,
+            "sender_peer_id": "chat:"+first, "target_peer_id": "chat:"+chat, "content": "task",
+            "message_kind": "request", "delivery": "steer", "state": "persisted"})
+    persist(tail, "tail")
+    heard = {tail: asyncio.Event(), missed: asyncio.Event()}
+    received = []
+    host = SimpleNamespace(hub=SimpleNamespace(broadcast=AsyncMock()),
+                           require_runtime=lambda: SimpleNamespace(sessions=sessions, session_runtimes=runtimes))
+    chat = ChatService(host=host, transcript=None, models=None)
+    async def run(_, text, session, **kwargs):
+        chat_id = session.viewed_session_id
+        ticket_id = kwargs["ticket_id"]
+        received.append((chat_id, ticket_id))
+        runtimes.begin_run(kwargs["runtime_admission_id"], run_id="run-" + ticket_id, thread_id=ticket_id)
+        runtimes.complete_transcript_commit(chat_id, [{"id": ticket_id}])
+        heard[chat_id].set()
+    chat.run_task = run
+    service.chat_service = chat
+    service.host = host
+    schedule = service._schedule_native_wake
+    monkeypatch.setattr(service, "_schedule_native_wake", lambda sid: schedule(sid) if sid != backlog else None)
+    try:
+        await service.start()
+        await asyncio.wait_for(heard[tail].wait(), 3)
+        persist(missed, "missed")  # Simulate a missed sender wake with 500 earlier pending rows.
+        await asyncio.wait_for(heard[missed].wait(), 3)
+        service._reconcile_native_backlog()
+        assert received == [(tail, service._ticket_id("tail")), (missed, service._ticket_id("missed"))]
+        assert all(runtimes.repository.get_ticket(ticket).state == "completed" for _, ticket in received)
+    finally:
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_reconciliation_does_not_wake_user_parked_or_completed_peer_work(tmp_path, monkeypatch):
+    service, runtimes, _, _, sender, target = _stack(tmp_path)
+    offered = []
+    monkeypatch.setattr(service, "_schedule_native_wake", offered.append)
+    admission = runtimes.try_reserve_run(target)
+    runtimes.begin_run(admission, run_id="one", thread_id="one", source="chat")
+    try:
+        await service.send("chat:" + sender, "chat:" + target, "Already consumed")
+        consumed = runtimes.claim_input(target, "steer", run_id="one")
+        runtimes.complete_transcript_commit(target, [consumed])
+        parked = await service.send("chat:" + sender, "chat:" + target, "Paused by user")
+        runtimes.park_queued_input_tickets(target, reason="stopped_by_user")
+        offered.clear()
+        runtimes.finish_run(admission, status="cancelled")
+        service._reconcile_native_backlog()
+        service._reconcile_native_backlog()
+        assert runtimes.repository.get_ticket(parked["delivery_ticket_id"]).state == "parked"
+        assert offered == []
+    finally:
+        runtimes.finish_run(admission, status="test_cleanup")
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_external_failure_precedes_attention_and_status_filter_precedes_limit(tmp_path):
+    service, runtimes, _, _, first, second = _stack(tmp_path)
+    def register(peer_id, name, adapter):
+        return service.register_external(peer_id, name, adapter, peer_id, "", "", 0, 1, {"live_ingress": True})
+    try:
+        register("old", "A", "grok-acp-mcp")  # Retired adapter's effective status is disconnected.
+        register("last", "z", "fixture")
+        register("middle", "Y", "fixture")
+        found = service.list_peers(kind="external_harness", status="connected", limit=1)
+        assert [row["peer_id"] for row in found] == ["middle"]
+        assert [row["peer_id"] for row in service.list_peers(kind="external_harness", status="disconnected", limit=1)] == ["old"]
+        sender = "chat:" + first
+        for state in ("unknown", "observed", "failed"):
+            message = await service.send(sender, "last", "External request " + state)
+            service.claim_external_delivery("fixture", 1, peer_id="last")
+            await service.settle_external_delivery(message["message_id"], 1, state)
+            if state == "failed":
+                await service.send("chat:"+second, sender, "Separate attention")
+            waited = await asyncio.wait_for(service.wait_message(sender, message["message_id"],
+                timeout_s=10 if state == "failed" else 0), 1)
+            assert waited["status"] == ("failed" if state == "failed" else "pending")
+            assert waited["message"]["state"] == state
+    finally:
+        await _settle_service(service, runtimes)
 
 
 @pytest.mark.asyncio
@@ -408,6 +567,41 @@ async def test_deleted_sender_still_has_durable_attribution_at_admission(tmp_pat
         assert f"Sender: {sender_peer_id} ({sender_peer_id})" in ticket.text
         assert "survives sender deletion" in ticket.text
     finally:
+        await _settle_service(service, runtimes)
+
+
+@pytest.mark.asyncio
+async def test_idle_requeues_a_runnable_request_after_its_wake_task_has_gone(tmp_path):
+    service, runtimes, sessions, _, first, second = _stack(tmp_path)
+    runtime = SimpleNamespace(sessions=sessions, session_runtimes=runtimes)
+    host = SimpleNamespace(hub=SimpleNamespace(broadcast=AsyncMock()), require_runtime=lambda: runtime)
+    chat = ChatService(host=host, transcript=None, models=None)
+    service.chat_service = chat
+    received = []
+    finished = asyncio.Event()
+
+    async def run(transport, text, session, **kwargs):
+        received.append(kwargs["ticket_id"])
+        runtimes.complete_transcript_commit(second, [{"id": kwargs["ticket_id"]}])
+        finished.set()
+
+    chat.run_task = run
+    admission = runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission, run_id="preceding", thread_id="preceding")
+    try:
+        request = await service.send("chat:" + first, "chat:" + second, "Do this once")
+        wake = service._wake_tasks[second]
+        await asyncio.sleep(0)
+        wake.cancel()
+        await asyncio.gather(wake, return_exceptions=True)
+        assert second not in service._wake_tasks
+        runtimes.park_queued_input_tickets(second, reason="turn_ok_before_input_delivery")
+        runtimes.finish_run(admission, status="ok")
+        await asyncio.wait_for(finished.wait(), 1)
+        assert received == [request["delivery_ticket_id"]]
+        assert runtimes.repository.get_ticket(received[0]).state == "completed"
+    finally:
+        runtimes.finish_run(admission, status="test_cleanup")
         await _settle_service(service, runtimes)
 
 

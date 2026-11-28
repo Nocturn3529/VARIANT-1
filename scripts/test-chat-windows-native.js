@@ -7,7 +7,9 @@ const out=process.env.VARIANT1_FRONTEND_TEST_ARTIFACTS || path.join(root,'artifa
 fs.writeFileSync(path.join(temp,'preload.cjs'),`const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('variant1Deck',{
  listChatWindows:()=>ipcRenderer.invoke('chat-window:list'),manageChatWindow:(id,action)=>ipcRenderer.invoke('chat-window:manage',id,action),
  onChatWindowsChanged:cb=>{const listener=(_e,value)=>cb(value);ipcRenderer.on('chat-window:changed',listener);return()=>ipcRenderer.removeListener('chat-window:changed',listener);},
- getBackendInfo:()=>ipcRenderer.invoke('test:backend'),openChatWindow:(id,title)=>ipcRenderer.invoke('chat-window:open',id,title)
+ getBackendInfo:()=>ipcRenderer.invoke('test:backend'),openChatWindow:(id,title)=>ipcRenderer.invoke('chat-window:open',id,title),
+ getAppInfo:()=>ipcRenderer.invoke('app:getInfo'),getUpdateState:()=>ipcRenderer.invoke('update:getState'),
+ onNavigate:cb=>{const listener=(_e,view)=>cb(view);ipcRenderer.on('deck:navigate',listener);return()=>ipcRenderer.removeListener('deck:navigate',listener);}
 });`);
 fs.writeFileSync(path.join(temp,'main.cjs'),`
 const {app,BrowserWindow,ipcMain,protocol}=require('electron');
@@ -15,7 +17,7 @@ const {WebSocketServer}=require(${JSON.stringify(require.resolve('ws'))});
 const fs=require('node:fs'),assert=require('node:assert/strict');
 const boot=require(${JSON.stringify(path.join(root,'electron-app-boot.js'))});
 boot.applyGpuFlags(app);boot.registerVariant1Scheme(protocol);app.setPath('userData',${JSON.stringify(path.join(temp,'profile'))});
-const pause=ms=>new Promise(r=>setTimeout(r,ms));let main,manager,server;const frames=[],sockets=[];
+const pause=ms=>new Promise(r=>setTimeout(r,ms));let main,monitor,manager,server;const frames=[],sockets=[];
 async function wait(win,expression){for(let i=0;i<400;i++){if(await win.webContents.executeJavaScript(expression))return;await pause(50);}throw new Error('Timed out: '+expression);}
 app.whenReady().then(async()=>{
  app.on("browser-window-created",(_event,win)=>win.webContents.on("console-message",event=>console.log("CHAT_TEST_CONSOLE",event.message)));
@@ -37,7 +39,20 @@ app.whenReady().then(async()=>{
  });
  main=new BrowserWindow({show:false,width:1240,height:820,webPreferences:{preload:${JSON.stringify(path.join(temp,'preload.cjs'))},sandbox:true,contextIsolation:true,nodeIntegration:false}});
  let firstInfo=true;ipcMain.handle('test:backend',async()=>{if(firstInfo){firstInfo=false;await pause(14000);}return info;});
- manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:()=>main,getBackendInfo:()=>info,isTrustedIpcSender:e=>e.sender===main.webContents,hardenAppWindow:()=>{},show:false});
+ const owners={getDeckWindow:()=>main,getMonitorWindow:()=>monitor};
+ const {isTrustedIpcSender}=boot.createWindowSecurity(owners);
+ let handoffs=0;
+ manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:owners.getDeckWindow,
+   openDeckWindow:view=>{assert.equal(view,'updates');handoffs++;main.webContents.send('deck:navigate',view);return main;},
+   getBackendInfo:()=>info,isTrustedIpcSender,hardenAppWindow:()=>{},show:false});
+ const available={status:'available',currentVersion:'0.1.1-preview.4',version:'0.1.1-preview.5',installMode:'in-app',platform:'win32',releaseName:'Fixture',releaseUrl:'',percent:0};
+ const userData=app.getPath('userData');
+ require(${JSON.stringify(path.join(root,'electron-deck-ipc.js'))}).registerDeckIpc({app:{isPackaged:true,getVersion:()=>available.currentVersion,getPath:()=>userData},appRoot:${JSON.stringify(root)},
+   ...owners,isTrustedIpcSender,getDataDir:()=>userData,getLogDir:()=>userData,getPortFile:()=>'',updates:{getState:()=>available},getLogBuffer:()=>['fixture status']});
+ monitor=new BrowserWindow({show:false,webPreferences:{preload:${JSON.stringify(path.join(root,'monitor-preload.js'))},sandbox:true,contextIsolation:true,nodeIntegration:false}});
+ await monitor.loadURL('variant1://app/frontend/monitor.html');
+ assert.deepEqual(await monitor.webContents.executeJavaScript('window.variant1Monitor.getLogHistory()'),['fixture status']);
+ monitor.destroy();monitor=null;
  await main.loadURL('variant1://app/frontend/main-deck/index.html');
  main.showInactive();
  await wait(main,'!!document.querySelector(".startup-cover")');await pause(200);main.webContents.invalidate();await pause(80);
@@ -76,6 +91,13 @@ app.whenReady().then(async()=>{
  await main.webContents.executeJavaScript(${JSON.stringify("[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='Show right panel').click()")});await pause(80);
  console.log('Native layouts: four scoped presets, docked Review growth, and complete auxiliary panel hiding passed');
  console.log("CHAT_TEST_READY");
+ const mainSocket=sockets.find(connection=>!connection.pinned).socket;
+ function turnFrame(socket,chatId,frame) {
+  socket.send(JSON.stringify({source:'chat',session_id:chatId,admission_id:'admission-'+chatId,run_id:'run-'+chatId,...frame}));
+ }
+ turnFrame(mainSocket,'main-a',{type:'start'});
+ turnFrame(mainSocket,'main-a',{type:'token',token:'Main chat stream'});
+ await wait(main,'document.querySelector(".chat-turn--live")?.textContent.includes("Main chat stream")');
  const response=await main.webContents.executeJavaScript('window.variant1Deck.openChatWindow("chat-b","Detached chat")');assert.equal(response.ok,true);
 
  await wait(main,'document.querySelector(".window-count")?.textContent==="1"');
@@ -89,6 +111,39 @@ app.whenReady().then(async()=>{
  assert.ok(sockets.some(s=>s.role==='detached_chat'&&s.pinned==='chat-b'));
  const peer=sockets.find(s=>s.role==='detached_chat');peer.socket.send(JSON.stringify({type:'chat:session',session:{id:'foreign',title:'Wrong chat',messages:[]}}));await pause(100);
  assert.match(await child.webContents.executeJavaScript('document.querySelector(".titlebar__name").textContent'),/Detached chat/);
+ turnFrame(peer.socket,'chat-b',{type:'start'});
+ turnFrame(peer.socket,'chat-b',{type:'token',token:'Detached chat stream'});
+ await wait(child,'document.querySelector(".chat-turn--live")?.textContent.includes("Detached chat stream")');
+ peer.socket.send(JSON.stringify({type:'chat:session',session:{id:'chat-b',title:'Renamed while streaming',messages:[]}}));
+ await wait(child,'document.querySelector(".titlebar__name")?.textContent==="Renamed while streaming"');
+ await main.webContents.executeJavaScript('document.querySelector("[data-session-id=chat-c] .history-item__select").click()');
+ await wait(main,'document.querySelector("[data-session-id=chat-c] .history-item__select")?.getAttribute("aria-current")==="true" && !document.querySelector(".chat-turn--live")');
+ const escapeKey='document.body.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true,cancelable:true}))';
+ assert.equal(await main.webContents.executeJavaScript(escapeKey),true,'the newly selected idle chat leaves Escape available');
+ turnFrame(mainSocket,'main-a',{type:'done',text:'Main chat complete'});
+ assert.equal(await child.webContents.executeJavaScript(escapeKey),false,'the active detached chat handles Escape');
+ turnFrame(peer.socket,'chat-b',{type:'done',text:'Detached chat complete'});
+ await wait(child,'!document.querySelector(".chat-turn--live") && document.querySelector(".chat-workspace")?.textContent.includes("Detached chat complete")');
+ const cancellations=frames.filter(frame=>frame.type==='cancel');
+ assert.deepEqual(cancellations.map(frame=>[frame.role,frame.session_id,frame.admission_id,frame.run_id]),[['detached_chat','chat-b','admission-chat-b','run-chat-b']]);
+ assert.equal(await child.webContents.executeJavaScript(escapeKey),true,'the settled detached chat releases Escape');
+ console.log('Native streaming: main header inventory, switching to an idle chat, detached title and scoped Escape passed');
+ assert.equal(await child.webContents.executeJavaScript('typeof window.variant1Deck.installUpdate'), 'undefined');
+ peer.socket.send(JSON.stringify({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{supported:true,installed:false}}));
+ peer.socket.send(JSON.stringify({type:'chat:context',session_id:'chat-b',route:'local',model:'fixture',model_configured:true}));
+ await wait(child,'!!document.querySelector(".composer-engine button")');
+ await child.webContents.executeJavaScript('document.querySelector(".composer-engine button").click()');
+ await wait(child,'!!document.querySelector(".settings-rail")');
+ await child.webContents.executeJavaScript('[...document.querySelectorAll(".settings-rail button")].find(b=>b.textContent.includes("About")).click()');
+ await wait(child,'[...document.querySelectorAll("button")].some(b=>b.textContent==="Open updates")');
+ await child.webContents.executeJavaScript('[...document.querySelectorAll("button")].find(b=>b.textContent==="Open updates").click()');
+ await wait(main,'document.querySelector("dialog.updates-overlay[open]")?.textContent.includes("0.1.1-preview.5") && document.querySelector(".version-hero__channel")?.textContent==="Installed build"');
+ assert.match(await main.webContents.executeJavaScript('document.querySelector(".updates-overlay").textContent'),/Download update/);
+ assert.equal(handoffs,1);
+ assert.equal(await child.webContents.executeJavaScript('!!document.querySelector(".updates-overlay")'),false);
+ await main.webContents.executeJavaScript('document.querySelector(".updates-overlay__close").click()');
+ await child.webContents.executeJavaScript('document.querySelector(".settings-overlay__close").click()');
+ console.log('Installed update handoff: production detached chat preload opened the available release in the Deck');
  child.showInactive();child.webContents.invalidate();await pause(250);
  fs.writeFileSync(${JSON.stringify(path.join(out,'detached-chat.png'))},(await child.webContents.capturePage()).toPNG());
 
@@ -128,7 +183,7 @@ app.whenReady().then(async()=>{
  child.hide();
  await main.webContents.executeJavaScript('window.variant1Deck.openChatWindow("chat-b","Detached chat")');assert.equal(manager.list().length,1);
  await child.webContents.executeJavaScript('window.variant1Deck.close()');await pause(150);assert.equal(manager.list().length,0);assert.equal(main.isDestroyed(),false);
- assert.equal(frames.filter(f=>['chat:session:new','chat:stop','cancel'].includes(f.type)).length,0,'opening/closing a view cannot submit or cancel work');
+ assert.equal(frames.filter(f=>['chat:session:new','chat:stop','cancel'].includes(f.type) && f!==cancellations[0]).length,0,'opening/closing a view cannot submit or cancel work');
  fs.writeFileSync(${JSON.stringify(path.join(out,'chat-window-frames.json'))},JSON.stringify(frames,null,2));
  console.log('Native chat windows: startup cover, compact pinned view, no host takeover, foreign snapshot rejection, reuse and view-only close passed');
 }).catch(e=>{console.error(e);process.exitCode=1;}).finally(()=>{if(manager)manager.closeAll();for(const {socket} of sockets)socket.terminate();if(server)server.close();app.exit(process.exitCode||0);});

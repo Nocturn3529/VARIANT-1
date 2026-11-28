@@ -8,6 +8,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 import psutil
 
+from security import matches_ascii_token
+
 from .bridge_contract import call_peer_tool
 from .bridge_discovery import PublishedBridge, process_matches
 
@@ -69,7 +71,10 @@ def register_bridge_routes(app, host):
     async def peer_bridge(request: Request):
         token = str(getattr(host, "peer_bridge_token", ""))
         supplied = request.headers.get("authorization", "").removeprefix("Bearer ")
-        if str(getattr(request.client, "host", "")) not in {"127.0.0.1", "::1"} or not token or not secrets.compare_digest(token, supplied):
+        if (
+            str(getattr(request.client, "host", "")) not in {"127.0.0.1", "::1"}
+            or not matches_ascii_token(supplied, token)
+        ):
             return JSONResponse({"ok": False, "error": {"code": "unauthorized"}}, status_code=401)
         raw = await request.body()
         if len(raw) > 1024 * 1024:

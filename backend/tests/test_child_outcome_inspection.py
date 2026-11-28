@@ -132,7 +132,7 @@ async def test_children_wire_rejects_cross_owner_detail(manager):
             return fn
         return register_handler
     register(on)
-    runtime=SimpleNamespace(sessions=SimpleNamespace(get_session=lambda sid:{}),catalog=SimpleNamespace(children=manager),work=manager.work)
+    runtime=SimpleNamespace(sessions=SimpleNamespace(has_session=lambda sid:True),catalog=SimpleNamespace(children=manager),work=manager.work)
     replies=[]
     class Socket:
         async def send_json(self,value):replies.append(value)

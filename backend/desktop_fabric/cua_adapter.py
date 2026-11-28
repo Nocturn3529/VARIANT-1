@@ -24,6 +24,7 @@ from .adapter import (
 )
 from .cua_client import (
     CuaDriverError,
+    CuaToolError,
     cua_driver_env,
     resolve_cua_driver_command,
 )
@@ -370,7 +371,8 @@ class CuaDesktopAdapter:
             # Some windows drop posted input; the driver refuses before
             # delivering anything and asks for foreground delivery, which
             # raises the window for the action and restores focus after.
-            if (delivery == "semantic" or payload.get("delivery_mode") != "background"
+            if (not isinstance(exc.__cause__, CuaToolError)
+                    or delivery == "semantic" or payload.get("delivery_mode") != "background"
                     or _FOREGROUND_RETRY not in str(exc).casefold()):
                 raise
             payload["delivery_mode"] = "foreground"

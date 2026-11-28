@@ -126,7 +126,7 @@ async def test_detached_inventory_and_release_cannot_access_another_chat():
         return {"status": "closed"}
     runtime = SimpleNamespace(kernel=SimpleNamespace(live_inventory=lambda: [
         {"chat_id": "own", "generation": 1}, {"chat_id": "other", "generation": 2}], release_idle=release),
-        sessions=SimpleNamespace(get_session=lambda chat: {"title": chat}),
+        sessions=SimpleNamespace(get_session_metadata=lambda chat: {"title": chat}),
         session_runtimes=SimpleNamespace(is_busy=lambda chat: False))
     messages = []
     async def send(value): messages.append(value)

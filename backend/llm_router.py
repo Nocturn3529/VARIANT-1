@@ -66,7 +66,7 @@ from llm_stream_diagnostics import (
     log_finish_reason,
 )
 from session_catalog.support import SupportMatrix, validate_tool_projection
-from model_runtime.secret_egress import SecretEgressFirewall
+from model_runtime.secret_egress import SecretEgressBlocked, SecretEgressFirewall
 
 from llm_cloud_stream import (
     call_cloud as _cloud_call_cloud,
@@ -327,11 +327,6 @@ class LLMRouter:
         if callable(resolver) and resolver not in self._model_secret_resolvers:
             self._model_secret_resolvers.append(resolver)
 
-    def set_secret_egress_firewall(self, firewall) -> None:
-        if firewall is None or not callable(getattr(firewall, "project", None)):
-            raise TypeError("secret-egress firewall must expose project()")
-        self._secret_egress_firewall = firewall
-
     def _known_model_secrets(self) -> list[tuple[str, str]]:
         """Resolve managed credentials only for the in-memory sanitation pass."""
         from security import secretstore
@@ -390,39 +385,22 @@ class LLMRouter:
                     rows.append((str(item[0] or "host"), str(item[1])))
         return rows
 
-    @staticmethod
-    def _model_egress_scope() -> str:
-        try:
-            from run_context import current_run_context
-            ctx = current_run_context()
-        except Exception:
-            ctx = None
-        if ctx is None:
-            return ""
-        metadata = dict(getattr(ctx, "metadata", None) or {})
-        return str(getattr(getattr(ctx, 'work_scope', None), 'chat_id', '') or metadata.get("chat_id") or getattr(ctx, "run_id", "") or "")
-
     def prepare_cloud_payload(self, payload: dict, *, provider: str, model: str) -> dict:
-        projection = self._secret_egress_firewall.project(
-            payload,
-            provider=provider,
-            model=model,
-            scope=self._model_egress_scope(),
-        )
+        from observability.trace_events import record_trace_event
+
         try:
-            from run_context import current_run_context
-            ctx = current_run_context()
-        except Exception:
-            ctx = None
-        if ctx is not None and isinstance(getattr(ctx, "metadata", None), dict):
-            refs = ctx.metadata.setdefault("model_egress_projection_refs", [])
-            if isinstance(refs, list):
-                refs.append({
-                    "local": projection.local_ref,
-                    "cloud": projection.cloud_ref,
-                    "known_replacements": projection.known_replacements,
-                    "redacted_history_fields": projection.redacted_history_fields,
-                })
+            projection = self._secret_egress_firewall.project(payload)
+        except SecretEgressBlocked as error:
+            record_trace_event(
+                "model:egress", status="blocked", provider=provider, model=model,
+                finding_count=len(error.findings),
+            )
+            raise
+        record_trace_event(
+            "model:egress", status="accepted", provider=provider, model=model,
+            known_replacements=projection.known_replacements,
+            redacted_history_fields=projection.redacted_history_fields,
+        )
         return projection.payload
 
     def validate_model_request(
@@ -1634,17 +1612,21 @@ class LLMRouter:
     @staticmethod
     def _provider_headers(profile, key: str) -> dict:
         headers = dict(profile.default_headers or {})
-        if profile.auth_style == "x-api-key" and key:
-            headers["x-api-key"] = key
-        elif profile.auth_style in {"bearer", "optional"} and key:
+        style = profile.auth_style
+        if style in {"x-api-key", "x-goog-api-key"} and key:
+            headers[style] = key
+        elif style in {"bearer", "optional"} and key:
             headers["Authorization"] = f"Bearer {key}"
         return headers
 
     @staticmethod
-    def _openai_url(base: str, path: str) -> str:
+    def _openai_url(base: str, path: str, *, profile=None) -> str:
         base = str(base or "").rstrip("/")
         clean = path.lstrip("/")
-        return f"{base}/{clean}" if base.endswith("/v1") else f"{base}/v1/{clean}"
+        versioned = str(getattr(profile, "versioned_base_url", "") or "").rstrip("/")
+        if base.endswith("/v1") or (versioned and base == versioned):
+            return f"{base}/{clean}"
+        return f"{base}/v1/{clean}"
 
     def nous_model_available(self, model: str) -> bool | None:
         return model in self._nous_models if self._nous_models is not None else None
@@ -1748,7 +1730,7 @@ class LLMRouter:
             raise LocalEngineError(f"no base URL configured for {prov}")
         try:
             if profile.api_style == "openai":
-                url = profile.models_url or self._openai_url(base, "models")
+                url = profile.models_url or self._openai_url(base, "models", profile=profile)
                 headers = self._provider_headers(profile, key)
                 async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
                     r = await client.get(url, headers=headers)
@@ -1760,7 +1742,7 @@ class LLMRouter:
                     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     return sorted(set(ids))
             elif profile.api_style == "anthropic":
-                url = base.rstrip("/") + "/v1/models"
+                url = profile.models_url or self._openai_url(base, "models", profile=profile)
                 headers = self._provider_headers(profile, key)
                 headers["anthropic-version"] = "2023-06-01"
                 async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
@@ -1773,11 +1755,13 @@ class LLMRouter:
                     ids = [m.get("id") for m in data.get("data", []) if m.get("id")]
                     return sorted(ids)
             elif profile.api_style == "gemini":
-                url = f"{base}/models?key={key}&pageSize=100"
+                url = f"{base.rstrip('/')}/models"
+                headers = self._provider_headers(profile, key)
                 async with httpx.AsyncClient(timeout=15, trust_env=False) as client:
-                    r = await client.get(url)
+                    r = await client.get(url, headers=headers, params={"pageSize": 100})
                     if r.status_code != 200:
-                        raise LocalEngineError(f"list models failed: {r.status_code} {r.text[:100]}")
+                        detail = r.text.replace(key, "[redacted]") if key else r.text
+                        raise LocalEngineError(f"list models failed: {r.status_code} {detail[:100]}")
                     data = r.json()
                     from model_runtime.context import catalog_context_windows
                     self._model_context_windows[prov] = catalog_context_windows(data.get("models"))
@@ -1793,6 +1777,8 @@ class LLMRouter:
         except LocalEngineError:
             raise
         except Exception as e:
+            if profile.api_style == "gemini":
+                raise LocalEngineError(f"failed to list {prov} models: {type(e).__name__}") from None
             raise LocalEngineError(f"failed to list {prov} models: {e}")
 
     @property

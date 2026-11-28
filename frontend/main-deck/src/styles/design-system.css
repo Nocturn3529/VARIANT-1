@@ -46,6 +46,7 @@
   --deck-accent-soft: #222222;
   --deck-accent-line: #363636;
   /* Reserved for enabled mutation authority; ordinary controls stay neutral. */
+  --deck-brand-accent: #a3e635;
   --deck-mutation: #39ff14;
   /* The same deliberate green, reserved for work that is live right now. */
   --deck-live: var(--deck-mutation);
@@ -162,7 +163,7 @@
   --deck-motion-slow: 0ms;
 }
 
-.deck-input-dialog {
+.deck-input-dialog, .deck-confirm-dialog {
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
   padding: 20px;
@@ -173,15 +174,21 @@
   box-shadow: var(--deck-shadow);
   font: var(--deck-text-md)/1.5 var(--font-ui);
 }
-.deck-input-dialog::backdrop { background: rgba(0, 0, 0, .55); }
-.deck-input-dialog header, .deck-input-dialog footer { display: flex; align-items: center; gap: 8px; }
-.deck-input-dialog header { justify-content: space-between; margin-bottom: 18px; }
-.deck-input-dialog h2 { margin: 0; font-size: var(--deck-text-lg); }
+.deck-input-dialog::backdrop, .deck-confirm-dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.deck-input-dialog header, .deck-input-dialog footer, .deck-confirm-dialog header, .deck-confirm-dialog footer { display: flex; align-items: center; gap: 8px; }
+.deck-input-dialog header, .deck-confirm-dialog header { justify-content: space-between; margin-bottom: 18px; }
+.deck-input-dialog h2, .deck-confirm-dialog h2 { margin: 0; font-size: var(--deck-text-lg); }
 .deck-input-dialog label { display: grid; gap: 6px; }
 .deck-input-dialog input { width: 100%; height: var(--deck-control-height); padding: 0 9px; border: 1px solid var(--deck-line-strong); border-radius: var(--deck-radius-sm); color: inherit; background: var(--deck-canvas); font: inherit; }
-.deck-input-dialog footer { justify-content: flex-end; margin-top: 20px; }
-.deck-input-dialog p[role="alert"] { color: var(--deck-danger); font-size: var(--deck-text-sm); }
-.deck-input-dialog :is(button, input):focus-visible { outline: 2px solid var(--deck-text-primary); outline-offset: 2px; }
+.deck-input-dialog footer, .deck-confirm-dialog footer { justify-content: flex-end; margin-top: 20px; }
+.deck-input-dialog p[role="alert"], .deck-confirm-dialog p[role="alert"] { color: var(--deck-danger); font-size: var(--deck-text-sm); }
+.deck-confirm-dialog__message { margin: 0; color: var(--deck-text-secondary); font-size: var(--deck-text-sm); line-height: 1.55; }
+.deck-confirm-dialog__detail { margin: 8px 0 0; color: var(--deck-text-muted); font-size: var(--deck-text-xs); line-height: 1.5; }
+.deck-confirm-dialog__done { display: inline-flex; align-items: center; gap: 6px; color: var(--deck-positive); font-size: var(--deck-text-xs); font-weight: 550; }
+.deck-button--danger { color: var(--deck-danger); border-color: color-mix(in srgb, var(--deck-danger) 42%, var(--deck-line-strong)); background: color-mix(in srgb, var(--deck-danger) 10%, var(--deck-surface-raised)); }
+.deck-button--danger:hover:not(:disabled) { color: var(--deck-text-primary); border-color: var(--deck-danger); background: color-mix(in srgb, var(--deck-danger) 20%, var(--deck-surface-raised)); }
+.deck-input-dialog :is(button, input):focus-visible,
+.deck-confirm-dialog :is(button, input):focus-visible { outline: 2px solid var(--deck-text-primary); outline-offset: 2px; }
 
 body,
 .app-shell {

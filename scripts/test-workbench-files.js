@@ -72,6 +72,29 @@ loaded.exports.registerDeckIpc({app: {}, appRoot: root, getDeckWindow: () => dec
     onTempWrite = async (write, bytes) => {await write(bytes); await fs.promises.writeFile(target, 'external edit');};
     assert.equal((await write({}, target, 'stale')).conflict, true);
     assert.equal(await fs.promises.readFile(target, 'utf8'), 'external edit');
+    if (process.platform === 'win32') {
+      const stream = target + ':editor-metadata';
+      await fs.promises.writeFile(stream, 'retained metadata');
+      const opened = await read({}, target);
+      const saved = await write({}, target, 'ordinary save', opened.mtimeMs, opened.revision);
+      assert.equal(saved.ok, true);
+      const reopened = await read({}, target);
+      assert.equal(reopened.mtimeMs, saved.mtimeMs);
+      assert.equal(reopened.revision, saved.revision);
+      assert.equal(await fs.promises.readFile(stream, 'utf8'), 'retained metadata');
+      assert.equal((await write({}, target, 'forced save')).ok, true);
+      assert.equal(await fs.promises.readFile(stream, 'utf8'), 'retained metadata');
+    }
+    const alias = path.join(documents, 'hard-linked.txt');
+    await fs.promises.link(target, alias);
+    const linked = await read({}, target);
+    for (const expected of [[linked.mtimeMs, linked.revision], []]) {
+      const result = await write({}, target, 'would split the link', ...expected);
+      assert.equal(result.ok, false);
+      assert.match(result.error, /hard links/i);
+      assert.equal(await fs.promises.readFile(alias, 'utf8'), linked.text);
+      assert.equal((await fs.promises.stat(target)).nlink, 2);
+    }
     console.log('Workbench files: UTF-8, atomic failure, concurrent conflict, external edits and line endings passed');
   } finally {
     await fs.promises.rm(dir, {recursive: true, force: true});

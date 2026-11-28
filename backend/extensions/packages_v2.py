@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import operator
 import os
 from pathlib import Path
 import shutil
@@ -26,22 +27,31 @@ class ExtensionPackageError(RuntimeError):
     pass
 
 
-def _semver(value: str) -> tuple[int, int, int]:
-    core = str(value).split("-", 1)[0]
+def _semver(value: str) -> tuple:
+    core, separator, prerelease = str(value).partition("-")
     try:
-        return tuple(int(part) for part in core.split("."))  # type: ignore[return-value]
+        numbers = tuple(int(part) for part in core.split("."))
+        identifiers = tuple((0, int(part)) if part.isascii() and part.isdigit() else (1, part)
+                            for part in prerelease.split(".")) if separator else ()
+        return numbers, not bool(separator), identifiers
     except Exception as exc:
         raise ExtensionPackageError(f"invalid compatibility version: {value}") from exc
+
+
+_VERSION_COMPARISONS = ((">=", operator.ge), ("<=", operator.le), ("==", operator.eq),
+                        (">", operator.gt), ("<", operator.lt), ("=", operator.eq))
 
 
 def _range_allows(version: str, expression: str) -> bool:
     current = _semver(version)
     for token in str(expression or "").split():
-        if token.startswith(">=") and current < _semver(token[2:]): return False
-        if token.startswith(">") and current <= _semver(token[1:]): return False
-        if token.startswith("<=") and current > _semver(token[2:]): return False
-        if token.startswith("<") and current >= _semver(token[1:]): return False
-        if token.startswith("=") and current != _semver(token[1:]): return False
+        for prefix, compare in _VERSION_COMPARISONS:
+            if token.startswith(prefix):
+                if not compare(current, _semver(token[len(prefix):])):
+                    return False
+                break
+        else:
+            raise ExtensionPackageError(f"unsupported compatibility constraint: {token}")
     return True
 
 

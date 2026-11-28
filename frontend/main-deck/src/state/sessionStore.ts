@@ -43,7 +43,7 @@ type PendingSessionAction =
 type ExpectedSessionChange =
   | {type: "switch"; id: string; requestId: string}
   | {type: "new"; requestId: string}
-  | {type: "fallback"}
+  | {type: "fallback"; deleteRequestId?: string}
   | null;
 
 export type SessionState = Readonly<{
@@ -68,6 +68,21 @@ let navigationTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingDispatch: "queued" | "sent" | null = null;
 let pendingNeedsRecovery = false;
 let expectedSessionChange: ExpectedSessionChange = null;
+type DeleteCompletion = (error?: Error) => void;
+type DeleteWaiter = {requestId: string; finish?: DeleteCompletion; timer: ReturnType<typeof setTimeout>};
+const deleteWaiters = new Map<string, DeleteWaiter>();
+
+function settleDeletion(id: string, requestId: unknown, error?: Error): boolean {
+  const waiter = deleteWaiters.get(id);
+  if (!waiter || waiter.requestId !== requestId) return false;
+  clearTimeout(waiter.timer);
+  deleteWaiters.delete(id);
+  if (error && expectedSessionChange?.type === "fallback" && expectedSessionChange.deleteRequestId === requestId) {
+    expectedSessionChange = null;
+  }
+  waiter.finish?.(error);
+  return true;
+}
 const OFFLINE_ERROR = "Backend offline — reconnecting";
 const initialState = (): SessionState => ({
   connected: false,
@@ -161,6 +176,9 @@ export function setSessionConnection(status: string): void {
   const connected = status === "connected";
   const state = store.getState();
   if (!connected && state.historyMatch?.requestId) finishHistoryWindow(state.historyMatch.requestId,{error:"Connect to load this earlier message"});
+  if (!connected) {
+    for (const [id, waiter] of deleteWaiters) settleDeletion(id, waiter.requestId, new Error("Connection interrupted. Refresh conversations to check whether deletion completed."));
+  }
   if (!connected && state.pendingAction && pendingDispatch === "sent") {
     // A successful socket write can still lose its acknowledgement. Keep the
     // intent until reconnect hydration proves which session the backend bound.
@@ -357,19 +375,30 @@ export function setSessionArchived(id: string, value: boolean): boolean {
   return send({type: "chat:session:archive", id, value});
 }
 
-export function deleteSession(id: string): boolean {
+export function deleteSession(id: string, finish?: DeleteCompletion): boolean {
   const state = store.getState();
-  if (state.workingSessionIds.includes(id)) {
-    notify("Wait for VARIANT-1 to finish before deleting this chat");
+  const blocked = deleteWaiters.has(id) ? "A delete request for this conversation is already pending."
+    : state.workingSessionIds.includes(id) ? "Wait for VARIANT-1 to finish before deleting this chat"
+    : !canClosePreviewTabs(getPreviewState().tabs.filter(tab => tab.ownerChatId === id).map(tab => tab.id))
+      ? "Close or confirm this conversation's preview tabs before deleting it." : "";
+  if (blocked) {
+    if (finish) finish(new Error(blocked));
+    else notify(blocked);
     return false;
   }
-  if(!canClosePreviewTabs(getPreviewState().tabs.filter(tab=>tab.ownerChatId===id).map(tab=>tab.id)))return false;
   setOpenSessionMenu(null);
-  const deletingDisplayed = id === state.displayedSessionId;
-  if (deletingDisplayed) expectedSessionChange = {type: "fallback"};
-  const ok = send({type: "chat:session:delete", id});
-  if (!ok && deletingDisplayed) expectedSessionChange = null;
-  return ok;
+  const requestId = crypto.randomUUID();
+  if (id === state.displayedSessionId) expectedSessionChange = {type: "fallback", deleteRequestId: requestId};
+  const timer = setTimeout(() => settleDeletion(id, requestId, new Error("No confirmation received. Refresh conversations to check the result.")), 15_000);
+  // Register before sending so an immediate reply can settle this exact operation.
+  deleteWaiters.set(id, {requestId, timer, finish});
+  if (send({type: "chat:session:delete", id, request_id: requestId})) return true;
+  settleDeletion(id, requestId, new Error(state.connected ? "Could not send the delete request." : OFFLINE_ERROR));
+  return false;
+}
+
+export function deleteSessionConfirmed(id: string): Promise<void> {
+  return new Promise((resolve, reject) => deleteSession(id, error => error ? reject(error) : resolve()));
 }
 
 export function ingestSessions(message: Record<string, unknown>): void {
@@ -400,6 +429,11 @@ export function ingestSessions(message: Record<string, unknown>): void {
   }
   if(type==="chat:session:deleted") {
     const id=String(message.session_id || message.id || "");if(!id)return;
+    if (message.request_id) {
+      if (!message.id || message.id === id) settleDeletion(id, message.request_id);
+      return;
+    }
+    // The common broadcast disposes windows and cached surfaces exactly once.
     releaseDeletedChat(id);
     store.setState({items:state.items.filter(row=>row.id!==id),searchResults:state.searchResults?.filter(row=>row.id!==id) || null,openMenuId:state.openMenuId===id?null:state.openMenuId});
     return;
@@ -465,6 +499,10 @@ export function ingestSessions(message: Record<string, unknown>): void {
     return;
   }
   if (type === "chat:session:error") {
+    const errorText = String(message.error || "Could not update session");
+    if (message.operation === "chat:session:delete") {
+      if (!settleDeletion(String(message.session_id || ""), message.request_id, new Error(errorText))) return;
+    }
     store.setState({
       loading: false,
       error: String(message.error || "Could not update session"),
@@ -483,6 +521,8 @@ export function useSessionState(): SessionState {
 
 export function __resetSessionStoreForTests(): void {
   clearTimeout(historyTimer);
+  for (const waiter of deleteWaiters.values()) clearTimeout(waiter.timer);
+  deleteWaiters.clear();
   if (navigationTimer) clearTimeout(navigationTimer);
   navigationTimer = null;
   if (searchTimer) clearTimeout(searchTimer);

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from contextlib import suppress
+from contextlib import closing, suppress
 import hashlib
 import json
 import os
@@ -34,6 +34,7 @@ from .worker_entry import MAX_MESSAGE_BYTES, PROTOCOL_SCHEMA
 _SAFE_EFFECTS = frozenset({"pure", "read"})
 _EFFECTS = frozenset({"pure", "read", "write", "external_effect"})
 _TERMINAL = frozenset({"succeeded", "failed", "unknown_effect"})
+_MESSAGING_CREDENTIAL_ARGUMENTS = frozenset({"token", "credentials"})
 
 
 class PluginWorkerError(RuntimeError):
@@ -81,6 +82,58 @@ def _json_clone(value: Any, *, label: str, require_object: bool = False) -> Any:
     if require_object and not isinstance(cloned, dict):
         raise PluginWorkerError(f"{label} must be a JSON object")
     return cloned
+
+
+def _messaging_public_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        name: value for name, value in arguments.items()
+        if name not in _MESSAGING_CREDENTIAL_ARGUMENTS
+    }
+
+
+def _messaging_credential_values(arguments: Mapping[str, Any]) -> tuple[str, ...]:
+    credentials = arguments.get("credentials")
+    values = credentials.values() if isinstance(credentials, Mapping) else ()
+    return tuple(sorted(
+        {value for value in (arguments.get("token"), *values) if isinstance(value, str) and value},
+        key=len, reverse=True,
+    ))
+
+
+def _without_credential_values(value: Any, credentials: tuple[str, ...]) -> Any:
+    if not credentials:
+        return value
+    if isinstance(value, str):
+        for secret in credentials:
+            value = value.replace(secret, "[redacted]")
+        return value
+    if isinstance(value, dict):
+        return {
+            _without_credential_values(name, credentials): _without_credential_values(item, credentials)
+            for name, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_without_credential_values(item, credentials) for item in value]
+    return value
+
+
+def _invocation_fingerprint(
+    package: Mapping[str, Any], contribution_id: str,
+    arguments: Mapping[str, Any], context: Mapping[str, Any],
+) -> str:
+    semantic_context = {
+        key: value for key, value in context.items()
+        if key not in {"request_id", "outer_tool_call_id", "nested_call_id", "cell_execution_id"}
+    }
+    return request_fingerprint("plugin.invoke", {
+        "package_digest": str(package["package_digest"]),
+        "contribution_kind": str(package.get("contribution_kind") or "capabilities"),
+        "contribution_id": contribution_id,
+        "handler": str(package["handler"]),
+        "effect_class": str(package["effect_class"]),
+        "arguments": arguments,
+        "context": semantic_context,
+    })
 
 
 def _schema_type_matches(value: Any, expected: str) -> bool:
@@ -148,6 +201,7 @@ class _WorkerProcess:
         cwd: str,
         generation: int,
         startup_deadline_s: float,
+        capture_diagnostics: bool = True,
     ) -> None:
         self.package_digest = package_digest
         self.config_path = config_path
@@ -155,6 +209,7 @@ class _WorkerProcess:
         self.cwd = cwd
         self.generation = generation
         self.startup_deadline_s = startup_deadline_s
+        self.capture_diagnostics = capture_diagnostics
         self.process: asyncio.subprocess.Process | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._write_lock = asyncio.Lock()
@@ -254,7 +309,10 @@ class _WorkerProcess:
             line = await process.stderr.readline()
             if not line:
                 return
-            self._diagnostics.append(line.decode("utf-8", errors="replace").rstrip()[:4096])
+            # A worker trusted with messaging credentials can echo them to
+            # stderr, including from another call or an earlier credential.
+            if self.capture_diagnostics:
+                self._diagnostics.append(line.decode("utf-8", errors="replace").rstrip()[:4096])
 
     async def _read_stdout(self) -> None:
         process = self.process
@@ -277,8 +335,9 @@ class _WorkerProcess:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._diagnostics.append(f"invalid worker stdout: {exc}")
-            self._fail_pending(PluginWorkerLost(f"plugin response stream failed: {exc}"))
+            detail = str(exc) if self.capture_diagnostics else type(exc).__name__
+            self._diagnostics.append(f"invalid worker stdout: {detail}")
+            self._fail_pending(PluginWorkerLost(f"plugin response stream failed: {detail}"))
         finally:
             self._closed = True
             self._fail_pending(
@@ -459,7 +518,7 @@ class PluginWorkerHost:
 
     def _initialize(self) -> None:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
             conn.executescript(
@@ -489,8 +548,52 @@ class PluginWorkerHost:
                 );
                 CREATE INDEX IF NOT EXISTS extension_worker_operation_status_idx
                 ON extension_worker_operation_v2(status,prepared_at);
+                CREATE TABLE IF NOT EXISTS extension_worker_migration(name TEXT PRIMARY KEY);
                 """
             )
+            self._upgrade_messaging_receipts(conn)
+
+    @staticmethod
+    def _upgrade_messaging_receipts(conn: sqlite3.Connection) -> None:
+        migration = "messaging-credentials-v2"
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute(
+            "SELECT 1 FROM extension_worker_migration WHERE name=?", (migration,),
+        ).fetchone():
+            return
+        after = 0
+        while rows := conn.execute(
+            "SELECT rowid AS ledger_rowid,* FROM extension_worker_operation_v2 "
+            "WHERE rowid>? AND json_extract(context_json,'$.surface')='messaging' "
+            "AND (json_type(arguments_json,'$.token') IS NOT NULL "
+            "OR json_type(arguments_json,'$.credentials') IS NOT NULL) ORDER BY rowid LIMIT 128",
+            (after,),
+        ).fetchall():
+            after = int(rows[-1]["ledger_rowid"])
+            for row in rows:
+                arguments = json.loads(row["arguments_json"])
+                context = json.loads(row["context_json"])
+                package = {**dict(row), "contribution_kind": "messaging_adapters"}
+                contribution = str(row["contribution_id"])
+                public = _messaging_public_arguments(arguments)
+                # An empty fingerprint cannot match a later invocation.
+                # Scrub every gateway row and preserve retry identity only for a verified receipt.
+                fingerprint = ""
+                if _invocation_fingerprint(package, contribution, arguments, context) == row["request_fingerprint"]:
+                    fingerprint = _invocation_fingerprint(package, contribution, public, context)
+                credentials = _messaging_credential_values(arguments)
+                result, error = (
+                    _stable(_without_credential_values(json.loads(row[field]), credentials)) if row[field] else ""
+                    for field in ("result_json", "error_json")
+                )
+                conn.execute(
+                    "UPDATE extension_worker_operation_v2 SET arguments_json=?,request_fingerprint=?,"
+                    "result_json=?,error_json=? WHERE operation_id=?",
+                    (
+                        _stable(public), fingerprint, result, error, row["operation_id"],
+                    ),
+                )
+        conn.execute("INSERT INTO extension_worker_migration(name) VALUES (?)", (migration,))
 
     @staticmethod
     def _default_command(package: Mapping[str, Any], config_path: Path) -> list[str]:
@@ -632,6 +735,10 @@ class PluginWorkerHost:
                 cwd=str(Path(str(package["source_path"])).resolve()),
                 generation=self._generation,
                 startup_deadline_s=self.startup_deadline_s,
+                capture_diagnostics=not any(
+                    item.get("kind") == "messaging_adapters"
+                    for item in package.get("contributions") or ()
+                ),
             )
             await worker.start()
             self._workers[digest] = worker
@@ -655,24 +762,9 @@ class PluginWorkerHost:
         digest = str(package["package_digest"])
         handler = str(package["handler"])
         effect_class = str(package["effect_class"])
-        semantic_context = {
-            key: value for key, value in context.items()
-            if key not in {
-                "request_id", "outer_tool_call_id", "nested_call_id",
-                "cell_execution_id",
-            }
-        }
-        fingerprint = request_fingerprint("plugin.invoke", {
-            "package_digest": digest,
-            "contribution_kind": str(
-                package.get("contribution_kind") or "capabilities"
-            ),
-            "contribution_id": contribution_id,
-            "handler": handler,
-            "effect_class": effect_class,
-            "arguments": arguments,
-            "context": semantic_context,
-        })
+        messaging = package.get("contribution_kind") == "messaging_adapters"
+        durable_arguments = _messaging_public_arguments(arguments) if messaging else arguments
+        fingerprint = _invocation_fingerprint(package, contribution_id, durable_arguments, context)
         dedupe = str(idempotency_key or "").strip() or "auto:" + uuid.uuid4().hex
         now = time.time()
         with self._lock, self._connect() as conn:
@@ -699,7 +791,7 @@ class PluginWorkerHost:
                 (
                     operation_id, dedupe, str(idempotency_key or ""), fingerprint,
                     str(package["package_id"]), digest, contribution_id, handler,
-                    effect_class, _stable(arguments), _stable(context), now,
+                    effect_class, _stable(durable_arguments), _stable(context), now,
                 ),
             )
             row = conn.execute(
@@ -811,15 +903,16 @@ class PluginWorkerHost:
     @staticmethod
     def _raise_terminal(row: Mapping[str, Any]) -> None:
         status = str(row.get("status") or "")
+        if status not in {"unknown_effect", "failed"}:
+            return
         error = json.loads(str(row.get("error_json") or "{}"))
         message = str(error.get("message") or f"plugin operation {status}")
         if status == "unknown_effect":
-            raise UnknownPluginEffect(str(row["operation_id"]), message)
-        if status == "failed":
-            raise PluginInvocationFailed(
-                message, operation_id=str(row["operation_id"]),
-                code=str(error.get("code") or "plugin_failed"),
-            )
+            raise UnknownPluginEffect(str(row["operation_id"]), message) from None
+        raise PluginInvocationFailed(
+            message, operation_id=str(row["operation_id"]),
+            code=str(error.get("code") or "plugin_failed"),
+        ) from None
 
     async def _prepare_invocation(
         self,
@@ -1045,6 +1138,10 @@ class PluginWorkerHost:
             contribution_kind=contribution_kind,
         )
         clean_arguments, clean_context, package, row = prepared
+        credentials = (
+            _messaging_credential_values(clean_arguments)
+            if package.get("contribution_kind") == "messaging_adapters" else ()
+        )
         operation_id = str(row["operation_id"])
         lock = self._operation_locks.setdefault(operation_id, asyncio.Lock())
         timeout = self.default_deadline_s if deadline_s is None else max(
@@ -1103,13 +1200,15 @@ class PluginWorkerHost:
                         )
                         self._raise_terminal(row)
                     if not bool(response.get("ok")):
-                        error = dict(response.get("error") or {})
+                        error = _without_credential_values(dict(response.get("error") or {}), credentials)
                         row = await asyncio.to_thread(
                             self._transition, operation_id, ("dispatched",), "failed",
                             error=error,
                         )
                         self._raise_terminal(row)
-                    result = _json_clone(response.get("result"), label="handler result")
+                    result = _without_credential_values(
+                        _json_clone(response.get("result"), label="handler result"), credentials,
+                    )
                     row = await asyncio.to_thread(
                         self._transition, operation_id, ("dispatched",), "succeeded",
                         result=result,
@@ -1136,7 +1235,7 @@ class PluginWorkerHost:
                     if worker is not None:
                         await self._drop_worker(str(package["package_digest"]), worker)
                     effect = str(package["effect_class"])
-                    error = {"code": type(exc).__name__, "message": str(exc)}
+                    error = {"code": type(exc).__name__, "message": _without_credential_values(str(exc), credentials)}
                     if (
                         external_request_id in self._cancelled_requests
                         or operation_id in self._cancelled_requests
@@ -1173,8 +1272,8 @@ class PluginWorkerHost:
                     )
                     self._raise_terminal(row)
                     raise PluginInvocationFailed(
-                        str(exc), operation_id=operation_id, code=type(exc).__name__
-                    ) from exc
+                        error["message"], operation_id=operation_id, code=error["code"],
+                    ) from None
                 finally:
                     current = self._inflight.get(external_request_id)
                     if current is not None and current[1] == correlation_id:

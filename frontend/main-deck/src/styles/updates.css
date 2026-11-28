@@ -1,0 +1,402 @@
+/* BrandMark, UpdatesOverlay and UpdateStatusCard */
+
+.brand-mark {
+  --brand-size: 28px;
+  --brand-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--deck-text-primary);
+  vertical-align: middle;
+  transition: opacity var(--deck-motion-fast) ease;
+}
+
+.brand-mark[data-phase="offline"] {
+  opacity: .42;
+}
+
+.brand-mark__tile {
+  width: var(--brand-size);
+  height: var(--brand-size);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.brand-mark__monogram-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: none;
+}
+
+.brand-mark__wordmark-svg {
+  display: block;
+  width: auto;
+  height: var(--brand-height);
+  fill: none;
+  stroke: none;
+}
+
+.brand-mark__fg {
+  fill: currentColor;
+}
+
+.brand-mark__accent {
+  fill: var(--deck-brand-accent);
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: fill var(--deck-motion-fast) ease, opacity var(--deck-motion-fast) ease;
+}
+
+.brand-mark.is-mutation .brand-mark__accent {
+  fill: var(--deck-mutation);
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--deck-mutation) 55%, transparent));
+}
+
+.brand-mark[data-phase="offline"] .brand-mark__accent {
+  fill: var(--deck-text-muted);
+}
+
+.brand-mark[data-phase="running"] .brand-mark__accent {
+  animation: brand-accent-pulse 1.5s var(--deck-ease-out) infinite;
+}
+
+@keyframes brand-accent-pulse {
+  0%, 100% {
+    opacity: .42;
+    transform: scaleX(.84);
+  }
+  50% {
+    opacity: 1;
+    transform: scaleX(1.06);
+  }
+}
+
+/* About status bar actions harmony */
+
+.about-status-bar__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* VersionHero (About + compact UpdatesOverlay) */
+
+.about-hero__mark {
+  background: var(--deck-canvas);
+}
+
+.version-hero__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.version-hero__headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.version-hero__channel {
+  display: none;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-subtle);
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-xs);
+  font-weight: 560;
+  white-space: nowrap;
+}
+
+.version-hero--compact {
+  min-height: 0;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--deck-line-soft);
+  background: var(--deck-surface-void);
+}
+
+.version-hero--compact .version-hero__channel {
+  display: inline-flex;
+}
+
+.version-hero__actions {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Compact UpdatesOverlay dialog */
+
+.deck-overlay.updates-overlay {
+  width: min(440px, calc(100vw - 32px));
+  max-height: min(560px, calc(100dvh - 64px));
+  background: var(--deck-surface-panel);
+  border: 1px solid var(--deck-line-strong);
+  border-radius: var(--deck-radius-lg);
+}
+
+.updates-overlay__header {
+  min-height: 42px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--deck-line-soft);
+}
+
+.updates-overlay__close:disabled {
+  opacity: .38;
+  cursor: not-allowed;
+}
+
+.updates-overlay__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* UpdateStatusCard */
+
+.update-status-card--modal {
+  padding: 14px 16px 16px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.update-status-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.update-status-card--modal .update-status-card__header {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.update-status-card__heading {
+  min-width: 0;
+}
+
+.update-status-card__heading .deck-instrument__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.update-status-card__spinner {
+  color: var(--deck-text-secondary);
+}
+
+.about-update__meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.about-card--update:not(.update-status-card--modal) .about-update__meta,
+.about-card--update:not(.update-status-card--modal) .about-update__error-detail,
+.about-card--update:not(.update-status-card--modal) .about-update__progress-block,
+.about-card--update:not(.update-status-card--modal) .about-update__log-drawer {
+  padding-inline: 18px;
+}
+
+.about-update__tag {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-subtle);
+  color: var(--deck-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--deck-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-update__release-name {
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-xs);
+  font-weight: 540;
+}
+
+.about-update__notes-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--deck-text-secondary);
+  font-family: var(--font-ui);
+  font-size: var(--deck-text-xs);
+  cursor: pointer;
+}
+
+.about-update__notes-link:hover {
+  color: var(--deck-text-primary);
+  text-decoration: underline;
+}
+
+.about-update__notes-link .deck-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.about-update__error-detail {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-void);
+  color: var(--deck-danger);
+  font-family: var(--font-mono);
+  font-size: var(--deck-text-xs);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.about-update__progress-block {
+  --update-progress: 0%;
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.about-update__progress-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-update__percent {
+  color: var(--deck-text-primary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-update__track {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999em;
+  background: var(--deck-surface-raised);
+}
+
+.about-update__fill {
+  display: block;
+  width: var(--update-progress);
+  height: 100%;
+  border-radius: 999em;
+  background: var(--deck-text-primary);
+  transition: width var(--deck-motion-panel) var(--deck-ease-out);
+}
+
+.about-update__progress-block .about-update__progress {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
+.about-update__url-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--deck-control-height);
+  padding: 0 10px;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-subtle);
+  color: var(--deck-text-secondary);
+  font-size: var(--deck-text-xs);
+  cursor: pointer;
+}
+
+.about-update__url-pill:hover {
+  border-color: var(--deck-line-strong);
+  color: var(--deck-text-primary);
+}
+
+.about-update__log-drawer {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--deck-line-soft);
+}
+
+.about-card--update:not(.update-status-card--modal) .about-update__log-drawer {
+  padding-bottom: 14px;
+}
+
+.about-update__log-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.about-update__log-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--deck-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--deck-text-xs);
+  cursor: pointer;
+}
+
+.about-update__log-toggle:hover {
+  color: var(--deck-text-primary);
+}
+
+.about-update__log-toggle .deck-icon {
+  width: 12px;
+  height: 12px;
+}
+
+.about-update__log-count {
+  color: var(--deck-text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.about-update__log {
+  margin: 8px 0 0;
+  max-height: 164px;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--deck-line);
+  border-radius: var(--deck-radius-sm);
+  background: var(--deck-surface-void);
+  color: var(--deck-text-secondary);
+  font-family: var(--font-mono);
+  font-size: var(--deck-text-xs);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

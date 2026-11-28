@@ -90,6 +90,7 @@ export type ChatRuntimeMessage = Readonly<{
 
 export type ChatSessionErrorMessage = Readonly<{
   type: "chat:session:error";
+  operation?: string;
   error: string;
 }>;
 
@@ -443,6 +444,7 @@ export function parseChatWsMessage(
     case "chat:session:error":
       return {
         type: "chat:session:error",
+        ...(row.operation ? {operation:str(row.operation)} : {}),
         error: str(row.error, "Could not update session"),
       };
     case "chat:runtime:mutation:set:done":

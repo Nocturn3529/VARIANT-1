@@ -19,6 +19,50 @@ def _fork(sessions, chat, head, name):
     return sid
 
 
+def test_chat_metadata_is_branch_local_and_respects_tombstones(tmp_path):
+    sessions = open_sessions(tmp_path / "chats")
+    main = sessions.create_session("Shared title")
+    sessions.append_messages(main, [{"role": "user", "text": "Shared ancestor"}])
+    project = tmp_path / "project"
+    project.mkdir()
+    binding = sessions.set_project(main, str(project))
+    main_route = {"mode": "local", "model": "original", "provider": ""}
+    fork_route = {"mode": "cloud", "model": "separate", "provider": "test", "reasoning_effort": "high"}
+    assert sessions.set_model_route(main, main_route)
+    assert sessions.set_last_run_receipt(main, {"run_id": "main-run", "status": "ok"})
+    head = sessions.context_head(main)["head_node_id"]
+    fork = _fork(sessions, main, head, "fork")
+
+    assert sessions.get_session_metadata(fork) == {
+        "id": fork, "title": "Shared title", "archived": False, "project": None,
+    }
+    assert sessions.get_model_route(fork) == {}
+    assert sessions.get_last_run_receipt(fork) == {}
+    assert sessions.set_model_route(fork, fork_route)
+    assert sessions.set_last_run_receipt(fork, {"run_id": "fork-run", "status": "ok"})
+    assert sessions.set_flag(fork, archived=True)
+    assert {row["id"] for row in sessions.list_session_metadata() if row["archived"]} == {main, fork}
+    assert sessions.get_session_metadata(main)["project"] == binding
+    assert sessions.get_model_route(main) == main_route
+    assert sessions.get_model_route(fork) == fork_route
+    assert sessions.get_last_run_receipt(main)["run_id"] == "main-run"
+    assert sessions.get_last_run_receipt(fork)["run_id"] == "fork-run"
+
+    sessions.delete(fork)
+    assert sessions.get_session_metadata(fork) is None
+    assert sessions.get_model_route(fork) == {}
+    assert sessions.get_last_run_receipt(fork) == {}
+    assert sessions.get_model_route(main) == main_route
+    assert {row["id"] for row in sessions.list_session_metadata()} == {main}
+
+    sessions.delete(main)
+    assert sessions.get_session_metadata(main) is None
+    assert sessions.get_project(main) is None
+    assert sessions.get_model_route(main) == {}
+    assert sessions.get_last_run_receipt(main) == {}
+    assert all(row["id"] not in {main, fork} for row in sessions.list_session_metadata())
+
+
 def test_clock_rollback_preserves_recent_canonical_order_and_uncapped_summary(tmp_path, monkeypatch):
     sessions = open_sessions(tmp_path / "chats")
     chat = sessions.create_session("Clock")
@@ -105,3 +149,43 @@ def test_missing_peer_display_never_falls_back_to_internal_text(tmp_path):
     node = sessions.context_head(sid)["head_node_id"]
     assert sessions.search("orchestration") == []
     assert sessions.history_window(sid, node)["messages"][0]["text"] == "Peer message"
+
+
+@pytest.mark.parametrize(("fts", "query", "passage"), [
+    (True, "amber cobal", "amber separated from cobalt"),
+    (True, "cafe 東京", "Café words before 東京駅"),
+    (False, "Café 東京", "Café 東京駅"),
+])
+def test_open_search_result_at_matching_source_on_exact_branch(tmp_path, fts, query, passage):
+    sessions = open_sessions(tmp_path / "chats")
+    if fts and not sessions.repository.fts_enabled:
+        pytest.skip("native FTS5 unavailable")
+    sessions.repository.fts_enabled = fts
+    parent = sessions.create_session("root")
+    sessions.append_messages(parent, [{"role": "user", "text": "root message"}])
+    branch = _fork(sessions, parent, sessions.context_head(parent)["head_node_id"], "other")
+    body = ("🌿 word " * 1400) + passage + (" after" * 1000)
+    sessions.append_messages(branch, [{"role": "assistant", "text": body}])
+    hit, = sessions.search(query)
+    assert hit["session_id"] == branch and hit["branch_id"] == "other"
+    assert sessions.history_window(parent, hit["node_id"], query=query) is None
+    window = sessions.history_window(branch, hit["node_id"], query=query)
+    row, = (item for item in window["messages"] if item["node_id"] == hit["node_id"])
+    assert passage in row["text"] and row["text_offset"] > 0
+    assert row["text"] == body[row["text_offset"]:row["text_offset"] + 4096]
+    assert row["text_total_chars"] == len(body)
+
+
+def test_separated_terms_in_peer_window_use_public_content_and_its_character_offset(tmp_path):
+    sessions = open_sessions(tmp_path / "chats")
+    if not sessions.repository.fts_enabled:
+        pytest.skip("native FTS5 unavailable")
+    sid = sessions.create_session()
+    shown = "🙂 ß " * 1600 + "amber word cobalt"
+    sessions.bind_peer_display(lambda _: {"content": shown}, lambda *_: None)
+    sessions.append_messages(sid, [{"role": "user", "text": "private envelope amber cobalt",
+        "origin": {"kind": "peer", "peer_id": "peer", "message_id": "msg"}}])
+    hit, = sessions.search("amber cobal")
+    row, = sessions.history_window(sid, hit["node_id"], query="amber cobal")["messages"]
+    assert "amber word cobalt" in row["text"] and "private envelope" not in row["text"]
+    assert row["text"] == shown[row["text_offset"]:row["text_offset"] + 4096]

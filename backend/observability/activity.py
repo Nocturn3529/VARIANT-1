@@ -19,12 +19,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
 from collections import OrderedDict, deque
 
 from run_context import current_run_context
+
+_LOG = logging.getLogger(__name__)
+_JSON_ENCODING_ERRORS = (TypeError, ValueError, OverflowError, RecursionError)
 
 
 # The avatar overlay is a presence surface, not a second application client.
@@ -328,15 +332,27 @@ class WSHub:
         try:
             while outbox:
                 payload, future = outbox[0]
-                await ws.send_json(payload)
+                delivered = False
+                try:
+                    await ws.send_json(payload)
+                    delivered = True
+                except _JSON_ENCODING_ERRORS:
+                    # Verify the payload separately. A serializable frame can
+                    # still fail because the transport itself is broken.
+                    try:
+                        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                    except _JSON_ENCODING_ERRORS:
+                        _LOG.warning("Discarding an activity frame that cannot be serialized")
+                    else:
+                        raise
                 outbox.popleft()
                 if not future.done():
-                    future.set_result(True)
+                    future.set_result(delivered)
         except asyncio.CancelledError:
             raise
         except Exception:
             # A failed send means the socket is closed or broken.
-            self._drop(ws)
+            self._drop(ws, close=True)
         finally:
             if self._drainers.get(ws) is asyncio.current_task():
                 self._drainers.pop(ws, None)

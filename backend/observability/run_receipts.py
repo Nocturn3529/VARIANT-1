@@ -383,9 +383,9 @@ def sanitize_run_receipt(raw: Any) -> dict:
     } if isinstance(raw_descendant, dict) else {}
     raw_descendants = raw.get("descendants")
     receipt["descendants"] = {
-        "total": bounded_int((raw_descendants or {}).get("total"), 10_000),
-        "active": bounded_int((raw_descendants or {}).get("active"), 10_000),
-        "terminal": bounded_int((raw_descendants or {}).get("terminal"), 10_000),
+        "total": bounded_int((raw_descendants or {}).get("total")),
+        "active": bounded_int((raw_descendants or {}).get("active")),
+        "terminal": bounded_int((raw_descendants or {}).get("terminal")),
         "ids": [
             str(value)[:96]
             for value in (

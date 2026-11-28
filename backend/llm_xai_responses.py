@@ -10,7 +10,7 @@ into VARIANT-1's existing sinks.
 
 from __future__ import annotations
 
-from reasoning_summaries import ResponsesSummary
+from reasoning_summaries import ResponsesSummary, readable_responses_reasoning_delta, thoughts_enabled
 
 import time
 from typing import Any
@@ -119,6 +119,9 @@ async def call_xai_responses(
 
     b = (base or "https://api.x.ai/v1").rstrip("/")
     url = f"{b}/responses" if b.endswith("/v1") else f"{b}/v1/responses"
+    show_thought = getattr(reasoning_sink, "returned_thought", None)
+    if not callable(show_thought) or not thoughts_enabled(router, profile, model, payload, provider=label):
+        show_thought = None
     request_started = time.perf_counter()
     print(f"[cloud] {label} transport=responses model={model} reasoning_effort={effort}",
           flush=True)
@@ -200,14 +203,15 @@ async def call_xai_responses(
                             yield str(delta)
                         continue
 
-                    # Reasoning deltas (optional)
-                    if reasoning_sink is not None and "reasoning" in et and "delta" in et:
-                        rd = obj.get("delta") or ""
-                        if rd:
-                            try:
-                                reasoning_sink(str(rd))
-                            except Exception:
-                                pass
+                    text = readable_responses_reasoning_delta(obj)
+                    if text:
+                        try:
+                            if reasoning_sink is not None:
+                                reasoning_sink(text)
+                            if show_thought:
+                                await show_thought(text, "provider_reasoning")
+                        except Exception:
+                            pass
                         continue
 
                     # Completed output items (function calls)

@@ -19,6 +19,14 @@ const {
 } = require('./electron-backend-posix-engines');
 
 const MAX_BACKEND_RESTARTS = 5;
+const COMPLETION_SOURCES = new Map([
+  ['kernel:execution_result', 'kernel'],
+  ['request_complete', 'model'],
+  ['tool:result', 'tool'],
+  ['task:done', 'run'],
+  ['broker:result', 'capability'],
+  ['run:settled', 'run'],
+]);
 const DEFAULT_BACKEND_TIMINGS = Object.freeze({
   cachedHealthTtlMs: 2000,
   probeTimeoutMs: 1500,
@@ -151,8 +159,8 @@ function createBackendManager(deps) {
   let portFile = null;
   let backendLastVerifiedAt = 0;
   let backendHealthMissStartedAt = 0;
-  let backendLastWorkAt = 0;
-  const backendWorkTails = new Map();
+  let lastOwnedCompletion = null;
+  const backendWorkLinePrefixes = new Map();
   let backendHealthProbe = null;
   let backendStartPromise = null;
   let startupController = null;
@@ -205,8 +213,9 @@ function createBackendManager(deps) {
     if (processIsAlive(cached.pid)) {
       if (!backendHealthMissStartedAt) backendHealthMissStartedAt = missedAt;
       const missAge = missedAt - backendHealthMissStartedAt;
-      const completingWork = backendProc && backendLastWorkAt > 0
-        && missedAt - backendLastWorkAt < timings.unhealthyGraceMs
+      const completingWork = backendProc && lastOwnedCompletion
+        && lastOwnedCompletion.instanceId === cached.instance_id
+        && missedAt - lastOwnedCompletion.at < timings.unhealthyGraceMs
         && (reason === 'timeout' || reason === 'connection_error');
       if (missAge < timings.unhealthyGraceMs || completingWork) {
         // A busy asyncio loop is not evidence that the process died. Keep the
@@ -276,14 +285,15 @@ function createBackendManager(deps) {
     });
   }
 
-  function observeOwnedWork(chunk, stream) {
-    const lines = ((backendWorkTails.get(stream) || '') + String(chunk)).split(/\r?\n/);
-    backendWorkTails.set(stream, lines.pop().slice(-2048));
+  function observeOwnedWork(chunk, stream, instanceId) {
+    const lines = ((backendWorkLinePrefixes.get(stream) || '') + String(chunk)).split(/\r?\n/);
+    // The Python emitter puts level, source and event first. Keep that header
+    // across chunks even when diagnostic fields make the rest of the line long.
+    backendWorkLinePrefixes.set(stream, lines.pop().slice(0, 256));
     for (const line of lines) {
-      // Only completed framework work on the currently owned process's pipe
-      // counts. Ordinary output, request starts and repeated polling do not.
-      if (/^\[[^\]]+\] \[INFO\] \[(?:kernel|model|tool|run|capability)\] (?:kernel:execution_result|request_complete|tool:result|task:done|broker:result|run:settled)\b/.test(line)) {
-        backendLastWorkAt = now();
+      const fields = /^\[op\] level=info source=([\w.-]+) event=([\w.:-]+)(?:\s|$)/.exec(line);
+      if (fields && COMPLETION_SOURCES.get(fields[2]) === fields[1]) {
+        lastOwnedCompletion = {instanceId, at: now()};
       }
     }
   }
@@ -349,12 +359,12 @@ function createBackendManager(deps) {
     }
   }
 
-  function resolveBackendCommand() {
+  function resolveBackendCommand(backendArgs = ['--port-file', portFile]) {
     if (app.isPackaged) {
       const exe = path.join(resourcesPath, 'backend',
         process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend');
       if (fs.existsSync(exe)) {
-        return { command: exe, args: ['--port-file', portFile], label: 'bundled exe' };
+        return { command: exe, args: backendArgs, label: 'bundled exe' };
       }
       throw new Error('Packaged backend executable is missing: ' + exe + '. Repair or reinstall VARIANT-1.');
     }
@@ -366,10 +376,10 @@ function createBackendManager(deps) {
       ? path.join(backendDir, '.venv', 'Scripts', 'python.exe')
       : path.join(backendDir, '.venv', 'bin', 'python');
     if (fs.existsSync(venvPy)) {
-      return { command: venvPy, args: [serverPy, '--port-file', portFile], label: 'venv python' };
+      return { command: venvPy, args: [serverPy, ...backendArgs], label: 'venv python' };
     }
     const sysPy = process.platform === 'win32' ? 'python' : 'python3';
-    return { command: sysPy, args: [serverPy, '--port-file', portFile], label: 'system python' };
+    return { command: sysPy, args: [serverPy, ...backendArgs], label: 'system python' };
   }
 
   async function terminateOwnedBackend(proc, record) {
@@ -383,11 +393,11 @@ function createBackendManager(deps) {
     let owned = false;
     if (Number.isFinite(record.process_started_at) && record.process_started_at > 0) {
       try {
-        const {command, args} = resolveBackendCommand();
+        const {command, args} = resolveBackendCommand(['--check-backend-owner', String(pid),
+          String(record.process_started_at), record.instance_id, portFile]);
         // Keep the interpreter and script (or frozen executable). The checker
         // exits before backend startup and independently verifies the OS process.
-        await runFile(command, [...args.slice(0, -2), '--check-backend-owner', String(pid),
-          String(record.process_started_at), record.instance_id, portFile], {
+        await runFile(command, args, {
           windowsHide: true, timeout: timings.forceKillTimeoutMs,
         });
         owned = true;
@@ -496,12 +506,25 @@ function createBackendManager(deps) {
         log('[backend] POSIX engine lookup failed: ' + String(error.code || error.message));
       }
     }
-    // Managed SearXNG is a Docker container (not a project .exe). Backend stops
-    // it on graceful shutdown; this is a crash / hard-quit safety net. Runs on every
-    // platform (previously skipped by a win32-only early return).
+  }
+
+  async function cleanupOrphanedSearch(proc, predecessor) {
     try {
-      await runFile('docker', ['stop', 'variant1-searxng'], {windowsHide: true, timeout: 15000});
-    } catch (_) {}
+      const dataDir = path.resolve(getDataDir());
+      const directory = path.join(dataDir, 'data', 'searxng');
+      if (!['docker.cid', 'podman.cid'].some(name => fs.existsSync(path.join(directory, name)))) return;
+      if ((predecessor && !(predecessor.pid > 1)) ||
+          !await waitForBackendExit(proc, predecessor, timings.forceKillTimeoutMs)) return;
+      if (portFile && fs.existsSync(portFile)) {
+        const current = JSON.parse(fs.readFileSync(portFile, 'utf8'));
+        if (!validPortRecord(current) || !(current.pid > 1) || processIsAlive(current.pid)) return;
+      }
+      // The backend verifies the runtime, profile label and immutable ID from its own receipt.
+      const {command, args} = resolveBackendCommand(['--cleanup-searxng', dataDir]);
+      await runFile(command, args, {windowsHide: true, timeout: 45000});
+    } catch (error) {
+      log('[backend] SearXNG cleanup could not be confirmed (code ' + (error.code || 'unknown') + ')');
+    }
   }
 
   function readPortFile() {
@@ -669,6 +692,8 @@ function createBackendManager(deps) {
     backendLastVerifiedAt = 0;
     await killVariant1EngineProcesses();
     if (backendStopping) return;
+    await cleanupOrphanedSearch(null, existing);
+    if (backendStopping) return;
 
     let launch;
     try { launch = resolveBackendCommand(); }
@@ -699,18 +724,18 @@ function createBackendManager(deps) {
         ),
       });
       backendProc = child;
-      backendLastWorkAt = 0;
-      backendWorkTails.clear();
+      lastOwnedCompletion = null;
+      backendWorkLinePrefixes.clear();
     } catch (err) {
       log('[backend] spawn threw: ' + err.message);
       return scheduleRestart();
     }
 
     if (child.stdout && typeof child.stdout.on === 'function') {
-      child.stdout.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stdout');logStream('[backend] ', d);});
+      child.stdout.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stdout',launchInstanceId);logStream('[backend] ', d);});
     }
     if (child.stderr && typeof child.stderr.on === 'function') {
-      child.stderr.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stderr');logStream('[backend:err] ', d);});
+      child.stderr.on('data', (d) => {if(backendProc === child)observeOwnedWork(d,'stderr',launchInstanceId);logStream('[backend:err] ', d);});
     }
 
     let rejectProcessFailure;
@@ -773,6 +798,7 @@ function createBackendManager(deps) {
       await terminateOwnedBackend(child, launched);
       if (launched) removePortFileFor(launched);
       await killVariant1EngineProcesses();
+      await cleanupOrphanedSearch(child, launched);
       backendInfo = null;
       backendLastVerifiedAt = 0;
       // Both readiness failure and process exit converge on this one timer.
@@ -913,6 +939,7 @@ function createBackendManager(deps) {
       if (pids.size) log('[backend] graceful shutdown unavailable or timed out; checking process ownership');
       pids = new Set(await terminateOwnedBackend(proc, info || candidate));
       await killVariant1EngineProcesses();
+      await cleanupOrphanedSearch(proc, info || candidate);
     } else {
       log('[backend] graceful shutdown complete');
     }
@@ -967,7 +994,7 @@ function createBackendManager(deps) {
  *
  * @param {object} opts
  * @param {import('electron').IpcMain} opts.ipcMain
- * @param {(event: any, win?: any) => boolean} opts.isTrustedIpcSender
+ * @param {(event: any) => boolean} opts.isTrustedIpcSender  Bound to the owning Deck window.
  * @param {() => object|null} opts.getInfo
  */
 function registerBackendIpc({ ipcMain, isTrustedIpcSender, getInfo }) {

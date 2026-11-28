@@ -123,7 +123,7 @@ def register(on):
 
     @on("searxng:stop")
     async def _searxng_stop(srv, websocket, session, msg):
-        """Manual Stop — tear down the managed container (force)."""
+        """Manual Stop uses the same verified ownership as backend shutdown."""
         mgr = getattr(srv, "searxng", None)
         if mgr is None:
             await websocket.send_json({
@@ -133,7 +133,6 @@ def register(on):
             })
             return
         try:
-            # force=True so the button stops even if another session started it.
             await mgr.stop(force=True)
             await srv.hub.broadcast(srv.require_runtime().tool_settings.state())
             await websocket.send_json({

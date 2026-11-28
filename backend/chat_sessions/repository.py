@@ -31,7 +31,7 @@ from .models import (
     InvalidConversationGraph,
     SearchHit,
 )
-from .projection import ANCESTRY_SQL, display_excerpt, display_origin_text, history_order, rows_for_ids
+from .projection import ANCESTRY_SQL, display_excerpt, display_origin_text, history_order, rows_for_ids, search_terms
 
 
 SCHEMA_VERSION = 2
@@ -693,6 +693,40 @@ class ConversationRepository:
             ids = ordered[-min(20000, max(1, limit)):]
             return [self._node(row) for row in rows_for_ids(conn, branch.conversation_id, ids, full=True)]
 
+    @staticmethod
+    def _fts_expression(tokens):
+        return " AND ".join('"' + token + '"*' for token in tokens)
+
+    def history_match_offset(self, conn, cid, node_id, query):
+        if not query:
+            return 0
+        tokens = search_terms(query)
+        if self.fts_enabled and tokens:
+            # Ask the same unicode61 tokenizer for its best passage. Match that
+            # passage back to the immutable source, keeping offsets in characters.
+            marker = uuid.uuid4().hex
+            begin, end, omitted = ("[" + marker + tag + "]" for tag in ("B", "E", "O"))
+            try:
+                row = conn.execute(
+                    "SELECT snippet(conversation_node_fts,3,?,?,?,25) FROM conversation_node_fts "
+                    "WHERE conversation_node_fts MATCH ? AND conversation_id=? AND node_id=?",
+                    (begin, end, omitted, self._fts_expression(tokens), cid, node_id),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                row = None
+            if row:
+                snippet = row[0].removeprefix(omitted).removesuffix(omitted)
+                before, found, rest = snippet.partition(begin)
+                if found:
+                    plain = before + rest.replace(begin, "").replace(end, "")
+                    pos = conn.execute("SELECT instr(content_text,?) FROM conversation_node "
+                                       "WHERE conversation_id=? AND node_id=?", (plain, cid, node_id)).fetchone()[0]
+                    if pos:
+                        return max(0, pos - 1 + len(before) - 160)
+        return conn.execute("SELECT max(0,instr(lower(content_text), lower(?))-161) "
+                            "FROM conversation_node WHERE conversation_id=? AND node_id=?",
+                            (query, cid, node_id)).fetchone()[0]
+
     def _message_matches(self, conn, query, tokens, pattern, visible):
         select = (
             "SELECT n.conversation_id,n.node_id,n.role,n.created_at,c.title,c.default_branch_id,t.branch_id,"
@@ -701,7 +735,7 @@ class ConversationRepository:
         joins = (" JOIN conversation c ON c.conversation_id=n.conversation_id "
                  "LEFT JOIN conversation_turn t ON t.turn_id=n.turn_id ")
         if self.fts_enabled and tokens:
-            expression = " AND ".join('"' + token + '"*' for token in tokens[:20])
+            expression = self._fts_expression(tokens)
             try:
                 return conn.execute(
                     select + "substr(snippet(conversation_node_fts,3,'','','…',25),1,500) AS preview,"
@@ -724,7 +758,7 @@ class ConversationRepository:
 
         query = _text(query, "query", required=True, limit=1000)
         cap = min(500, max(1, int(limit)))
-        tokens = re.findall(r"[\w-]+", query, flags=re.UNICODE)
+        tokens = search_terms(query)
         pattern = "%" + query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
         visible = "c.tombstoned_at IS NULL" + ("" if include_archived else " AND c.archived=0")
         with self._read() as conn:
@@ -761,7 +795,7 @@ class ConversationRepository:
                         hits.append(SearchHit(
                             conversation_id=cid, branch_id=branch["branch_id"], session_id=branch["runtime_chat_id"],
                             node_id=node, title=row["title"], role=row["role"], created_at=row["created_at"],
-                            preview=display_excerpt(special, query, 500)[0] if special is not None else row["preview"],
+                            preview=display_excerpt(special, query, 500, terms=words)[0] if special is not None else row["preview"],
                             score=-float(row["rank"] or 0)))
                         break
                 if len(hits) == cap:

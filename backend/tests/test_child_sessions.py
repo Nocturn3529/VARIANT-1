@@ -161,10 +161,17 @@ async def test_child_writes_in_admitted_kernel_project_across_restart(catalog_st
         changed = host.make_run_context("chat", "delegate", metadata={"chat_id": "parent"})
         assert changed.metadata["working_directory"] == str(later)
         changed.metadata["project_environment"] = {"PARENT_ONLY": "example"}
-        with bind_run_context(changed):
-            await cell({"category": "operate", "code": "child = children.spawn(task='Write a relative file')"})
+        admission = runtimes.try_reserve_run("parent")
+        runtimes.begin_run(admission, run_id=changed.run_id, thread_id=changed.run_id, source="chat")
+        changed.metadata.update(admission_id=admission, admission_run_id=changed.run_id)
+        try:
+            with bind_run_context(changed):
+                await cell({"category": "operate", "code": "child = children.spawn(task='Write a relative file')"})
+        finally:
+            runtimes.finish_run(admission, status="ok")
         child, = manager.list("parent")
         child_id, chat_id = child["child_id"], child["child_chat_id"]
+        assert manager.receipt_descendants("parent", changed.run_id, admission)["ids"] == [child_id]
         assert kernel.execution_history("parent")["items"][-1]["workspace_root_ids"] == roots
 
         await manager._run(child_id)
@@ -260,6 +267,88 @@ async def test_explicit_child_keeps_parent_goal_scope_across_queued_dispatch(tmp
     assert child['work_scope']['chat_id']==child['child_chat_id']
     job_id=manager._admit_job(child['child_id'])
     assert manager.work.jobs.get(job_id).scope.goal_id=='goal-attribution'
+
+
+@pytest.mark.asyncio
+async def test_child_receipt_tracks_the_exact_birth_admission_before_truncating(tmp_path, monkeypatch):
+    from contextlib import closing
+    from chat_pipeline import chat_task
+    from chat_session import ConnectionSession
+    from chat_sessions import build_chat_sessions
+    from agent_engine.execution_context import run_context_from_state
+    from functools import partial
+    from host_run_context import make_run_context
+    from run_context import bind_run_context, current_run_context
+    from session_catalog import child_worker
+    from tests.test_run_receipts import _make_chat_context
+
+    db = tmp_path / "children.sqlite3"
+    host = _Host(db)
+    host.app_root = host.data_dir = str(tmp_path)
+    host.emit_activity = AsyncMock()
+    host.make_run_context = partial(make_run_context, host)
+    manager = _manager(str(db), host, ContentAddressedArtifactStore(str(tmp_path / "artifacts")))
+    registry = _runtimes(host)
+    # Exercise a repeated logical run ID under two admissions independently of its budget ledger.
+    monkeypatch.setattr(registry, "record_run_usage", lambda *_: None)
+    store = build_chat_sessions(path=str(tmp_path / "chats.sqlite3"))
+    chat = store.create_session()
+    monkeypatch.setattr(manager, "_enqueue", AsyncMock(return_value="held"))
+    ids = {}
+    with closing(manager._connect()) as conn, conn:
+        conn.executemany("INSERT INTO astb_child_handle(child_id,child_chat_id,parent_chat_id,name,task_text,"
+                         "context_text,action_surface,status,created_at,updated_at) "
+                         "VALUES(?,?,?,'legacy','','','trusted-local.v1','completed',1,1)",
+                         [(f"old-{i}", f"old-chat-{i}", chat) for i in range(100)])
+
+    async def worker(_ports, task, *_args, **_kwargs):
+        parent = current_run_context().metadata["chat_id"]
+        name = ("late-from-first" if task == "nested-first" else "nested-" + phase)
+        # The model runs under a rebound graph identity, not necessarily the admitted run ID.
+        inner = run_context_from_state(SimpleNamespace(name="fixture", source="subagent"),
+            {"chat_id": parent, "run_id": "retained-graph"}, SimpleNamespace())
+        with bind_run_context(inner):
+            ids[name] = await manager.spawn(parent, task=name)
+        return "DONE: fixture"
+
+    monkeypatch.setattr(child_worker, "run_child_worker", worker)
+    async def turn(*_args, **_kwargs):
+        if phase == "first":
+            ids["direct"] = await manager.spawn(chat, task="direct")
+            await asyncio.create_task(manager._run(ids["direct"]["child_id"]))
+            # Fill the first admission's receipt past its 32-ID display cap.
+            with closing(manager._connect()) as conn, conn:
+                conn.executemany("INSERT INTO astb_child_handle(child_id,child_chat_id,parent_chat_id,name,task_text,"
+                    "context_text,action_surface,status,created_at,updated_at,birth_origin) "
+                    "SELECT ?,?,parent_chat_id,name,task_text,context_text,action_surface,'completed',created_at+1,"
+                    "updated_at,birth_origin FROM astb_child_handle WHERE child_id=?",
+                    [(f"same-{i}", f"same-chat-{i}", ids["direct"]["child_id"]) for i in range(32)])
+        else:
+            await asyncio.create_task(manager._run(ids["nested-first"]["child_id"]))
+            await manager.restart(chat, ids["direct"]["child_id"])
+            await asyncio.create_task(manager._run(ids["direct"]["child_id"]))
+
+    receipts = {}
+    for phase in ("first", "resumed"):
+        ports = SimpleNamespace(io=SimpleNamespace(sessions=store, runtime_registry=registry, children=manager,
+            emit=AsyncMock(), hub=None), session=SimpleNamespace(make_run_context=_make_chat_context, handle_chat=turn))
+        session = ConnectionSession(viewed_session_id=chat)
+        seq = session.reserve_turn()
+        session.active.turn_session_id = chat
+        admission = registry.try_reserve_run(chat)
+        await chat_task(ports, SimpleNamespace(send_json=AsyncMock()), "fixture", session,
+                        turn_seq=seq, runtime_admission_id=admission)
+        receipts[phase] = registry.repository.get_run_settlement(
+            chat, run_id="chat-receipt-run", admission_id=admission)["receipt"]["descendants"]
+    first = receipts["first"]
+    assert (first["total"], first["terminal"], first["active"], first["truncated"]) == (34, 33, 1, True)
+    assert len(first["ids"]) == 32 and ids["direct"]["child_id"] in first["ids"]
+    assert ids["nested-first"]["child_id"] in first["ids"]
+    second = receipts["resumed"]
+    assert second == {"total": 1, "active": 1, "terminal": 0, "ids": [ids["nested-resumed"]["child_id"]], "truncated": False}
+    assert ids["late-from-first"]["child_id"] not in second["ids"]
+    reopened = build_chat_sessions(path=str(tmp_path / "chats.sqlite3"))
+    assert reopened.get_last_run_receipt(chat)["descendants"] == second
 
 
 @pytest.mark.asyncio

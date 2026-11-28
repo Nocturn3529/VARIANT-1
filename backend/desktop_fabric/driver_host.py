@@ -17,7 +17,7 @@ import threading
 from collections import OrderedDict
 from typing import Any, Callable, Mapping
 
-from .cua_client import CuaDriverClient, CuaDriverError, pinned_cua_driver_version
+from .cua_client import CuaDriverClient, CuaDriverError, CuaToolError, pinned_cua_driver_version
 
 
 _DEFAULT_SESSION = "variant1"
@@ -74,8 +74,7 @@ class CuaDriverHost:
         if self._closed:
             raise CuaDriverError("desktop driver is shut down")
         client = self._client
-        alive = getattr(client, "alive", None)
-        if client is not None and (not callable(alive) or alive()):
+        if client is not None and not self.last_error and self._alive(client):
             return client
         if client is not None:
             self._discard(client)
@@ -85,15 +84,15 @@ class CuaDriverHost:
             client.open()
             self._check_version(client)
         except Exception as exc:
-            if client is not None:
-                self._discard(client)
             self.last_error = str(exc)[:500]
+            if client is not None:
+                # Keep ownership if startup failed and the child cannot be reaped yet.
+                self._client = client
+                self._discard(client)
             raise
         self.last_error = ""
         self.generation += 1
         self._client = client
-        # A new process has no sessions; earlier runs simply get new ones.
-        self._sessions.clear()
         return client
 
     def _check_version(self, client: Any) -> None:
@@ -109,10 +108,12 @@ class CuaDriverHost:
     def _discard(self, client: Any) -> None:
         try:
             client.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.last_error = "cua-driver could not retire its transport"
+            raise CuaDriverError(self.last_error) from exc
         if client is self._client:
             self._client = None
+            self._sessions.clear()
 
     def close(self) -> None:
         # A macOS permission request may be waiting on the user with its own
@@ -126,22 +127,21 @@ class CuaDriverHost:
         with self._lock:
             self._closed = True
             client = self._client
-            self._client = None
             if client is not None:
                 for label in list(self._sessions):
+                    if not self._alive(client):
+                        break
                     try:
                         client.call_tool("end_session", {"session": label})
                     except Exception:
                         pass
                 self._discard(client)
-            self._sessions.clear()
 
     def status(self) -> Mapping[str, Any]:
         client = self._client
-        alive = getattr(client, "alive", None)
         return {
             "generation": self.generation,
-            "running": bool(client is not None and (not callable(alive) or alive())),
+            "running": client is not None and not self.last_error and self._alive(client),
             "expected_version": self.expected_version,
             "server_version": str((getattr(client, "server_info", None) or {}).get("version") or ""),
             "last_error": self.last_error,
@@ -168,25 +168,24 @@ class CuaDriverHost:
         payload = dict(arguments)
         payload.setdefault("session", label)
         with self._lock:
-            if self._attempt_ended(attempt_id) or (
-                not attempt_id and run_id and label in self._ended
-            ):
-                raise CuaRunEnded("this run has ended; its desktop input is refused")
-            client = self._ensure()
-            generation = self.generation
-            try:
-                result = client.call_tool(name, payload)
-            except CuaDriverError:
-                if read_only and not self._alive(client) and generation == self.generation:
-                    # A read has no effect, so it may be retried once on a
-                    # fresh process. Input is never replayed.
-                    client = self._ensure()
+            for attempt in range(2):
+                if self._attempt_ended(attempt_id) or (
+                    not attempt_id and run_id and label in self._ended
+                ):
+                    raise CuaRunEnded("this run has ended; its desktop input is refused")
+                client = self._ensure()
+                try:
                     result = client.call_tool(name, payload)
-                else:
-                    raise
-            if attempt_id or run_id:
-                self._sessions.add(label)
-            return result
+                except CuaDriverError as exc:
+                    if self._alive(client):
+                        raise
+                    self._discard(client)
+                    if not read_only or attempt or isinstance(exc, CuaToolError):
+                        raise
+                    continue  # One safe observation on a freshly pinned generation.
+                if attempt_id or run_id:
+                    self._sessions.add(label)
+                return result
 
     @staticmethod
     def _alive(client: Any) -> bool:

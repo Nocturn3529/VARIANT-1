@@ -66,7 +66,7 @@ def register(on):
         if getattr(session, "view_role", "main") == "detached_chat":
             rows = [row for row in rows if row["chat_id"] == _chat_id(srv, session)]
         for row in rows:
-            saved = runtime.sessions.get_session(row["chat_id"]) or {}
+            saved = runtime.sessions.get_session_metadata(row["chat_id"]) or {}
             row["title"] = str(saved.get("title") or row["chat_id"])
             row["busy"] = runtime.session_runtimes.is_busy(row["chat_id"])
         capacity = await asyncio.to_thread(_children_capacity, srv)

@@ -9,14 +9,13 @@ from __future__ import annotations
 import asyncio
 import anyio
 import json
-import secrets
 import time
 from typing import Any, Callable
 
 from fastapi import Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
-from security import secretstore
+from security import matches_ascii_token, secretstore
 import ws_dispatch
 from ws_transport import transport_disconnected
 from ws_protocol import input_reply_fields
@@ -69,7 +68,7 @@ def require_loopback_bearer(auth_token: str, request: Request) -> JSONResponse |
         return JSONResponse({"ok": False, "error": "loopback only"}, status_code=403)
     provided = str(request.headers.get("authorization", "") or "")
     expected = f"Bearer {auth_token}"
-    if not auth_token or not secrets.compare_digest(provided, expected):
+    if not auth_token or not matches_ascii_token(provided, expected):
         return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
     return None
 
@@ -286,7 +285,7 @@ async def websocket_endpoint(srv: Any, websocket: WebSocket,
                              session_factory: Callable[[], Any]) -> None:
     """Authenticated WS loop: hello hydrate + dispatch table."""
     token = websocket.query_params.get("token", "")
-    if not token or not secrets.compare_digest(token, auth_token):
+    if not matches_ascii_token(token, auth_token):
         await websocket.close(code=1008)
         return
 
@@ -518,13 +517,7 @@ async def activity_websocket_endpoint(
     upgraded into chat, credential, configuration, or cancellation authority.
     """
     token = websocket.query_params.get("token", "")
-    if (
-        not token
-        or not activity_token
-        or not token.isascii()
-        or not activity_token.isascii()
-        or not secrets.compare_digest(token, activity_token)
-    ):
+    if not matches_ascii_token(token, activity_token):
         await websocket.close(code=1008)
         return
 

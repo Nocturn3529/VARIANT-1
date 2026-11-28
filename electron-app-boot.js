@@ -110,15 +110,13 @@ function isAudioOnlyMediaDetails(details) {
 function createWindowSecurity(deps) {
   const { getDeckWindow, getMonitorWindow, log } = deps;
 
-  function isTrustedIpcSender(event, expectedWindow = null) {
-    if (!event || !event.sender || !event.senderFrame) return false;
-    const win = BrowserWindow.fromWebContents(event.sender);
-    if (!win || win.isDestroyed()) return false;
-    const deckWindow = getDeckWindow();
-    const monitorWindow = getMonitorWindow();
-    if (![deckWindow, monitorWindow].includes(win)) return false;
-    if (expectedWindow && win !== expectedWindow) return false;
-    return isTrustedAppUrl(event.senderFrame.url);
+  function isTrustedIpcSender(event, expectedWindow) {
+    if (!expectedWindow || expectedWindow.isDestroyed()) return false;
+    if (expectedWindow !== getDeckWindow() && expectedWindow !== getMonitorWindow()) return false;
+    const sender = event?.sender;
+    if (!sender || sender !== expectedWindow.webContents || sender.isDestroyed()) return false;
+    const frame = event.senderFrame;
+    return !!frame && frame === sender.mainFrame && isTrustedAppUrl(frame.url);
   }
 
   function hardenAppWindow(win) {

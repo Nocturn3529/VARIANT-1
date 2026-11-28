@@ -24,7 +24,7 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""
     env_vars: tuple[str, ...] = ()
-    auth_style: str = "bearer"  # bearer | x-api-key | query | optional
+    auth_style: str = "bearer"  # bearer | x-api-key | x-goog-api-key | optional
     default_model: str = ""
     fallback_models: tuple[str, ...] = ()
     # Fail closed. Provider/model profiles must explicitly opt into image input;
@@ -61,6 +61,12 @@ class ProviderProfile:
     prompt_cache_header: str = ""
     wire_transport: str = ""
     wire_model_rules: tuple[Mapping[str, Any], ...] = ()
+    # Some OpenAI-compatible APIs already version their base by another path.
+    versioned_base_url: str = ""
+
+    def __post_init__(self) -> None:
+        if self.api_style == "gemini" and self.auth_style == "query":
+            object.__setattr__(self, "auth_style", "x-goog-api-key")
 
     def for_model(self, model: str) -> "ProviderProfile":
         if self.wire_transport not in {"", "responses"}:

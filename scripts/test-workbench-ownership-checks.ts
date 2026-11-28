@@ -206,4 +206,44 @@ async function checkSearchAndPresets(chatId: string, controls: FixtureControls) 
   await until(()=>document.querySelector('[data-message-index="12"].history-match-active'),"return to original chat hit");
   if (getChatState().draft !== "Unsent operator draft" || reads.length !== 4) throw new Error("Search lost the original draft or fetched a loaded match");
   setSessionSearchQuery("");
+  const fence = String.fromCharCode(96).repeat(3);
+  const block = (match: boolean) => [fence+"text", ...Array.from({length:55}, (_,i) =>
+    match && i===44 ? "🗂 Caféine fixture" : "row "+(i+1)), fence].join("\n");
+  const body = block(false)+"\n\n"+block(true);
+  const codeMessages = (["user", "assistant"] as const).map((role,i)=>({role,nodeId:"code-"+i,text:body,ts:5000+i}));
+  setChatState({...getChatState(),messages:codeMessages});
+  setSessionSearchQuery("cafe");
+  ingestSessions({type:"chat:search:results",query:"cafe",items:[
+    ...codeMessages.map(row=>({...owner,node_id:row.nodeId,role:row.role,ts:row.ts,snippet:"…Caféine fixture…"})),
+    {...owner,node_id:"code-earlier",role:"assistant",ts:4900,snippet:"…Caféine fixture…"},
+  ]});
+  const assertCodeMatch = async (index:number) => {
+    let observed = "";
+    await until(()=>{
+      const article=document.querySelector<HTMLElement>('[data-message-index="'+index+'"].history-match-active');
+      const range=[...(CSS.highlights.get("history-match") || [])][0];
+      observed = JSON.stringify({index, article:!!article, text:range?.toString(), match:getSessionState().historyMatch?.hit.nodeId, scoped:!!article?.contains(range?.startContainer || null)});
+      if (!article || !range || !article.contains(range.startContainer) || range.toString() !== "Café") return false;
+      const blocks=article.querySelectorAll(".runtime-code-block__body");
+      observed += " "+JSON.stringify([...blocks].map(b=>[b.className,b.getBoundingClientRect().top,b.getBoundingClientRect().bottom]));
+      if (blocks.length!==2 || !blocks[0].classList.contains("is-collapsed") || blocks[1].classList.contains("is-collapsed")) return false;
+      const rect=range.getBoundingClientRect(), viewport=article.closest(".messages-scroll")!.getBoundingClientRect();
+      observed += " "+JSON.stringify({rect:[rect.top,rect.bottom],viewport:[viewport.top,viewport.bottom]});
+      return rect.height>0 && rect.top>=viewport.top && rect.bottom<=viewport.bottom
+        && rect.bottom<=blocks[1].getBoundingClientRect().bottom;
+    },"visible accent-insensitive code match on line 45, with its sibling still collapsed").catch(error=>{throw new Error(String(error)+": "+observed);});
+  };
+  const codeHit = await until(()=>[...document.querySelectorAll<HTMLButtonElement>('[data-group="Search results"] .history-item__select')].find(item=>item.textContent?.includes("Caféine")), "current code search hit");
+  codeHit.click();
+  if (getSessionState().historyMatch?.hit.nodeId!=="code-0") throw new Error("Wrong code node after clicking: " + JSON.stringify(getSessionState().historyMatch?.hit));
+  await assertCodeMatch(0);
+  button("Next match")!.click();
+  await assertCodeMatch(1);
+  button("Next match")!.click();
+  const older=await until(()=>reads.find(row=>row.node_id==="code-earlier"),"older code window request");
+  reply(older,{messages:[{node_id:"code-earlier",role:"assistant",ts:4900,text:body,text_offset:6000,text_total_chars:10000}]});
+  await assertCodeMatch(0);
+  if (getChatState().messages!==codeMessages || getChatState().draft!=="Unsent operator draft") throw new Error("Opening earlier code changed the live transcript or draft");
+  button("Return to latest")!.click();
+  setSessionSearchQuery("");
 }

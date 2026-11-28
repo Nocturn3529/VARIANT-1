@@ -13,11 +13,16 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from typing import Any, Mapping
 
 
 class CuaDriverError(RuntimeError):
     """The cua-driver process failed or returned an MCP error."""
+
+
+class CuaToolError(CuaDriverError):
+    """The driver explicitly rejected this JSON-RPC request."""
 
 
 # The driver is a third-party binary: it gets only what it needs to find the
@@ -127,6 +132,7 @@ class CuaDriverClient:
         self._process: subprocess.Popen[bytes] | None = None
         self._messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._reader: threading.Thread | None = None
+        self._broken = threading.Event()
         self._request_lock = threading.RLock()
         self._stderr_lock = threading.Lock()
         self._stderr_text = ""
@@ -135,7 +141,13 @@ class CuaDriverClient:
 
     def open(self) -> None:
         if self._process is not None:
-            return
+            if self.alive():
+                return
+            self.close()
+        self._closed = False
+        self._messages = queue.Queue()
+        self._broken = threading.Event()
+        self._stderr_text = ""
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
         try:
             self._process = subprocess.Popen(
@@ -149,11 +161,12 @@ class CuaDriverClient:
         except OSError as exc:
             raise CuaDriverError(f"could not start cua-driver: {exc}") from exc
         self._reader = threading.Thread(
-            target=self._read_loop, name="cua-driver-mcp", daemon=True,
+            target=self._read_loop, args=(self._process.stdout, self._messages, self._broken),
+            name="cua-driver-mcp", daemon=True,
         )
         self._reader.start()
         threading.Thread(
-            target=self._read_stderr, name="cua-driver-mcp-err", daemon=True,
+            target=self._read_stderr, args=(self._process,), name="cua-driver-mcp-err", daemon=True,
         ).start()
         result = self._request("initialize", {
             "protocolVersion": "2025-06-18",
@@ -166,12 +179,11 @@ class CuaDriverClient:
 
     def alive(self) -> bool:
         process = self._process
-        return process is not None and process.poll() is None
+        return not self._closed and not self._broken.is_set() and process is not None and process.poll() is None
 
     def close(self) -> None:
         self._closed = True
         process = self._process
-        self._process = None
         if process is None:
             return
         if process.stdin is not None:
@@ -185,6 +197,8 @@ class CuaDriverClient:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 process.kill()
+                process.wait(timeout=2)
+        self._process = None
 
     def list_tools(self) -> list[str]:
         result = self._request("tools/list", {})
@@ -199,7 +213,7 @@ class CuaDriverClient:
         if not isinstance(result, dict):
             raise CuaDriverError(f"cua-driver tool {name} returned {type(result).__name__}")
         if result.get("isError"):
-            raise CuaDriverError(_error_text(result) or f"cua-driver tool {name} failed")
+            raise CuaToolError(_error_text(result) or f"cua-driver tool {name} failed")
         return unwrap_tool_result(result)
 
     def _request(self, method: str, params: Mapping[str, Any]) -> Any:
@@ -212,14 +226,18 @@ class CuaDriverClient:
                 "method": method,
                 "params": dict(params),
             })
+            deadline = time.monotonic() + self.timeout_s
             while True:
-                message = self._next(self.timeout_s)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise CuaDriverError(f"cua-driver timed out{self._stderr_suffix()}")
+                message = self._next(remaining)
                 if message.get("id") != message_id:
                     continue
                 if "error" in message:
                     error = message.get("error") or {}
                     detail = error.get("message") if isinstance(error, dict) else error
-                    raise CuaDriverError(f"cua-driver {method} failed: {detail}")
+                    raise CuaToolError(f"cua-driver {method} failed: {detail}")
                 return message.get("result")
 
     def _notify(self, method: str, params: Mapping[str, Any]) -> None:
@@ -232,7 +250,7 @@ class CuaDriverClient:
 
     def _write(self, payload: Mapping[str, Any]) -> None:
         process = self._process
-        if process is None or process.stdin is None:
+        if process is None or process.stdin is None or self._closed or self._broken.is_set():
             raise CuaDriverError("cua-driver is not running")
         # MCP stdio is one JSON-RPC message per line. Content-Length framing
         # is not a message, so cua-driver 0.28 never answers it.
@@ -241,6 +259,7 @@ class CuaDriverClient:
             process.stdin.write(body + b"\n")
             process.stdin.flush()
         except OSError as exc:
+            self._broken.set()
             raise CuaDriverError(f"cua-driver stopped accepting requests{self._stderr_suffix()}") from exc
 
     def _stderr_suffix(self) -> str:
@@ -257,35 +276,31 @@ class CuaDriverClient:
             raise CuaDriverError("cua-driver closed the connection")
         return message
 
-    def _read_loop(self) -> None:
-        process = self._process
-        stream = process.stdout if process is not None else None
-        if stream is None:
-            self._messages.put(None)
-            return
+    @staticmethod
+    def _read_loop(stream, messages: queue.Queue, broken: threading.Event) -> None:
         try:
-            while not self._closed:
-                line = stream.readline()
-                if not line:
-                    self._messages.put(None)
-                    return
-                text = line.decode("utf-8", "replace").strip()
-                if not text:
+            for line in stream:
+                if not line.strip():
                     continue
-                payload = json.loads(text)
-                if isinstance(payload, dict):
-                    self._messages.put(payload)
-        except Exception:
-            self._messages.put(None)
+                payload = json.loads(line.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    break
+                messages.put(payload)
+        except (OSError, ValueError, RecursionError):
+            pass
+        finally:
+            # Publish sticky generation health before waking the in-flight request.
+            broken.set()
+            messages.put(None)
+            stream.close()
 
-    def _read_stderr(self) -> None:
-        process = self._process
-        stream = process.stderr if process is not None else None
+    def _read_stderr(self, process: subprocess.Popen) -> None:
+        stream = process.stderr
         if stream is None:
             return
         kept = bytearray()
         try:
-            while not self._closed:
+            while True:
                 chunk = stream.read(1024)
                 if not chunk:
                     break
@@ -293,9 +308,12 @@ class CuaDriverClient:
                 if len(kept) > 4000:
                     del kept[:-4000]
                 with self._stderr_lock:
-                    self._stderr_text = kept.decode("utf-8", "replace")
+                    if self._process is process:
+                        self._stderr_text = kept.decode("utf-8", "replace")
         except Exception:
             return
+        finally:
+            stream.close()
 
 
 def unwrap_tool_result(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -345,6 +363,7 @@ def _error_text(result: Mapping[str, Any]) -> str:
 __all__ = [
     "CuaDriverClient",
     "CuaDriverError",
+    "CuaToolError",
     "cua_driver_env",
     "pinned_cua_driver_version",
     "resolve_cua_driver_command",

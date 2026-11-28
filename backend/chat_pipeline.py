@@ -29,6 +29,7 @@ from model_runtime.context import session_model_route
 from run_context import bind_run_context, current_run_context
 from observability.run_receipts import (
     build_run_receipt,
+    sanitize_run_receipt,
 )
 from observability.trace_events import (
     record_trace_event,
@@ -390,6 +391,33 @@ async def chat_task(ports: ChatPorts, websocket, text, session, *, resume: bool 
         raise
 
 
+def _persist_terminal_receipt(sessions, registry, chat_id, admission_id, receipt, reply):
+    receipt = sanitize_run_receipt({**receipt, "settled": True, "settled_at": round(time.time(), 6)})
+    if registry is not None and admission_id:
+        try:
+            stored = registry.repository.store_run_settlement(chat_id, admission_id, receipt, reply)
+        except Exception:
+            # The insert can have committed before its acknowledgement failed.
+            # Only this admission's immutable record can confirm the outcome.
+            _LOG.exception("historical run settlement could not be confirmed")
+            try:
+                stored = registry.repository.get_run_settlement(
+                    chat_id, run_id=receipt["run_id"], admission_id=admission_id)
+            except Exception:
+                _LOG.exception("historical run settlement lookup failed")
+                stored = None
+        if stored is None:
+            receipt.update(status="unknown", settled=False, settled_at=0.0)
+        else:
+            receipt = sanitize_run_receipt(stored["receipt"])
+    if chat_id:
+        try:
+            sessions.set_last_run_receipt(chat_id, receipt)
+        except Exception:
+            _LOG.exception("last run receipt could not be persisted")
+    return receipt
+
+
 async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume: bool = False,
                     turn_seq=None, client_id: str = "", source: str = "",
                     images: list[dict] | None = None, attachment_text: str = "",
@@ -513,7 +541,6 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
         turn_router = getattr(ports.io, "router", None)
         route_token = None
         started = time.perf_counter()
-        started_at_wall = time.time()
         usage_events = []
         receipt_wall_time_s = 0.0
         receipt_session_id = ""
@@ -838,33 +865,7 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                 children = getattr(ports.io, "children", None)
                 if children is not None:
                     try:
-                        tree = children.tree(receipt_session_id, limit=100)
-                        items = [
-                            dict(item)
-                            for item in tree.get("items") or ()
-                            if float(item.get("created_at") or 0.0)
-                            >= started_at_wall
-                        ]
-                        terminal_states = {"completed", "failed", "cancelled"}
-                        receipt["descendants"] = {
-                            "total": len(items),
-                            "active": sum(
-                                1 for item in items
-                                if str(item.get("status") or "")
-                                not in terminal_states
-                            ),
-                            "terminal": sum(
-                                1 for item in items
-                                if str(item.get("status") or "")
-                                in terminal_states
-                            ),
-                            "ids": [
-                                str(item.get("child_id") or "")
-                                for item in items[:32]
-                                if str(item.get("child_id") or "")
-                            ],
-                            "truncated": len(items) > 32,
-                        }
+                        receipt["descendants"] = children.receipt_descendants(bound_sid or receipt_session_id, run_id, admission_id)
                     except Exception:
                         _LOG.exception("descendant tree could not be projected")
                 try:
@@ -922,56 +923,42 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                 )
             turn_can_release = not hard_cancelled or cancel_terminal_finalized
             settlement_reply = str(getattr(session.active, 'terminal_reply', '') or '')
-            if ((turn_seq is None or turn_seq == session.latest_turn_seq)
-                    and turn_can_release):
-                session.busy = False
-                session.clear_active_turn()
-            if runtime_registry is not None and admission_id and turn_can_release:
-                runtime_registry.finish_run(admission_id, status=turn_status)
             if turn_can_release:
-                receipt["settled"] = True
-                receipt["settled_at"] = round(time.time(), 6)
-                if receipt_session_id:
-                    try:
-                        ports.io.sessions.set_last_run_receipt(
-                            receipt_session_id, receipt
-                        )
-                        durable_receipt = ports.io.sessions.get_last_run_receipt(
-                            receipt_session_id
-                        )
-                        if isinstance(durable_receipt, dict) and durable_receipt:
-                            receipt = durable_receipt
-                    except Exception:
-                        _LOG.exception("settled run receipt could not be persisted")
+                owner_chat_id = bound_sid or receipt_session_id
+                try:
+                    receipt = _persist_terminal_receipt(
+                        ports.io.sessions, runtime_registry, owner_chat_id, admission_id, receipt, settlement_reply)
+                finally:
+                    if turn_seq is None or turn_seq == session.latest_turn_seq:
+                        session.busy = False
+                        session.clear_active_turn()
                     if runtime_registry is not None and admission_id:
-                        try:
-                            runtime_registry.repository.store_run_settlement(
-                                receipt_session_id, admission_id, receipt, settlement_reply)
-                            runtime_registry.notify_run_settlement(receipt_session_id, run_id, admission_id)
-                        except Exception:
-                            _LOG.exception('historical run settlement could not be persisted')
-                settled_event = {
-                    "type": "run:settled",
-                    "schema": "variant1.run-settled.v1",
-                    "run_id": run_id,
-                    "admission_id": admission_id,
-                    "session_id": receipt_session_id or bound_sid,
-                    "status": turn_status,
-                    "stop_reason": terminal_stop_reason,
-                    "terminal_reason": terminal_reason,
-                    "cause_class": receipt.get("cause_class") or "unknown",
-                    "length_recoveries": length_recoveries,
-                    "settled": True,
-                    "receipt": receipt,
-                    "client_id": client_id,
-                    "source": source or "chat",
+                        release_status = receipt["status"] if receipt.get("settled") else "unknown"
+                        runtime_registry.finish_run(admission_id, status=release_status)
+                if runtime_registry is not None and admission_id and receipt["settled"]:
+                    runtime_registry.notify_run_settlement(owner_chat_id, run_id, admission_id)
+                routing = {
+                    "session_id": owner_chat_id, "run_id": run_id, "admission_id": admission_id,
+                    "client_id": client_id, "source": source or "chat",
                 }
+                if receipt["settled"]:
+                    terminal_frame = {
+                        **routing, "type": "run:settled", "schema": "variant1.run-settled.v1",
+                        "status": receipt["status"], "stop_reason": receipt["stop_reason"],
+                        "terminal_reason": receipt["terminal_reason"], "cause_class": receipt["cause_class"],
+                        "length_recoveries": receipt["length_recoveries"], "settled": True, "receipt": receipt,
+                    }
+                else:
+                    terminal_frame = {
+                        **routing, "type": "activity", "event": "run:settlement_unknown", "status": "unknown",
+                        "text": "The turn ended. Its terminal receipt could not be confirmed.",
+                    }
                 record_trace_event(
-                    "run:settled",
+                    "run:settled" if receipt["settled"] else "run:settlement_unknown",
                     run_id=run_id,
-                    session_id=receipt_session_id or bound_sid,
-                    status=turn_status,
-                    terminal_reason=terminal_reason,
+                    session_id=owner_chat_id,
+                    status=receipt["status"],
+                    terminal_reason=receipt["terminal_reason"],
                     cause_class=receipt.get("cause_class") or "unknown",
                 )
                 # A single bounded barrier at the lifecycle boundary preserves
@@ -981,12 +968,12 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                 try:
                     hub = getattr(ports.io, "hub", None)
                     if hub is None:
-                        await websocket.send_json(settled_event)
+                        await websocket.send_json(terminal_frame)
                     else:
                         await publish_terminal_event(
                             hub,
                             websocket,
-                            settled_event,
+                            terminal_frame,
                             transports=(
                                 runtime_registry.attached_transports(bound_sid)
                                 if runtime_registry is not None and bound_sid

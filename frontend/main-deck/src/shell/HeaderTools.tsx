@@ -1,7 +1,7 @@
 import {useLayoutEffect, useRef, useState} from "react";
 import {Icon, type IconName} from "../ui/Icon";
-import {navigateTo, revealHistory, selectSettingsCategory, useAppState} from "../state/appStore";
-import {useAboutState} from "../aboutStore";
+import {navigateTo, revealHistory, useAppState} from "../state/appStore";
+import {openUpdatesModal, useAboutState} from "../aboutStore";
 import {useQuestionChatIds} from "../state/clarificationStore";
 import {useSessionState} from "../state/sessionStore";
 import {openBrowser, usePreviewState} from "../workbench/previewStore";
@@ -47,8 +47,8 @@ export function HeaderTools() {
   }
 
   return <div className="titlebar-thread-tools" role="toolbar" aria-label="Thread tools">
-    {updatePill ? <button type="button" className="titlebar-thread-tools__update" title={`VARIANT-1 ${update?.version} · open Settings › About`}
-      onClick={() => { selectSettingsCategory("about"); navigateTo("settings"); }}>{updatePill}</button> : null}
+    {updatePill ? <button type="button" className="titlebar-thread-tools__update" title={`VARIANT-1 ${update?.version} · open updates`}
+      aria-haspopup="dialog" onClick={openUpdatesModal}>{updatePill}</button> : null}
     {questionChats.length ? <button type="button" className="titlebar-thread-tools__question" aria-label="Chats needing answers" title="Chats needing answers" onClick={revealHistory}>?<span>{questionChats.length}</span></button> : null}
     {PANEL_TOOLS.map(item => {
       const active = pressed(item.id);

@@ -27,6 +27,7 @@ from typing import Any, Mapping
 
 from text_limits import utf8_prefix, utf8_suffix
 
+from .capsule_contracts import CapsuleRestoreUnknownEffect
 from .repl_protocol import (
     DEFAULT_MAX_REPL_FRAME_BYTES,
     JsonLineWriter,
@@ -1111,7 +1112,7 @@ class ReplWorker:
             message = _safe_exception_text(exc)
             code = (
                 "capsule_restore_unknown_effect"
-                if "capsule_restore_unknown_effect" in message
+                if operation == "capsule_restore" and isinstance(exc, CapsuleRestoreUnknownEffect)
                 else "repl_control_error"
             )
             self._done(

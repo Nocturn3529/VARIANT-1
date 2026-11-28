@@ -139,6 +139,50 @@ function managerFor(portFile, overrides = {}) {
   return {manager, logs, killed};
 }
 
+async function testProfileSearchCleanup(tempDir) {
+  for (const runtime of ['external', 'docker', 'podman']) {
+    const profile = path.join(tempDir, 'search ' + runtime);
+    const receipts = path.join(profile, 'data', 'searxng');
+    fs.mkdirSync(receipts, {recursive: true});
+    const owned = runtime !== 'external';
+    const receipt = path.join(receipts, runtime + '.cid');
+    if (owned) fs.writeFileSync(receipt, 'fixture-id');
+    const packaged = runtime === 'podman';
+    const binary = path.join(profile, 'backend', process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend');
+    if (packaged) { fs.mkdirSync(path.dirname(binary)); fs.writeFileSync(binary, 'fixture'); }
+    const calls = [];
+    let exited = true;
+    const {manager} = managerFor(path.join(profile, 'port.json'), {deps: {
+      app: {isPackaged: packaged, getVersion: () => VERSION}, resourcesPath: profile,
+      killVariant1EngineProcesses: undefined,
+      waitForBackendExit: async () => exited,
+      runFile: async (command, args, options) => {
+        if (command === 'powershell.exe' || command === 'ps') return {stdout:''};
+        if (['docker','podman'].includes(path.basename(command).replace(/\.exe$/i,''))) {
+          calls.push('unexpected direct container command');
+          return {stdout:''};
+        }
+        assert.deepEqual(args.slice(-2), ['--cleanup-searxng', profile]);
+        if (packaged) assert.equal(command, binary);
+        else assert.equal(path.basename(args[0]), 'server.py');
+        assert.ok(options.windowsHide);
+        await Promise.resolve();
+        calls.push('cleanup');
+      },
+      spawnProcess: () => { calls.push('launch'); throw new Error('fixture launch complete'); },
+    }});
+    await manager.startBackend();
+    assert.deepEqual(calls, owned ? ['cleanup', 'launch'] : ['launch']);
+    await manager.stopBackend();
+    assert.equal(calls.filter(step => step === 'cleanup').length, owned ? 2 : 0);
+    assert.ok(!calls.includes('unexpected direct container command'));
+    exited = false;
+    await manager.stopBackend();
+    assert.equal(calls.filter(step => step === 'cleanup').length, owned ? 2 : 0);
+    if (owned) assert.equal(fs.readFileSync(receipt, 'utf8'), 'fixture-id');
+  }
+}
+
 async function testMissingPackagedBackendNeverSpawnsPython(tempDir) {
   for (const withVenv of [false, true]) {
     const resourcesPath = path.join(tempDir, withVenv ? 'missing-exe-with-venv' : 'missing-exe-without-venv');
@@ -468,32 +512,62 @@ async function testProbeFailureFallsBackToOs(tempDir) {
 }
 
 async function testOwnedCompletionsProtectWorkButOrdinaryOutputDoesNot(tempDir) {
-  let healthy=true,clock=1000;
-  const instanceId='owned-progress',killed=[];
+  const backend = path.join(__dirname, '..', 'backend');
+  const venvPython = path.join(backend, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+  const python = fs.existsSync(venvPython) ? venvPython : process.platform === 'win32' ? 'python' : 'python3';
+  const emitter = path.join(backend, 'observability', 'operational_log.py');
+  const {stdout} = await exec(python, ['-I', '-B', '-c', [
+    'import runpy, sys',
+    'op = runpy.run_path(sys.argv[1])',
+    'op["mirror_activity"]({"event":"task:start", "run_id":"fixture"})',
+    'op["mirror_model_usage"]({"run":{"run_id":"fixture"}})',
+  ].join('\n'), emitter], {windowsHide:true, timeout:10000});
+  const [start, completion] = stdout.trimEnd().split(/\r?\n/);
+  const boundary = completion.indexOf('request_complete') + 'request_'.length;
+  assert.ok(completion.includes('request_complete'));
+  let healthy=true,clock=1000,instanceId='owned-progress-1',child;
+  const killed=[],children=new Map();
   const server=http.createServer((_req,res)=>{
     if(!healthy)return; // A real transport deadline, not a changed identity.
     res.end(JSON.stringify({status:'ok',version:VERSION,instance_id:instanceId}));
   });
   const port=await listen(server),portFile=path.join(tempDir,'owned-progress.json');
-  const child=new EventEmitter();child.pid=44501;
-  child.stdout=new EventEmitter();child.stderr=new EventEmitter();
   const result=managerFor(portFile,{killed,timings:{probeTimeoutMs:10,unhealthyGraceMs:20},deps:{
     now:()=>clock,isProcessAlive:()=>true,createInstanceId:()=>instanceId,
-    spawnProcess:()=>{writeRecord(portFile,{port,pid:child.pid,token:'fixture-token',version:VERSION,instance_id:instanceId});return child;},
-    killProcessTree:pid=>{killed.push(pid);child.exitCode=0;queueMicrotask(()=>child.emit('exit',0,null));},
+    spawnProcess:()=>{
+      child=new EventEmitter();child.pid=44501+children.size;
+      child.stdout=new EventEmitter();child.stderr=new EventEmitter();children.set(child.pid,child);
+      writeRecord(portFile,{port,pid:child.pid,token:'fixture-token',version:VERSION,instance_id:instanceId});return child;
+    },
+    killProcessTree:pid=>{const target=children.get(pid);killed.push(pid);target.exitCode=0;queueMicrotask(()=>target.emit('exit',0,null));},
   }});
   try {
     await result.manager.startBackend();healthy=false;clock++;
     assert.ok(await result.manager.getInfo());
     clock+=21;
-    child.stdout.emit('data','[fixture] [INFO] [model] request_com');
-    child.stdout.emit('data','plete run_id=fixture\n');
+    child.stdout.emit('data',completion.slice(0,boundary));
+    child.stdout.emit('data',completion.slice(boundary)+'\r');
+    child.stdout.emit('data','\n');
     assert.ok(await result.manager.getInfo(),'fresh completed work survives an expired health grace interval');
     assert.deepEqual(killed,[]);
     assert.ok(result.logs.some(line=>line.includes('owned work still completing')));
-    child.stdout.emit('data','ordinary output\n');clock+=21;
+    clock+=21;
+    child.stdout.emit('data','ordinary output\n'+start+'\n');
     assert.equal(await result.manager.getInfo(),null,'expired progress retains bounded hung-backend recovery');
     assert.deepEqual(killed,[child.pid]);
+    const retired=child;
+    await result.manager.stopBackend();
+    healthy=true;instanceId='owned-progress-2';
+    await result.manager.startBackend();
+    assert.notEqual(child,retired);healthy=false;clock++;
+    assert.ok(await result.manager.getInfo(),'replacement gets its own ordinary health grace');
+    clock+=21;
+    retired.stdout.emit('data',completion+'\n');
+    child.stdout.emit('data',completion.slice(0,boundary));
+    child.stderr.emit('data',completion.slice(boundary)+'\n');
+    child.stdout.emit('data','\n');
+    assert.equal(await result.manager.getInfo(),null,'a retired child or mismatched pipe fragments cannot extend the replacement grace');
+    assert.deepEqual(killed,[retired.pid,child.pid]);
   } finally {await result.manager.stopBackend();server.closeAllConnections();await closeServer(server);}
 }
 
@@ -1186,6 +1260,7 @@ async function main() {
     await testDarwinEngineUsesLsofTextNotArgv();
     await testMacEngineSweepFiltersBeforeIdentity();
     await testPackagedEngineCleanupUsesOwnedRoots(tempDir);
+    await testProfileSearchCleanup(tempDir);
     await testOverlayReceivesOnlyScopedActivityStatus(tempDir);
     await testReadinessFailureSchedulesOnlyOneRestart(tempDir);
     await testReadinessRestartWaitsForTreeTermination(tempDir);

@@ -8,6 +8,74 @@ from peers import PeerError
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("inbound_stage", ["preparing", "running", "settled"])
+async def test_wait_on_third_peer_skips_the_triggering_and_settled_requests(tmp_path, inbound_stage):
+    from chat_session import ConnectionSession
+
+    service, runtimes, sessions, _, first, second = _stack(tmp_path)
+    third = sessions.create_session("Third", make_active=False)
+    a, b, c = ("chat:" + chat for chat in (first, second, third))
+    admission = runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission, run_id="middle-run", thread_id="middle-run", source="chat")
+    try:
+        trigger = await service.send(a, b, "Consult the third chat")
+        row = runtimes.claim_input(second, "steer", run_id="middle-run")
+        assert row["id"] == trigger["delivery_ticket_id"]
+        if inbound_stage == "running":
+            session = ConnectionSession(viewed_session_id=second)
+            session.active.runtime_admission_id = admission
+            runtimes.record_input_delivery(second, session, row, None)
+        elif inbound_stage == "settled":
+            runtimes.complete_transcript_commit(second, [row])
+            runtimes.repository.store_run_settlement(second, admission, {
+                "run_id": "middle-run", "status": "ok", "settled": True,
+            }, "Earlier work complete")
+            runtimes.finish_run(admission, status="ok")
+
+        outgoing = await service.send(b, c, "Check the result")
+        waiter = asyncio.create_task(service.wait_message(b, outgoing["message_id"], timeout_s=5))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+        explicit = await service.reply(c, outgoing["message_id"], "Checked")
+        result = await asyncio.wait_for(waiter, 1)
+        assert result["reply"]["message_id"] == explicit["message_id"]
+
+        other = await service.send(b, c, "Another check")
+        fresh = await service.send(a, b, "New work for the middle chat")
+        result = await service.wait_message(b, other["message_id"], timeout_s=0)
+        assert result["status"] == "attention"
+        assert result["incoming"]["message_id"] == fresh["message_id"]
+    finally:
+        await service.shutdown()
+        runtimes.finish_run(admission, status="test_cleanup")
+
+
+@pytest.mark.asyncio
+async def test_new_attention_is_found_beyond_a_page_of_stale_ticket_projections(tmp_path):
+    service, runtimes, sessions, _, first, second = _stack(tmp_path)
+    third = sessions.create_session("Third", make_active=False)
+    sender, middle = "chat:" + first, "chat:" + second
+    admission = runtimes.try_reserve_run(second)
+    runtimes.begin_run(admission, run_id="consumed", thread_id="consumed", source="chat")
+    try:
+        for index in range(34):
+            await service.send(sender, middle, f"Earlier request {index}")
+            row = runtimes.claim_input(second, "steer", run_id="consumed")
+            runtimes.complete_transcript_commit(second, [row])
+        runtimes.repository.store_run_settlement(second, admission, {
+            "run_id": "consumed", "status": "ok", "settled": True,
+        }, "All earlier requests handled")
+        outgoing = await service.send(middle, "chat:" + third, "A separate request")
+        new = await service.send(sender, middle, "Handle this one")
+        observed = await service.wait_message(middle, outgoing["message_id"], timeout_s=0)
+        assert observed["status"] == "attention"
+        assert observed["incoming"]["message_id"] == new["message_id"]
+    finally:
+        await service.shutdown()
+        runtimes.finish_run(admission, status="test_cleanup")
+
+
+@pytest.mark.asyncio
 async def test_restart_records_uncertain_consumed_peer_request_without_replaying(tmp_path):
     from peers import PeerCommunicationService
     from session_runtime.registry import SessionRuntimeRegistry
@@ -26,7 +94,8 @@ async def test_restart_records_uncertain_consumed_peer_request_without_replaying
         sessions=sessions,session_runtimes=fresh,chat_service=chat)
     try:
         await recovered.start()
-        assert 'without a settlement' in recovered.native_wait_failure('chat:'+first,request['message_id'])
+        waited = await recovered.wait_message('chat:'+first, request['message_id'], timeout_s=0)
+        assert waited['status'] == 'unavailable' and 'without a settlement' in waited['error']
         assert recovered.native_completion('chat:'+first,request['message_id']) is None
         assert service.repository.find_reply(request['message_id']) is None
         chat.start_next_queued_input.assert_not_awaited()
@@ -51,7 +120,7 @@ async def test_service_restart_does_not_invalidate_final_persistence_after_relea
     runtimes.complete_transcript_commit(second,[row]);runtimes.finish_run(admission,status='terminal')
     try:
         await service.shutdown();await service.start()
-        assert service.native_wait_failure('chat:'+first,request['message_id']) is None
+        assert (await service.wait_message('chat:'+first, request['message_id'], timeout_s=0))['status'] == 'pending'
         runtimes.repository.store_run_settlement(second,admission,{'run_id':'finishing-run','status':'ok','settled':True},'Retained result')
         gate.set();await task;await asyncio.sleep(0)
         assert not runtimes.admission_task_pending(admission)
@@ -74,9 +143,12 @@ async def test_finished_task_without_settlement_exposes_failure_without_fabricat
         row=runtimes.claim_input(second,'steer',run_id='recipient-run')
         runtimes.complete_transcript_commit(second,[row])
         runtimes.finish_run(admission,status='terminal')
-        assert service.native_wait_failure('chat:'+first,request['message_id']) is None, 'release precedes terminal persistence'
+        assert (await service.wait_message('chat:'+first, request['message_id'], timeout_s=0))['status'] == 'pending'
         gate.set();await task;await asyncio.sleep(0)
-        assert 'without a settlement' in service.native_wait_failure('chat:'+first,request['message_id'])
+        observed = await asyncio.wait_for(service.wait_message(
+            'chat:'+first, request['message_id'], timeout_s=5), 1)
+        assert observed['status'] == 'unavailable'
+        assert 'without a settlement' in observed['error']
         assert service.native_completion('chat:'+first,request['message_id']) is None
         assert service.repository.find_reply(request['message_id']) is None
     finally:

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from chat_sessions import ChatSessionService, build_chat_sessions
+from observability.run_receipts import sanitize_run_receipt
 from project_context import ProjectBindingError
 
 
@@ -65,6 +68,34 @@ def test_session_state_is_sql_owned_and_runtime_creation_is_explicit(tmp_path):
     assert reopened.get_model_route(session_id)["model"] == "gpt-test"
 
 
+def test_route_and_receipt_reads_skip_transcript_projection(tmp_path, monkeypatch):
+    service = build_chat_sessions(path=str(tmp_path / "conversations.sqlite3"))
+    session_id = service.create_session("Metadata")
+    service.append_messages(session_id, [
+        *({"role": "user", "text": f"Prior input {i}"} for i in range(1001)),
+        *({"role": "assistant", "text": "Prior answer", "run_id": f"run-{i}"} for i in range(3)),
+    ])
+    route = {"mode": "cloud", "provider": "test", "model": "chosen", "reasoning_enabled": False}
+    receipt = {"run_id": "run-2", "status": "ok", "settled": True, "tool_calls": 2}
+    assert service.set_model_route(session_id, route)
+    assert service.set_last_run_receipt(session_id, receipt)
+    expected_receipt = sanitize_run_receipt(service.get_session(session_id)["last_run_receipt"])
+    history_sizes = []
+    display_lookups = []
+    read_history = service.repository.history_nodes
+
+    def observe_history(*args, **kwargs):
+        rows = read_history(*args, **kwargs)
+        history_sizes.append(len(rows))
+        return rows
+
+    service.bind_peer_display(lambda *_: None, lambda *ids: display_lookups.append(ids))
+    monkeypatch.setattr(service.repository, "history_nodes", observe_history)
+    assert service.get_model_route(f" {session_id} ") == route
+    assert service.get_last_run_receipt(session_id) == expected_receipt
+    assert (sum(history_sizes), len(display_lookups)) == (0, 0)
+
+
 def test_chat_project_binding_is_durable_and_new_chats_are_unbound(tmp_path):
     path = str(tmp_path / "conversations.sqlite3")
     project_root = tmp_path / "project"
@@ -86,6 +117,32 @@ def test_chat_project_binding_is_durable_and_new_chats_are_unbound(tmp_path):
 
     assert reopened.set_project(session_id, None) is None
     assert build_chat_sessions(path=path).get_project(session_id) is None
+
+
+@pytest.mark.parametrize("corrupt_json", [True, False])
+def test_metadata_reads_handle_unusable_legacy_state(tmp_path, corrupt_json):
+    service = build_chat_sessions(path=str(tmp_path / "conversations.sqlite3"))
+    session_id = service.create_session()
+    project = tmp_path / "project"
+    project.mkdir()
+    binding = service.set_project(session_id, str(project))
+    state = json.dumps({
+        "model_route": json.dumps({"mode": "cloud", "model": "not an object"}),
+        "last_run_receipt": json.dumps({"run_id": "not an object"}),
+        "project": json.dumps(binding),
+    })
+    with service.repository._write() as conn:
+        conn.execute("UPDATE conversation_session_state SET state_json=? WHERE runtime_chat_id=?",
+                     ("{unfinished" if corrupt_json else state, session_id))
+
+    assert service.get_model_route(session_id) == {}
+    assert service.get_last_run_receipt(session_id) == {}
+    assert service.get_session_metadata(session_id)["project"] is None
+    if corrupt_json:
+        assert service.get_project(session_id) is None
+    else:
+        with pytest.raises(ProjectBindingError, match="stored project binding is invalid"):
+            service.get_project(session_id)
 
 
 def test_chat_project_binding_rejects_noncanonical_roots(tmp_path):

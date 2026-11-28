@@ -27,7 +27,7 @@ import time
 import uuid
 from typing import Any, Callable, Mapping
 
-from .cua_client import CuaDriverClient, CuaDriverError, cua_driver_env
+from .cua_client import CuaDriverClient, CuaDriverError, CuaToolError, cua_driver_env
 
 
 BUNDLE_ID = "com.trycua.driver"
@@ -345,7 +345,8 @@ class MacDriverClient:
                 self._dead = True
             text = str(exc).lower()
             if "accessibility" in text or "screen recording" in text or "not granted" in text:
-                raise CuaDriverError(f"{exc}. {PERMISSION_HINT}") from exc
+                error = CuaToolError if isinstance(exc, CuaToolError) else CuaDriverError
+                raise error(f"{exc}. {PERMISSION_HINT}") from exc
             raise
 
     def close(self) -> None:
