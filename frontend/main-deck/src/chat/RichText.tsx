@@ -40,24 +40,37 @@ function InlineNodes({tokens}: {tokens: InlineToken[]}): ReactNode {
   </>;
 }
 
+const CODE_COLLAPSE_LINES = 22;
+
 function CodeBlock({language, text, deferHighlight = false}: {language: string; text: string; deferHighlight?: boolean}) {
+  const [expanded, setExpanded] = useState(false);
+  const lineCount = useMemo(() => (text ? text.split("\n").length : 0), [text]);
+  const collapsible = !deferHighlight && lineCount > CODE_COLLAPSE_LINES;
+  const collapsed = collapsible && !expanded;
   const tokens = !deferHighlight && runtimeLib.highlightCode
     ? runtimeLib.highlightCode!(text, language)
     : [{type: "text", text}];
   return <figure className="runtime-code-block">
     <figcaption>
-      <span>{language || "code"}</span>
+      <span>{language || "code"}{collapsible ? ` · ${lineCount} lines` : ""}</span>
       <CopyButton text={text} title="Copy code"/>
     </figcaption>
-    <pre>
-      <code data-language={language || undefined}>
-        {tokens.map((token, index) => (
-          token.type === "text"
-            ? <span key={index}>{token.text}</span>
-            : <span key={index} className={`syntax-${token.type}`}>{token.text}</span>
-        ))}
-      </code>
-    </pre>
+    <div className={`runtime-code-block__body${collapsed ? " is-collapsed" : ""}`}>
+      <pre>
+        <code data-language={language || undefined}>
+          {tokens.map((token, index) => (
+            token.type === "text"
+              ? <span key={index}>{token.text}</span>
+              : <span key={index} className={`syntax-${token.type}`}>{token.text}</span>
+          ))}
+        </code>
+      </pre>
+      {collapsible ? <div className={collapsed ? "runtime-code-block__fade" : "runtime-code-block__actions"}>
+        <button type="button" className="runtime-code-block__expand" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+          {expanded ? "Collapse" : `Show all ${lineCount} lines`}
+        </button>
+      </div> : null}
+    </div>
   </figure>;
 }
 

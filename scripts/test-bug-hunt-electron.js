@@ -35,7 +35,7 @@ function load(name,overrides){const file=path.join(root,name),local=createRequir
 
   class Window extends EventEmitter {
     constructor(){super();this.dead=false;this.sent=[];this.loading=true;this.webContents=new EventEmitter();this.webContents.isLoading=()=>this.loading;this.webContents.send=(...args)=>this.sent.push(args);}
-    show(){}focus(){}setMenuBarVisibility(){}maximize(){}loadURL(){}isDestroyed(){return this.dead;}
+    show(){}focus(){}setMenuBarVisibility(){}maximize(){}loadURL(url){this.url=url;}isDestroyed(){return this.dead;}
   }
   const windows=load('electron-app-windows.js',{'electron':{BrowserWindow:Window}}).createAppWindows({appRoot:root,hardenAppWindow(){}});
   const first=windows.openDeckWindow('chat');
@@ -46,6 +46,12 @@ function load(name,overrides){const file=path.join(root,name),local=createRequir
   first.loading=true;windows.openDeckWindow('settings');first.dead=true;
   const second=windows.openDeckWindow('chat');first.emit('closed');first.webContents.emit('did-finish-load');
   assert.equal(windows.getDeckWindow(),second);assert.equal(first.webContents.listenerCount('did-finish-load'),0);assert.equal(second.sent.length,0);
+  second.loading=false;
+  windows.openDeckWindow('updates');
+  assert.deepEqual(second.sent,[['deck:navigate','updates']]);
+  second.dead=true;
+  const coldUpdates=windows.openDeckWindow('updates');
+  assert.equal(new URL(coldUpdates.url).searchParams.get('view'),'updates');
 
   const made=[],logs=[];
   const boot=load('electron-app-boot.js',{'electron':{},fs:{...fs,

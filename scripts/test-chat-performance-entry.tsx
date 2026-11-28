@@ -4,6 +4,8 @@ import {pathToFileURL} from "node:url";
 import {act,Profiler} from "react";
 import {createRoot} from "react-dom/client";
 import {DeckApp} from "../frontend/main-deck/src/DeckApp";
+import {closeUpdatesModal, openUpdatesModal, setAboutContext} from "../frontend/main-deck/src/aboutStore";
+import type {UpdateState} from "../frontend/main-deck/src/types";
 import {ChatComposer} from "../frontend/main-deck/src/chat/ChatComposer";
 import {ComposerGoalStatus} from "../frontend/main-deck/src/chat/ComposerGoal";
 import {InputQueuePanel} from "../frontend/main-deck/src/chat/InputQueuePanel";
@@ -36,8 +38,17 @@ async function checkFullDeck(root: ReturnType<typeof createRoot>, host: HTMLElem
     await act(async () => root.render(<DeckApp api={null}/>));
     const mounted = await renders();
     for (const [name,count] of Object.entries(mounted)) assert.ok(count > 0, `missing render counter for ${name}`);
+    let update!: (state:UpdateState)=>void;
+    setAboutContext({send:()=>true,notify(){},api:{onUpdateState:callback=>{update=callback;return ()=>{};}}});
+    await act(async () => openUpdatesModal());
+    assert.ok(host.querySelector("dialog.updates-overlay[open]"), "the full Deck opens Updates during a live turn");
+    await act(async()=>update({status:"downloading",reason:"",currentVersion:"1.0",platform:"win32",version:"1.1",
+      releaseName:"Fixture",releaseUrl:"",installMode:"in-app",percent:40,transferred:40,total:100,error:"",checkedAt:1}));
+    assert.equal(host.querySelector(".updates-overlay .about-update__percent")?.textContent,"40%");
+    await renders();
     for (let i=1; i<=5; i++) await act(async () => patchChatState({streamText:`Visible stream ${i}`}));
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)); });
+    const transcriptWindow = host.querySelector(".chat-turn--live")!.ownerDocument.defaultView!;
+    await act(async () => { await new Promise(resolve => transcriptWindow.requestAnimationFrame(resolve)); });
     const counts = await renders();
     console.log("Five full Deck stream updates", JSON.stringify(counts));
     assert.equal(counts.DeckApp, 0, "stream text must not rerender the shell");
@@ -46,6 +57,8 @@ async function checkFullDeck(root: ReturnType<typeof createRoot>, host: HTMLElem
     assert.ok(counts.ChatMessageList > 0);
     assert.match(host.querySelector(".chat-turn--live")?.textContent || "", /Visible stream 5/);
   } finally {
+    await act(async () => closeUpdatesModal());
+    setAboutContext({send:()=>false,notify(){},api:null});
     inspector.disconnect();
     await act(async () => root.render(null));
   }

@@ -124,8 +124,8 @@ export async function saveFileDocument(
       return false;
     }
     if (!result?.ok) throw new Error(result?.error || "Unable to save file");
-    owner.store.setState({original: state.text, mtimeMs: Number(result.mtimeMs || Date.now()), revision: result.revision,
-      saving: false, editing: false, conflict: false});
+    owner.store.setState({original: state.text, mtimeMs: Number(result.mtimeMs ?? (result.revision ? 0 : Date.now())), revision: result.revision,
+      saving: false, editing: false, conflict: false, error: result.warning || ""});
     return true;
   } catch (error) {
     if (documents.get(id) === owner && epoch === owner.epoch) {

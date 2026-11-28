@@ -266,9 +266,11 @@ export async function run() {
   ingestTerminal({type:"execution:snapshot",chat_id:"preset-B",terminals:[{id:"deleted-terminal",state:"running"}],processes:[]});
   ingestTerminal({type:"terminal:accepted",chat_id:"preset-B",operation:"read",result:{entity:{id:"deleted-terminal",kind:"terminal"},frames:[{text:"retained output"}],next_cursor:1}});
   assert.equal(getTerminalSnapshot("preset-B").output,"retained output");
-  setSessionContext({send:()=>true,notify(){}});
+  let deletionRequest: unknown;
+  setSessionContext({send:command=>{deletionRequest=command.request_id;return true;},notify(){}});
   assert.equal(deleteSession("preset-B"),true);
   assert.ok(getPreviewState().tabs.some(tab=>tab.id===browser),"delete dispatch does not close surfaces before success");
+  ingestSessions({type:"chat:session:deleted",session_id:"preset-B",request_id:deletionRequest});
   ingestSessions({type:"chat:session:deleted",session_id:"preset-B"});
   assert.ok(!getPreviewState().tabs.some(tab=>tab.ownerChatId==="preset-B"));
   assert.ok(getPreviewState().tabs.some(tab=>tab.id===survivor));

@@ -139,6 +139,50 @@ function managerFor(portFile, overrides = {}) {
   return {manager, logs, killed};
 }
 
+async function testProfileSearchCleanup(tempDir) {
+  for (const runtime of ['external', 'docker', 'podman']) {
+    const profile = path.join(tempDir, 'search ' + runtime);
+    const receipts = path.join(profile, 'data', 'searxng');
+    fs.mkdirSync(receipts, {recursive: true});
+    const owned = runtime !== 'external';
+    const receipt = path.join(receipts, runtime + '.cid');
+    if (owned) fs.writeFileSync(receipt, 'fixture-id');
+    const packaged = runtime === 'podman';
+    const binary = path.join(profile, 'backend', process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend');
+    if (packaged) { fs.mkdirSync(path.dirname(binary)); fs.writeFileSync(binary, 'fixture'); }
+    const calls = [];
+    let exited = true;
+    const {manager} = managerFor(path.join(profile, 'port.json'), {deps: {
+      app: {isPackaged: packaged, getVersion: () => VERSION}, resourcesPath: profile,
+      killVariant1EngineProcesses: undefined,
+      waitForBackendExit: async () => exited,
+      runFile: async (command, args, options) => {
+        if (command === 'powershell.exe' || command === 'ps') return {stdout:''};
+        if (['docker','podman'].includes(path.basename(command).replace(/\.exe$/i,''))) {
+          calls.push('unexpected direct container command');
+          return {stdout:''};
+        }
+        assert.deepEqual(args.slice(-2), ['--cleanup-searxng', profile]);
+        if (packaged) assert.equal(command, binary);
+        else assert.equal(path.basename(args[0]), 'server.py');
+        assert.ok(options.windowsHide);
+        await Promise.resolve();
+        calls.push('cleanup');
+      },
+      spawnProcess: () => { calls.push('launch'); throw new Error('fixture launch complete'); },
+    }});
+    await manager.startBackend();
+    assert.deepEqual(calls, owned ? ['cleanup', 'launch'] : ['launch']);
+    await manager.stopBackend();
+    assert.equal(calls.filter(step => step === 'cleanup').length, owned ? 2 : 0);
+    assert.ok(!calls.includes('unexpected direct container command'));
+    exited = false;
+    await manager.stopBackend();
+    assert.equal(calls.filter(step => step === 'cleanup').length, owned ? 2 : 0);
+    if (owned) assert.equal(fs.readFileSync(receipt, 'utf8'), 'fixture-id');
+  }
+}
+
 async function testMissingPackagedBackendNeverSpawnsPython(tempDir) {
   for (const withVenv of [false, true]) {
     const resourcesPath = path.join(tempDir, withVenv ? 'missing-exe-with-venv' : 'missing-exe-without-venv');
@@ -1216,6 +1260,7 @@ async function main() {
     await testDarwinEngineUsesLsofTextNotArgv();
     await testMacEngineSweepFiltersBeforeIdentity();
     await testPackagedEngineCleanupUsesOwnedRoots(tempDir);
+    await testProfileSearchCleanup(tempDir);
     await testOverlayReceivesOnlyScopedActivityStatus(tempDir);
     await testReadinessFailureSchedulesOnlyOneRestart(tempDir);
     await testReadinessRestartWaitsForTreeTermination(tempDir);

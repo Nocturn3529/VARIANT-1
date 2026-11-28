@@ -2,6 +2,7 @@
 const {contextBridge,ipcRenderer,webUtils}=require('electron');
 contextBridge.exposeInMainWorld('variant1Deck',{
   getBackendInfo:()=>ipcRenderer.invoke('chat-window:backendInfo'),
+  openDeckUpdates:()=>ipcRenderer.invoke('chat-window:openUpdates'),
   onBackendStatus:callback=>{const listener=(_event,value)=>callback(value);ipcRenderer.on('backend:status',listener);return()=>ipcRenderer.removeListener('backend:status',listener);},
   getPathForFile:file=>{try{return webUtils.getPathForFile(file);}catch{return ''; }},
   openExternal:url=>ipcRenderer.invoke('chat-window:external',url),

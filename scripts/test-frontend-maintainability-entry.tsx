@@ -197,6 +197,14 @@ async function testInterruptedForms() {
   assert.equal(webKey.value,"fixture-search");assert.equal(button(host,"Save").disabled,false);
   assert.deepEqual(sent.slice(before).map(row=>row.type),["tools:get"],"a missing receipt on an open socket only refreshes");
 
+  await act(async()=>ingestAgentTools({type:"tools",web_search:{provider:"searxng",providers:[{id:"searxng",name:"SearXNG"}]}}));
+  await act(async()=>ingestAgentTools({type:"searxng:status",ready:true,managed:false,owned:false,runtime:"docker"}));
+  assert.match(host.textContent!,/Reachable · External endpoint/);
+  assert.equal(button(host,"Stop").disabled,true);
+  await act(async()=>ingestAgentTools({type:"searxng:status",ready:true,running:true,managed:true,owned:true,runtime:"podman.exe"}));
+  assert.match(host.textContent!,/Running · Managed by VARIANT-1 · Podman/);
+  assert.equal(button(host,"Stop").disabled,false);
+
   await act(async()=>{ingest({type:"config",custom_endpoints:[]});root.render(<CustomEndpointsPanel/>);});
   await change(field(host,"Name"),"Example");await change(field(host,"Endpoint URL"),"https://example.test/v1");
   await change(field(host,"Default Model"),"sample");await change(field(host,"API Key"),"fixture-endpoint");

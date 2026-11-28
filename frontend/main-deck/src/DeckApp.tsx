@@ -5,6 +5,7 @@ import {ChatDestination} from "./ChatDestination";
 import {ActionPalette} from "./ui/ActionPalette";
 import {openPalette} from "./state/paletteStore";
 import {Icon} from "./ui/Icon";
+import {openUpdatesModal, useUpdatesModalOpen} from "./aboutStore";
 import {lazy, Suspense, useEffect} from "react";
 import {cancelChatTurn, notifyChat, shallowChatSelection, useChatSelection} from "./chatStore";
 import {LazySurface} from "./ui/LazySurface";
@@ -25,6 +26,7 @@ import {HeaderTools, SessionsRailCap} from "./shell/HeaderTools";
 const AutomationsDestination = lazy(() => import("./deferred/destinations").then(module => ({default: module.AutomationsDestination})));
 const OverviewDestination = lazy(() => import("./deferred/destinations").then(module => ({default: module.OverviewDestination})));
 const SettingsOverlay = lazy(() => import("./deferred/settings").then(module => ({default: module.SettingsOverlay})));
+const UpdatesOverlay = lazy(() => import("./deferred/settings").then(module => ({default: module.UpdatesOverlay})));
 const closeUtility = () => navigateTo("chat");
 
 function UtilitySurface({kind, api}: {kind: "overview" | "automations"; api: RuntimeApi | null}) {
@@ -106,10 +108,18 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
     state => ({title: state.title, turnActive: state.turnActive}),
     shallowChatSelection,
   );
+  const updatesModalOpen = useUpdatesModalOpen();
   const workbench = useWorkbenchState();
   useEffect(() => installNativeWindowBridge(api), [api]);
   useEffect(()=>!detachedChatId() ? installChatWindowInventory(api) : undefined,[api]);
-  useEffect(() => api?.onNavigate?.(view => { if (isPrimaryView(view)) navigateTo(view); }), [api]);
+  useEffect(() => {
+    if (detachedChatId()) return;
+    if (new URLSearchParams(window.location.search).get("view") === "updates") openUpdatesModal();
+    return api?.onNavigate?.(view => {
+      if (view === "updates") openUpdatesModal();
+      else if (isPrimaryView(view)) navigateTo(view);
+    });
+  }, [api]);
   useEffect(() => {
     const unsubscribe = api?.onVoiceToggle?.(() => { navigateTo("chat"); toggleMic(); });
     return typeof unsubscribe === "function" ? unsubscribe : undefined;
@@ -144,6 +154,7 @@ export function DeckApp({api}: {api: RuntimeApi | null}) {
     <UtilitySurface kind="overview" api={api}/>
     <UtilitySurface kind="automations" api={api}/>
     {settingsOpen ? <Suspense fallback={<SettingsOverlayFallback/>}><SettingsOverlay category={app.settingsCategory} onClose={closeSettings}/></Suspense> : null}
+    {updatesModalOpen ? <Suspense fallback={null}><UpdatesOverlay/></Suspense> : null}
     <ActionPalette/>
     <ToastHost/><StartupCover/>
   </div>;

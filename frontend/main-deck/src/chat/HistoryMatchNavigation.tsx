@@ -15,16 +15,40 @@ function matchIndex(messages: readonly ChatMessage[], hit: SessionSearchHit): nu
   return matching.length === 1 ? matching[0].index : -1;
 }
 
-function passage(element: HTMLElement, query: string): Range | undefined {
-  const doc = element.ownerDocument, walker = doc.createTreeWalker(element,NodeFilter.SHOW_TEXT);
+function fold(text: string): string {
+  return text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
+function passage(element: HTMLElement, query: string, snippet: string): Range | undefined {
+  const doc = element.ownerDocument;
+  const walker = doc.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
-  const text = nodes.map(node=>node.data).join("");
-  const terms = [query, ...(query.match(/[\p{L}\p{N}_-]+/gu) || [])];
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (!node.parentElement?.closest("button, figcaption, [aria-hidden=true]")) nodes.push(node);
+  }
+  const text = nodes.map(node => node.data).join("");
+  // FTS can return an accent-insensitive prefix. Map folded UTF-16 offsets back
+  // to their original spans, including astral characters and combining marks.
+  let folded = "";
+  const starts: number[] = [], ends: number[] = [];
+  for (const cluster of text.matchAll(/\P{M}\p{M}*|\p{M}+/gu)) {
+    const normalized = fold(cluster[0]);
+    folded += normalized;
+    for (let i=0; i<normalized.length; i++) {
+      starts.push(cluster.index!);
+      ends.push(cluster.index! + cluster[0].length);
+    }
+  }
+  const excerpt = fold(snippet.replace(/^(?:…|\.\.\.)|(?:…|\.\.\.)$/g,"").trim());
+  const anchor = excerpt ? folded.indexOf(excerpt) : -1;
+  const terms = [fold(query.trim()), ...(fold(query).match(/[\p{L}\p{N}_]+/gu) || [])];
   for (const term of terms) {
-    const found = new RegExp(term.replace(/[.*+?^{}()|[\]\\$]/g,"\\$&"),"iu").exec(text);
-    if (!found?.[0]) continue;
-    const start = found.index, end = start + found[0].length;
+    if (!term) continue;
+    const inExcerpt = anchor >= 0 ? excerpt.indexOf(term) : -1;
+    const at = inExcerpt >= 0 ? anchor + inExcerpt : folded.indexOf(term);
+    if (at < 0) continue;
+    const start = starts[at], end = ends[at + term.length - 1];
     const range = doc.createRange();
     let offset = 0;
     for (const node of nodes) {
@@ -48,28 +72,36 @@ export function HistoryMatchNavigation({match,messages,viewport,reveal}: {
   useLayoutEffect(()=>{
     const scroll = viewport.current;
     if (!scroll || index < 0) return;
+    const view = scroll.ownerDocument.defaultView!;
     revealRef.current(index);
     let frame = 0, timer = 0, article: HTMLElement | null = null, attempts = 0;
     const clearHighlight = () => {
       article?.classList.remove("history-match-active");
-      globalThis.CSS?.highlights?.delete("history-match");
+      view.CSS?.highlights?.delete("history-match");
     };
     const locate = () => {
       article = scroll.querySelector<HTMLElement>('[data-message-index="' + index + '"]');
       if (!article) {
-        if (++attempts < 20) frame = requestAnimationFrame(locate);
+        if (++attempts < 20) frame = view.requestAnimationFrame(locate);
         return;
       }
       article.classList.add("history-match-active");
       const content = article.querySelector<HTMLElement>(".message__content,.peer-chat__bubble") || article;
-      const range = passage(content,match.query);
-      if (range && typeof Highlight !== "undefined") globalThis.CSS?.highlights?.set("history-match",new Highlight(range));
+      const range = passage(content,match.query,match.hit.snippet);
+      const closed = range?.startContainer.parentElement?.closest(".runtime-code-block__body.is-collapsed");
+      const expand = closed?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
+      if (expand && attempts++ < 20) {
+        expand.click();
+        frame = view.requestAnimationFrame(locate);
+        return;
+      }
+      if (range && typeof view.Highlight !== "undefined") view.CSS?.highlights?.set("history-match",new view.Highlight(range));
       const bounds = range?.getBoundingClientRect() || article.getBoundingClientRect();
       scroll.scrollBy({top:bounds.top - scroll.getBoundingClientRect().top - scroll.clientHeight * .3, behavior:"instant"});
-      timer = window.setTimeout(clearHighlight,2600);
+      timer = view.setTimeout(clearHighlight,2600);
     };
-    frame = requestAnimationFrame(locate);
-    return () => { cancelAnimationFrame(frame); clearTimeout(timer); clearHighlight(); };
+    frame = view.requestAnimationFrame(locate);
+    return () => { view.cancelAnimationFrame(frame); view.clearTimeout(timer); clearHighlight(); };
   }, [index,match,viewport]);
   const position = "Match " + (match.index+1) + " of " + match.count;
   const context = match.window?.hasAfter ? "Earlier messages · " : match.window?.hasBefore ? "Recent messages · " : "";

@@ -251,6 +251,60 @@ export async function run() {
       HTMLElement.prototype.getBoundingClientRect=bounds;
       Object.defineProperty(window,"innerHeight",{configurable:true,value:originalHeight});Object.defineProperty(window,"innerWidth",{configurable:true,value:originalWidth});
     }
+    let allowSend = true;
+    const deleteCommands: Array<Record<string, unknown>> = [];
+    await act(async () => {
+      setAppearance({density: "comfortable", motion: "system"});
+      __resetSessionStoreForTests(); __resetTurnStoreForTests();
+      setSessionContext({send: command => { deleteCommands.push(command); return allowSend; }, notify() {}, isOpen: () => allowSend});
+      ingestSessions({type: "chat:sessions", items: [{id: "busy-chat", title: "Busy chat"}, {id: "idle-chat", title: "Idle chat"}], active_id: "idle-chat"});
+      turnController.begin({clientId: getChatState().clientId, sessionId: "busy-chat", source: "chat"});
+      root.render(<HistoryRail/>);
+    });
+    const openDeleteDialogFor = async (title: string) => {
+      const trigger = host.querySelector<HTMLButtonElement>(`[aria-label="Actions for ${title}"]`)!;
+      await act(async () => trigger.click());
+      const deleteMenuItem = [...document.querySelectorAll<HTMLButtonElement>("#runtime-session-menu button")].find(b => b.textContent?.includes("Delete"))!;
+      await act(async () => deleteMenuItem.click());
+    };
+    const confirmDeleteBtn = () => [...document.querySelectorAll<HTMLButtonElement>("dialog.deck-confirm-dialog button")].find(b => b.textContent === "Delete")!;
+    await openDeleteDialogFor("Busy chat");
+    await act(async () => { confirmDeleteBtn().click(); await pause(10); });
+    assert.match(document.querySelector("dialog.deck-confirm-dialog")?.textContent || "", /Wait for VARIANT-1 to finish/, "busy chat deletion fails inline");
+    assert.doesNotMatch(document.querySelector("dialog.deck-confirm-dialog")?.textContent || "", /Deleted/, "busy chat deletion never shows Deleted");
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>("dialog.deck-confirm-dialog button")].find(b => b.textContent === "Cancel")!.click());
+
+    allowSend = false;
+    await openDeleteDialogFor("Idle chat");
+    await act(async () => { confirmDeleteBtn().click(); await pause(10); });
+    assert.match(document.querySelector("dialog.deck-confirm-dialog")?.textContent || "", /Could not send|Backend offline/, "offline chat deletion reports error inline");
+    assert.doesNotMatch(document.querySelector("dialog.deck-confirm-dialog")?.textContent || "", /Deleted/, "offline chat deletion never shows Deleted");
+
+    allowSend = true;
+    const dialog = () => document.querySelector("dialog.deck-confirm-dialog")!;
+    const latestDelete = () => deleteCommands.filter(row=>row.type==="chat:session:delete").at(-1)!;
+    const reply = (event: Record<string, unknown>) => act(async()=>ingestSessions(event));
+    await act(async()=>confirmDeleteBtn().click());
+    const firstDelete = latestDelete().request_id;
+    assert.ok(firstDelete);
+    await reply({type:"chat:session:error",session_id:"busy-chat",error:"Unrelated kernel error"});
+    await reply({type:"chat:session:error",operation:"chat:session:delete",session_id:"busy-chat",request_id:firstDelete,error:"Foreign delete error"});
+    await reply({type:"chat:session:error",operation:"chat:session:delete",session_id:"idle-chat",request_id:"stale",error:"Old delete error"});
+    assert.match(dialog().textContent || "", /Deleting/);
+    await reply({type:"chat:session:error",operation:"chat:session:delete",session_id:"idle-chat",request_id:firstDelete,error:"Delete was rejected"});
+    assert.match(dialog().querySelector("[role=alert]")?.textContent || "", /Delete was rejected/);
+    assert.equal(confirmDeleteBtn().disabled,false);
+    await act(async()=>confirmDeleteBtn().click());
+    const nextDelete=latestDelete().request_id;
+    assert.notEqual(firstDelete,nextDelete);
+    await reply({type:"chat:session:deleted",session_id:"idle-chat"});
+    await reply({type:"chat:session:deleted",session_id:"idle-chat",request_id:firstDelete});
+    await reply({type:"chat:sessions",items:[]});
+    assert.match(dialog().textContent || "",/Deleting/);
+    await reply({type:"chat:session:deleted",session_id:"idle-chat",request_id:nextDelete});
+    await reply({type:"chat:session:deleted",session_id:"idle-chat"});
+    assert.equal(dialog().querySelector("[role=status]")?.textContent,"Deleted");
+
     console.log("design behavior: ordered/folded traces, failure disclosure, density/motion, palette navigation, queued delivery, seeded geometry, and placement validation passed");
   } finally {
     await act(async () => { root.unmount(); closePalette(); __resetTurnStoreForTests(); setAppearance({density: "comfortable", motion: "system"}); });

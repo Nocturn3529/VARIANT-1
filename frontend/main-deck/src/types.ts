@@ -467,6 +467,7 @@ export type RuntimeApi = {
   }>;
   writeWorkbenchFile?: (path: string, text: string, expectedMtimeMs?: number, revision?: string) => Promise<{
     ok?: boolean;
+    warning?: string;
     conflict?: boolean;
     error?: string;
     mtimeMs?: number;
@@ -496,6 +497,7 @@ export type RuntimeApi = {
   workbenchDownloads?: (command: Record<string, unknown>) => Promise<{ok?: boolean; error?: string; downloads?: unknown[]; [key: string]: unknown}>;
   onWorkbenchDownloads?: (callback: (rows: unknown) => void) => () => void;
   onNavigate?: (listener: (view: string) => void) => () => void;
+  openDeckUpdates?: () => Promise<{ok:boolean}>;
   onVoiceToggle?: (listener: () => void) => (() => void) | void;
   minimize?: () => void;
   toggleMaximize?: () => void;

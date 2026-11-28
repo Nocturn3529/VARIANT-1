@@ -7,7 +7,7 @@ import {focusMainComposer, useSurfaceDocument} from "../ui/SurfaceDocument";
 import {createPortal} from "react-dom";
 import {useEffect, useLayoutEffect, useMemo, useRef, useState} from "react";
 import {
-  deleteSession,
+  deleteSessionConfirmed,
   renameSession,
   requestNewSession,
   setOpenSessionMenu,
@@ -24,6 +24,7 @@ import {
 } from "../state/sessionStore";
 import {closeMobileHistory, navigateTo} from "../state/appStore";
 import {EmptyState} from "../ui/EmptyState";
+import {ConfirmDialog} from "../ui/ConfirmDialog";
 import {TextInputDialog} from "../ui/TextInputDialog";
 import {useQuestionChatIds} from "../state/clarificationStore";
 
@@ -43,11 +44,13 @@ function SessionMenu({
   position,
   returnFocus,
   onRename,
+  onRequestDelete,
 }: {
   session: SessionSummary;
   position: {left: number; top: number};
   returnFocus: HTMLButtonElement | null;
   onRename: () => void;
+  onRequestDelete: () => void;
 }) {
   const ownerDocument = useSurfaceDocument();
   const ownerWindow = ownerDocument.defaultView || window;
@@ -161,10 +164,8 @@ function SessionMenu({
         role="menuitem"
         type="button"
         onClick={() => {
-          if (ownerWindow.confirm("Delete this conversation permanently?")) {
-            deleteSession(session.id);
-            close();
-          }
+          onRequestDelete();
+          close(false);
         }}
       >
         Delete
@@ -239,6 +240,7 @@ export function HistoryRail() {
   const questionChats = useQuestionChatIds();
   const [menuPosition, setMenuPosition] = useState({left: 8, top: 8});
   const [menuTrigger, setMenuTrigger] = useState<HTMLButtonElement | null>(null);
+  const [deleting, setDeleting] = useState<SessionSummary | null>(null);
   const [renaming, setRenaming] = useState<SessionSummary | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const projectState=useChatProjects();
@@ -361,8 +363,19 @@ export function HistoryRail() {
     </div>
 
     {openSession
-      ? <SessionMenu session={openSession} position={menuPosition} returnFocus={menuTrigger} onRename={() => setRenaming(openSession)}/>
+      ? <SessionMenu session={openSession} position={menuPosition} returnFocus={menuTrigger} onRename={() => setRenaming(openSession)} onRequestDelete={() => setDeleting(openSession)}/>
       : null}
+    {deleting ? <ConfirmDialog
+      title="Delete conversation"
+      message={`Delete "${deleting.title || "New chat"}" permanently?`}
+      detail="Messages and traces in this conversation cannot be recovered."
+      confirmLabel="Delete"
+      doneLabel="Deleted"
+      danger
+      workingLabel="Deleting…"
+      onConfirm={() => deleteSessionConfirmed(deleting.id)}
+      onCancel={() => setDeleting(null)}
+    /> : null}
     {renaming ? <TextInputDialog title="Rename conversation" label="Title" initialValue={renaming.title || "New chat"}
       returnFocus={menuTrigger} onSubmit={title => renameSession(renaming.id, title)} onClose={() => setRenaming(null)}/> : null}
   </>;

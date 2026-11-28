@@ -1,5 +1,6 @@
 import {useEffect,useMemo,useRef,useState,type MouseEvent} from "react";
 import {Icon} from "../ui/Icon";
+import {ConfirmDialog} from "../ui/ConfirmDialog";
 import {PopupMenu} from "../ui/PopupMenu";
 import {VirtualList} from "../ui/VirtualList";
 import {useSurfaceDocument} from "../ui/SurfaceDocument";
@@ -39,6 +40,7 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
   const [scroller,setScroller]=useState<HTMLElement|null>(null),[selected,setSelected]=useState(""),[notice,setNotice]=useState("");
   const [closedFolders,setClosedFolders]=useState<ReadonlySet<string>>(new Set());
   const [sidebarWidth,setSidebarWidth]=useState<number|null>(null);
+  const [confirmRevert,setConfirmRevert]=useState<WorkbenchGitFile|null>(null);
   async function loadBranches(){
     const token=++catalogEpoch.current;if(!directory)return;
     try{const value=await api?.getWorkbenchGitBranches?.(directory,{limit:200});if(token!==catalogEpoch.current)return;
@@ -110,13 +112,28 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
     commitAnchor.current=oid;
   }
   function navigate(file:string){setSelected(file);setClosed(prior=>{const next=new Set(prior);next.delete(file);return next;});requestAnimationFrame(()=>{[...panel.current?.querySelectorAll<HTMLElement>("[data-review-file]") || []].find(row=>row.dataset.reviewFile===file)?.scrollIntoView?.({block:"start"});});}
+  async function runMutate(action:string,file:WorkbenchGitFile,confirming=false){
+    if (["commit","branch"].includes(options.scope) || mutating.current) {
+      if (confirming) throw new Error("The selected change is no longer available. Refresh Review and try again.");
+      return;
+    }
+    const token=epoch.current;
+    mutating.current=true;
+    try {
+      const result=await api?.runWorkbenchGit?.(action,root,{file:file.path});
+      if (!result?.ok) throw new Error(String(result?.error || "Git action failed"));
+      if (panel.current) await refreshRef.current();
+    } catch (error) {
+      if (token===epoch.current) setError(error instanceof Error ? error.message : String(error));
+      if (confirming) throw error;
+    } finally {
+      mutating.current=false;
+    }
+  }
   async function mutate(action:string,file:WorkbenchGitFile){
     setMenu(null);if(["commit","branch"].includes(options.scope) || mutating.current)return;
-    if(action==="revert" && !ownerWindow.confirm(`Discard unstaged changes in ${file.path}? Staged changes will be kept.`))return;
-    const token=epoch.current;mutating.current=true;
-    try{const value=await api?.runWorkbenchGit?.(action,root,{file:file.path});if(token!==epoch.current)return;if(!value?.ok)setError(String(value?.error || "Git action failed"));else await refresh();}
-    catch(error){if(token===epoch.current)setError(String(error));}
-    finally{mutating.current=false;}
+    if(action==="revert"){setConfirmRevert(file);return;}
+    await runMutate(action,file);
   }
   async function copy(file:WorkbenchGitFile,patch=false){
     setMenu(null);const token=epoch.current;
@@ -171,5 +188,16 @@ export function ReviewPanel({directory="",chatId=""}:{directory?:string;chatId?:
         {!["commit","branch"].includes(options.scope)?<><hr/><button role="menuitem" onClick={()=>void mutate("stage",menu.file!)}>Stage file</button><button role="menuitem" disabled={!menu.file.staged} onClick={()=>void mutate("unstage",menu.file!)}>Unstage file</button><button role="menuitem" disabled={menu.file.status[1]===" "} onClick={()=>void mutate("revert",menu.file!)}>Discard unstaged changes…</button></>:null}
       </>:null}
     </PopupMenu>:null}
+    {confirmRevert ? <ConfirmDialog
+      title="Discard unstaged changes"
+      message={`Discard unstaged changes in ${confirmRevert.path}?`}
+      detail="Staged changes will be kept."
+      confirmLabel="Discard"
+      workingLabel="Discarding…"
+      doneLabel="Discarded"
+      danger
+      onConfirm={() => runMutate("revert", confirmRevert, true)}
+      onCancel={() => setConfirmRevert(null)}
+    /> : null}
   </section>;
 }

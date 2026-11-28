@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('variant1Deck', {
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   // Updates download and install only when the user asks.
   getUpdateState: () => ipcRenderer.invoke('update:getState'),
+  openDeckUpdates: () => ipcRenderer.invoke('chat-window:openUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),
   cancelUpdateDownload: () => ipcRenderer.invoke('update:cancel'),
   installUpdate: () => ipcRenderer.invoke('update:install'),

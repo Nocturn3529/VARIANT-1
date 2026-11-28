@@ -359,12 +359,12 @@ function createBackendManager(deps) {
     }
   }
 
-  function resolveBackendCommand() {
+  function resolveBackendCommand(backendArgs = ['--port-file', portFile]) {
     if (app.isPackaged) {
       const exe = path.join(resourcesPath, 'backend',
         process.platform === 'win32' ? 'Variant1Backend.exe' : 'Variant1Backend');
       if (fs.existsSync(exe)) {
-        return { command: exe, args: ['--port-file', portFile], label: 'bundled exe' };
+        return { command: exe, args: backendArgs, label: 'bundled exe' };
       }
       throw new Error('Packaged backend executable is missing: ' + exe + '. Repair or reinstall VARIANT-1.');
     }
@@ -376,10 +376,10 @@ function createBackendManager(deps) {
       ? path.join(backendDir, '.venv', 'Scripts', 'python.exe')
       : path.join(backendDir, '.venv', 'bin', 'python');
     if (fs.existsSync(venvPy)) {
-      return { command: venvPy, args: [serverPy, '--port-file', portFile], label: 'venv python' };
+      return { command: venvPy, args: [serverPy, ...backendArgs], label: 'venv python' };
     }
     const sysPy = process.platform === 'win32' ? 'python' : 'python3';
-    return { command: sysPy, args: [serverPy, '--port-file', portFile], label: 'system python' };
+    return { command: sysPy, args: [serverPy, ...backendArgs], label: 'system python' };
   }
 
   async function terminateOwnedBackend(proc, record) {
@@ -393,11 +393,11 @@ function createBackendManager(deps) {
     let owned = false;
     if (Number.isFinite(record.process_started_at) && record.process_started_at > 0) {
       try {
-        const {command, args} = resolveBackendCommand();
+        const {command, args} = resolveBackendCommand(['--check-backend-owner', String(pid),
+          String(record.process_started_at), record.instance_id, portFile]);
         // Keep the interpreter and script (or frozen executable). The checker
         // exits before backend startup and independently verifies the OS process.
-        await runFile(command, [...args.slice(0, -2), '--check-backend-owner', String(pid),
-          String(record.process_started_at), record.instance_id, portFile], {
+        await runFile(command, args, {
           windowsHide: true, timeout: timings.forceKillTimeoutMs,
         });
         owned = true;
@@ -506,12 +506,25 @@ function createBackendManager(deps) {
         log('[backend] POSIX engine lookup failed: ' + String(error.code || error.message));
       }
     }
-    // Managed SearXNG is a Docker container (not a project .exe). Backend stops
-    // it on graceful shutdown; this is a crash / hard-quit safety net. Runs on every
-    // platform (previously skipped by a win32-only early return).
+  }
+
+  async function cleanupOrphanedSearch(proc, predecessor) {
     try {
-      await runFile('docker', ['stop', 'variant1-searxng'], {windowsHide: true, timeout: 15000});
-    } catch (_) {}
+      const dataDir = path.resolve(getDataDir());
+      const directory = path.join(dataDir, 'data', 'searxng');
+      if (!['docker.cid', 'podman.cid'].some(name => fs.existsSync(path.join(directory, name)))) return;
+      if ((predecessor && !(predecessor.pid > 1)) ||
+          !await waitForBackendExit(proc, predecessor, timings.forceKillTimeoutMs)) return;
+      if (portFile && fs.existsSync(portFile)) {
+        const current = JSON.parse(fs.readFileSync(portFile, 'utf8'));
+        if (!validPortRecord(current) || !(current.pid > 1) || processIsAlive(current.pid)) return;
+      }
+      // The backend verifies the runtime, profile label and immutable ID from its own receipt.
+      const {command, args} = resolveBackendCommand(['--cleanup-searxng', dataDir]);
+      await runFile(command, args, {windowsHide: true, timeout: 45000});
+    } catch (error) {
+      log('[backend] SearXNG cleanup could not be confirmed (code ' + (error.code || 'unknown') + ')');
+    }
   }
 
   function readPortFile() {
@@ -679,6 +692,8 @@ function createBackendManager(deps) {
     backendLastVerifiedAt = 0;
     await killVariant1EngineProcesses();
     if (backendStopping) return;
+    await cleanupOrphanedSearch(null, existing);
+    if (backendStopping) return;
 
     let launch;
     try { launch = resolveBackendCommand(); }
@@ -783,6 +798,7 @@ function createBackendManager(deps) {
       await terminateOwnedBackend(child, launched);
       if (launched) removePortFileFor(launched);
       await killVariant1EngineProcesses();
+      await cleanupOrphanedSearch(child, launched);
       backendInfo = null;
       backendLastVerifiedAt = 0;
       // Both readiness failure and process exit converge on this one timer.
@@ -923,6 +939,7 @@ function createBackendManager(deps) {
       if (pids.size) log('[backend] graceful shutdown unavailable or timed out; checking process ownership');
       pids = new Set(await terminateOwnedBackend(proc, info || candidate));
       await killVariant1EngineProcesses();
+      await cleanupOrphanedSearch(proc, info || candidate);
     } else {
       log('[backend] graceful shutdown complete');
     }

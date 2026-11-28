@@ -16,6 +16,7 @@ export function installDockedChatBridge():void {
     const api=window.parent.variant1Deck;if(!api)return;
     window.variant1Deck={getBackendInfo:()=>api.getBackendInfo?.() || Promise.resolve(null),
       onBackendStatus:callback=>api.onBackendStatus?.(callback),
+      openDeckUpdates:()=>api.openDeckUpdates?.() || Promise.resolve({ok:false}),
       getPathForFile:file=>api.getPathForFile?.(file) || "",
       openExternal:url=>api.openExternal?.(url)};
   } catch { /* A foreign frame never receives the desktop bridge. */ }

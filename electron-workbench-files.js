@@ -4,8 +4,35 @@ const {isUtf8} = require('node:buffer');
 const fs = require('node:fs');
 const path = require('node:path');
 const {createHash, randomUUID} = require('node:crypto');
+const {execFile} = require('node:child_process');
+const {promisify} = require('node:util');
 
 const MAX_BYTES = 16 * 1024 * 1024;
+const runFile = promisify(execFile);
+const linkedFileError = 'This file has multiple hard links. Use an editor that updates all linked names together.';
+
+// File.Replace uses ReplaceFileW, which transfers the destination's named streams
+// and security metadata. Keep a same-directory recovery copy until it succeeds.
+const replaceWindowsFile = [
+  "$ErrorActionPreference = 'Stop'",
+  '$dst = $env:VARIANT1_EDITOR_TARGET',
+  '$src = $env:VARIANT1_EDITOR_STAGE',
+  '$backup = $src + ".original"',
+  'try {',
+  '  $item = Get-Item -Force -LiteralPath $dst',
+  "  if ($item.LinkType -eq 'HardLink') { exit 31 }",
+  '  if (([DateTimeOffset]$item.LastWriteTimeUtc).ToUnixTimeMilliseconds() -ne [long]$env:VARIANT1_EDITOR_MTIME -or',
+  '      ([DateTimeOffset]$item.CreationTimeUtc).ToUnixTimeMilliseconds() -ne [long]$env:VARIANT1_EDITOR_BIRTH) { exit 32 }',
+  '  $file = [IO.File]::OpenRead($dst)',
+  '  $sha = [Security.Cryptography.SHA256]::Create()',
+  '  try { $hash = [BitConverter]::ToString($sha.ComputeHash($file)).Replace("-", "") } finally { $sha.Dispose(); $file.Dispose() }',
+  '  if ($hash -ne $env:VARIANT1_EDITOR_REVISION) { exit 32 }',
+  '  [IO.File]::Replace($src, $dst, $backup, $false)',
+  '} catch {',
+  '  if ([IO.File]::Exists($backup) -and -not [IO.File]::Exists($dst)) { [IO.File]::Move($backup, $dst) }',
+  '  throw',
+  '}',
+].join('\n');
 
 // Text editing must round-trip the bytes as UTF-8. An extension is only a
 // preview hint; it cannot make a binary/UTF-16 payload safe for the text writer.
@@ -62,6 +89,7 @@ function createEditorWriter(io = fs.promises) {
     const before = await readFileSnapshot(physical, io);
     if (!before.ok) return before;
     if (!isEditableText(before.bytes)) return {ok: false, error: 'binary_file_not_editable'};
+    if (before.stat.nlink > 1) return {ok: false, error: linkedFileError};
     if ((revision && revision !== before.revision) || (mtime > 0 && before.stat.mtimeMs !== mtime)) {
       return {ok: false, conflict: true, mtimeMs: before.stat.mtimeMs};
     }
@@ -81,12 +109,41 @@ function createEditorWriter(io = fs.promises) {
       const latest = await readFileSnapshot(physical, io);
       if (!latest.ok || latest.revision !== before.revision || latest.stat.dev !== before.stat.dev || latest.stat.ino !== before.stat.ino
           || latest.stat.ctimeMs !== before.stat.ctimeMs) return {ok: false, conflict: true};
+      if (latest.stat.nlink > 1) return {ok: false, error: linkedFileError};
       const committed = await io.stat(temp);
-      await io.rename(temp, physical);
+      if (process.platform === 'win32') {
+        try {
+          const powershell = path.join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+          await runFile(powershell, ['-NoProfile', '-NonInteractive', '-Command', replaceWindowsFile], {
+            windowsHide: true,
+            env: {...process.env, VARIANT1_EDITOR_TARGET: physical, VARIANT1_EDITOR_STAGE: temp,
+              VARIANT1_EDITOR_REVISION: before.revision, VARIANT1_EDITOR_MTIME: String(Math.floor(before.stat.mtimeMs)),
+              VARIANT1_EDITOR_BIRTH: String(Math.floor(before.stat.birthtimeMs))},
+          });
+        } catch (error) {
+          if (error.code === 31) return {ok: false, error: linkedFileError};
+          if (error.code === 32) return {ok: false, conflict: true};
+          const backup = temp + '.original';
+          const retained = await io.stat(backup).then(() => true, () => false);
+          return {ok:false, error: 'Windows could not safely replace the file. Close other editors and check write permissions.'
+            + (retained ? ' The previous version is at ' + backup : '')};
+        }
+      } else {
+        await io.rename(temp, physical);
+      }
       published = true;
-      return {ok: true, revision: createHash('sha256').update(bytes).digest('hex'), mtimeMs: committed.mtimeMs};
+      const receipt = {ok: true, revision: createHash('sha256').update(bytes).digest('hex'), mtimeMs: committed.mtimeMs};
+      if (process.platform === 'win32') {
+        // Merging named streams can advance the published file's last-write time.
+        // A concurrent replacement still leaves our committed revision authoritative.
+        const actual = await io.stat(physical).catch(() => null);
+        receipt.mtimeMs = actual && actual.dev === committed.dev && actual.ino === committed.ino ? actual.mtimeMs : 0;
+        try { await io.unlink(temp + '.original'); }
+        catch { receipt.warning = 'File saved. The previous version was retained at ' + temp + '.original'; }
+      }
+      return receipt;
     } finally {
-      if (!published) await io.unlink(temp);
+      if (!published) await io.unlink(temp).catch(error => { if (error.code !== 'ENOENT') throw error; });
     }
   }
   return async function write(target, text, mtime, revision) {

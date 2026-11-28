@@ -240,7 +240,7 @@ registerBackendIpc({
   getInfo: () => backend.getInfo(),
 });
 
-chatWindows = require('./electron-chat-windows').createChatWindows({appRoot:APP_ROOT,getDeckWindow:()=>deckWindow,
+chatWindows = require('./electron-chat-windows').createChatWindows({appRoot:APP_ROOT,getDeckWindow:()=>deckWindow,openDeckWindow,
   getBackendInfo:()=>backend.getInfo(),isTrustedIpcSender,hardenAppWindow});
 
 // --- Deck / Monitor windows ------------------------------------------------

@@ -1,10 +1,22 @@
 import type { WsCommand } from "./protocol";
+import {useSyncExternalStore} from "react";
+import {detachedChatId} from "./runtime/viewIdentity";
 import { createModuleStore } from "./state/createModuleStore";
 import { getSessionState } from "./state/sessionStore";
 import { activeBrowserDownloads } from "./workbench/browserDownloads";
 import type { AboutState, DoctorFinding, RuntimeApi, RuntimeContext, UpdateState } from "./types";
 
-const store = createModuleStore<AboutState>({
+/** About state plus the compact updates modal and its rolling status log. */
+export type AboutStoreState = AboutState & {
+  updatesModalOpen: boolean;
+  /** Timestamped update transitions (check, available, download, ready, error), newest last. */
+  updateLogs: string[];
+};
+
+/** Bounded so a long-lived window never grows the tail without limit. */
+export const UPDATE_LOG_LIMIT = 120;
+
+const store = createModuleStore<AboutStoreState>({
   initialState: {
     connected: false,
     version: "",
@@ -13,6 +25,8 @@ const store = createModuleStore<AboutState>({
     updateChecking: false,
     updateCheckComplete: false,
     update: null,
+    updatesModalOpen: false,
+    updateLogs: [],
     paths: {},
     health: {
       backend: "Waiting",
@@ -60,9 +74,66 @@ export function updateLabelFor(update: UpdateState | null, packaged: boolean): s
   }
 }
 
+function logStamp(at = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
+}
+
+/** One line per meaningful transition; a running download logs each quarter, not every tick. */
+export function updateLogLine(previous: UpdateState | null, next: UpdateState): string {
+  const same = previous?.status === next.status && previous?.version === next.version;
+  switch (next.status) {
+    case "checking": return same ? "" : "Checking for updates";
+    case "up-to-date": return same ? "" : `Up to date (${next.currentVersion || "current build"})`;
+    case "available":
+      return same && previous?.installMode === next.installMode ? ""
+        : `Update ${next.version} available · ${next.installMode === "in-app" ? "in-app download" : "manual install from the release page"}`;
+    case "downloading": {
+      const quarter = Math.floor(Math.max(0, Math.min(100, next.percent)) / 25);
+      if (!same) return `Downloading ${next.version}${next.percent ? ` · ${Math.round(next.percent)}%` : ""}`;
+      return previous && quarter > Math.floor(previous.percent / 25) ? `Downloading ${next.version} · ${quarter * 25}%` : "";
+    }
+    case "downloaded":
+      return same && previous?.error === next.error ? ""
+        : next.error ? `Install failed: ${next.error}` : `Update ${next.version} downloaded · ready to install`;
+    case "installing": return same ? "" : "Restarting to install";
+    case "error": return same && previous?.error === next.error ? "" : `Update error: ${next.error || "the check did not finish"}`;
+    case "unavailable": return same && previous?.reason === next.reason ? "" : `Updates unavailable (${next.reason || "unknown reason"})`;
+    default: return "";
+  }
+}
+
+function withLogLine(logs: string[], line: string): string[] {
+  return line ? [...logs, `[${logStamp()}] ${line}`].slice(-UPDATE_LOG_LIMIT) : logs;
+}
+
 function applyUpdate(update: UpdateState) {
-  store.setState({update, updateLabel: updateLabelFor(update, store.getState().packaged),
-    updateChecking: update.status === "checking", updateCheckComplete: update.status !== "idle"});
+  const current = store.getState();
+  store.setState({update, updateLabel: updateLabelFor(update, current.packaged),
+    updateChecking: update.status === "checking", updateCheckComplete: update.status !== "idle",
+    updateLogs: withLogLine(current.updateLogs, updateLogLine(current.update, update))});
+}
+
+/** The titlebar pill and About open one compact updates dialog instead of navigating Settings. */
+export function openUpdatesModal() {
+  if (detachedChatId()) {
+    const handoff = store.getContext()?.api?.openDeckUpdates;
+    if (!handoff) { notifyAbout("Software updates are available in the main window."); return; }
+    void handoff().then(result => {
+      if (!result?.ok) notifyAbout("Could not open software updates in the main window.");
+    }).catch(() => notifyAbout("Could not open software updates in the main window."));
+    return;
+  }
+  const {update, updateChecking} = store.getState();
+  store.setState({updatesModalOpen: true});
+  if (!store.getState().version) void loadAboutInfo();
+  if ((!update || update.status === "idle") && !updateChecking && store.getContext()?.api?.checkForUpdates) void checkForUpdates();
+}
+
+/** Closing is locked while the app restarts to install, so the dialog can't hide a running install. */
+export function closeUpdatesModal() {
+  if (store.getState().update?.status === "installing") return;
+  store.setState({updatesModalOpen: false});
 }
 
 export async function downloadUpdate() {
@@ -166,6 +237,7 @@ export function ingestAbout(message: Record<string, unknown>) {
 
 export async function loadAboutInfo() {
   try {
+    const priorUpdate = store.getState().update;
     const info = await store.getContext()?.api?.getAppInfo?.();
     if (!info) return;
     const current = store.getState();
@@ -177,7 +249,7 @@ export async function loadAboutInfo() {
         : info.packaged ? "Installed build" : "Development build",
       paths: {...(info.paths || {})},
     });
-    if (info.update) applyUpdate(info.update);
+    if (info.update && current.update === priorUpdate) applyUpdate(info.update);
   } catch {
     /* ignore */
   }
@@ -209,10 +281,11 @@ export async function checkForUpdates() {
     }
     else if (result.reason === "dev_mode") label = "Development build";
     else if (result.reason === "unconfigured") label = "Update feed not configured";
-    store.setState({updateLabel: label, updateChecking: false, updateCheckComplete: true});
+    store.setState(prev => ({...prev, updateLabel: label, updateChecking: false, updateCheckComplete: true,
+      updateLogs: withLogLine(prev.updateLogs, label)}));
   } catch {
-    store.setState({updateLabel: "Update check unavailable", updateChecking: false,
-      updateCheckComplete: true});
+    store.setState(prev => ({...prev, updateLabel: "Update check unavailable", updateChecking: false,
+      updateCheckComplete: true, updateLogs: withLogLine(prev.updateLogs, "Update check unavailable")}));
   }
 }
 
@@ -228,4 +301,9 @@ export function runHealthCheck() {
 
 export function useAboutState() {
   return store.useStore();
+}
+
+const modalOpen = () => store.getState().updatesModalOpen;
+export function useUpdatesModalOpen() {
+  return useSyncExternalStore(store.subscribe, modalOpen, modalOpen);
 }

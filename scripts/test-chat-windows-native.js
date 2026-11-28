@@ -7,7 +7,9 @@ const out=process.env.VARIANT1_FRONTEND_TEST_ARTIFACTS || path.join(root,'artifa
 fs.writeFileSync(path.join(temp,'preload.cjs'),`const {contextBridge,ipcRenderer}=require('electron');contextBridge.exposeInMainWorld('variant1Deck',{
  listChatWindows:()=>ipcRenderer.invoke('chat-window:list'),manageChatWindow:(id,action)=>ipcRenderer.invoke('chat-window:manage',id,action),
  onChatWindowsChanged:cb=>{const listener=(_e,value)=>cb(value);ipcRenderer.on('chat-window:changed',listener);return()=>ipcRenderer.removeListener('chat-window:changed',listener);},
- getBackendInfo:()=>ipcRenderer.invoke('test:backend'),openChatWindow:(id,title)=>ipcRenderer.invoke('chat-window:open',id,title)
+ getBackendInfo:()=>ipcRenderer.invoke('test:backend'),openChatWindow:(id,title)=>ipcRenderer.invoke('chat-window:open',id,title),
+ getAppInfo:()=>ipcRenderer.invoke('app:getInfo'),getUpdateState:()=>ipcRenderer.invoke('update:getState'),
+ onNavigate:cb=>{const listener=(_e,view)=>cb(view);ipcRenderer.on('deck:navigate',listener);return()=>ipcRenderer.removeListener('deck:navigate',listener);}
 });`);
 fs.writeFileSync(path.join(temp,'main.cjs'),`
 const {app,BrowserWindow,ipcMain,protocol}=require('electron');
@@ -39,8 +41,14 @@ app.whenReady().then(async()=>{
  let firstInfo=true;ipcMain.handle('test:backend',async()=>{if(firstInfo){firstInfo=false;await pause(14000);}return info;});
  const owners={getDeckWindow:()=>main,getMonitorWindow:()=>monitor};
  const {isTrustedIpcSender}=boot.createWindowSecurity(owners);
- manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:owners.getDeckWindow,getBackendInfo:()=>info,isTrustedIpcSender,hardenAppWindow:()=>{},show:false});
- require(${JSON.stringify(path.join(root,'electron-deck-ipc.js'))}).registerDeckIpc({app,...owners,isTrustedIpcSender,getLogBuffer:()=>['fixture status']});
+ let handoffs=0;
+ manager=require(${JSON.stringify(path.join(root,'electron-chat-windows.js'))}).createChatWindows({appRoot:${JSON.stringify(root)},getDeckWindow:owners.getDeckWindow,
+   openDeckWindow:view=>{assert.equal(view,'updates');handoffs++;main.webContents.send('deck:navigate',view);return main;},
+   getBackendInfo:()=>info,isTrustedIpcSender,hardenAppWindow:()=>{},show:false});
+ const available={status:'available',currentVersion:'0.1.1-preview.4',version:'0.1.1-preview.5',installMode:'in-app',platform:'win32',releaseName:'Fixture',releaseUrl:'',percent:0};
+ const userData=app.getPath('userData');
+ require(${JSON.stringify(path.join(root,'electron-deck-ipc.js'))}).registerDeckIpc({app:{isPackaged:true,getVersion:()=>available.currentVersion,getPath:()=>userData},appRoot:${JSON.stringify(root)},
+   ...owners,isTrustedIpcSender,getDataDir:()=>userData,getLogDir:()=>userData,getPortFile:()=>'',updates:{getState:()=>available},getLogBuffer:()=>['fixture status']});
  monitor=new BrowserWindow({show:false,webPreferences:{preload:${JSON.stringify(path.join(root,'monitor-preload.js'))},sandbox:true,contextIsolation:true,nodeIntegration:false}});
  await monitor.loadURL('variant1://app/frontend/monitor.html');
  assert.deepEqual(await monitor.webContents.executeJavaScript('window.variant1Monitor.getLogHistory()'),['fixture status']);
@@ -120,6 +128,22 @@ app.whenReady().then(async()=>{
  assert.deepEqual(cancellations.map(frame=>[frame.role,frame.session_id,frame.admission_id,frame.run_id]),[['detached_chat','chat-b','admission-chat-b','run-chat-b']]);
  assert.equal(await child.webContents.executeJavaScript(escapeKey),true,'the settled detached chat releases Escape');
  console.log('Native streaming: main header inventory, switching to an idle chat, detached title and scoped Escape passed');
+ assert.equal(await child.webContents.executeJavaScript('typeof window.variant1Deck.installUpdate'), 'undefined');
+ peer.socket.send(JSON.stringify({type:'inference:platform',targets:[],install_jobs:[],local_runtime:{supported:true,installed:false}}));
+ peer.socket.send(JSON.stringify({type:'chat:context',session_id:'chat-b',route:'local',model:'fixture',model_configured:true}));
+ await wait(child,'!!document.querySelector(".composer-engine button")');
+ await child.webContents.executeJavaScript('document.querySelector(".composer-engine button").click()');
+ await wait(child,'!!document.querySelector(".settings-rail")');
+ await child.webContents.executeJavaScript('[...document.querySelectorAll(".settings-rail button")].find(b=>b.textContent.includes("About")).click()');
+ await wait(child,'[...document.querySelectorAll("button")].some(b=>b.textContent==="Open updates")');
+ await child.webContents.executeJavaScript('[...document.querySelectorAll("button")].find(b=>b.textContent==="Open updates").click()');
+ await wait(main,'document.querySelector("dialog.updates-overlay[open]")?.textContent.includes("0.1.1-preview.5") && document.querySelector(".version-hero__channel")?.textContent==="Installed build"');
+ assert.match(await main.webContents.executeJavaScript('document.querySelector(".updates-overlay").textContent'),/Download update/);
+ assert.equal(handoffs,1);
+ assert.equal(await child.webContents.executeJavaScript('!!document.querySelector(".updates-overlay")'),false);
+ await main.webContents.executeJavaScript('document.querySelector(".updates-overlay__close").click()');
+ await child.webContents.executeJavaScript('document.querySelector(".settings-overlay__close").click()');
+ console.log('Installed update handoff: production detached chat preload opened the available release in the Deck');
  child.showInactive();child.webContents.invalidate();await pause(250);
  fs.writeFileSync(${JSON.stringify(path.join(out,'detached-chat.png'))},(await child.webContents.capturePage()).toPNG());
 

@@ -33,7 +33,7 @@ function createAppWindows(deps) {
   function getMonitorWindow() { return monitorWindow; }
 
   function openDeckWindow(initialView = 'chat') {
-    const targetView = DECK_VIEWS.has(initialView) ? initialView : 'chat';
+    const targetView = initialView === 'updates' || DECK_VIEWS.has(initialView) ? initialView : 'chat';
 
     if (deckWindow && !deckWindow.isDestroyed()) {
       deckWindow.show();
