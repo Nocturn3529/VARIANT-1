@@ -7,7 +7,7 @@ loop and tool executor.
 
 from __future__ import annotations
 
-from reasoning_summaries import ResponsesSummary
+from reasoning_summaries import ResponsesSummary, readable_responses_reasoning_delta, thoughts_enabled
 
 import time
 import json
@@ -148,6 +148,9 @@ async def call_openai_codex_responses(
         body_field=str(getattr(profile, "prompt_cache_body_field", "") or ""),
         header_name=str(getattr(profile, "prompt_cache_header", "") or ""),
     )
+    show_thought = getattr(reasoning_sink, "returned_thought", None)
+    if not callable(show_thought) or not thoughts_enabled(router, profile, model, payload, provider="openai-codex"):
+        show_thought = None
     request_started = time.perf_counter()
     print(
         f"[cloud] openai-codex transport=responses model={model} "
@@ -308,11 +311,14 @@ async def call_openai_codex_responses(
                     ):
                         delta = event.get("delta") or ""
                         if delta:
-                            text = str(delta)
-                            charge_output(len(text.encode('utf-8')))
+                            charge_output(len(str(delta).encode('utf-8')))
+                        text = readable_responses_reasoning_delta(event)
+                        if text:
                             try:
-                                if text and reasoning_sink is not None:
+                                if reasoning_sink is not None:
                                     reasoning_sink(text)
+                                if show_thought:
+                                    await show_thought(text, "provider_reasoning")
                             except Exception:
                                 pass
                         continue

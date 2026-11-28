@@ -23,6 +23,7 @@ from model_runtime.request_manifest import (
 )
 from model_runtime.prompt_cache import apply_prompt_cache_identity
 from model_runtime.openai_sse import OpenAIChatSSEDecoder
+from reasoning_summaries import ReasoningBuffer, extract_readable_thought_parts, thoughts_enabled
 
 
 @asynccontextmanager
@@ -185,6 +186,11 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
     messages = render_local_messages(source_messages, image_b64)
     payload = _build_local_payload(
         router, messages, sampling, json_mode, reasoning_budget, tools)
+    display_reasoning = (
+        callable(getattr(reasoning_sink, "summary_event", None))
+        and reasoning_budget != 0
+        and thoughts_enabled(router, None, router.model_name or "", payload, provider="local")
+    )
     request_headers = dict(getattr(router.engine, "request_headers", {}) or {})
     raw_cache_enabled = getattr(router.engine, "cache_prompt", None)
     prompt_cache = apply_prompt_cache_identity(
@@ -208,6 +214,8 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
     managed = bool(getattr(router.engine, "managed", True))
     attempts = 2 if managed else 1
     for attempt in range(attempts):
+        attempt_thoughts = ReasoningBuffer(summary_sink=reasoning_sink) if display_reasoning else None
+        summary_status = "discarded"
         url = f"{router.engine.base_url}/v1/chat/completions"
         telemetry_id, telemetry = router._inference.start(router.model_name)
         await router._publish_inference(telemetry, force=True)
@@ -285,11 +293,9 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
                                 finish_reason)
                         delta = choice.get("delta") or {}
                         tok = delta.get("content")
-                        rtok = (
-                            delta.get("reasoning_content")
-                            or delta.get("reasoning")
-                            or delta.get("thinking")
-                        )
+                        rtok = next((value for value in (
+                            delta.get("reasoning_content"), delta.get("reasoning"), delta.get("thinking"),
+                        ) if isinstance(value, str) and value), "")
                         if tool_call_sink is not None and delta.get("tool_calls"):
                             # A sink may mutate before raising, so crossing this
                             # boundary makes replay unsafe even if it then fails.
@@ -306,6 +312,11 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
                                     reasoning_sink(rtok)
                                 except Exception:
                                     pass
+                        if attempt_thoughts is not None:
+                            for piece, source in extract_readable_thought_parts(delta, rtok):
+                                # A public summary can arrive without a text or reasoning alias.
+                                observable_delta_delivered |= bool(piece.strip())
+                                await attempt_thoughts.returned_thought(piece, source)
                         if rtok or tok:
                             token_snapshot = router._inference.token(telemetry_id, rtok or tok)
                             await router._publish_inference(
@@ -347,12 +358,17 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
                     generation_tps=telemetry.get("decode_tps"),
                     manifest_ref=event_hooks.request_ref,
                 )
+            summary_status = "done"
             return
         except asyncio.CancelledError:
+            summary_status = "cancelled"
             telemetry = router._inference.fail(telemetry_id, status="cancelled")
             telemetry_terminal = True
             await router._publish_inference(telemetry, force=True)
             _record_local_terminal(router, telemetry, "cancelled")
+            raise
+        except GeneratorExit:
+            summary_status = "cancelled"
             raise
         except httpx.HTTPError as e:
             last_error = e
@@ -400,6 +416,8 @@ async def call_local_inner(router, messages: list, sampling: dict, json_mode: bo
             _record_local_terminal(router, telemetry, "error")
             raise
         finally:
+            if attempt_thoughts is not None:
+                await attempt_thoughts.finish(summary_status)
             if not telemetry_terminal:
                 telemetry = router._inference.fail(telemetry_id, status="cancelled")
                 await router._publish_inference(telemetry, force=True)

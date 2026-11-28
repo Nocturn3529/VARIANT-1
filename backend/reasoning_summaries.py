@@ -9,6 +9,69 @@ from dataclasses import dataclass, field
 SUMMARY_TEXT_LIMIT = 16_000
 SUMMARY_STEP_LIMIT = 200
 DISPLAY_THOUGHT_SOURCES = ("provider_summary", "provider_reasoning")
+_READABLE_RESPONSES_DELTAS = frozenset({
+    "response.reasoning.delta",
+    "response.reasoning_text.delta",
+})
+
+
+def thoughts_enabled(router, profile, model, payload, *, provider: str) -> bool:
+    """Use the effective request and the matching route's display policy."""
+    from model_runtime.request_policy import effective_reasoning_rule
+
+    reasoning = payload.get("reasoning")
+    options = reasoning if isinstance(reasoning, dict) else {}
+    effort = str(options.get("effort") or payload.get("reasoning_effort") or "").lower()
+    thinking = payload.get("thinking")
+    thinking_type = thinking.get("type") if isinstance(thinking, dict) else None
+    template = payload.get("chat_template_kwargs")
+    template = template if isinstance(template, dict) else {}
+    generation = payload.get("generationConfig")
+    generation = generation if isinstance(generation, dict) else {}
+    gemini = generation.get("thinkingConfig") or generation.get("thinking_config")
+    gemini = gemini if isinstance(gemini, dict) else {}
+    if (
+        reasoning is False or options.get("enabled") is False or options.get("exclude") is True
+        or effort in {"off", "none"} or thinking_type == "disabled"
+        or payload.get("reasoning_budget") == 0 or template.get("enable_thinking") is False
+        or gemini.get("includeThoughts") is False or gemini.get("include_thoughts") is False
+        or gemini.get("thinkingBudget") == 0 or gemini.get("thinking_budget") == 0
+    ):
+        return False
+    getter = getattr(router, "bound_model_route", None)
+    route = getter() if callable(getter) else None
+    if isinstance(route, dict) and route.get("provider") == provider and route.get("model") == model:
+        if route.get("reasoning_enabled") is False or route.get("reasoning_effort") in ("off", "none"):
+            return False
+        if route.get("reasoning_enabled") is True:
+            return True
+    if (options.get("enabled") is True or effort or thinking_type in ("enabled", "adaptive")
+            or gemini.get("includeThoughts") is True or gemini.get("include_thoughts") is True):
+        return True
+    return effective_reasoning_rule(router, profile, model).get("default_enabled") is not False
+
+
+def readable_responses_reasoning_delta(event: dict) -> str:
+    """Read the plaintext field of an explicit reasoning event."""
+    kind = event.get("type")
+    delta = event.get("delta")
+    return delta if isinstance(kind, str) and kind in _READABLE_RESPONSES_DELTAS and isinstance(delta, str) else ""
+
+
+def extract_readable_thought_parts(delta: dict, plaintext):
+    """Read only plaintext aliases and typed text or summary fields."""
+    if isinstance(plaintext, str) and plaintext:
+        # A provider can send the same token in both carriers.
+        yield plaintext, "provider_reasoning"
+        return
+    details = delta.get("reasoning_details")
+    for part in details if isinstance(details, list) else ():
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "reasoning.text" and isinstance(part.get("text"), str):
+            yield part["text"], "provider_reasoning"
+        elif part.get("type") == "reasoning.summary" and isinstance(part.get("summary"), str):
+            yield part["summary"], "provider_summary"
 
 
 @dataclass

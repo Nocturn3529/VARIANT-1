@@ -12,7 +12,7 @@ from chat_session import ConnectionSession
 from host_ports import build_task_turn_ports
 from llm_router import LLMRouter
 from observability import activity
-from reasoning_summaries import ReasoningBuffer, SUMMARY_TEXT_LIMIT
+from reasoning_summaries import ReasoningBuffer, SUMMARY_TEXT_LIMIT, thoughts_enabled
 from run_context import Variant1RunContext, bind_run_context
 from tests.support.conversation_sessions import open_sessions
 from tests.test_cloud_stream_reliability import _client_for, _StreamResponse
@@ -96,15 +96,15 @@ async def test_nous_live_thought_survives_reconnect_and_reopening(tmp_path, monk
     ("hermes", {"reasoning": {"enabled": True}}, True),
     ("hermes", {"reasoning": {"enabled": False}}, False),
     ("hermes", {"reasoning_effort": "none"}, False),
-    ("openai", {}, False),
+    ("openai", {}, True),
+    ("openai", {"reasoning": {"exclude": True}}, False),
 ])
-async def test_only_enabled_nous_plaintext_carriers_are_displayed(tmp_path, monkeypatch, provider, policy, eligible):
-    lines = [chunk({"thinking":"SIGNED_TOPLEVEL_FIXTURE","signature":"SIG_FIXTURE"}),
+async def test_only_enabled_plaintext_carriers_are_displayed(tmp_path, monkeypatch, provider, policy, eligible):
+    lines = [chunk({"thinking":"Readable with signature. ","signature":"SIG_FIXTURE"}),
              chunk({"reasoning_content": "Direct text. "}), chunk({"reasoning_details": [
         {"type":"reasoning.encrypted","data":"OPAQUE_FIXTURE"},
-        {"type":"reasoning.text","text":"SIGNED_TEXT_FIXTURE", "signature":"SIGNATURE_FIXTURE"},
-        {"type":"reasoning.text","text":"CIPHERTEXT_PREVIEW_FIXTURE", "encrypted_content":"CIPHER_FIXTURE"},
-        {"type":"reasoning.text","text":"Returned text"},
+        {"type":"reasoning.text","text":"Readable detail. ", "signature":"SIGNATURE_FIXTURE"},
+        {"type":"reasoning.text","text":"Returned text", "encrypted_content":"CIPHER_FIXTURE"},
         {"type":"reasoning.summary","summary":"Provider summary"},
         {"type":"unknown","text":"HIDDEN_FIXTURE"}]}), chunk({"content":"Answer"}), "data: [DONE]"]
     monkeypatch.setattr(cloud.httpx, "AsyncClient", _client_for(_StreamResponse(lines)))
@@ -117,7 +117,8 @@ async def test_only_enabled_nous_plaintext_carriers_are_displayed(tmp_path, monk
     await sink.finish("done")
     assert reply == ["Answer"]
     assert [(e["source"], e["text"]) for e in events if e["status"] == "done"] == (
-        [("provider_reasoning", "Direct text. Returned text"), ("provider_summary", "Provider summary")] if eligible else [])
+        [("provider_reasoning", "Readable with signature. Direct text. Readable detail. Returned text"),
+         ("provider_summary", "Provider summary")] if eligible else [])
     assert "FIXTURE" not in json.dumps(events)
 
 
@@ -125,12 +126,41 @@ def test_nous_display_respects_default_off_and_explicit_chat_setting():
     model = "fixture/model"
     route = {"provider":"hermes", "model":model}
     router = SimpleNamespace(bound_model_route=lambda: route, model_reasoning_rule=lambda *_: {"default_enabled":False})
-    assert not cloud._nous_thoughts_enabled(router, None, model, {})
+    assert not thoughts_enabled(router, None, model, {}, provider="hermes")
     route["reasoning_enabled"] = True
-    assert cloud._nous_thoughts_enabled(router, None, model, {})
-    assert not cloud._nous_thoughts_enabled(router, None, model, {"reasoning":{"enabled":False}})
+    assert thoughts_enabled(router, None, model, {}, provider="hermes")
+    assert not thoughts_enabled(router, None, model, {"reasoning":{"enabled":False}}, provider="hermes")
     route["reasoning_enabled"] = False
-    assert not cloud._nous_thoughts_enabled(router, None, model, {"reasoning_effort":"high"})
+    assert not thoughts_enabled(router, None, model, {"reasoning_effort":"high"}, provider="hermes")
+    assert thoughts_enabled(router, None, model, {"reasoning_effort":"high"}, provider="openai")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_anthropic_thoughts_use_the_effective_request(tmp_path, monkeypatch, enabled):
+    events = [
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "thinking_delta", "thinking": "Check the schema."}},
+        {"type": "content_block_delta", "index": 0,
+         "delta": {"type": "signature_delta", "signature": "OPAQUE_FIXTURE"}},
+        {"type": "content_block_delta", "index": 1,
+         "delta": {"type": "text_delta", "text": "Answer"}},
+        {"type": "message_stop"},
+    ]
+    response = _StreamResponse(["data: " + json.dumps(event) for event in events])
+    monkeypatch.setattr(cloud.httpx, "AsyncClient", _client_for(response))
+    router = LLMRouter({}, str(tmp_path))
+    thinking = {"type": "enabled", "budget_tokens": 1024} if enabled else {"type": "disabled"}
+    monkeypatch.setattr(router, "prepare_cloud_payload", lambda body, **_: {**body, "thinking": thinking})
+    frames = []
+    sink = ReasoningBuffer(SimpleNamespace(summary_event=frames.append))
+    answer = [part async for part in cloud.call_anthropic(
+        router, [], {"max_tokens": 1024}, "fixture", model="fixture", reasoning_sink=sink,
+    )]
+    await sink.finish("done")
+    assert answer == ["Answer"]
+    assert [row["text"] for row in frames if row["status"] == "done"] == (["Check the schema."] if enabled else [])
+    assert "OPAQUE_FIXTURE" not in json.dumps(frames)
 
 
 @pytest.mark.asyncio

@@ -7,7 +7,7 @@ here. ``LLMRouter.stream`` stays a thin mode-selection facade.
 from __future__ import annotations
 
 from contextlib import aclosing
-from reasoning_summaries import ReasoningBuffer
+from reasoning_summaries import ReasoningBuffer, extract_readable_thought_parts, thoughts_enabled
 
 import asyncio
 from copy import deepcopy
@@ -39,7 +39,6 @@ from model_runtime.openai_sse import OpenAIChatSSEDecoder
 from model_runtime.context import context_limit_tokens as _context_limit_tokens
 from model_runtime.request_policy import (
     effective_reasoning_budget,
-    effective_reasoning_rule,
     project_reasoning_policy,
     resolve_cloud_request_policy,
 )
@@ -306,6 +305,9 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
     prepare_payload = getattr(router, "prepare_cloud_payload", None)
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
+    show_thought = getattr(reasoning_sink, "returned_thought", None)
+    if not callable(show_thought) or not thoughts_enabled(router, profile, model, payload, provider=label):
+        show_thought = None
     headers = router._provider_headers(profile, key) if profile else {"x-api-key": key}
     headers.update({"anthropic-version": "2023-06-01", "content-type": "application/json"})
     prompt_cache = apply_prompt_cache_identity(
@@ -391,10 +393,12 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
                         idx = int(obj.get("index", block_index))
                         if d.get("type") == "text_delta" and d.get("text"):
                             yield d["text"]
-                        elif (d.get("type") == "thinking_delta" and d.get("thinking")
+                        elif (d.get("type") == "thinking_delta" and isinstance(d.get("thinking"), str)
                               and reasoning_sink is not None):
                             try:
                                 reasoning_sink(d["thinking"])
+                                if show_thought:
+                                    await show_thought(d["thinking"], "provider_reasoning")
                             except Exception:
                                 pass
                         elif (d.get("type") == "input_json_delta"
@@ -435,42 +439,6 @@ async def call_anthropic(router, messages, sampling, key, image_b64=None,
         ) from e
     except Exception as e:
         raise ProviderRequestError(label, f"{label} request failed: {e}") from e
-
-def _nous_thoughts_enabled(router, profile, model, payload):
-    """Use the effective request, including an explicit Off or the model default."""
-    reasoning = payload.get("reasoning")
-    options = reasoning if isinstance(reasoning, dict) else {}
-    effort = options.get("effort") or payload.get("reasoning_effort")
-    if reasoning is False or options.get("enabled") is False or options.get("exclude") is True or effort in ("none", "off"):
-        return False
-    bound_route = getattr(router, "bound_model_route", None)
-    route = bound_route() if callable(bound_route) else None
-    if isinstance(route, dict) and route.get("provider") == "hermes" and route.get("model") == model:
-        if route.get("reasoning_enabled") is False or route.get("reasoning_effort") in ("off", "none"):
-            return False
-        if route.get("reasoning_enabled") is True:
-            return True
-    if options.get("enabled") is True or effort:
-        return True
-    return effective_reasoning_rule(router, profile, model).get("default_enabled") is not False
-
-
-def _nous_thought_parts(delta, plaintext):
-    if "signature" in delta or "encrypted_content" in delta:
-        return
-    if plaintext:
-        # The top-level alias often duplicates the same chunk in reasoning_details.
-        yield plaintext, "provider_reasoning"
-        return
-    details = delta.get("reasoning_details")
-    for part in details if isinstance(details, list) else ():
-        if not isinstance(part, dict) or "signature" in part or "encrypted_content" in part:
-            continue
-        if part.get("type") == "reasoning.text" and isinstance(part.get("text"), str):
-            yield part["text"], "provider_reasoning"
-        elif part.get("type") == "reasoning.summary" and isinstance(part.get("summary"), str):
-            yield part["summary"], "provider_summary"
-
 
 async def call_openai(router, messages, sampling, key, json_mode=False, image_b64=None,
                       base: str = None, model_key: str = "openai_model", label: str = "openai",
@@ -528,8 +496,8 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
     prepare_payload = getattr(router, "prepare_cloud_payload", None)
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
-    show_thought = getattr(reasoning_sink, "returned_thought", None) if label == "hermes" else None
-    if show_thought and not _nous_thoughts_enabled(router, profile, model, payload):
+    show_thought = getattr(reasoning_sink, "returned_thought", None)
+    if not callable(show_thought) or not thoughts_enabled(router, profile, model, payload, provider=label):
         show_thought = None
     headers = router._provider_headers(profile, key) if profile else {
         "Authorization": f"Bearer {key}"}
@@ -604,8 +572,7 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                     if stream_diagnostics is not None:
                         stream_diagnostics.note_finish_reason(finish_reason)
                     delta = choice.get("delta") or {}
-                    # Nous returns readable thought deltas alongside regular Chat
-                    # Completions output. Replay objects and signatures are separate.
+                    # Read the provider's plaintext aliases, separate from replay metadata.
                     rc = next((value for value in (
                         delta.get("reasoning_content"), delta.get("reasoning"), delta.get("thinking"),
                     ) if isinstance(value, str) and value), "")
@@ -618,7 +585,7 @@ async def call_openai(router, messages, sampling, key, json_mode=False, image_b6
                             except Exception:
                                 pass
                     if show_thought:
-                        for piece, source in _nous_thought_parts(delta, rc):
+                        for piece, source in extract_readable_thought_parts(delta, rc):
                             try:
                                 await show_thought(piece, source)
                             except Exception:
@@ -710,8 +677,9 @@ def gemini_extract_thoughts(obj: dict):
     for candidate in (obj or {}).get("candidates", []):
         content = candidate.get("content", {}) or {}
         for part in content.get("parts", []) or []:
-            if part.get("text") and part.get("thought"):
-                out.append(part["text"])
+            text = part.get("text")
+            if part.get("thought") and isinstance(text, str) and text:
+                out.append(text)
     return out
 
 
@@ -777,6 +745,9 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
     if callable(prepare_payload):
         payload = prepare_payload(payload, provider=label, model=model)
 
+    show_thought = getattr(reasoning_sink, "returned_thought", None)
+    if not callable(show_thought) or not thoughts_enabled(router, profile, model, payload, provider=label):
+        show_thought = None
     headers = router._provider_headers(profile, key) if profile else {"x-goog-api-key": key}
     headers["Content-Type"] = "application/json"
     prompt_cache = apply_prompt_cache_identity(
@@ -870,6 +841,8 @@ async def call_gemini(router, messages, sampling, key, json_mode=False, image_b6
                         for thought in gemini_extract_thoughts(obj):
                             try:
                                 reasoning_sink(thought)
+                                if show_thought:
+                                    await show_thought(thought, "provider_reasoning")
                             except Exception:
                                 pass
                     if tool_call_sink is not None:

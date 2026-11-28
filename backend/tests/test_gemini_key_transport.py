@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -8,6 +9,7 @@ from llm_cloud_stream import call_gemini
 from llm_router import LLMRouter
 from model_providers import CredentialLease, ProviderProfile, ProviderRequestError
 from model_runtime.llama_server import LocalEngineError
+from reasoning_summaries import ReasoningBuffer
 from speech import providers as speech
 
 
@@ -83,6 +85,50 @@ async def test_gemini_chat_api_key_never_enters_request_url(transport, monkeypat
             _ = [part async for part in stream]
         assert _KEY not in str(caught.value)
         assert caught.value.status_code == {"http": 400, "embedded": 429, "transport": 503}[kind]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["direct", "profile", "subscription"])
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_gemini_thoughts_and_credentials_follow_the_selected_route(transport, monkeypatch, route, enabled):
+    router, install = transport
+    label = "google-antigravity" if route == "subscription" else "gemini"
+    profile = None if route == "direct" else router.provider_profile(label)
+    monkeypatch.setattr(router, "_oauth_rec", lambda _name: {"project_id": "fixture-project"})
+
+    def configure(payload, **_kwargs):
+        payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": enabled}
+        return payload
+
+    monkeypatch.setattr(router, "prepare_cloud_payload", configure)
+
+    def mock_request(request):
+        assert dict(request.url.params) == {"alt": "sse"}
+        assert _KEY not in str(request.url)
+        body = json.loads(request.content)
+        event = {"candidates": [{"content": {"parts": [
+            {"thought": True, "text": "Check the payload.", "thoughtSignature": "OPAQUE_FIXTURE"},
+            {"text": "Answer"},
+        ]}, "finishReason": "STOP"}]}
+        if route == "subscription":
+            assert request.headers["Authorization"] == f"Bearer {_KEY}"
+            assert "x-goog-api-key" not in request.headers and body["project"] == "fixture-project"
+            body = body["request"]
+            event = {"response": event}
+        else:
+            assert request.headers["x-goog-api-key"] == _KEY
+        assert body["generationConfig"]["thinkingConfig"]["includeThoughts"] == enabled
+        return httpx.Response(200, text=f"data: {json.dumps(event)}\n\n")
+
+    install(mock_request)
+    frames = []
+    sink = ReasoningBuffer(summary_sink=SimpleNamespace(summary_event=frames.append))
+    stream = call_gemini(router, [], {"max_tokens": 32}, _KEY, profile=profile,
+                         model="fixture", reasoning_sink=sink)
+    assert [part async for part in stream] == ["Answer"]
+    await sink.finish("done")
+    assert [row["text"] for row in frames if row["status"] == "done"] == (["Check the payload."] if enabled else [])
+    assert "OPAQUE_FIXTURE" not in json.dumps(frames)
 
 
 @pytest.mark.asyncio

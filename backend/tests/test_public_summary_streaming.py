@@ -36,7 +36,7 @@ async def test_native_public_delta_is_visible_before_provider_finishes(tmp_path,
     sink = ReasoningBuffer(summary_sink=SimpleNamespace(summary_event=public))
     class Response(_StreamResponse):
         async def aiter_lines(self):
-            yield "data: " + json.dumps({"type": "response.reasoning_text.delta", "delta": "PRIVATE"})
+            yield "data: " + json.dumps({"type": "response.reasoning_encrypted.delta", "delta": "PRIVATE"})
             yield "data: " + json.dumps(delta("**Inspect** the files."))
             await release.wait()
             yield "data: " + json.dumps({"type": "response.output_text.delta", "delta": "Answer"})
@@ -57,6 +57,44 @@ async def test_native_public_delta_is_visible_before_provider_finishes(tmp_path,
         release.set()
         await task
     assert tokens == ["Answer"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["codex", "xai"])
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_responses_display_only_eligible_plaintext(tmp_path, monkeypatch, transport, enabled):
+    from llm_router import LLMRouter
+    import llm_openai_codex_responses as codex
+    import llm_xai_responses as xai
+    from tests.test_cloud_stream_reliability import _StreamResponse, _client_for
+
+    module = codex if transport == "codex" else xai
+    router = LLMRouter({}, str(tmp_path))
+    monkeypatch.setattr(router, "prepare_cloud_payload", lambda body, **_: {
+        **body, "reasoning": {"enabled": enabled},
+    })
+    events = [
+        {"type": "response.reasoning_text.delta", "delta": "Check the report. ", "signature": "SIGNATURE_FIXTURE"},
+        {"type": "response.reasoning.delta", "delta": "Then verify it."},
+        {"type": "response.reasoning.delta", "delta": {"encrypted_content": "OBJECT_FIXTURE"}},
+        {"type": "response.reasoning_text.delta", "delta": ["LIST_FIXTURE"]},
+        {"type": "response.reasoning_encrypted.delta", "delta": "CIPHER_FIXTURE"},
+        delta("Provider summary"),
+        {"type": "response.output_text.delta", "delta": "Answer"},
+        {"type": "response.completed", "response": {}},
+    ]
+    response = _StreamResponse(["data: " + json.dumps(event) for event in events])
+    monkeypatch.setattr(module.httpx, "AsyncClient", _client_for(response))
+    fn = codex.call_openai_codex_responses if transport == "codex" else xai.call_xai_responses
+    frames = []
+    sink = ReasoningBuffer(SimpleNamespace(summary_event=frames.append))
+    stream = fn(router, [{"role": "user", "content": "input"}], {"max_tokens": 64}, "key", reasoning_sink=sink)
+    assert [part async for part in stream] == ["Answer"]
+    await sink.finish("done")
+    shown = [row["text"] for row in frames if row["status"] == "done" and row.get("source") == "provider_reasoning"]
+    assert shown == (["Check the report. Then verify it."] if enabled else [])
+    assert any(row["text"] == "Provider summary" for row in frames)
+    assert "FIXTURE" not in json.dumps(frames) and "FIXTURE" not in sink.text()
 
 
 @pytest.mark.asyncio

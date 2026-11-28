@@ -12,6 +12,7 @@ import pytest
 import llm_local_stream as lls
 from llm_stream_diagnostics import StreamDiagnostics
 from model_runtime.llama_server import LlamaServer
+from reasoning_summaries import ReasoningBuffer
 
 
 class _Engine:
@@ -157,6 +158,61 @@ async def test_call_local_retries_after_connect_error(monkeypatch):
     assert diagnostics.finish_reason == "stop"
     assert router.start_calls == 1
     assert stream_ctx.calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_local_summary_disconnect_keeps_attempts_distinct(monkeypatch, enabled):
+    from tests.test_cloud_stream_reliability import _sequenced_client_for, _StreamResponse
+
+    def update(*, summary):
+        return "data: " + json.dumps({"choices": [{"delta": {"reasoning_details": [
+            {"type": "reasoning.summary", "summary": summary},
+            {"type": "reasoning.encrypted", "data": "OPAQUE_FIXTURE"},
+        ]}}]})
+
+    class Interrupted(_StreamResponse):
+        async def aiter_lines(self):
+            yield update(summary="First attempt")
+            raise httpx.RemoteProtocolError("fixture disconnected")
+
+    next_attempt = _StreamResponse([
+        update(summary="Second attempt"),
+        'data: {"choices":[{"delta":{"content":"answer"}}]}',
+        "data: [DONE]",
+    ])
+    responses = [Interrupted([]), next_attempt]
+    monkeypatch.setattr(lls.httpx, "AsyncClient", _sequenced_client_for(responses))
+    router = _Router()
+    router.engine.ready = True
+    router.engine.reasoning_budget = -1 if enabled else 0
+
+    async def ensure(selected):
+        await selected.start_local()
+
+    monkeypatch.setattr("model_runtime.engine_manager.ensure_local_engine", ensure)
+    frames = []
+    sink = ReasoningBuffer(SimpleNamespace(summary_event=frames.append))
+
+    async def consume():
+        return [part async for part in lls.call_local_inner(
+            router, [{"role": "user", "content": "fixture"}], {"max_tokens": 8}, reasoning_sink=sink,
+        )]
+
+    if enabled:
+        with pytest.raises(lls.LocalEngineError, match="fixture disconnected"):
+            await consume()
+        assert responses == [next_attempt] and router.start_calls == 0
+        assert await consume() == ["answer"]
+        assert [(row["text"], row["status"]) for row in frames] == [
+            ("First attempt", "running"), ("First attempt", "discarded"),
+            ("Second attempt", "running"), ("Second attempt", "done"),
+        ]
+        assert frames[0]["summary_id"] == frames[1]["summary_id"] != frames[2]["summary_id"] == frames[3]["summary_id"]
+    else:
+        assert await consume() == ["answer"]
+        assert frames == []
+    assert responses == [] and router.start_calls == 1
 
 
 @pytest.mark.asyncio
