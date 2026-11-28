@@ -10,6 +10,11 @@ backend packages; this module retains only composition and live boundary calls.
 # construct, inherit, or import VARIANT-1's trusted service graph.
 import sys
 
+if __name__ == "__main__" and sys.argv[1:2] == ["--cleanup-searxng"]:
+    from web_search.searxng import cleanup_main
+
+    raise SystemExit(cleanup_main(sys.argv[2:]))
+
 if __name__ == "__main__" and sys.argv[1:2] == ["--check-backend-owner"]:
     from lifecycle import owns_backend_process
 

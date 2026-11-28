@@ -17,7 +17,11 @@ Config lives under ``tools.json`` → ``web_search.searxng`` (see ToolsConfig).
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
+from pathlib import Path
+import re
 import secrets
 import shutil
 import sys
@@ -40,6 +44,7 @@ DEFAULT_PORT = 8888
 DEFAULT_IMAGE = "docker.io/searxng/searxng:latest"
 DEFAULT_CONTAINER = "variant1-searxng"
 CONTAINER_PORT = 8080
+_LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
 
 
 class SearxngError(RuntimeError):
@@ -122,6 +127,7 @@ class SearxngServer:
         c = dict(cfg or {}) if isinstance(cfg, dict) else {}
         self.data_dir = data_dir or ""
         self.app_root = app_root or ""
+        self._configured_url = str(c.get("base_url") or "").strip().rstrip("/")
         self.autostart = bool(c.get("autostart", False))
         # managed=true: VARIANT-1 starts/stops the container. managed=false: attach only.
         self.managed = bool(c.get("managed", True))
@@ -146,23 +152,30 @@ class SearxngServer:
         self.ready = False
         self.last_error = ""
         self._owned = False  # True if this process started/attached as owner
+        self._owner_runtime = ""
         self._container_running = False
         self._runtime: str | None = None
         self._start_lock: asyncio.Lock | None = None
         self._autostart_task: asyncio.Task | None = None
+        profile = os.path.normcase(os.path.realpath(self.data_dir or self.app_root or "."))
+        self._profile_label = hashlib.sha256(os.fsencode(profile)).hexdigest()
+        self._cid_dir = Path(profile) / "data" / "searxng"
 
     @property
     def base_url(self) -> str:
-        return f"http://{self.host}:{self.port}"
+        if self._configured_url and urlparse(self._configured_url).hostname not in _LOCAL_HOSTS:
+            return self._configured_url
+        hostname = f"[{self.host}]" if ":" in self.host else self.host
+        return f"http://{hostname}:{self.port}"
 
     def _uses_local_managed_endpoint(self) -> bool:
-        return self.host.strip().lower() in {
-            "127.0.0.1", "localhost", "::1", "0.0.0.0",
-        }
+        return urlparse(self.base_url).hostname in _LOCAL_HOSTS
 
     def configure(self, cfg: dict | None) -> bool:
         """Refresh settings from tools.json without dropping live process state."""
         c = dict(cfg or {}) if isinstance(cfg, dict) else {}
+        if "base_url" in c:
+            self._configured_url = str(c["base_url"] or "").strip().rstrip("/")
         if "autostart" in c:
             self.autostart = bool(c.get("autostart"))
         if "managed" in c:
@@ -206,14 +219,17 @@ class SearxngServer:
             except (TypeError, ValueError):
                 pass
         address_changed = (host, port) != (self.host, self.port)
-        if address_changed and (self._owned or self._container_running):
+        name_changed = bool(c.get("container_name") and str(c["container_name"]).strip() != self.container_name)
+        if (address_changed or name_changed) and (self._owned or self._container_running):
             await self.stop(force=True)
-        self.ready = False if address_changed else self.ready
+        self.ready = False if address_changed or name_changed else self.ready
         if address_changed:
             self._container_running = False
         self.configure(c)
         if address_changed:
             self.host, self.port = host, port
+        if not self.managed or not self._uses_local_managed_endpoint():
+            self._owned = self._container_running = False
 
     def runtime_path(self) -> str | None:
         if self._runtime and os.path.isfile(self._runtime):
@@ -237,12 +253,12 @@ class SearxngServer:
             "container_name": self.container_name,
             "docker_image": self.docker_image,
             "docker_available": self.docker_available(),
-            "runtime": os.path.basename(self.runtime_path() or "") or "",
+            "runtime": self._owner_runtime if self._owned else os.path.basename(self.runtime_path() or ""),
             "error": self.last_error or "",
         }
 
-    async def _run_cli(self, args: list[str], *, timeout: float = 120.0) -> tuple[int, str, str]:
-        runtime = self.runtime_path()
+    async def _run_cli(self, args: list[str], *, timeout: float = 120.0, runtime: str | None = None) -> tuple[int, str, str]:
+        runtime = runtime or self.runtime_path()
         if not runtime:
             raise SearxngError(
                 "Docker/Podman not found on PATH. Install Docker Desktop to run "
@@ -283,20 +299,50 @@ class SearxngServer:
         err = (err_b or b"").decode("utf-8", errors="replace").strip()
         return int(proc.returncode or 0), out, err
 
-    async def _container_state(self) -> str:
-        """Return 'running' | 'exited' | 'missing' | 'unknown'."""
-        code, out, _ = await self._run_cli(
-            ["inspect", "-f", "{{.State.Running}}", self.container_name],
-            timeout=15.0,
-        )
-        if code != 0:
-            return "missing"
-        text = (out or "").strip().lower()
-        if text == "true":
-            return "running"
-        if text == "false":
-            return "exited"
-        return "unknown"
+    async def _inspect(self, runtime: str, identity: str) -> dict | None:
+        code, out, err = await self._run_cli(["container", "inspect", "--", identity], runtime=runtime, timeout=10)
+        if code:
+            if any(term in err.lower() for term in ("no such container", "no such object", "no container with")):
+                return None
+            raise SearxngError("The container runtime could not confirm the container identity.")
+        try:
+            item, = json.loads(out)
+            cid = item.get("Id") or item.get("ID")
+            running = item["State"]["Running"]
+            if not isinstance(cid, str) or not re.fullmatch("[0-9a-f]{64}", cid) or not isinstance(running, bool):
+                raise ValueError
+            return {"id": cid, "name": str(item.get("Name") or "").lstrip("/"), "running": running,
+                    "labels": item["Config"].get("Labels") or {}}
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            raise SearxngError("The container runtime returned incomplete identity information.") from exc
+
+    async def _owned_containers(self, *, forget_missing: bool = False):
+        owners = []
+        if self.managed and self._uses_local_managed_endpoint():
+            for kind in ("docker", "podman"):
+                path = self._cid_dir / (kind + ".cid")
+                try:
+                    with path.open(encoding="ascii") as stream:
+                        cid = stream.read(80).strip()
+                except FileNotFoundError:
+                    continue
+                if not re.fullmatch("[0-9a-f]{64}", cid):
+                    raise SearxngError("The managed container ID could not be verified.")
+                runtime = shutil.which(kind)
+                if not runtime:
+                    raise SearxngError(f"The recorded {kind} runtime is unavailable.")
+                info = await self._inspect(runtime, cid)
+                if info is None:
+                    if forget_missing and path.read_text(encoding="ascii").strip() == cid:
+                        path.unlink()
+                    continue
+                labels = info["labels"]
+                if (info["id"] == cid and labels.get("com.variant1.managed") == "searxng"
+                        and labels.get("com.variant1.profile") == self._profile_label):
+                    owners.append((runtime, path, info))
+        self._owned = self._container_running = any(info["running"] for _, _, info in owners)
+        self._owner_runtime = next((os.path.basename(runtime) for runtime, _, info in owners if info["running"]), "")
+        return owners
 
     async def _wait_healthy(self, timeout_s: float) -> bool:
         deadline = asyncio.get_event_loop().time() + timeout_s
@@ -322,26 +368,15 @@ class SearxngServer:
         return False
 
     async def probe(self) -> bool:
-        """Non-destructive health probe of base_url."""
+        """Reachability and permission to manage a container are independent."""
+        self.ready = await self._wait_healthy(2.5)
         try:
-            ok = await self._wait_healthy(2.5)
-            self.ready = ok
-            if (
-                self.managed
-                and self._uses_local_managed_endpoint()
-                and self.docker_available()
-            ):
-                state = await self._container_state()
-                self._container_running = state == "running"
-                if self._container_running:
-                    self._owned = True
-            if ok:
-                self.last_error = ""
-            return ok
-        except Exception as e:
-            self.ready = False
-            self.last_error = str(e)
-            return False
+            await self._owned_containers()
+            self.last_error = ""
+        except (OSError, SearxngError) as exc:
+            self._owned = self._container_running = False
+            self.last_error = str(exc)
+        return self.ready
 
     def _settings_mount_dir(self) -> str:
         config_dir = os.path.join(self.data_dir, "config") if self.data_dir else ""
@@ -361,166 +396,96 @@ class SearxngServer:
 
     async def _start_unlocked(self, *, ready_timeout_s: float, force: bool) -> None:
         self.last_error = ""
-        # Already healthy (external or previously started) — reuse.
         if await self._wait_healthy(2.0):
             self.ready = True
-            if (
-                self.managed
-                and self._uses_local_managed_endpoint()
-                and self.docker_available()
-            ):
-                state = await self._container_state()
-                self._container_running = state == "running"
-                self._owned = self._owned or self._container_running
-            print(f"[searxng] ready at {self.base_url} (already listening)", flush=True)
+            try:
+                await self._owned_containers()
+            except (OSError, SearxngError) as exc:
+                self._owned = self._container_running = False
+                self.last_error = str(exc)
             return
-
-        if not self.managed:
-            self.ready = False
-            self.last_error = (
-                f"no SearXNG reachable at {self.base_url} "
-                "(managed=false; start your own instance or enable managed)"
-            )
-            raise SearxngError(self.last_error)
-
+        self.ready = False
+        if not self.managed or not self._uses_local_managed_endpoint():
+            raise SearxngError(f"No SearXNG reachable at {self.base_url}; this endpoint is attach-only.")
         if not force and not self.autostart:
-            self.ready = False
-            self.last_error = "autostart disabled; use Settings → Start SearXNG"
-            raise SearxngError(self.last_error)
+            raise SearxngError("autostart disabled; use Settings to start SearXNG")
 
-        if not self.docker_available():
-            self.ready = False
-            self.last_error = (
-                "Docker/Podman not found. Install Docker Desktop for managed SearXNG, "
-                f"or run an instance at {self.base_url}."
-            )
-            raise SearxngError(self.last_error)
-
-        state = await self._container_state()
-        self._container_running = state == "running"
-        if state == "running":
-            self._owned = True
-            # Container up but our port probe failed — wrong port or still booting.
-            if await self._wait_healthy(ready_timeout_s):
-                self.ready = True
-                self._owned = True
-                print(f"[searxng] ready at {self.base_url} (existing container)", flush=True)
-                return
-            self.last_error = (
-                f"container {self.container_name} is running but "
-                f"{self.base_url} did not become healthy"
-            )
-            raise SearxngError(self.last_error)
-
-        if state == "exited":
-            print(f"[searxng] starting existing container {self.container_name}", flush=True)
-            code, _out, err = await self._run_cli(["start", self.container_name], timeout=60.0)
-            if code != 0:
-                self.last_error = err or f"docker start failed (code {code})"
-                raise SearxngError(self.last_error)
+        owners = await self._owned_containers(forget_missing=True)
+        current = next((entry for entry in owners if entry[2]["name"] == self.container_name), None)
+        if current is not None:
+            runtime, _, info = current
+            if not info["running"]:
+                code, _, err = await self._run_cli(["start", info["id"]], runtime=runtime, timeout=60)
+                if code:
+                    raise SearxngError(err or "Could not start the owned SearXNG container.")
         else:
-            # missing → create
+            runtime = self.runtime_path()
+            if not runtime:
+                raise SearxngError("Docker/Podman not found. Start an external instance or install a runtime.")
+            if await self._inspect(runtime, self.container_name) is not None:
+                raise SearxngError("The configured container name is in use without a matching ownership record.")
             if not tcp_port_is_free(self.host, self.port):
-                # Something else is on the port (not healthy for HTTP earlier).
-                self.last_error = (
-                    f"port {self.host}:{self.port} is in use but not serving SearXNG"
-                )
-                raise SearxngError(self.last_error)
-            settings_dir = self._settings_mount_dir()
-            # Docker Desktop on Windows wants host paths; normalize for volume flag.
-            vol = os.path.abspath(settings_dir)
+                raise SearxngError(f"port {self.host}:{self.port} is in use but not serving SearXNG")
+            kind = Path(runtime).stem.lower()
+            if kind not in {"docker", "podman"}:
+                raise SearxngError("Unsupported managed container runtime.")
+            self._cid_dir.mkdir(parents=True, exist_ok=True)
+            cidfile = self._cid_dir / (kind + ".cid")
+            # Rotating a stopped, renamed container's receipt leaves the old container intact.
+            for _, path, prior in owners:
+                if path == cidfile and not prior["running"] and path.read_text().strip() == prior["id"]:
+                    path.unlink()
+            if cidfile.exists():
+                raise SearxngError("An existing container ownership record must be reconciled before starting another.")
             args = [
-                "run",
-                "-d",
-                "--name", self.container_name,
-                "--label", "com.variant1.managed=searxng",
+                "run", "-d", "--cidfile", str(cidfile), "--name", self.container_name,
+                "--label", "com.variant1.managed=searxng", "--label", "com.variant1.profile=" + self._profile_label,
                 "-p", f"127.0.0.1:{self.port}:{CONTAINER_PORT}",
-                "-v", f"{vol}:/etc/searxng:rw",
-                "-e", f"SEARXNG_BASE_URL={self.base_url}/",
-                "--restart", "no",
-                self.docker_image,
+                "-v", f"{os.path.abspath(self._settings_mount_dir())}:/etc/searxng:rw",
+                "-e", f"SEARXNG_BASE_URL={self.base_url}/", "--restart", "no", self.docker_image,
             ]
-            print(f"[searxng] docker {' '.join(args)}", flush=True)
             try:
-                code, _out, err = await self._run_cli(args, timeout=180.0)
+                code, _, err = await self._run_cli(args, runtime=runtime, timeout=180)
+                if code:
+                    raise SearxngError(err or "Could not create the managed SearXNG container.")
             except SearxngError:
-                state = await self._reconcile_ambiguous_start()
-                if state != "running":
+                # The runtime writes its CID file even when acknowledgement of the launch is lost.
+                actual = await self._owned_containers()
+                if not any(path == cidfile and info["running"] for _, path, info in actual):
                     raise
-                code, err = 0, ""
-            if code != 0:
-                self.last_error = err or f"docker run failed (code {code})"
-                raise SearxngError(self.last_error)
-
+            else:
+                actual = await self._owned_containers()
+                if not any(path == cidfile and info["name"] == self.container_name for _, path, info in actual):
+                    raise SearxngError("Container creation finished without a verified ownership record.")
         if not await self._wait_healthy(ready_timeout_s):
-            self.ready = False
-            self.last_error = f"SearXNG did not become healthy at {self.base_url}"
-            # Best-effort stop so we do not leave a half-broken container racing.
-            try:
-                await self._run_cli(["stop", self.container_name], timeout=30.0)
-            except Exception:
-                pass
-            raise SearxngError(self.last_error)
-
+            await self._stop_owned()
+            raise SearxngError(f"SearXNG did not become healthy at {self.base_url}")
+        await self._owned_containers()
         self.ready = True
-        self._owned = True
-        self._container_running = True
-        self.last_error = ""
-        print(f"[searxng] ready at {self.base_url}", flush=True)
 
-    async def _reconcile_ambiguous_start(self, *, timeout_s: float = 15.0) -> str:
-        deadline = asyncio.get_event_loop().time() + max(1.0, float(timeout_s))
-        last = "unknown"
-        while asyncio.get_event_loop().time() < deadline:
-            try:
-                last = await self._container_state()
-            except Exception:
-                last = "unknown"
-            if last == "running":
-                self._container_running = True
-                self._owned = True
-                return last
-            if last == "exited":
-                self._container_running = False
-                try:
-                    await self._run_cli(["rm", "-f", self.container_name], timeout=30.0)
-                except Exception:
-                    pass
-                return last
-            await asyncio.sleep(0.5)
-        return last
+    async def _stop_owned(self) -> None:
+        for runtime, _, info in await self._owned_containers():
+            if not info["running"]:
+                continue
+            code, _, _ = await self._run_cli(["stop", info["id"]], runtime=runtime, timeout=45)
+            remaining = await self._inspect(runtime, info["id"])
+            if remaining is not None and remaining["running"]:
+                raise SearxngError(f"The owned SearXNG container is still running (stop status {code}).")
+        self._owned = self._container_running = False
 
     async def stop(self, *, force: bool = False) -> None:
-        """Stop the managed container. force=True stops even if not owned by us."""
-        self.ready = False
+        """A manual or shutdown Stop requires the same exact managed ownership."""
         retry_task = self._autostart_task
         if retry_task is not None and retry_task is not asyncio.current_task():
             self._autostart_task = None
             retry_task.cancel()
             await asyncio.gather(retry_task, return_exceptions=True)
-        if not self.managed and not force:
-            return
-        if not self._owned and not force:
-            # We never started it this session — leave external instances alone.
-            return
-        if not self.docker_available():
-            return
-        try:
-            state = await self._container_state()
-            self._container_running = state == "running"
-            if state == "running":
-                print(f"[searxng] stopping container {self.container_name}", flush=True)
-                await self._run_cli(["stop", self.container_name], timeout=45.0)
-            state = await self._container_state()
-            self._container_running = state == "running"
-        except Exception as e:
-            print(f"[searxng] stop warning: {e}", flush=True)
-            try:
-                self._container_running = await self._container_state() == "running"
-            except Exception:
-                self._container_running = True
-        if not self._container_running:
-            self._owned = False
+        if self._start_lock is None:
+            self._start_lock = asyncio.Lock()
+        async with self._start_lock:
+            await self._stop_owned()
+            if self.managed and self._uses_local_managed_endpoint():
+                self.ready = False
 
     async def _autostart_retry_loop(self) -> None:
         delay = 3.0
@@ -546,7 +511,7 @@ class SearxngServer:
 
     async def ensure_started_if_autostart(self) -> None:
         """Lifecycle hook: start when autostart+managed, never raise to kill boot."""
-        if not self.managed or not self.autostart:
+        if not self.managed or not self.autostart or not self._uses_local_managed_endpoint():
             # Still probe so Settings can show "already running" for external instances.
             await self.probe()
             return
@@ -559,3 +524,26 @@ class SearxngServer:
             self.last_error = str(e)
             print(f"[searxng] autostart failed: {e}", flush=True)
             self._schedule_autostart_retry()
+
+
+def cleanup_main(argv: list[str]) -> int:
+    """Cold/forced Electron cleanup. This entry point never boots the backend."""
+    if len(argv) != 1 or not os.path.isabs(argv[0]):
+        return 2
+    data = Path(argv[0])
+    if not any((data / "data" / "searxng" / (kind + ".cid")).is_file() for kind in ("docker", "podman")):
+        return 0
+    config = Path(os.environ.get("VARIANT1_CONFIG") or data / "config")
+    path = Path(os.environ.get("VARIANT1_TOOLS_CONFIG") or config / "tools.json")
+    try:
+        try:
+            settings = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            settings = {}
+        cfg = settings.get("web_search", {}).get("searxng", {})
+        if not isinstance(cfg, dict) or ("managed" in cfg and not isinstance(cfg["managed"], bool)):
+            return 1
+        asyncio.run(SearxngServer(cfg, data_dir=str(data)).stop())
+    except (OSError, ValueError, AttributeError, TypeError, SearxngError):
+        return 1
+    return 0

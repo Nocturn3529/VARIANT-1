@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+import os
+import runpy
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -61,116 +65,141 @@ def test_public_status_defaults():
     assert "docker_available" in st
 
 
+class FakeRuntime:
+    def __init__(self, kind, root):
+        self.kind = kind
+        self.path = str(root / (kind + (".exe" if os.name == "nt" else "")))
+        self.rows = {}
+        self.calls = []
+        self.fail_stop = False
+
+    async def run(self, args, *, runtime, timeout):
+        assert runtime == self.path
+        self.calls.append(list(args))
+        command = args[0]
+        if command == "container":
+            key = args[-1]
+            row = next((r for r in self.rows.values() if key in (r["Id"], r["Name"].lstrip("/"))), None)
+            return (0, json.dumps([row]), "") if row else (1, "", "No such container")
+        if command == "run":
+            cid = "a" * 64
+            labels = dict(args[i + 1].split("=", 1) for i, arg in enumerate(args) if arg == "--label")
+            self.rows[cid] = {"Id": cid, "Name": "/" + args[args.index("--name") + 1],
+                              "Config": {"Labels": labels}, "State": {"Running": True}}
+            Path(args[args.index("--cidfile") + 1]).write_text(cid, encoding="ascii")
+            return 0, cid, ""
+        assert command in {"stop", "start"} and args[1] in self.rows
+        if command == "stop" and self.fail_stop:
+            return 1, "", "fixture stop failure"
+        self.rows[args[1]]["State"]["Running"] = command == "start"
+        return 0, "", ""
+
+    def use(self, manager, monkeypatch):
+        monkeypatch.setattr(sx.shutil, "which", lambda name: self.path if name == self.kind else None)
+        monkeypatch.setattr(manager, "_run_cli", self.run)
+        monkeypatch.setattr(sx, "tcp_port_is_free", lambda *args: True)
+
+
 @pytest.mark.asyncio
-@pytest.mark.parametrize("docker_available", [False, True])
-async def test_start_reuses_already_healthy(tmp_path: Path, docker_available: bool):
-    mgr = sx.SearxngServer({"autostart": True}, data_dir=str(tmp_path))
-    with (
-        patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=True)),
-        patch.object(mgr, "docker_available", return_value=docker_available),
-        patch.object(mgr, "_container_state", new=AsyncMock(return_value="missing")) as state,
-        patch.object(mgr, "_run_cli", new=AsyncMock(side_effect=AssertionError("unexpected live container command"))) as cli,
-    ):
+@pytest.mark.parametrize("kind", ["docker", "podman"])
+async def test_verified_local_manager_starts_and_stops_only_its_full_container_id(tmp_path, monkeypatch, kind):
+    runtime = FakeRuntime(kind, tmp_path)
+    cfg = {"autostart": True, "container_name": "custom-search"}
+    profile = tmp_path / "profile"
+    mgr = sx.SearxngServer(cfg, data_dir=str(profile))
+    runtime.use(mgr, monkeypatch)
+    monkeypatch.setattr(mgr, "_wait_healthy", AsyncMock(side_effect=[False, True]))
+    await mgr.ensure_started_if_autostart()
+    cid = (profile / "data" / "searxng" / (kind + ".cid")).read_text()
+    assert mgr.public_status()["owned"] and mgr.ready
+    # The original name is now occupied by an independent container.
+    runtime.rows[cid]["Name"] = "/renamed-owner"
+    foreign = "b" * 64
+    runtime.rows[foreign] = {"Id": foreign, "Name": "/custom-search", "Config": {"Labels": {}},
+                             "State": {"Running": True}}
+    fresh = sx.SearxngServer(cfg, data_dir=str(profile))
+    runtime.use(fresh, monkeypatch)
+    await fresh.stop(force=True)
+    assert [call for call in runtime.calls if call[0] == "stop"] == [["stop", cid]]
+    assert runtime.rows[foreign]["State"]["Running"]
+    runtime.rows[cid]["Name"] = "/custom-search"
+    runtime.rows[foreign]["Name"] = "/independent"
+    monkeypatch.setattr(fresh, "_wait_healthy", AsyncMock(side_effect=[False, True]))
+    await fresh.start(force=True)
+    assert ["start", cid] in runtime.calls
+    runtime.fail_stop = True
+    with pytest.raises(sx.SearxngError, match="still running"):
+        await fresh.stop()
+    assert fresh.public_status()["owned"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["attach", "external", "missing-proof", "foreign-profile", "wrong-id"])
+async def test_probe_or_force_stop_cannot_claim_an_independent_server(tmp_path, monkeypatch, mode):
+    cfg = {"managed": mode != "attach", "container_name": "search"}
+    if mode == "external":
+        cfg["base_url"] = "http://192.0.2.42:8888"
+        cfg["host"] = "127.0.0.1"  # A saved local default does not authorize a stop for an external URL.
+    mgr = sx.SearxngServer(cfg, data_dir=str(tmp_path))
+    runtime = FakeRuntime("podman", tmp_path)
+    runtime.use(mgr, monkeypatch)
+    cid = "c" * 64
+    runtime.rows[cid] = {"Id": cid, "Name": "/search", "State": {"Running": True},
+        "Config": {"Labels": {"com.variant1.managed":"searxng",
+                              "com.variant1.profile":"foreign" if mode == "foreign-profile" else mgr._profile_label}}}
+    if mode != "missing-proof":
+        mgr._cid_dir.mkdir(parents=True)
+        (mgr._cid_dir / "podman.cid").write_text("d"*64 if mode == "wrong-id" else cid)
+    monkeypatch.setattr(mgr, "_wait_healthy", AsyncMock(return_value=True))
+    assert await mgr.probe()
+    await mgr.start(force=True)
+    if mode == "external":
+        assert mgr.base_url == cfg["base_url"]
+    assert not mgr.public_status()["owned"]
+    await mgr.stop(force=True)
+    assert all(call[0] == "container" for call in runtime.calls)
+    assert runtime.rows[cid]["State"]["Running"]
+
+
+@pytest.mark.parametrize("kind", ["docker", "podman"])
+def test_packaged_entry_cleanup_verifies_profile_runtime_and_id(tmp_path, monkeypatch, kind):
+    profile = tmp_path / "fixture-profile"
+    config = profile / "config" / "tools.json"
+    config.parent.mkdir(parents=True)
+    monkeypatch.setenv("VARIANT1_TOOLS_CONFIG", str(config))
+    cid = "e" * 64
+    proof = profile / "data" / "searxng" / (kind + ".cid")
+    proof.parent.mkdir(parents=True)
+    proof.write_text(cid)
+    mgr = sx.SearxngServer({}, data_dir=str(profile))
+    fake = FakeRuntime(kind, tmp_path)
+    fake.rows[cid] = {"Id":cid, "Name":"/not-the-default", "State":{"Running":True},
+        "Config":{"Labels":{"com.variant1.managed":"searxng","com.variant1.profile":mgr._profile_label}}}
+    monkeypatch.setattr(sx.shutil, "which", lambda name: fake.path if name == kind else None)
+    async def run(self, args, **kwargs):
+        return await fake.run(args, **kwargs)
+    monkeypatch.setattr(sx.SearxngServer, "_run_cli", run)
+    server_py = Path(sx.__file__).parents[1] / "server.py"
+    monkeypatch.setattr(sys, "argv", [str(server_py), "--cleanup-searxng", str(profile)])
+    for managed in (False, True):
+        config.write_text(json.dumps({"web_search":{"searxng":{"managed":managed}}}))
+        with pytest.raises(SystemExit) as result:
+            runpy.run_path(str(server_py), run_name="__main__")
+        assert result.value.code == 0
+        assert fake.rows[cid]["State"]["Running"] is (not managed)
+    assert [call for call in fake.calls if call[0] == "stop"] == [["stop", cid]]
+    assert sx.cleanup_main(["relative"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_start_requires_managed_autostart_or_manual_start(tmp_path, monkeypatch):
+    mgr = sx.SearxngServer({}, data_dir=str(tmp_path))
+    monkeypatch.setattr(mgr, "_wait_healthy", AsyncMock(return_value=False))
+    monkeypatch.setattr(sx.shutil, "which", lambda _: None)
+    with pytest.raises(sx.SearxngError, match="autostart disabled"):
+        await mgr.start()
+    with pytest.raises(sx.SearxngError, match="Docker/Podman not found"):
         await mgr.start(force=True)
-    if docker_available:
-        state.assert_awaited_once()
-    else:
-        state.assert_not_awaited()
-    cli.assert_not_awaited()
-    assert mgr.ready is True
-    assert mgr.last_error == ""
-    assert mgr._owned is False
-
-
-@pytest.mark.asyncio
-async def test_healthy_named_managed_container_is_adopted_as_owned(tmp_path: Path):
-    mgr = sx.SearxngServer({"autostart": True, "managed": True}, data_dir=str(tmp_path))
-    with patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=True)):
-        with patch.object(mgr, "docker_available", return_value=True):
-            with patch.object(mgr, "_container_state", new=AsyncMock(return_value="running")):
-                await mgr.start(force=False)
-    assert mgr.ready is True
-    assert mgr._container_running is True
-    assert mgr._owned is True
-
-
-@pytest.mark.asyncio
-async def test_start_respects_autostart_false_without_force(tmp_path: Path):
-    mgr = sx.SearxngServer({"autostart": False, "managed": True}, data_dir=str(tmp_path))
-    with patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=False)):
-        with pytest.raises(sx.SearxngError, match="autostart disabled"):
-            await mgr.start(force=False)
-    assert mgr.ready is False
-
-
-@pytest.mark.asyncio
-async def test_start_force_without_docker_errors(tmp_path: Path):
-    mgr = sx.SearxngServer({"autostart": False, "managed": True}, data_dir=str(tmp_path))
-    with patch.object(mgr, "_wait_healthy", new=AsyncMock(return_value=False)):
-        with patch.object(mgr, "docker_available", return_value=False):
-            with pytest.raises(sx.SearxngError, match="Docker"):
-                await mgr.start(force=True)
-
-
-@pytest.mark.asyncio
-async def test_stop_skips_when_not_owned(tmp_path: Path):
-    mgr = sx.SearxngServer({}, data_dir=str(tmp_path))
-    mgr.ready = True
-    mgr._owned = False
-    with patch.object(mgr, "_run_cli", new=AsyncMock()) as cli:
-        await mgr.stop(force=False)
-    cli.assert_not_called()
-    assert mgr.ready is False
-
-
-@pytest.mark.asyncio
-async def test_stop_force_stops_container(tmp_path: Path):
-    mgr = sx.SearxngServer({}, data_dir=str(tmp_path))
-    mgr.ready = True
-    mgr._owned = False
-    with patch.object(mgr, "docker_available", return_value=True):
-        with patch.object(mgr, "_container_state", new=AsyncMock(return_value="running")):
-            with patch.object(mgr, "_run_cli", new=AsyncMock(return_value=(0, "", ""))) as cli:
-                await mgr.stop(force=True)
-    assert cli.await_count >= 1
-    args = cli.await_args_list[0].args[0]
-    assert args[0] == "stop"
-    assert mgr.ready is False
-
-
-@pytest.mark.asyncio
-async def test_stop_failure_keeps_running_container_owned_for_retry(tmp_path: Path):
-    mgr = sx.SearxngServer({}, data_dir=str(tmp_path))
-    mgr._owned = True
-    states = AsyncMock(side_effect=["running", "running"])
-    with patch.object(mgr, "docker_available", return_value=True):
-        with patch.object(mgr, "_container_state", new=states):
-            with patch.object(
-                mgr, "_run_cli", new=AsyncMock(side_effect=sx.SearxngError("timeout"))
-            ):
-                await mgr.stop(force=False)
-    assert mgr._owned is True
-    assert mgr._container_running is True
-
-
-@pytest.mark.asyncio
-async def test_reconfigure_stops_owned_container_before_address_change(tmp_path: Path):
-    mgr = sx.SearxngServer(
-        {"base_url": "http://127.0.0.1:8888"}, data_dir=str(tmp_path)
-    )
-    mgr.ready = True
-    mgr._owned = True
-    mgr._container_running = True
-
-    async def stopped(*, force=False):
-        assert force is True
-        mgr._owned = False
-        mgr._container_running = False
-
-    with patch.object(mgr, "stop", side_effect=stopped) as stop:
-        await mgr.reconfigure({"base_url": "http://127.0.0.1:9999"})
-    stop.assert_awaited_once()
-    assert mgr.base_url == "http://127.0.0.1:9999"
 
 
 def test_web_search_public_status_includes_runtime():
