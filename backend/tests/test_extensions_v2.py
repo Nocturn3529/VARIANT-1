@@ -125,6 +125,26 @@ def test_install_rejects_unsupported_version_constraints(tmp_path, requirement):
     assert service.search() == []
 
 
+def test_prerelease_precedence_in_real_install_and_update(tmp_path):
+    service = ExtensionPackageService(str(tmp_path / "extensions.sqlite3"), str(tmp_path / "store"),
+        variant1_version="0.1.1-preview.4", environment_builder=lambda *_: {"mode": "fake"})
+    source = _package(tmp_path / "requires-final", "1.0.0")
+    path = source / "variant1.plugin.json"
+    manifest = json.loads(path.read_text())
+    manifest["compatibility"] = {"variant1": ">=0.1.1"}
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ExtensionPackageError, match="incompatible"):
+        service.install(str(source))
+    manifest["version"] = "1.0.0-preview.2"
+    manifest["compatibility"] = {"variant1": ">=0.1.1-preview.2 <0.1.1"}
+    path.write_text(json.dumps(manifest))
+    assert service.install(str(source))["version"] == "1.0.0-preview.2"
+    for name in ("1.0.0-preview.10", "1.0.0-rc.2", "1.0.0"):
+        assert service.update(str(_package(tmp_path / name, name)))["version"] == name
+    with pytest.raises(ExtensionPackageError, match="newer"):
+        service.update(str(_package(tmp_path / "older", "1.0.0-rc.20")))
+
+
 def test_model_extension_surface_is_one_connectors_object():
     from extensions.capabilities_v2 import register_extension_v2_tools
     from tools import ToolRegistry

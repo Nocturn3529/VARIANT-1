@@ -27,10 +27,13 @@ class ExtensionPackageError(RuntimeError):
     pass
 
 
-def _semver(value: str) -> tuple[int, int, int]:
-    core = str(value).split("-", 1)[0]
+def _semver(value: str) -> tuple:
+    core, separator, prerelease = str(value).partition("-")
     try:
-        return tuple(int(part) for part in core.split("."))  # type: ignore[return-value]
+        numbers = tuple(int(part) for part in core.split("."))
+        identifiers = tuple((0, int(part)) if part.isascii() and part.isdigit() else (1, part)
+                            for part in prerelease.split(".")) if separator else ()
+        return numbers, not bool(separator), identifiers
     except Exception as exc:
         raise ExtensionPackageError(f"invalid compatibility version: {value}") from exc
 

@@ -8,6 +8,8 @@ import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import closing
+from itertools import islice
 from typing import Any
 from background_tasks import OwnedTaskSet
 from peer_message_contract import PEER_REPLY_HINT
@@ -276,6 +278,7 @@ class PeerCommunicationService:
     ) -> list[dict[str, Any]]:
         wanted_kind = str(kind or "").strip()
         wanted_status = str(status or "").strip()
+        cap = max(1, min(int(limit), 500))
         rows: list[dict[str, Any]] = []
         if wanted_kind in {"", "variant_chat"}:
             for session in self.sessions.list_session_metadata():
@@ -287,17 +290,16 @@ class PeerCommunicationService:
                 rows.append(row)
         if wanted_kind in {"", "external_harness"}:
             self.expire_connections()
-            for row in self.repository.list_endpoints(limit=max(1, int(limit))):
-                row = self._external_descriptor(row)
-                if wanted_status and row.get("status") != wanted_status:
-                    continue
-                rows.append(row)
+            with closing(self.repository.endpoint_candidates()) as candidates:
+                descriptors = (self._external_descriptor(row) for row in candidates)
+                matched = (row for row in descriptors if not wanted_status or row["status"] == wanted_status)
+                rows.extend(islice(matched, cap))
         rows.sort(key=lambda row: (
             str(row.get("kind") or ""),
             str(row.get("display_name") or "").casefold(),
             str(row.get("peer_id") or ""),
         ))
-        return rows[:max(1, min(int(limit), 500))]
+        return rows[:cap]
 
     def get_peer(self, peer_id: str) -> dict[str, Any]:
         clean = str(peer_id or "").strip()
@@ -627,14 +629,36 @@ class PeerCommunicationService:
         event = self._idle_events.get(chat_id)
         if event is not None:
             event.set()
-        needs_wake = False
-        for row in self.repository.pending_native(chat_id=chat_id):
-            updated = self._sync_native_state(row, idle=True)
-            if (event is None and not needs_wake and updated["state"] in {"persisted", "queued"}
-                    and self._actionable_request(updated) is not None):
-                needs_wake = True
-        if needs_wake:
-            self._schedule_native_wake(chat_id)
+        self._reconcile_native_backlog(chat_id=chat_id)
+
+    def _reconcile_native_page(self, rows, scheduled):
+        for row in rows:
+            chat = _native_chat_id(row["target_peer_id"])
+            if not chat:
+                continue
+            updated = self._sync_native_state(row, idle=not self.session_runtimes.is_busy(chat))
+            if chat in scheduled or updated["state"] not in {"persisted", "queued"}:
+                continue
+            task = self._wake_tasks.get(chat)
+            if task is not None and not task.done():
+                scheduled.add(chat)
+                continue
+            if self._actionable_request(updated) is None:
+                continue
+            if updated.get("delivery_ticket_id"):
+                target = self.sessions.get_session_metadata(chat)
+                if target is None or target.get("archived"):
+                    scheduled.add(chat)
+                    continue
+            scheduled.add(chat)
+            self._schedule_native_wake(chat)
+
+    def _reconcile_native_backlog(self, *, chat_id=""):
+        after = 0
+        scheduled = set()
+        while rows := self.repository.pending_native(chat_id=chat_id, after=after):
+            self._reconcile_native_page(rows, scheduled)
+            after = rows[-1]["sequence"]
 
     async def _wake_native(self, chat_id: str) -> None:
         idle_delay = 0.1
@@ -929,6 +953,10 @@ class PeerCommunicationService:
                 completion = self._native_completion(message)
                 if completion is not None:
                     return {"status": "settled", "message": message, "completion": completion}
+                if (requests_work(message) and message["state"] == "failed"
+                        and not _native_chat_id(message["target_peer_id"])):
+                    return {"status": "failed", "message": message,
+                            "error": message.get("error") or "The external peer reported failure."}
                 failure = self._native_wait_failure(message)
                 if failure:
                     return {"status": "unavailable", "message": message, "error": failure}
@@ -1317,10 +1345,7 @@ class PeerCommunicationService:
             after = rows[-1]['ticket_id']
         for row in self.repository.reconcile_stale_external_claims():
             self._event(row)
-        for row in self.repository.pending_native():
-            chat_id = _native_chat_id(str(row.get("target_peer_id") or ""))
-            if chat_id:
-                self._schedule_native_wake(chat_id)
+        self._reconcile_native_backlog()
         if self._poll_task is None or self._poll_task.done():
             self._poll_task = asyncio.create_task(
                 self._poll_native_receipts(), name="peer-native-receipts",
@@ -1328,9 +1353,11 @@ class PeerCommunicationService:
 
     async def _poll_native_receipts(self) -> None:
         connection_tick = 0
+        after = 0
         while not self._closed:
-            for row in self.repository.pending_native():
-                self._sync_native_state(row)
+            rows = self.repository.pending_native(after=after)
+            self._reconcile_native_page(rows, set())
+            after = rows[-1]["sequence"] if len(rows) == 500 else 0
             connection_tick += 1
             if connection_tick >= 4:
                 self.expire_connections()

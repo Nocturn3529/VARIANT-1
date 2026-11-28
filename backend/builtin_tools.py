@@ -841,11 +841,12 @@ def _owns_patch_staging_paths(document: dict, journal_path: str) -> bool:
     return True
 
 
-def _retain_patch_journal(journal_path: str) -> None:
+def _retain_patch_journal(journal_path: str) -> str:
     retained = f"{journal_path}.{uuid.uuid4().hex}.needs-review"
     os.replace(journal_path, retained)
     _fsync_directory(os.path.dirname(journal_path))
     print(f"[apply_patch] Transaction evidence retained at {retained}", flush=True)
+    return retained
 
 
 def _remove_patch_staging(path: str, *, expected_sha256: str) -> bool:
@@ -880,7 +881,7 @@ def _remove_patch_staging(path: str, *, expected_sha256: str) -> bool:
     return True
 
 
-def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool) -> None:
+def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool) -> str | None:
     cleanup_errors: list[str] = []
     for item in document.get("operations") or ():
         for field in ("candidate", "backup", "deleted"):
@@ -889,8 +890,7 @@ def _cleanup_patch_journal(document: dict, journal_path: str, *, rollback: bool)
                 try:
                     digest_field = "published_sha256" if field == "candidate" else "original_sha256"
                     if not _remove_patch_staging(path, expected_sha256=item.get(digest_field, "")):
-                        _retain_patch_journal(journal_path)
-                        return
+                        return _retain_patch_journal(journal_path)
                 except OSError as exc:
                     cleanup_errors.append(f"{path}: {exc}")
     if rollback:
@@ -974,7 +974,20 @@ def _restore_patch_journal(document: dict, journal_path: str) -> None:
     _cleanup_patch_journal(document, journal_path, rollback=True)
 
 
-def _recover_patch_journal(journal_path: str) -> None:
+def _finish_committed_patch(document: dict, journal_path: str, *, retry_cleanup: bool = False) -> str:
+    """Only disposable staging remains after the committed marker."""
+    for attempt in range(2 if retry_cleanup else 1):
+        try:
+            retained = _cleanup_patch_journal(document, journal_path, rollback=False)
+        except OSError:
+            continue
+        if retained:
+            return f"Staging evidence was retained for review at {retained}."
+        return "Staging cleanup completed during recovery." if attempt else ""
+    return f"Publication is committed. Staging cleanup is pending at {journal_path}."
+
+
+def _recover_patch_journal(journal_path: str) -> bool:
     with open(journal_path, "r", encoding="utf-8") as handle:
         document = json.load(handle)
     if (
@@ -990,13 +1003,15 @@ def _recover_patch_journal(journal_path: str) -> None:
         # Never roll back an older ambiguous publication or remove an unowned path.
         _retain_patch_journal(journal_path)
     elif state == "committed":
-        _cleanup_patch_journal(document, journal_path, rollback=False)
+        _finish_committed_patch(document, journal_path)
+        return not os.path.exists(journal_path)
     elif state == "preparing":
         _cleanup_patch_journal(document, journal_path, rollback=True)
     elif state == "committing":
         _restore_patch_journal(document, journal_path)
     else:
         raise tools.ToolError(f"unknown patch transaction state: {journal_path}")
+    return True
 
 
 def _recover_patch_transactions() -> int:
@@ -1008,8 +1023,7 @@ def _recover_patch_transactions() -> int:
         for name in sorted(os.listdir(root)):
             if not name.endswith(".json"):
                 continue
-            _recover_patch_journal(os.path.join(root, name))
-            recovered += 1
+            recovered += int(_recover_patch_journal(os.path.join(root, name)))
     return recovered
 
 
@@ -1037,7 +1051,15 @@ def _apply_direct_patch(
     )
     root = _patch_transaction_root()
     journal_path = os.path.join(root, transaction_id + ".json")
+    cleanup_note = ""
     with _PATCH_TRANSACTION_LOCK:
+        if operation_id and os.path.isfile(journal_path):
+            with open(journal_path, encoding="utf-8") as stored:
+                prior = json.load(stored)
+            if (prior.get("schema") == _PATCH_JOURNAL_SCHEMA and prior.get("state") == "committed"
+                    and prior.get("transaction_id") == transaction_id and prior.get("broker_operation") == operation):
+                note = _finish_committed_patch(prior, journal_path)
+                return "This patch operation was already committed." + (" " + note if note else "")
         _recover_patch_transactions()
         for op in final_operations:
             if _file_signature(op["path"]) != op["signature"]:
@@ -1134,7 +1156,6 @@ def _apply_direct_patch(
                 _write_patch_journal(journal_path, document)
             document["state"] = "committed"
             _write_patch_journal(journal_path, document)
-            _cleanup_patch_journal(document, journal_path, rollback=False)
         except Exception as exc:
             try:
                 _recover_patch_journal(journal_path)
@@ -1143,12 +1164,15 @@ def _apply_direct_patch(
                     f"apply_patch failed and durable rollback is pending: {recovery_error}"
                 ) from exc
             raise
+        cleanup_note = _finish_committed_patch(document, journal_path, retry_cleanup=True)
 
     lines = [f"Applied {len(operations)} file operation(s) as one recoverable batch:"]
     for op in operations:
         detail = (f" ({op['replacements']} replacement(s))"
                   if "replacements" in op else "")
         lines.append(f"- {op['action']} {op['path']}{detail}")
+    if cleanup_note:
+        lines.append(cleanup_note)
     return "\n".join(lines)
 
 

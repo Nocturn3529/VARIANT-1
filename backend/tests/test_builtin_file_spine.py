@@ -674,6 +674,59 @@ async def test_apply_patch_rollback_wal_is_owned_by_the_broker_operation(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_committed_patch_cleanup_failure_and_correlated_retry(file_scope, monkeypatch, persistent):
+    target = file_scope / "item.txt"
+    target.write_text("item-v1")
+    args = {"path": str(target), "find": "v1", "replace": "extra-v1"}
+    reg = tools.ToolRegistry()
+    builtin_tools.register(reg)
+    broker = CapabilityBroker(registry=reg, runtime_registry=StaticRuntimeRegistry(),
+                              enabled_resolver=lambda: {"apply_patch"})
+    ctx = InvocationContext(chat_id="chat", run_id="run", outer_tool_call_id="outer",
+        cell_execution_id="cell", nested_call_id="patch", catalog_release_id="test", idempotency_key="once")
+    unlink = builtin_tools._remove_patch_staging
+    faults = []
+
+    def deny_backup(path, **kwargs):
+        if path.endswith(".backup") and (persistent or not faults):
+            faults.append(path)
+            raise PermissionError("fixture backup in use")
+        return unlink(path, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(builtin_tools, "_remove_patch_staging", deny_backup)
+        receipt = await broker.invoke_name("apply_patch", args, ctx)
+        assert receipt.ok and "Applied 1" in receipt.result_value
+        assert ("cleanup is pending" in receipt.result_value) is persistent
+        duplicate = await broker.invoke_name("apply_patch", args, ctx)
+        assert duplicate.receipt_id == receipt.receipt_id and target.read_text() == "item-extra-v1"
+        pending = list((file_scope / "patch-transactions").glob("*.json"))
+        assert bool(pending) is persistent
+        if pending:
+            assert json.loads(pending[0].read_text())["state"] == "committed"
+        await builtin_tools.apply_patch({"path": str(file_scope / "other.txt"), "content": "different edit"})
+    await builtin_tools.apply_patch(args)
+    assert target.read_text() == "item-extra-extra-v1"
+    assert not list((file_scope / "patch-transactions").glob("*.json"))
+
+
+@pytest.mark.asyncio
+async def test_denied_final_commit_marker_rolls_back_new_file(file_scope, monkeypatch):
+    write = builtin_tools._write_patch_journal
+    def inject(path, document):
+        if document["state"] == "committed":
+            assert json.loads(Path(path).read_text())["state"] == "committing"
+            raise PermissionError("final marker denied")
+        return write(path, document)
+    monkeypatch.setattr(builtin_tools, "_write_patch_journal", inject)
+    target = file_scope / "new.txt"
+    with pytest.raises(PermissionError, match="final marker denied"):
+        await builtin_tools.apply_patch({"path": str(target), "content": "appeared briefly"})
+    assert not target.exists() and not list((file_scope / "patch-transactions").glob("*.json"))
+
+
+@pytest.mark.asyncio
 async def test_apply_patch_applies_repeated_paths_in_order(file_scope):
     target = file_scope / "ordered.txt"
     target.write_text("first=one\nsecond=two\nstatus=pending\n", encoding="utf-8")

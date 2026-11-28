@@ -7,16 +7,14 @@ import pytest
 @pytest.mark.asyncio
 async def test_managed_search_creation_publishes_loopback_and_defaults_manual(tmp_path, monkeypatch):
     from web_search import searxng as sx
+    from tests.test_searxng_server import FakeRuntime
     manager = sx.SearxngServer({}, data_dir=str(tmp_path))
     assert manager.public_status()["autostart"] is False
     monkeypatch.setattr(manager, "_wait_healthy", AsyncMock(side_effect=[False, True]))
-    monkeypatch.setattr(manager, "docker_available", lambda: True)
-    monkeypatch.setattr(manager, "_container_state", AsyncMock(return_value="missing"))
-    monkeypatch.setattr(sx, "tcp_port_is_free", lambda *_: True)
-    cli = AsyncMock(return_value=(0, "container", ""))
-    monkeypatch.setattr(manager, "_run_cli", cli)
+    runtime = FakeRuntime("docker", tmp_path)
+    runtime.use(manager, monkeypatch)
     await manager.start(force=True)
-    args = cli.await_args.args[0]
+    args, = (call for call in runtime.calls if call[0] == "run")
     assert args[args.index("-p") + 1] == "127.0.0.1:8888:8080"
 
 

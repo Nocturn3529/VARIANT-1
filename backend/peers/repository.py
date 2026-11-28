@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from contextlib import closing
 from typing import Any
 
 from .delivery import MESSAGE_KINDS, GROK_DELIVERY_MODES, SENDER_EVIDENCE_FIELDS
@@ -426,18 +427,12 @@ class PeerRepository:
             ).fetchone()
         return self._endpoint(updated) or {}
 
-    def list_endpoints(self, *, adapter: str = "", limit: int = 500) -> list[dict[str, Any]]:
-        clauses, params = [], []
-        if adapter:
-            clauses.append("adapter=?")
-            params.append(str(adapter))
-        sql = "SELECT * FROM peer_endpoint"
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY display_name,peer_id LIMIT ?"
-        params.append(max(1, min(int(limit), 5000)))
-        with self._connect() as conn:
-            return [self._endpoint(row) or {} for row in conn.execute(sql, params)]
+    def endpoint_candidates(self):
+        """Yield in the public sort order so the caller can stop at its last matching peer."""
+        with closing(self._connect()) as conn:
+            conn.create_function("peer_name_key", 1, str.casefold, deterministic=True)
+            for row in conn.execute("SELECT * FROM peer_endpoint ORDER BY peer_name_key(display_name),peer_id"):
+                yield self._endpoint(row)
 
     def persist_message(self, record: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
         kind = str(record.get("message_kind") or "request")
@@ -1235,13 +1230,13 @@ class PeerRepository:
             conn.commit()
         return claimed
 
-    def pending_native(self, limit: int = 500, *, chat_id: str = '') -> list[dict[str, Any]]:
+    def pending_native(self, limit: int = 500, *, chat_id: str = '', after: int = 0) -> list[dict[str, Any]]:
         target_filter = 'AND target_peer_id=? ' if chat_id else ''
-        values = (['chat:' + str(chat_id)] if chat_id else []) + [max(1, min(int(limit), 5000))]
+        values = [int(after)] + (['chat:' + str(chat_id)] if chat_id else []) + [max(1, min(int(limit), 5000))]
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM peer_message WHERE target_peer_id LIKE 'chat:%' "
-                "AND message_kind='request' "
+                "AND message_kind='request' AND sequence>? "
                 "AND state IN ('persisted','queued') " + target_filter + "ORDER BY sequence LIMIT ?",
                 values,
             ).fetchall()

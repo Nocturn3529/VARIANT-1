@@ -541,7 +541,6 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
         turn_router = getattr(ports.io, "router", None)
         route_token = None
         started = time.perf_counter()
-        started_at_wall = time.time()
         usage_events = []
         receipt_wall_time_s = 0.0
         receipt_session_id = ""
@@ -866,33 +865,7 @@ async def _chat_task_owned(ports: ChatPorts, websocket, text, session, *, resume
                 children = getattr(ports.io, "children", None)
                 if children is not None:
                     try:
-                        tree = children.tree(receipt_session_id, limit=100)
-                        items = [
-                            dict(item)
-                            for item in tree.get("items") or ()
-                            if float(item.get("created_at") or 0.0)
-                            >= started_at_wall
-                        ]
-                        terminal_states = {"completed", "failed", "cancelled"}
-                        receipt["descendants"] = {
-                            "total": len(items),
-                            "active": sum(
-                                1 for item in items
-                                if str(item.get("status") or "")
-                                not in terminal_states
-                            ),
-                            "terminal": sum(
-                                1 for item in items
-                                if str(item.get("status") or "")
-                                in terminal_states
-                            ),
-                            "ids": [
-                                str(item.get("child_id") or "")
-                                for item in items[:32]
-                                if str(item.get("child_id") or "")
-                            ],
-                            "truncated": len(items) > 32,
-                        }
+                        receipt["descendants"] = children.receipt_descendants(bound_sid or receipt_session_id, run_id, admission_id)
                     except Exception:
                         _LOG.exception("descendant tree could not be projected")
                 try:
