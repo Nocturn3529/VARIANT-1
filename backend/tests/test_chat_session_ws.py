@@ -123,6 +123,58 @@ def test_chat_session_protocol_over_ws():
         assert fallback["session"] is not None
 
 
+@pytest.mark.parametrize("fault", ["none", "before_commit", "after_commit"])
+def test_delete_result_is_correlated_and_follows_the_tombstone(monkeypatch, fault):
+    runtime = server.APP.require_runtime()
+    sessions = runtime.sessions
+    runtimes = runtime.session_runtimes
+    other = sessions.create_session("Surviving chat")
+    sid = sessions.create_session("Chat to delete")
+    observed_fault = []
+
+    def fail_deletion():
+        observed_fault.append(sessions.has_session(sid))
+        raise OSError("private fixture detail")
+
+    if fault == "before_commit":
+        runtimes.register_chat_tombstone_cleanup(lambda _sid: fail_deletion())
+    elif fault == "after_commit":
+        update_continuation = runtimes.repository.update_continuation
+
+        def fail_finalization(chat_id, state, *args, **kwargs):
+            if chat_id == sid and state == "owner_tombstoned":
+                fail_deletion()
+            return update_continuation(chat_id, state, *args, **kwargs)
+
+        monkeypatch.setattr(runtimes.repository, "update_continuation", fail_finalization)
+
+    with TestClient(server.app).websocket_connect(f"/ws?token={server.AUTH_TOKEN}") as ws:
+        operation = "chat:session:delete"
+        ws.send_json({"type": operation, "id": sid, "request_id": "delete-request"})
+        if fault == "before_commit":
+            response = _drain_until(ws, "chat:session:error")
+            assert response == {
+                "type": "chat:session:error", "operation": operation,
+                "session_id": sid, "request_id": "delete-request",
+                "error": "Could not delete that conversation",
+            }
+            assert observed_fault == [True]
+            assert sessions.has_session(sid)
+        else:
+            event = {"type": "chat:session:deleted", "session_id": sid, "id": sid}
+            assert _drain_until(ws, event["type"]) == {**event, "request_id": "delete-request"}
+            assert _drain_until(ws, event["type"]) == event
+            assert _drain_until(ws, "chat:session")["session"]["id"] == other
+            assert observed_fault == ([False] if fault == "after_commit" else [])
+            assert not sessions.has_session(sid)
+
+        ws.send_json({"type": operation, "id": "absent", "request_id": "absent-request"})
+        assert _drain_until(ws, "chat:session:error") == {
+            "type": "chat:session:error", "operation": operation,
+            "session_id": "absent", "request_id": "absent-request", "error": "unknown session",
+        }
+
+
 def test_chat_project_protocol_is_correlated_and_persistent(tmp_path):
     project_root = tmp_path / "project"
     project_root.mkdir()

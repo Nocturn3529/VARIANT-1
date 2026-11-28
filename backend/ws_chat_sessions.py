@@ -1,10 +1,13 @@
 """WebSocket handlers for durable chat session CRUD and search."""
 
 import asyncio
+import logging
 
 from ws_session_settings import mark_settings_applied, session_settings_command
+from ws_transport import transport_disconnected
 
 _NO_SESSION = object()
+_LOG = logging.getLogger(__name__)
 
 def _chat_runtime(srv):
     return srv.require_runtime().chat
@@ -397,24 +400,51 @@ def register(on):
 
     @on("chat:session:delete")
     async def _chat_session_delete(srv, websocket, session, msg):
-        sid = str(msg.get("id") or "")
-        if not _sessions(srv).has_session(sid):
-            await websocket.send_json({"type": "chat:session:error", "error": "unknown session"})
+        sid = str(msg.get("id") or "").strip()
+        request_id = str(msg.get("request_id") or "")[:512]
+        installed = srv.require_runtime()
+        sessions = installed.sessions
+        fallback = ""
+        error = ""
+        try:
+            if not sessions.has_session(sid):
+                error = "unknown session"
+            else:
+                try:
+                    fallback = await installed.session_runtimes.tombstone_chat_owner(sid, sessions)
+                except Exception:
+                    _LOG.exception("Conversation deletion did not finish normally")
+                    # Runtime bookkeeping can fail after the conversation commit.
+                    if sessions.has_session(sid):
+                        error = "Could not delete that conversation"
+        except Exception:
+            _LOG.exception("Could not verify conversation deletion")
+            error = "Could not confirm conversation deletion. Refresh the chat list."
+        if error:
+            await websocket.send_json({
+                "type": "chat:session:error", "operation": "chat:session:delete",
+                "session_id": sid, "request_id": request_id, "error": error,
+            })
             return
-        runtimes = srv.require_runtime().session_runtimes
-        fallback = await runtimes.tombstone_chat_owner(sid, _sessions(srv))
-        await srv.hub.broadcast({
-            "type": "chat:session:deleted", "id": sid, "session_id": sid,
-        })
-        if session.viewed_session_id == sid:
-            session.viewed_session_id = fallback
-            _bind_runtime_attachment(srv, websocket, session, fallback)
-        await srv.hub.broadcast(_chat_runtime(srv).sessions_message())
-        await websocket.send_json({
-            "type": "chat:session",
-            "session": _session_payload(
-                srv, _chat_runtime(srv).viewed_session_id(session)),
-        })
+        deleted = {"type": "chat:session:deleted", "id": sid, "session_id": sid}
+        try:
+            if request_id:
+                await websocket.send_json({**deleted, "request_id": request_id})
+        finally:
+            await srv.hub.broadcast(deleted)
+        try:
+            if session.viewed_session_id == sid:
+                session.viewed_session_id = fallback or sessions.get_active()
+                _bind_runtime_attachment(srv, websocket, session, session.viewed_session_id)
+            await srv.hub.broadcast(installed.chat.sessions_message())
+            await websocket.send_json({
+                "type": "chat:session",
+                "session": _session_payload(srv, installed.chat.viewed_session_id(session)),
+            })
+        except Exception as exc:
+            if transport_disconnected(exc):
+                raise
+            _LOG.exception("Could not refresh conversation views after deletion")
 
     @on("chat:session:pin")
     async def _chat_session_pin(srv, websocket, session, msg):
