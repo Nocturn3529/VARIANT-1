@@ -278,7 +278,7 @@ class PeerCommunicationService:
         wanted_status = str(status or "").strip()
         rows: list[dict[str, Any]] = []
         if wanted_kind in {"", "variant_chat"}:
-            for session in self.sessions.list_sessions():
+            for session in self.sessions.list_session_metadata():
                 if not isinstance(session, Mapping):
                     continue
                 row = self._native_descriptor(session)
@@ -303,7 +303,7 @@ class PeerCommunicationService:
         clean = str(peer_id or "").strip()
         chat_id = _native_chat_id(clean)
         if chat_id:
-            session = self.sessions.get_session(chat_id)
+            session = self.sessions.get_session_metadata(chat_id)
             if session is None:
                 raise PeerError("peer_not_found", f"unknown native peer: {clean}")
             return self._native_descriptor(session)
@@ -569,7 +569,7 @@ class PeerCommunicationService:
             self._event(updated)
             return updated
         chat_id = _native_chat_id(str(message.get("target_peer_id") or ""))
-        target = self.sessions.get_session(chat_id)
+        target = self.sessions.get_session_metadata(chat_id)
         if target is None:
             updated = self.repository.update_message(
                 str(message["message_id"]), state="failed",

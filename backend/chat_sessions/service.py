@@ -30,6 +30,21 @@ MAX_TITLE_CHARS = 80
 MAX_MESSAGES = 1000
 MAX_TURN_STEPS = 48
 
+_SESSION_OWNER_JOIN = (
+    "FROM conversation_branch b JOIN conversation c ON c.conversation_id=b.conversation_id"
+)
+_LIVE_SESSION_OWNER = "b.tombstoned_at IS NULL AND c.tombstoned_at IS NULL"
+_SESSION_STATE_SOURCE = (
+    _SESSION_OWNER_JOIN
+    + " LEFT JOIN conversation_session_state s ON s.runtime_chat_id=b.runtime_chat_id "
+    "WHERE b.runtime_chat_id<>'' AND " + _LIVE_SESSION_OWNER
+)
+_SESSION_METADATA_QUERY = (
+    "SELECT b.runtime_chat_id AS id, c.title, c.archived, "
+    "CASE WHEN json_valid(s.state_json) THEN s.state_json -> '$.project' END AS project "
+    + _SESSION_STATE_SOURCE
+)
+
 
 def _display_clip(value: str, limit: int) -> str:
     if len(value) <= limit:
@@ -406,11 +421,10 @@ class ChatSessionService:
             "b.runtime_fork_reason AS b_runtime_fork_reason, "
             "b.version AS b_version, b.created_at AS b_created_at, "
             "b.updated_at AS b_updated_at, b.tombstoned_at AS b_tombstoned_at "
-            "FROM conversation_branch b JOIN conversation c "
-            "ON c.conversation_id=b.conversation_id WHERE b.runtime_chat_id=?"
+            + _SESSION_OWNER_JOIN + " WHERE b.runtime_chat_id=?"
         )
         if not include_deleted:
-            sql += " AND b.tombstoned_at IS NULL AND c.tombstoned_at IS NULL"
+            sql += " AND " + _LIVE_SESSION_OWNER
         with self.repository._read() as conn:
             row = conn.execute(sql, (clean,)).fetchone()
         if row is None:
@@ -444,6 +458,15 @@ class ChatSessionService:
                 "WHERE runtime_chat_id=?", (str(sid),)
             ).fetchone()
         return _load_state(row["state_json"] if row is not None else None)
+
+    def _read_state_field(self, sid: str, field: str) -> Any:
+        with self.repository._read() as conn:
+            row = conn.execute(
+                "SELECT CASE WHEN json_valid(s.state_json) THEN s.state_json -> ? END AS value "
+                + _SESSION_STATE_SOURCE + " AND b.runtime_chat_id=?",
+                (f"$.{field}", str(sid or "").strip()),
+            ).fetchone()
+        return json.loads(row["value"]) if row is not None and row["value"] is not None else None
 
     def _change_state(
         self,
@@ -582,6 +605,29 @@ class ChatSessionService:
         resolved = self._resolve(sid)
         return self._full_session(*resolved) if resolved is not None else None
 
+    @staticmethod
+    def _session_metadata(row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "title": row["title"],
+            "archived": bool(row["archived"]),
+            "project": stored_project_binding(_load_state(row["project"])),
+        }
+
+    def get_session_metadata(self, sid: str) -> dict[str, Any] | None:
+        """Read the live branch's identity, archive flag, and project binding."""
+        with self.repository._read() as conn:
+            row = conn.execute(
+                _SESSION_METADATA_QUERY + " AND b.runtime_chat_id=?", (str(sid or "").strip(),),
+            ).fetchone()
+        return self._session_metadata(row) if row is not None else None
+
+    def list_session_metadata(self) -> list[dict[str, Any]]:
+        """List peer-discovery metadata without walking each branch's ancestry."""
+        with self.repository._read() as conn:
+            rows = conn.execute(_SESSION_METADATA_QUERY).fetchall()
+        return [self._session_metadata(row) for row in rows]
+
     def has_session(self, sid: str) -> bool:
         return self._resolve(sid) is not None
 
@@ -635,8 +681,7 @@ class ChatSessionService:
             return self.ensure_active()
 
     def get_model_route(self, sid: str) -> dict[str, Any]:
-        session = self.get_session(sid)
-        raw = (session or {}).get("model_route")
+        raw = self._read_state_field(sid, "model_route")
         if not isinstance(raw, Mapping):
             return {}
         mode = str(raw.get("mode") or "").strip().lower()
@@ -677,9 +722,7 @@ class ChatSessionService:
         return self._change_state(sid, change)[0]
 
     def get_project(self, sid: str) -> dict[str, str] | None:
-        if self._resolve(sid) is None:
-            return None
-        raw = self._read_state(sid).get("project")
+        raw = self._read_state_field(sid, "project")
         if raw is None:
             return None
         project = stored_project_binding(raw)
@@ -927,8 +970,7 @@ class ChatSessionService:
         return self._change_state(sid, change, expected_context=expected_head_cursor or source_cursor)[0]
 
     def get_last_run_receipt(self, sid: str) -> dict[str, Any]:
-        session = self.get_session(sid)
-        return sanitize_run_receipt((session or {}).get("last_run_receipt"))
+        return sanitize_run_receipt(self._read_state_field(sid, "last_run_receipt"))
 
     def set_last_run_receipt(
         self, sid: str, receipt: dict | None, *, expected_run_id: str = "",

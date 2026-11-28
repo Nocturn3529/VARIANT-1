@@ -12,7 +12,7 @@ def _preferences(srv):
 
 def _chat_id(srv, msg):
     chat_id = str(msg.get('chat_id') or '')
-    if not chat_id or srv.require_runtime().sessions.get_session(chat_id) is None:
+    if not chat_id or not srv.require_runtime().sessions.has_session(chat_id):
         raise BrowserValidationError('The requested chat is unavailable.')
     return chat_id
 

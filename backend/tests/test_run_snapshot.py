@@ -107,6 +107,43 @@ async def test_chat_session_payload_carries_the_snapshot_only_while_busy():
 
 
 @pytest.mark.asyncio
+async def test_runtime_refresh_uses_runtime_state_without_loading_the_chat():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from ws_dispatch import HANDLERS
+
+    sessions = SimpleNamespace(
+        has_session=lambda sid: sid == "chat-a",
+        get_session=Mock(side_effect=lambda sid: {"id": sid, "messages": []} if sid == "chat-a" else None),
+    )
+    runtimes = SimpleNamespace(
+        snapshot=Mock(return_value={"busy": True, "active_run_id": "run-1"}),
+        queue_snapshot=lambda _sid: {"items": [{"id": "queued-input"}]},
+        active_input_projection=Mock(return_value=None),
+    )
+    kernel = SimpleNamespace(status=lambda _sid: {"state": "ready", "generation": 3})
+    installed = SimpleNamespace(sessions=sessions, session_runtimes=runtimes,
+                                kernel=kernel, session_control=None)
+    srv = SimpleNamespace(require_runtime=lambda: installed)
+    ws = AsyncMock()
+    handler = HANDLERS["chat:runtime:get"]
+    await handler(srv, ws, SimpleNamespace(), {"id": "chat-a"})
+    assert ws.send_json.await_args.args[0] == {
+        "type": "chat:runtime", "id": "chat-a", "runtime": {
+            "busy": True, "active_run_id": "run-1", "warning": "",
+            "input_queue": {"items": [{"id": "queued-input"}]},
+            "kernel": {"state": "ready", "generation": 3},
+        },
+    }
+    await handler(srv, ws, SimpleNamespace(), {"id": "deleted"})
+    assert ws.send_json.await_args.args[0] == {"type": "chat:runtime", "id": "deleted", "runtime": {}}
+    runtimes.snapshot.assert_called_once_with("chat-a")
+    sessions.get_session.assert_not_called()
+    runtimes.active_input_projection.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_reopening_during_tools_shows_narration_once_not_as_reply_text():
     with bind_run_context(_ctx()):
         activity.bind_live_text(1, ["Let me check."], admission_id="adm-1")

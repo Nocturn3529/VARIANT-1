@@ -232,7 +232,7 @@ async def test_settings_protocol_is_correlated_and_does_not_switch_the_viewed_ch
             return handler
         return register
     ws_browser.register(on)
-    runtime = SimpleNamespace(browser=fabric, sessions=SimpleNamespace(get_session=lambda cid: {} if cid == 'chat-a' else None))
+    runtime = SimpleNamespace(browser=fabric, sessions=SimpleNamespace(has_session=lambda cid: cid == 'chat-a'))
     srv = SimpleNamespace(require_runtime=lambda: runtime)
     connection = SimpleNamespace(viewed_session_id='chat-kept')
     sent = []

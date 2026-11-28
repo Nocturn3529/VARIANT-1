@@ -107,7 +107,7 @@ class ChatGoalService:
         return goal
 
     def _require_chat(self, chat_id: str) -> None:
-        target = self.host.require_runtime().sessions.get_session(chat_id)
+        target = self.host.require_runtime().sessions.get_session_metadata(chat_id)
         if target is None or target.get("archived"):
             raise ChatUnavailable("The chat is unavailable or archived")
 
@@ -228,7 +228,7 @@ class ChatGoalService:
         from run_context import bind_run_context
 
         runtime = self.host.require_runtime()
-        target = runtime.sessions.get_session(chat_id)
+        target = runtime.sessions.get_session_metadata(chat_id)
         if target is None or target.get("archived"):
             return False
         # Queued user input, settings changes and running turns go first.

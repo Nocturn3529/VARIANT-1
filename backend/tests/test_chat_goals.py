@@ -116,7 +116,7 @@ class Host:
             try_reserve_run=self._reserve, finish_run=lambda *a, **k: None,
             attached_transports=lambda chat_id: [self.transport])
         sessions = SimpleNamespace(
-            get_session=lambda chat_id: {"archived": self.archived},
+            get_session_metadata=lambda chat_id: {"archived": self.archived},
             get_last_run_receipt=lambda chat_id: self.receipts.get(chat_id, {}))
         chat = SimpleNamespace(launch_reserved_turn=self._launch)
         self.runtime = SimpleNamespace(session_runtimes=registry, sessions=sessions, chat=chat)

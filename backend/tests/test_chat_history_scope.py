@@ -19,6 +19,50 @@ def _fork(sessions, chat, head, name):
     return sid
 
 
+def test_chat_metadata_is_branch_local_and_respects_tombstones(tmp_path):
+    sessions = open_sessions(tmp_path / "chats")
+    main = sessions.create_session("Shared title")
+    sessions.append_messages(main, [{"role": "user", "text": "Shared ancestor"}])
+    project = tmp_path / "project"
+    project.mkdir()
+    binding = sessions.set_project(main, str(project))
+    main_route = {"mode": "local", "model": "original", "provider": ""}
+    fork_route = {"mode": "cloud", "model": "separate", "provider": "test", "reasoning_effort": "high"}
+    assert sessions.set_model_route(main, main_route)
+    assert sessions.set_last_run_receipt(main, {"run_id": "main-run", "status": "ok"})
+    head = sessions.context_head(main)["head_node_id"]
+    fork = _fork(sessions, main, head, "fork")
+
+    assert sessions.get_session_metadata(fork) == {
+        "id": fork, "title": "Shared title", "archived": False, "project": None,
+    }
+    assert sessions.get_model_route(fork) == {}
+    assert sessions.get_last_run_receipt(fork) == {}
+    assert sessions.set_model_route(fork, fork_route)
+    assert sessions.set_last_run_receipt(fork, {"run_id": "fork-run", "status": "ok"})
+    assert sessions.set_flag(fork, archived=True)
+    assert {row["id"] for row in sessions.list_session_metadata() if row["archived"]} == {main, fork}
+    assert sessions.get_session_metadata(main)["project"] == binding
+    assert sessions.get_model_route(main) == main_route
+    assert sessions.get_model_route(fork) == fork_route
+    assert sessions.get_last_run_receipt(main)["run_id"] == "main-run"
+    assert sessions.get_last_run_receipt(fork)["run_id"] == "fork-run"
+
+    sessions.delete(fork)
+    assert sessions.get_session_metadata(fork) is None
+    assert sessions.get_model_route(fork) == {}
+    assert sessions.get_last_run_receipt(fork) == {}
+    assert sessions.get_model_route(main) == main_route
+    assert {row["id"] for row in sessions.list_session_metadata()} == {main}
+
+    sessions.delete(main)
+    assert sessions.get_session_metadata(main) is None
+    assert sessions.get_project(main) is None
+    assert sessions.get_model_route(main) == {}
+    assert sessions.get_last_run_receipt(main) == {}
+    assert all(row["id"] not in {main, fork} for row in sessions.list_session_metadata())
+
+
 def test_clock_rollback_preserves_recent_canonical_order_and_uncapped_summary(tmp_path, monkeypatch):
     sessions = open_sessions(tmp_path / "chats")
     chat = sessions.create_session("Clock")

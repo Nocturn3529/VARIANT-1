@@ -287,7 +287,7 @@ class ChatService:
 
         runtime = self.host.require_runtime()
         sessions = runtime.sessions
-        target = sessions.get_session(chat_id)
+        target = sessions.get_session_metadata(chat_id)
         if target is None:
             return {"status": "unavailable", "reason": "unknown_chat"}
         if target.get("archived"):

@@ -59,42 +59,15 @@ def _context_payload(srv, sid: str) -> dict:
     return context
 
 
-def _session_payload(srv, sid: str, *, stored=_NO_SESSION):
+def _runtime_payload(srv, sid: str, installed) -> dict:
     from session_catalog.profiles import is_action_surface
 
-    if stored is _NO_SESSION:
-        stored = _sessions(srv).get_session(sid)
-    if stored is None:
-        return None
-    payload = dict(stored)
-    installed = srv.require_runtime()
     runtimes = installed.session_runtimes
     kernels = installed.kernel
-    controls = installed.session_control
     try:
         runtime = runtimes.snapshot(sid) if runtimes is not None else {}
     except Exception as exc:
         runtime = {"error": str(exc)}
-    active_run_id = str((runtime or {}).get("active_run_id") or "")
-    if active_run_id:
-        project_inputs = getattr(runtimes, "active_input_projection", None)
-        if callable(project_inputs):
-            try:
-                inputs = project_inputs(sid)
-            except Exception:
-                inputs = None
-                payload["active_inputs_error"] = "unavailable"
-            if inputs and inputs["run_id"] == active_run_id and inputs["admission_id"] == runtime.get("active_admission_id"):
-                payload["active_inputs"] = inputs
-        # A Deck opening this chat mid-run rebuilds the live timeline from it.
-        from observability.activity import run_snapshot
-
-        snapshot = run_snapshot(
-            sid, active_run_id,
-            str((runtime or {}).get("active_admission_id") or ""),
-        )
-        if snapshot is not None:
-            payload["run_snapshot"] = snapshot
     if runtime:
         runtime = dict(runtime)
         runtime["input_queue"] = runtimes.queue_snapshot(sid)
@@ -175,9 +148,38 @@ def _session_payload(srv, sid: str, *, stored=_NO_SESSION):
                             if str(row.get("status") or "") in {"queued", "running", "cancelling"}
                         ),
                     }
+    return runtime or {}
+
+
+def _session_payload(srv, sid: str, *, stored=_NO_SESSION):
+    if stored is _NO_SESSION:
+        stored = _sessions(srv).get_session(sid)
+    if stored is None:
+        return None
+    payload = dict(stored)
+    installed = srv.require_runtime()
+    runtime = _runtime_payload(srv, sid, installed)
+    if runtime:
         payload["runtime"] = runtime
-    if controls is not None:
-        payload["session_controls"] = controls.snapshot()
+    active_run_id = str(runtime.get("active_run_id") or "")
+    if active_run_id:
+        project_inputs = getattr(installed.session_runtimes, "active_input_projection", None)
+        if callable(project_inputs):
+            try:
+                inputs = project_inputs(sid)
+            except Exception:
+                inputs = None
+                payload["active_inputs_error"] = "unavailable"
+            if inputs and inputs["run_id"] == active_run_id and inputs["admission_id"] == runtime.get("active_admission_id"):
+                payload["active_inputs"] = inputs
+        # A Deck opening this chat mid-run rebuilds the live timeline from it.
+        from observability.activity import run_snapshot
+
+        snapshot = run_snapshot(sid, active_run_id, str(runtime.get("active_admission_id") or ""))
+        if snapshot is not None:
+            payload["run_snapshot"] = snapshot
+    if installed.session_control is not None:
+        payload["session_controls"] = installed.session_control.snapshot()
     return payload
 
 
@@ -467,11 +469,12 @@ def register(on):
     @on("chat:runtime:get")
     async def _chat_runtime_get(srv, websocket, session, msg):
         sid = str(msg.get("id") or "") or _chat_runtime(srv).viewed_session_id(session)
-        payload = _session_payload(srv, sid) or {}
+        installed = srv.require_runtime()
+        runtime = _runtime_payload(srv, sid, installed) if installed.sessions.has_session(sid) else {}
         await websocket.send_json({
             "type": "chat:runtime",
             "id": sid,
-            "runtime": payload.get("runtime") or {},
+            "runtime": runtime,
         })
 
     @on("chat:execution:get")

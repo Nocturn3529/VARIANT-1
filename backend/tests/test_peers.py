@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -63,6 +64,65 @@ async def test_peer_receiver_launch_does_not_inherit_sender_goal_run_or_chat(tmp
         assert receiver.chat_session.viewed_session_id==second and receiver.run_id!=sender.run_id
     finally:
         await service.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_native_peer_metadata_does_not_read_long_transcripts(tmp_path, monkeypatch):
+    service, runtimes, sessions, _chat, first, second = _stack(tmp_path)
+    project = tmp_path / "project"
+    project.mkdir()
+    binding = sessions.set_project(second, str(project))
+    for chat_id in (first, second):
+        sessions.append_messages(chat_id, [
+            *({"role": "user", "text": f"Prior input {i}"} for i in range(1001)),
+            *({"role": "assistant", "text": "Prior answer", "run_id": f"run-{i}"} for i in range(3)),
+        ])
+
+    history_sizes = []
+    display_lookups = []
+    read_tables = set()
+    read_history = sessions.repository.history_nodes
+    connect = sessions.repository._connect
+
+    def observe_history(*args, **kwargs):
+        rows = read_history(*args, **kwargs)
+        history_sizes.append(len(rows))
+        return rows
+
+    def authorize(action, table, *_args):
+        if action == sqlite3.SQLITE_READ:
+            read_tables.add(table)
+        return sqlite3.SQLITE_OK
+
+    def observe_reads():
+        conn = connect()
+        conn.set_authorizer(authorize)
+        return conn
+
+    sessions.bind_peer_display(service.message_display, lambda *ids: display_lookups.append(ids))
+    monkeypatch.setattr(sessions.repository, "history_nodes", observe_history)
+    monkeypatch.setattr(sessions.repository, "_connect", observe_reads)
+    try:
+        sent = await service.send(f"chat:{first}", f"chat:{second}", "New request")
+        assert sent["state"] == "queued"
+        ticket = runtimes.repository.get_ticket(sent["delivery_ticket_id"])
+        assert ticket.chat_id == second and ticket.source == f"peer:chat:{first}"
+        assert (sum(history_sizes), len(display_lookups)) == (0, 0)
+
+        roster = {row["chat_id"]: row for row in service.list_peers(kind="variant_chat")}
+        assert set(roster) == {first, second}
+        assert roster[second] == service.get_peer(f"chat:{second}")
+        assert roster[second]["display_name"] == "Second" and roster[second]["project"] == binding
+
+        assert sessions.set_flag(second, archived=True)
+        parked = await service.send(f"chat:{first}", f"chat:{second}", "Request to an archived chat")
+        assert parked["state"] == "parked" and parked["delivery_ticket_id"] == ""
+        assert service.get_peer(f"chat:{second}")["archived"] is True
+        assert not read_tables.intersection({"conversation_node", "conversation_edge", "conversation_turn"})
+        assert not history_sizes and not display_lookups
+    finally:
+        await service.shutdown()
+        await runtimes.shutdown()
 
 
 async def _settle_service(service, runtimes):
