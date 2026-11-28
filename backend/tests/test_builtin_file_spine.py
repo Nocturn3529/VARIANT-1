@@ -705,6 +705,11 @@ async def test_committed_patch_cleanup_failure_and_correlated_retry(file_scope, 
         assert bool(pending) is persistent
         if pending:
             assert json.loads(pending[0].read_text())["state"] == "committed"
+            reopened = CapabilityBroker(registry=reg, runtime_registry=StaticRuntimeRegistry(),
+                                        enabled_resolver=lambda: {"apply_patch"})
+            recovered = await reopened.invoke_name("apply_patch", args, ctx)
+            assert recovered.ok and "already committed" in recovered.result_value
+            assert target.read_text() == "item-extra-v1"
         await builtin_tools.apply_patch({"path": str(file_scope / "other.txt"), "content": "different edit"})
     await builtin_tools.apply_patch(args)
     assert target.read_text() == "item-extra-extra-v1"

@@ -158,6 +158,7 @@ async def test_restart_and_poll_wake_beyond_first_recipient_page_without_duplica
         chat_id = session.viewed_session_id
         ticket_id = kwargs["ticket_id"]
         received.append((chat_id, ticket_id))
+        runtimes.begin_run(kwargs["runtime_admission_id"], run_id="run-" + ticket_id, thread_id=ticket_id)
         runtimes.complete_transcript_commit(chat_id, [{"id": ticket_id}])
         heard[chat_id].set()
     chat.run_task = run

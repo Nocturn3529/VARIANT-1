@@ -9,10 +9,10 @@ async def test_managed_search_creation_publishes_loopback_and_defaults_manual(tm
     from web_search import searxng as sx
     from tests.test_searxng_server import FakeRuntime
     manager = sx.SearxngServer({}, data_dir=str(tmp_path))
-    assert manager.public_status()["autostart"] is False
-    monkeypatch.setattr(manager, "_wait_healthy", AsyncMock(side_effect=[False, True]))
     runtime = FakeRuntime("docker", tmp_path)
     runtime.use(manager, monkeypatch)
+    assert manager.public_status()["autostart"] is False
+    monkeypatch.setattr(manager, "_wait_healthy", AsyncMock(side_effect=[False, True]))
     await manager.start(force=True)
     args, = (call for call in runtime.calls if call[0] == "run")
     assert args[args.index("-p") + 1] == "127.0.0.1:8888:8080"
