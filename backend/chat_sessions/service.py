@@ -22,7 +22,7 @@ from .models import (
     ConversationTombstoned,
 )
 from .repository import ConversationRepository, _json, _new_id
-from .projection import coverage, digest_rows, display_excerpt, display_origin_text, history_order, history_rows, rows_for_ids, verified_prefix
+from .projection import coverage, digest_rows, display_excerpt, display_origin_text, history_order, history_rows, rows_for_ids, search_terms, verified_prefix
 
 
 DEFAULT_TITLE = "New chat"
@@ -1532,22 +1532,25 @@ class ChatSessionService:
             except ValueError:
                 return None
             start, end = max(0, index - 2), min(len(order), index + 3)
+            matched_offset = self.repository.history_match_offset(conn, cid, node_id, query)
             rows = conn.execute(
                 "WITH selected AS (SELECT keys.key AS pos,n.node_id,n.role,n.created_at,n.content_text,"
                 "CASE WHEN json_type(n.metadata_json,'$.origin')='object' THEN json_extract(n.metadata_json,'$.origin') END AS origin,"
                 "CASE WHEN json_type(n.metadata_json,'$.peer_display')='object' THEN json_extract(n.metadata_json,'$.peer_display') END AS peer,"
-                "CASE WHEN n.node_id=? AND ?<>'' THEN max(0,instr(lower(n.content_text),lower(?))-161) ELSE 0 END AS off "
+                "CASE WHEN n.node_id=? THEN ? ELSE 0 END AS off "
                 "FROM json_each(?) keys CROSS JOIN conversation_node n ON n.node_id=keys.value WHERE n.conversation_id=?) "
                 "SELECT node_id,role,created_at,origin,peer,off,length(content_text) AS total,"
                 "substr(content_text,off+1,4096) AS text FROM selected ORDER BY pos",
-                (node_id, query, query, json.dumps(order[start:end]), cid)).fetchall()
+                (node_id, matched_offset, json.dumps(order[start:end]), cid)).fetchall()
         messages = []
         for row in rows:
             origin = json.loads(row["origin"] or "null")
             special = display_origin_text(row["role"], origin, json.loads(row["peer"] or "null"), self._peer_display)
             text, offset, total = row["text"], row["off"], row["total"]
             if special is not None:
-                text, offset = display_excerpt(special, query if row["node_id"] == node_id else "", 4096)
+                selected = query if row["node_id"] == node_id else ""
+                text, offset = display_excerpt(special, selected, 4096,
+                    terms=search_terms(selected) if self.repository.fts_enabled else ())
                 total = len(special)
             messages.append({"node_id": row["node_id"], "role": row["role"], "ts": row["created_at"],
                              "text": text, "text_offset": offset, "text_total_chars": total,

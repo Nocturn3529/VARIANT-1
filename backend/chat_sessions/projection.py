@@ -33,9 +33,23 @@ def display_origin_text(role, origin, recorded_peer, resolve_peer=None):
     return None
 
 
-def display_excerpt(text: str, query: str, limit: int) -> tuple[str, int]:
-    match = re.search(re.escape(query), text, re.IGNORECASE) if query else None
-    offset = max(0, match.start() - min(160, limit // 3)) if match else 0
+def search_terms(query: str) -> list[str]:
+    return re.findall(r"[\w-]+", query, flags=re.UNICODE)[:20]
+
+
+def display_excerpt(text: str, query: str, limit: int, *, terms=()) -> tuple[str, int]:
+    folded = text.casefold()
+    pos = folded.find(query.casefold()) if query else -1
+    if pos < 0 and terms:
+        pos = min((i for term in terms if (i := folded.find(term.casefold())) >= 0), default=-1)
+    if pos > 0 and len(folded) != len(text):
+        count = 0
+        for index, char in enumerate(text):
+            count += len(char.casefold())
+            if count > pos:
+                pos = index
+                break
+    offset = max(0, pos - min(160, limit // 3))
     return text[offset:offset + limit], offset
 
 
